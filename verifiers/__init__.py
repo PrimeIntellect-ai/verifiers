@@ -49,6 +49,9 @@ try:
     from .trainers import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,
+        VerifiersGRPOTrainer,
+        VerifiersGRPOConfig,
+        EnvironmentRewardAdapter,
         grpo_defaults,
         lora_defaults,
     )
@@ -126,6 +129,9 @@ if _HAS_TRL:
             "get_model_and_tokenizer",
             "GRPOTrainer",
             "GRPOConfig",
+            "VerifiersGRPOTrainer",
+            "VerifiersGRPOConfig", 
+            "EnvironmentRewardAdapter",
             "grpo_defaults",
             "lora_defaults",
         ]

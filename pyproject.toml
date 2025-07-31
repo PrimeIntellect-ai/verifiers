@@ -29,6 +29,7 @@ dependencies = [
     "openai",
     "datasets",
     "pydantic>=2.11.7",
+    "trl>=0.20.0",
 ]
 
 [project.optional-dependencies]
