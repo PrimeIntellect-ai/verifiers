@@ -7,9 +7,10 @@ like async batch generation and Environment-based reward computation.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 from unittest.mock import MagicMock
 
+import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase, TrainerCallback
 from trl import GRPOTrainer as TRLGRPOTrainer
 from trl.trainer.grpo_config import GRPOConfig as TRLGRPOConfig
@@ -24,31 +25,69 @@ from verifiers.trainers.multi_turn_mixin import MultiTurnMixin
 class VerifiersGRPOConfig(TRLGRPOConfig):
     """
     Extended GRPO configuration that includes verifiers-specific parameters.
+
+    This config extends TRL's GRPOConfig with:
+    - Async generation support for efficient batch processing
+    - Environment-specific configuration options
+    - Compatibility with latest TRL features (delta clipping, entropy masking, etc.)
     """
 
     def __init__(self, *args, **kwargs):
-        # Extract verifiers-specific parameters
+        # Extract verifiers-specific parameters for async generation
         self.num_batches_ahead = kwargs.pop("num_batches_ahead", 1)
         self.enable_async_generation = kwargs.pop("enable_async_generation", True)
         self.async_timeout = kwargs.pop("async_timeout", 300)
 
-        # Initialize base config
+        # Environment-specific parameters
+        self.use_environment_reward = kwargs.pop("use_environment_reward", True)
+        self.environment_reward_weight = kwargs.pop("environment_reward_weight", 1.0)
+        self.zero_truncated_completions = kwargs.pop(
+            "zero_truncated_completions", False
+        )
+
+        # Multi-turn conversation parameters
+        self.enable_multi_turn = kwargs.pop(
+            "enable_multi_turn", None
+        )  # Auto-detect if None
+        self.max_conversation_turns = kwargs.pop("max_conversation_turns", 10)
+
+        # Ensure new TRL parameters have proper defaults if not specified
+        # These are from recent TRL updates that we want to support
+        if "delta" not in kwargs:
+            kwargs["delta"] = None  # Two-sided GRPO loss clipping
+        if "epsilon_high" not in kwargs:
+            kwargs["epsilon_high"] = None  # Upper-bound epsilon for DAPO
+        if "importance_sampling_level" not in kwargs:
+            kwargs["importance_sampling_level"] = "token"  # Token vs sequence-level
+        if "top_entropy_quantile" not in kwargs:
+            kwargs["top_entropy_quantile"] = 1.0  # Entropy-based token masking
+        if "mask_truncated_completions" not in kwargs:
+            kwargs["mask_truncated_completions"] = False  # Exclude truncated from loss
+        if "scale_rewards" not in kwargs:
+            kwargs["scale_rewards"] = True  # Normalize rewards by std dev
+
+        # Initialize base config with TRL parameters
         super().__init__(*args, **kwargs)
 
 
 class EnvironmentRewardAdapter:
     """
     Adapter that converts verifiers Environment objects to TRL-compatible reward functions.
+
+    This adapter bridges the gap between verifiers' async Environment-based reward
+    computation and TRL's synchronous reward function interface.
     """
 
-    def __init__(self, env: Environment):
+    def __init__(self, env: Environment, scale_rewards: bool = True):
         self.env = env
+        self.scale_rewards = scale_rewards
         self.logger = logging.getLogger(__name__)
         self.__name__ = f"EnvironmentRewardAdapter_{type(env).__name__}"
+        self._reward_stats = {"mean": 0.0, "std": 1.0}  # For reward normalization
 
     def __call__(
-        self, prompts: List[str], completions: List[str], **kwargs
-    ) -> List[float]:
+        self, prompts: list[str], completions: list[str], **kwargs
+    ) -> list[float]:
         """
         Convert Environment reward computation to TRL format.
 
@@ -82,6 +121,9 @@ class EnvironmentRewardAdapter:
                     states.append({})  # Empty state
                     tasks.append("default")
 
+                # Also pass empty infos list as required by new signature
+                infos = [{}] * len(prompts)
+
                 # Run async scoring function
                 try:
                     if asyncio.get_event_loop().is_running():
@@ -97,6 +139,7 @@ class EnvironmentRewardAdapter:
                                     answers,
                                     states,
                                     tasks,
+                                    infos,
                                 ),
                             )
                             rollout_scores = future.result()
@@ -108,6 +151,7 @@ class EnvironmentRewardAdapter:
                                 answers,
                                 states,
                                 tasks,
+                                infos,
                             )
                         )
 
@@ -125,6 +169,19 @@ class EnvironmentRewardAdapter:
                             ]
                     else:
                         rewards = [1.0] * len(prompts)
+
+                    # Apply reward scaling if enabled (following TRL's scale_rewards)
+                    if self.scale_rewards and len(rewards) > 1:
+                        rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+                        rewards_std = rewards_tensor.std()
+                        if rewards_std > 0:
+                            rewards = (
+                                (rewards_tensor - rewards_tensor.mean()) / rewards_std
+                            ).tolist()
+                            # Update stats for logging
+                            self._reward_stats["mean"] = float(rewards_tensor.mean())
+                            self._reward_stats["std"] = float(rewards_std)
+
                     return rewards
 
                 except Exception as e:
@@ -163,7 +220,7 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         env: Environment,
         args: Optional[VerifiersGRPOConfig] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
-        callbacks: Optional[List[TrainerCallback]] = None,
+        callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple = (None, None),
         peft_config: Optional[PeftConfig] = None,
         **kwargs,
@@ -195,12 +252,30 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         self.enable_async_generation = getattr(args, "enable_async_generation", True)
         self.async_timeout = getattr(args, "async_timeout", 300)
 
-        # Detect multi-turn capability
-        self.is_multi_turn = self.is_multi_turn_environment(env)
-        self.logger.info(f"Environment detected as {'multi-turn' if self.is_multi_turn else 'single-turn'}")
+        # Environment-specific config
+        self.use_environment_reward = getattr(args, "use_environment_reward", True)
+        self.environment_reward_weight = getattr(args, "environment_reward_weight", 1.0)
 
-        # Create reward function adapter from Environment
-        reward_adapter = EnvironmentRewardAdapter(env)
+        # Message type config (for base model RL support)
+        self.message_type = getattr(env, "message_type", "chat")
+        self.logger.info(f"Environment message type: {self.message_type}")
+
+        # Multi-turn config
+        enable_multi_turn = getattr(args, "enable_multi_turn", None)
+        self.max_conversation_turns = getattr(args, "max_conversation_turns", 10)
+
+        # Detect multi-turn capability (auto-detect if not explicitly set)
+        if enable_multi_turn is None:
+            self.is_multi_turn = self.is_multi_turn_environment(env)
+        else:
+            self.is_multi_turn = enable_multi_turn
+        self.logger.info(
+            f"Environment detected as {'multi-turn' if self.is_multi_turn else 'single-turn'}"
+        )
+
+        # Create reward function adapter from Environment with proper scaling
+        scale_rewards = getattr(args, "scale_rewards", True)
+        reward_adapter = EnvironmentRewardAdapter(env, scale_rewards=scale_rewards)
         self._reward_adapter = reward_adapter
 
         # Get dataset from environment
@@ -210,7 +285,9 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         if self.is_multi_turn:
             # For multi-turn environments, we'll generate datasets dynamically
             # during training rather than using static datasets
-            self.logger.info("Multi-turn environment detected - datasets will be generated dynamically")
+            self.logger.info(
+                "Multi-turn environment detected - datasets will be generated dynamically"
+            )
             train_dataset = None
             eval_dataset = None
         else:
@@ -222,10 +299,17 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             except Exception as e:
                 self.logger.warning(f"Could not get dataset from environment: {e}")
 
+        # Handle reward_processing_classes for compatibility with TRL's validation
+        # If not provided in kwargs, set it to None to let TRL handle it
+        if "reward_processing_classes" not in kwargs:
+            kwargs["reward_processing_classes"] = None
+
         # Initialize TRL trainer with adapted components
         super().__init__(
             model=model,
-            reward_funcs=reward_adapter,  # Use our adapter as reward function
+            reward_funcs=reward_adapter
+            if self.use_environment_reward
+            else kwargs.pop("reward_funcs", None),
             args=args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
@@ -287,11 +371,11 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         return self._async_generator
 
     def generate_completions(
-        self, prompts: List[str], **generation_kwargs
-    ) -> List[str]:
+        self, prompts: list[str], **generation_kwargs
+    ) -> list[str]:
         """
         Generate completions using the environment's generation logic.
-        
+
         For multi-turn environments, this uses the environment's rollout
         system to generate full conversations. For single-turn environments,
         it falls back to TRL's standard generation.
@@ -300,10 +384,10 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             return self._generate_multi_turn_completions(prompts, **generation_kwargs)
         else:
             return self._generate_single_turn_completions(prompts, **generation_kwargs)
-    
+
     def _generate_single_turn_completions(
-        self, prompts: List[str], **generation_kwargs
-    ) -> List[str]:
+        self, prompts: list[str], **generation_kwargs
+    ) -> list[str]:
         """Generate completions for single-turn environments."""
         if hasattr(self.env, "generate") and callable(self.env.generate):
             try:
@@ -316,43 +400,43 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
 
         # Fallback to TRL's generation
         return super().generate_completions(prompts, **generation_kwargs)
-    
+
     def _generate_multi_turn_completions(
-        self, prompts: List[str], **generation_kwargs
-    ) -> List[str]:
+        self, prompts: list[str], **generation_kwargs
+    ) -> list[str]:
         """Generate completions for multi-turn environments using environment rollouts."""
         try:
             # For multi-turn, we need to generate fresh data each time
             batch_size = len(prompts)
-            
+
             # Generate multi-turn dataset
             multi_turn_dataset = self.create_multi_turn_dataset(
                 env=self.env,
                 model=self.model,
                 tokenizer=self.tokenizer,
                 num_samples=batch_size,
-                **generation_kwargs
+                **generation_kwargs,
             )
-            
+
             # Store the current batch data for reward computation
             self._current_batch_data = multi_turn_dataset.to_list()
-            
+
             # Extract completions from the generated dataset
-            completions = [item['completion'] for item in self._current_batch_data]
-            
+            completions = [item["completion"] for item in self._current_batch_data]
+
             return completions
-            
+
         except Exception as e:
             self.logger.error(f"Multi-turn generation failed: {e}")
             # Fallback to single-turn behavior
             return self._generate_single_turn_completions(prompts, **generation_kwargs)
 
     def compute_rewards(
-        self, prompts: List[str], completions: List[str]
-    ) -> List[float]:
+        self, prompts: list[str], completions: list[str]
+    ) -> list[float]:
         """
         Compute rewards using the Environment's rubric system.
-        
+
         For multi-turn environments, this uses the rich conversation context
         preserved during generation. For single-turn environments, it uses
         the standard reward adapter.
@@ -360,9 +444,7 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         try:
             if self.is_multi_turn:
                 return self.compute_multi_turn_rewards(
-                    env=self.env,
-                    prompts=prompts,
-                    completions=completions
+                    env=self.env, prompts=prompts, completions=completions
                 )
             else:
                 # Use the reward adapter for single-turn environments
@@ -378,6 +460,51 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             # Return fallback rewards
             return [1.0] * len(prompts)
 
+    def _apply_entropy_masking(self, logprobs, mask, quantile):
+        """
+        Apply entropy-based token masking as per 'Beyond the 80/20 Rule' paper.
+
+        This feature masks tokens based on their entropy, keeping only the top-ρ
+        quantile of tokens by entropy at each sequence position.
+        """
+        if quantile >= 1.0:
+            return mask  # No masking needed
+
+        try:
+            # Compute entropy for each token
+            probs = torch.exp(logprobs)
+            entropy = -torch.sum(probs * logprobs, dim=-1)
+
+            # Apply quantile masking
+            threshold = torch.quantile(entropy[mask.bool()], quantile)
+            entropy_mask = entropy >= threshold
+
+            # Combine with existing mask
+            return mask & entropy_mask
+        except Exception as e:
+            self.logger.warning(f"Entropy masking failed: {e}")
+            return mask
+
+    def _handle_truncated_completions(self, completion_mask, truncated_flags):
+        """
+        Handle truncated completions based on mask_truncated_completions setting.
+
+        When enabled, this excludes truncated completions from the loss calculation
+        to prevent incorrect penalization during training.
+        """
+        if not self.args.mask_truncated_completions:
+            return completion_mask
+
+        try:
+            # Zero out masks for truncated completions
+            for i, is_truncated in enumerate(truncated_flags):
+                if is_truncated:
+                    completion_mask[i] = 0
+            return completion_mask
+        except Exception as e:
+            self.logger.warning(f"Truncation masking failed: {e}")
+            return completion_mask
+
     def get_train_dataloader(self):
         """
         Get training dataloader with support for multi-turn and async generation.
@@ -386,7 +513,7 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             # For multi-turn environments, create a dummy dataset that will be
             # dynamically populated during generation
             return self._create_multi_turn_dataloader()
-        
+
         dataloader = super().get_train_dataloader()
 
         if self.enable_async_generation and self.num_batches_ahead > 0:
@@ -401,37 +528,45 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
                 self.logger.warning(f"Failed to create async dataloader: {e}")
 
         return dataloader
-    
+
     def _create_multi_turn_dataloader(self):
         """Create a dataloader for multi-turn environments."""
         from torch.utils.data import DataLoader, Dataset as TorchDataset
-        
+
         class MultiTurnDataset(TorchDataset):
             """Dynamic dataset that generates multi-turn data on-the-fly."""
-            
+
             def __init__(self, env, num_samples=1000):
                 self.env = env
                 self.num_samples = num_samples
-            
+
             def __len__(self):
                 return self.num_samples
-            
+
             def __getitem__(self, idx):
                 # Return dummy data - actual generation happens in generate_completions
                 return {
                     "prompt": f"multi_turn_prompt_{idx}",
                     "completion": "",
-                    "reward": 0.0
+                    "reward": 0.0,
                 }
-        
-        dataset = MultiTurnDataset(self.env, num_samples=getattr(self, 'args', MagicMock(num_train_epochs=1)).num_train_epochs * 1000)
+
+        dataset = MultiTurnDataset(
+            self.env,
+            num_samples=getattr(
+                self, "args", MagicMock(num_train_epochs=1)
+            ).num_train_epochs
+            * 1000,
+        )
         return DataLoader(
             dataset,
-            batch_size=getattr(self, 'args', MagicMock(per_device_train_batch_size=8)).per_device_train_batch_size,
-            shuffle=True
+            batch_size=getattr(
+                self, "args", MagicMock(per_device_train_batch_size=8)
+            ).per_device_train_batch_size,
+            shuffle=True,
         )
 
-    def log_stats(self, stats: Dict[str, Any]):
+    def log_stats(self, stats: dict[str, Any]):
         """
         Enhanced logging that includes verifiers-specific metrics.
         """
@@ -455,8 +590,8 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
         super().log_stats(stats)
 
     def generate_completions_async(
-        self, prompts: List[str], **generation_kwargs
-    ) -> List[str]:
+        self, prompts: list[str], **generation_kwargs
+    ) -> list[str]:
         """
         Generate completions using async batch generation if enabled.
 
