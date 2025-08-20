@@ -19,6 +19,11 @@ ENDPOINTS = {
         "url": "https://api.openai.com/v1",
         "key": "OPENAI_API_KEY",
     },
+    "r1-1.5b": {
+        "model": "willcb/DeepSeek-R1-Distill-Qwen-1.5B",
+        "url": "http://0.0.0.0:8000/v1",
+        "key": "EMPTY",
+    },
     "deepseek-v3": {
         "model": "deepseek-chat",
         "url": "https://api.deepseek.com/v1",
@@ -29,8 +34,28 @@ ENDPOINTS = {
         "url": "https://api.deepinfra.com/v1/openai",
         "key": "DEEPINFRA_API_KEY",
     },
+    "qwen3-235b-i": {
+        "model": "qwen-3-235b-a22b-instruct-2507",
+        "url": "https://api.cerebras.ai/v1",
+        "key": "CEREBRAS_API_KEY",
+    },
+    "qwen3-235b-t": {
+        "model": "qwen-3-235b-a22b-thinking-2507",
+        "url": "https://api.cerebras.ai/v1",
+        "key": "CEREBRAS_API_KEY",
+    },
     "qwen3-coder": {
         "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "url": "https://api.deepinfra.com/v1/openai",
+        "key": "DEEPINFRA_API_KEY",
+    },
+    "qwen3-32b": {
+        "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "url": "https://api.deepinfra.com/v1/openai",
+        "key": "DEEPINFRA_API_KEY",
+    },
+    "glm-4.5": {
+        "model": "zai-org/GLM-4.5",
         "url": "https://api.deepinfra.com/v1/openai",
         "key": "DEEPINFRA_API_KEY",
     },

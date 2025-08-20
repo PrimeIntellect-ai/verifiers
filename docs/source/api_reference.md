@@ -13,41 +13,48 @@ from pydantic import BaseModel
 
 class GenerateInputs(BaseModel):
     """Pydantic model for generation inputs."""
-    prompt: List[Messages]
-    answer: Optional[List[str]] = None
-    info: Optional[List[Dict]] = None
-    task: Optional[List[str]] = None
-    completion: Optional[List[Messages]] = None
+
+    prompt: list[Messages]
+    answer: list[str] | None = None
+    info: list[dict] | None = None
+    task: list[str] | None = None
+    completion: list[Messages] | None = None
 
 class GenerateOutputs(BaseModel):
     """Pydantic model for generation outputs."""
-    prompt: List[Messages]
-    completion: List[Messages]
-    answer: List[str]
-    state: List[State]
-    info: List[Info]
-    task: List[str]
-    reward: List[float]
-    metrics: Dict[str, List[float]] = {}
+
+    prompt: list[Messages]
+    completion: list[Messages]
+    answer: list[str]
+    state: list[State]
+    info: list[Info]
+    task: list[str]
+    reward: list[float]
+    metrics: dict[str, list[float]] = Field(default_factory=dict)
 
 class RolloutScore(BaseModel):
-    """Pydantic model for individual rollout scores."""
+    """Pydantic model for rollout scores."""
+
     reward: float
-    metrics: Dict[str, float] = {}
+    metrics: dict[str, float] = Field(default_factory=dict)
+
 
 class RolloutScores(BaseModel):
-    """Pydantic model for multiple rollout scores."""
-    reward: List[float]
-    metrics: Dict[str, List[float]] = {}
+    """Pydantic model for rubric outputs."""
+
+    reward: list[float]
+    metrics: dict[str, list[float]] = Field(default_factory=dict)
+
 
 class ProcessedOutputs(BaseModel):
     """Pydantic model for processed outputs."""
-    prompt_ids: List[List[int]]
-    prompt_mask: List[List[int]]
-    completion_ids: List[List[int]]
-    completion_mask: List[List[int]]
-    completion_logprobs: List[List[float]]
-    rewards: List[float]
+
+    prompt_ids: list[list[int]]
+    prompt_mask: list[list[int]]
+    completion_ids: list[list[int]]
+    completion_mask: list[list[int]]
+    completion_logprobs: list[list[float]]
+    rewards: list[float]
 ```
 
 ### State Dictionary
@@ -55,20 +62,20 @@ class ProcessedOutputs(BaseModel):
 The `State` object tracks rollout information throughout an interaction:
 
 ```python
-State = Dict[str, Any]
+State = dict[str, Any]
 
 # Common state fields during rollout:
 {
-    "prompt": List[ChatMessage],      # Original prompt messages
-    "completion": List[ChatMessage],  # Model's response messages
+    "prompt": list[ChatMessage],      # Original prompt messages
+    "completion": list[ChatMessage],  # Model's response messages
     "answer": str,                    # Ground truth answer
     "task": str,                      # Task identifier (for EnvGroup)
-    "info": Dict[str, Any],          # Additional metadata from dataset
-    "responses": List[Any],          # Raw LLM response objects
+    "info": dict[str, Any],          # Additional metadata from dataset
+    "responses": list[Any],          # Raw LLM response objects
     
     # Custom fields added by specific environments:
     "turn": int,                     # Current turn number (MultiTurnEnv)
-    "tools_called": List[str],       # Tool invocations (ToolEnv)
+    "tools_called": list[str],       # Tool invocations (ToolEnv)
     "game_state": Any,               # Game-specific state
 }
 ```
@@ -90,11 +97,11 @@ from verifiers.types import ChatMessage, Messages
 ChatMessage = {
     "role": str,                    # "system", "user", or "assistant"
     "content": str,                 # Message text
-    "tool_calls": List[...],        # Optional tool calls
+    "tool_calls": list[...],        # Optional tool calls
     "tool_call_id": str,            # Optional tool call ID
 }
 
-Messages = Union[str, List[ChatMessage]]  # Can be string (completion) or chat
+Messages = str | list[ChatMessage]  # Can be string (completion) or chat
 
 # Example chat format:
 messages = [
@@ -115,12 +122,12 @@ All reward functions must follow this signature:
 RewardFunc = Callable[..., float]
 
 def my_reward_func(
-    completion: Messages,      # Model's response (chat or string)
-    answer: str = "",         # Ground truth answer
-    prompt: Messages = None,  # Original prompt
-    state: State = None,      # Environment state
-    parser: Parser = None,    # Parser instance (if rubric has one)
-    **kwargs                  # Additional arguments
+    completion: Messages,            # Model's response (chat or string)
+    answer: str = "",                # Ground truth answer
+    prompt: Messages | None = None,  # Original prompt
+    state: State | None = None,      # Environment state
+    parser: Parser | None = None,    # Parser instance (if rubric has one)
+    **kwargs                         # Additional arguments
 ) -> float:
     """Return a float reward between 0.0 and 1.0."""
     return 1.0
@@ -133,13 +140,13 @@ For `MultiTurnEnv.env_response`:
 ```python
 def env_response(
     self,
-    messages: List[ChatMessage],
+    messages: list[ChatMessage],
     state: State,
     **kwargs
-) -> Tuple[Messages, State]:
+) -> tuple[Messages, State]:
     """
     Returns:
-        - Response messages (List[ChatMessage] or str for completion mode)
+        - Response messages (list[ChatMessage] or str for completion mode)
         - Updated state
     """
     # Return a list of ChatMessage dicts (typical case)
@@ -157,7 +164,7 @@ def env_response(
 vLLM-specific generation parameters:
 
 ```python
-SamplingArgs = Dict[str, Any]
+SamplingArgs = dict[str, Any]
 
 sampling_args = {
     # Basic sampling
@@ -183,7 +190,7 @@ sampling_args = {
 The `info` field in datasets can contain arbitrary metadata:
 
 ```python
-Info = Dict[str, Any]
+Info = dict[str, Any]
 
 # Dataset row with info dict:
 {
@@ -209,7 +216,7 @@ def reward_func(completion, answer, info=None, **kwargs):
 
 ```python
 # Rollout returns
-async def rollout(...) -> Tuple[Messages, State]:
+async def rollout(...) -> tuple[Messages, State]:
     """Returns (completion, final_state)"""
 
 # Evaluation results
@@ -229,7 +236,7 @@ def parse(text: str) -> Any:
     """Can return str, dict, dataclass, etc."""
 
 # parse_answer must return optional string
-def parse_answer(completion: Messages) -> Optional[str]:
+def parse_answer(completion: Messages) -> str | None:
     """Must return string answer or None"""
 ```
 
@@ -250,7 +257,7 @@ def get_text_content(completion: Messages) -> str:
 ### State Initialization
 
 ```python
-def reset_for_rollout(self, prompt, answer, info):
+def reset_for_rollout(self, prompt: Messages, answer: str, info: Info | None) -> State:
     """Initialize state for new rollout."""
     state = {
         "prompt": prompt,

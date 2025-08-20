@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-aime2025: gpt-4.1-mini (n=-1, r=1)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-aime2025 (v0.1.1)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=-1, r=1</div>
+      <div><b>Date</b>: 2025-08-11</div>
+      <div><b>Time</b>: 21:14:49</div>
+      <div><b>Sampling</b>: max_tokens=4096, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.3</td>
+        <td>0.4583</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>0.3</td>
+        <td>0.4583</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 30 of 30)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>First, let&#39;s understand the problem step-by-step:
+
+---
+
+**Given:**
+
+- \( 17_b \) divides \( 97_b \), where \( b &gt; 9 \) is an integer base.
+- We want to find the sum of all such bases \( b \).
+
+---
+
+**Step 1: Express the numbers in base 10**
+
+- \( 17_b = 1 \times b + 7 = b + 7 \)
+- \( 97_b = 9 \time…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understand the problem and notation**
+
+We have triangle \( \triangle ABC \). On side \( \overline{AB} \), points \( A, D, E, B \) lie in that order with:
+
+\[
+AD = 4, \quad DE = 16, \quad EB = 8.
+\]
+
+On side \( \overline{AC} \), points \( A, F, G, C \) lie in that order with:
+
+\[
+AF = 13, …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Step 1: Define variables and conditions**
+
+Let the number of players choosing each flavor be:
+- \( C \) for chocolate
+- \( V \) for vanilla
+- \( S \) for strawberry
+
+We have:
+\[
+C + V + S = 9
+\]
+with
+\[
+C &gt; V &gt; S \geq 1
+\]
+
+Each player is distinct, and each player&#39;s flavor choice is an assignment…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>We want to find the number of ordered integer pairs \((x,y)\) with \(x,y \in \{-100, -99, \dots, 99, 100\}\) that satisfy the equation:
+\[
+12x^{2} - xy - 6y^{2} = 0.
+\]
+
+---
+
+### Step 1: Analyze the given equation
+Rewrite the equation:
+\[
+12x^{2} - xy - 6y^{2} = 0.
+\]
+
+This is a homogeneous quadrat…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given the digits \(\{1,2,3,4,5,6,7,8\}\) and want to find the number \(N\) of 8-digit numbers using each digit exactly once that are divisible by 22. Then find \(N - 2025\).
+
+---
+
+### Step 1: Understand divisibility by 22
+
+A number is divisible by 22 if and only if it is divisible by both 2 …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given:
+- An isosceles trapezoid with an inscribed circle (tangential trapezoid).
+- The circle has radius \( r = 3 \).
+- The area of the trapezoid is 72.
+- The parallel sides are \( r \) and \( s \), with \( r \neq s \).
+- We want to find \( r^2 + s^2 \).
+
+---
+
+### Step 1: Properties of a trapezoid …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understanding the problem**
+
+We have 12 distinct letters: \( A, B, C, D, E, F, G, H, I, J, K, L \).
+
+They are randomly grouped into 6 pairs. Each pair is arranged in alphabetical order (e.g., if the pair is \( B \) and \( A \), it is written as \( AB \)).
+
+These 6 two-letter words are the…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understand the system**
+
+We have two conditions on a complex number \( z \):
+
+1. \( |25 + 20i - z| = 5 \).
+2. \( |z - (4 + k)| = |z - (3i + k)| \).
+
+We want to find all real numbers \( k \) such that this system has **exactly one** complex solution \( z \).
+
+---
+
+**Step 2: Geometric inter…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the parabola \( y = x^2 - 4 \), we rotate it \(60^\circ\) counterclockwise about the origin and find the intersection points of the original parabola and its rotated image. We want the unique intersection point in the fourth quadrant, and its \(y\)-coordinate in the form \(\frac{a - \sqrt{b}}…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We have a \(3 \times 9\) grid filled with numbers 1 through 9. The constraints are:
+- Each of the three rows contains all digits 1 through 9 exactly once.
+- Each of the three \(3 \times 3\) blocks (the blocks that form the first three rows of a Sudoku puzzle) contains all digits 1 through 9 exactly…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understand the function \( f(x) \)**
+
+The function \( f(x) \) is piecewise linear and periodic with period 4:
+
+\[
+f(x) = \begin{cases}
+x &amp; \text{if } x \in [-1,1) \\
+2 - x &amp; \text{if } x \in [1,3)
+\end{cases}, \quad \text{and } f(x+4) = f(x).
+\]
+
+Within one period \([-1,3)\), the graph lo…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understand the problem**
+
+We are given the plane in \(\mathbb{R}^3\):
+\[
+x + y + z = 75,
+\]
+and the inequalities:
+\[
+x - yz &lt; y - zx &lt; z - xy.
+\]
+The set of points \((x,y,z)\) on the plane satisfying these inequalities forms three disjoint convex regions, exactly one of which has finite a…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+- Alex first draws 2 perpendicular diameters of a disk, dividing it into 4 quadrants. These are 2 line segments.
+- Then, he draws 25 more line segments.
+- Each of these 25 line segments is drawn by selecting two points on the perimeter, each point in a different quadrant, …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+Given a convex pentagon \( ABCDE \) with side lengths:
+\[
+AB=14, \quad BC=7, \quad CD=24, \quad DE=13, \quad EA=26,
+\]
+and angles:
+\[
+\angle B = \angle E = 60^\circ,
+\]
+define for each point \( X \) in the plane,
+\[
+f(X) = AX + BX + CX + DX + EX.
+\]
+Find the least possible…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+Let \( N \) be the number of ordered triples of positive integers \((a,b,c)\) with \(1 \leq a,b,c \leq 3^6\) such that \(3^7 \mid (a^3 + b^3 + c^3)\).
+
+We want to find \( N \mod 1000 \).
+
+---
+
+**Step 1: Understanding the problem**
+
+We are counting triples \((a,b,c)\) with …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>15</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Step 1: Assign coordinates for the points on the line**
+
+Since points \( A, B, C, D, E, F \) lie on a line in that order, we can place them on the \( x \)-axis for convenience.
+
+Let \( A = 0 \). Then:
+
+- \( AC = 26 \implies C = 26 \)
+- \( BD = 22 \)
+- \( CE = 31 \)
+- \( DF = 33 \)
+- \( AF = 73 \)…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>16</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the problem:
+
+Find the sum of all positive integers \( n \) such that \( n + 2 \) divides the product \( 3(n + 3)(n^2 + 9) \).
+
+---
+
+### Step 1: Understand the divisibility condition
+
+We want \( n + 2 \mid 3(n + 3)(n^2 + 9) \).
+
+This means that \( 3(n + 3)(n^2 + 9) \equiv 0 \pmod{n + 2} \).
+
+…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>17</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+There is a \(2 \times 2\) grid made of four unit squares. The grid has 12 edges (line segments): 4 horizontal edges on top, 4 horizontal edges in the middle and bottom, and 4 vertical edges on left, middle, and right. Each edge is colored red or blue. The coloring is such…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>18</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the product:
+\[
+\prod_{k=4}^{63} \frac{\log_k(5^{k^2-1})}{\log_{k+1}(5^{k^2-4})}.
+\]
+
+First, let&#39;s rewrite the terms inside the product.
+
+---
+
+### Step 1: Express logarithms in terms of natural logs
+
+Recall the change of base formula:
+\[
+\log_a b = \frac{\ln b}{\ln a}.
+\]
+
+So,
+\[
+\log_k(5^{k^…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>19</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Let&#39;s analyze the problem step-by-step.
+
+---
+
+**Step 1: Understand the problem and notation**
+
+We have triangle \(\triangle ABC\) with angles:
+\[
+\angle BAC = 84^\circ, \quad \angle ABC = 60^\circ, \quad \angle ACB = 36^\circ.
+\]
+
+Points \(D, E, F\) are midpoints of sides:
+- \(D\) midpoint of \(BC\…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>20</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Let&#39;s analyze the problem step-by-step.
+
+---
+
+### Given:
+- Circle \(\omega_1\) has radius 6, centered at \(A\).
+- Circle \(\omega_2\) has radius 15 and is tangent internally to \(\omega_1\) at point \(B\).
+- Points \(C\) and \(D\) lie on \(\omega_2\) such that \(\overline{BC}\) is a diameter of \(\…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>21</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Find the prime factorization of 2025**
+
+First, factor 2025 into primes:
+
+\[
+2025 = 45^2 = (9 \cdot 5)^2 = (3^2 \cdot 5)^2 = 3^4 \cdot 5^2.
+\]
+
+So,
+\[
+2025 = 3^4 \cdot 5^2.
+\]
+
+---
+
+**Step 2: Describe the set \( A \)**
+
+The set \( A \) is the set of positive divisors of \( 2025 \).
+
+Each d…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>22</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+We have unlimited 1-cent, 10-cent, and 25-cent coins. For a given amount \( N \), the greedy algorithm picks coins starting with the largest coin that does not exceed remaining amount. The question is: for how many \( N \in \{1, 2, \ldots, 1000\} \) does the greedy algori…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>23</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the function:
+\[
+f(x) = \sin(7\pi \sin(5x))
+\]
+for \(0 &lt; x &lt; 2\pi\).
+
+---
+
+### Step 1: Find where \(f(x) = 0\)
+
+Since \(f(x) = \sin(7\pi \sin(5x))\), the zeros occur whenever the argument of the sine is an integer multiple of \(\pi\):
+\[
+7\pi \sin(5x) = k\pi, \quad k \in \mathbb{Z}
+\]
+Dividin…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>24</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Problem Restatement:**
+We have 16 chairs in a row, and 8 people choose 8 of these chairs to sit in. The condition is that no person sits next to two other people. Equivalently, in the chosen subset of 8 chairs, no person is adjacent to two other chosen chairs.
+
+We are asked: Let \( N \) be the nu…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>25</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+Let \( S \) be the set of vertices of a regular 24-gon. We want to find the number of ways to draw 12 segments of equal length such that each vertex in \( S \) is an endpoint of exactly one of the segments. In other words, we want to find the number of perfect matchings o…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>26</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Let&#39;s analyze the problem step-by-step.
+
+---
+
+### Step 1: Understanding the problem setup
+
+We have an 11-sided simple polygon \( A_1 A_2 \ldots A_{11} \) with:
+
+- The area of each triangle \( A_i A_1 A_{i+1} \) is 1 for \( 2 \leq i \leq 10 \).
+- The cosine of the angle \( \angle A_i A_1 A_{i+1} \) …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>27</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the sequence \(x_1, x_2, \ldots\) defined by
+\[
+x_1 = \frac{25}{11}
+\]
+and
+\[
+x_{k+1} = \frac{1}{3}\left(x_k + \frac{1}{x_k} - 1\right),
+\]
+we want to find \(x_{2025} = \frac{m}{n}\) in lowest terms and then find the remainder when \(m+n\) is divided by 1000.
+
+---
+
+### Step 1: Understand the …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>28</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+- \(\triangle ABC\) is a right triangle with \(\angle A = 90^\circ\).
+- \(BC = 38\).
+- Points \(K, L\) lie inside the triangle such that
+  \[
+  AK = AL = BK = CL = KL = 14.
+  \]
+
+We want to find the area of quadrilateral \(BKLC\), which can be expressed as \(n \sqrt{3}\) for some positive in…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>29</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the function
+\[
+f(x) = \frac{(x - 18)(x - 72)(x - 98)(x - k)}{x}
+\]
+defined for positive real \( x \), we want to find all positive real values of \( k \) such that \( f \) achieves its minimum value at exactly two positive real numbers \( x \).
+
+---
+
+### Step 1: Understand the problem
+
+- The…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

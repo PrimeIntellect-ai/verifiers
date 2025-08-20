@@ -29,7 +29,7 @@ class TestRubricGroup:
     def test_rubric_group_initialization_empty_fails(self):
         """Test that RubricGroup initialization fails with empty rubrics list."""
         with pytest.raises(
-            AssertionError, match="RubricGroup must have at least one rubric"
+            ValueError, match="RubricGroup must have at least one rubric"
         ):
             RubricGroup(rubrics=[])
 

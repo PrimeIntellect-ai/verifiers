@@ -1,5 +1,5 @@
 import json
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable
 
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.types import ChatCompletionMessageToolCall, Message, Messages, State
@@ -9,17 +9,17 @@ from verifiers.utils.tool_utils import convert_func_to_oai_tool
 class ToolEnv(MultiTurnEnv):
     def __init__(
         self,
-        tools: List[Callable] = [],
+        tools: list[Callable] | None = None,
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"{str(e)}",
         **kwargs,
     ):
-        self.tools = tools
-        self.oai_tools = [convert_func_to_oai_tool(tool) for tool in tools]
-        self.tool_map = {tool.__name__: tool for tool in tools}
-        super().__init__(oai_tools=self.oai_tools, **kwargs)
+        self.tools = tools or []
         self.max_turns = max_turns
         self.error_formatter = error_formatter
+        self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
+        self.tool_map = {tool.__name__: tool for tool in self.tools}
+        super().__init__(oai_tools=self.oai_tools, **kwargs)
 
     def is_completed(self, messages: Messages, state: State, **kwargs: Any) -> bool:
         assert isinstance(messages, list)
@@ -50,7 +50,7 @@ class ToolEnv(MultiTurnEnv):
 
     def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         assert isinstance(messages, list)
         assert "tool_calls" in messages[-1]
         tool_messages = []

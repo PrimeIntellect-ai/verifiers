@@ -1,6 +1,6 @@
 import re
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import ChatMessage, Messages
@@ -9,7 +9,7 @@ from verifiers.types import ChatMessage, Messages
 class XMLParser(Parser):
     def __init__(
         self,
-        fields: List[Union[str, Tuple[str, ...]]],
+        fields: list[str | tuple[str, ...]],
         answer_field: str = "answer",
     ):
         """
@@ -23,9 +23,9 @@ class XMLParser(Parser):
 
         The schema is assumed to have no duplicate names.
         """
-        self._fields: List[
-            Tuple[str, List[str]]
-        ] = []  # List of (canonical, [alternatives])
+        # list of (canonical, [alternatives])
+        self._fields: list[tuple[str, list[str]]] = []
+
         self.answer_field = answer_field
         seen = set()
         for field in fields:
@@ -46,7 +46,7 @@ class XMLParser(Parser):
             seen.add(canonical)
             self._fields.append((canonical, alternatives))
 
-    def parse(self, text: str, strip: bool = True) -> Any:
+    def parse(self, text: str, strip: bool = True, last: bool = False) -> Any:
         """
         Parse the given XML string and return an object with attributes corresponding
         to all allowed tags in the schema.
@@ -60,13 +60,18 @@ class XMLParser(Parser):
             `result.code` and `result.answer` are always accessible. If a tag is not
             found in the XML, its corresponding attribute is set to None.
         """
-        results: Dict[str, Optional[str]] = {}
+        results: dict[str, str | None] = {}
         for canonical, alternatives in self._fields:
             # For each allowed alternative tag, search independently.
             for alt in alternatives:
                 # Regex pattern to capture the content between the tags.
                 pattern = rf"<{alt}>\s*(.*?)\s*</{alt}>"
-                match = re.search(pattern, text, re.DOTALL)
+                if last:
+                    match = None
+                    for match in re.finditer(pattern, text, re.DOTALL):
+                        pass # iterate over matches to bind last match
+                else:
+                    match = re.search(pattern, text, re.DOTALL)
                 if match:
                     results[alt] = match.group(1).strip() if strip else match.group(1)
                 else:
@@ -76,7 +81,13 @@ class XMLParser(Parser):
     def parse_answer(self, completion: Messages) -> str | None:
         """Extract the last answer from a completion."""
         if isinstance(completion, str):
-            return self.parse(completion)
+            parsed = self.parse(completion, last=True)
+            if (
+                parsed
+                and hasattr(parsed, self.answer_field)
+                and getattr(parsed, self.answer_field) is not None
+            ):
+                return getattr(parsed, self.answer_field)
         else:
             for msg in reversed(self.get_assistant_messages(completion)):
                 parsed = self.parse(msg["content"])
@@ -111,7 +122,7 @@ class XMLParser(Parser):
         - Fields have proper content and spacing
         """
 
-        def format_reward_func(completion: List[ChatMessage]):
+        def format_reward_func(completion: list[ChatMessage]):
             """Reward function that checks if each step follows the expected format."""
             model_messages = self.get_assistant_messages(completion)
             if not model_messages:
@@ -214,7 +225,7 @@ class XMLParser(Parser):
 
         return format_reward_func
 
-    def get_fields(self) -> List[str]:
+    def get_fields(self) -> list[str]:
         """Return a list of the canonical field names (in order)."""
         return [canonical for canonical, _ in self._fields]
 

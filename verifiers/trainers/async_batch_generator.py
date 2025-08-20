@@ -4,7 +4,7 @@ import queue
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,7 @@ class BatchRequest(BaseModel):
     """Request for batch generation"""
 
     batch_id: int
-    env_inputs: Dict[str, List[Any]]
+    env_inputs: dict[str, list[Any]]
     processing_class: Any
     mask_env_responses: bool
     max_seq_len: int
@@ -31,13 +31,13 @@ class BatchResult(BaseModel):
     batch_id: int
     processed_results: ProcessedOutputs
     generation_time: float = 0.0
-    all_reward_dict: Dict[str, List[float]] = Field(
+    all_reward_dict: dict[str, list[float]] = Field(
         default_factory=dict
     )  # All reward scores
-    completions: List[Any] = Field(
+    completions: list[Any] = Field(
         default_factory=list
     )  # Store completions for logging
-    prompts: List[Any] = Field(default_factory=list)  # Store prompts for logging
+    prompts: list[Any] = Field(default_factory=list)  # Store prompts for logging
 
 
 class AsyncBatchGenerator:
@@ -54,9 +54,9 @@ class AsyncBatchGenerator:
         env,
         client_config,
         model_name: str,
-        sampling_args: Dict[str, Any],
+        sampling_args: dict[str, Any],
         num_batches_ahead: int = 1,
-        max_queue_size: Optional[int] = None,
+        max_queue_size: int | None = None,
         generation_timeout: float = 300.0,  # 5 minutes default
     ):
         self.env = env
@@ -137,7 +137,7 @@ class AsyncBatchGenerator:
         self.request_queue.put(request)
         return True
 
-    def get_batch(self, batch_id: int, timeout: Optional[float] = None) -> BatchResult:
+    def get_batch(self, batch_id: int, timeout: float | None = None) -> BatchResult:
         """
         Get a completed batch result. Blocks until the batch is ready.
 

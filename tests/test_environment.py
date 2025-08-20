@@ -209,24 +209,38 @@ class TestEnvironmentBase:
 
         # Create a mock tokenizer
         mock_tokenizer = Mock()
-        mock_tokenizer.apply_chat_template = Mock(
-            side_effect=lambda messages,
-            tokenize=False,
-            add_generation_prompt=True: "User: What is 2+2?Assistant:"
-            if add_generation_prompt
-            else "User: What is 2+2?Assistant: 4"
-        )
-        mock_tokenizer.encode = Mock(
-            side_effect=lambda text: list(range(len(text.split())))
-        )
+
+        def apply_template(conversation, tokenize=False, add_generation_prompt=True):
+            # Return deterministic token ids ensuring prefix property
+            return list(range(10 if add_generation_prompt else 14))
+
+        mock_tokenizer.apply_chat_template = Mock(side_effect=apply_template)
+        mock_tokenizer.encode = Mock(side_effect=lambda text: list(range(len(text))))
 
         prompt = [{"role": "user", "content": "What is 2+2?"}]
         completion = [{"role": "assistant", "content": "4"}]
+        # Minimal vLLM-style chat completion with tokens/logprobs
+        token_entries = [
+            Mock(logprob=-0.1, token="token_id:11"),
+            Mock(logprob=-0.2, token="token_id:12"),
+            Mock(logprob=-0.3, token="token_id:13"),
+            Mock(logprob=-0.4, token="token_id:14"),
+        ]
+        mock_choice = Mock()
+        mock_choice.logprobs = Mock()
+        mock_choice.logprobs.content = token_entries
+        mock_chat_completion = Mock()
+        mock_chat_completion.choices = [mock_choice]
+        state = {"responses": [mock_chat_completion]}
 
-        prompt_ids, prompt_mask, completion_ids, completion_mask = (
-            env.process_chat_format(
-                prompt, completion, mock_tokenizer, mask_env_responses=False
-            )
+        (
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            completion_logprobs,
+        ) = env.process_chat_format_vllm(
+            prompt, completion, state, mock_tokenizer, mask_env_responses=False
         )
 
         assert isinstance(prompt_ids, list)
@@ -254,9 +268,24 @@ class TestEnvironmentBase:
 
         prompt = "Complete this: 2+2="
         completion = "4"
+        # Minimal vLLM-style completion covering entire completion string
+        mock_choice = Mock()
+        mock_choice.text = completion
+        mock_choice.logprobs = Mock()
+        mock_choice.logprobs.tokens = ["token_id:1"] * len(completion)
+        mock_choice.logprobs.token_logprobs = [-0.1] * len(completion)
+        mock_completion = Mock()
+        mock_completion.choices = [mock_choice]
+        state = {"responses": [mock_completion], "responses_start_idx": [0]}
 
-        prompt_ids, prompt_mask, completion_ids, completion_mask = (
-            env.process_completion_format(prompt, completion, mock_tokenizer)
+        (
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            completion_logprobs,
+        ) = env.process_completion_format_vllm(
+            prompt, completion, state, mock_tokenizer
         )
 
         assert isinstance(prompt_ids, list)
@@ -285,33 +314,32 @@ class TestEnvironmentBase:
         def mock_apply_chat_template(
             conversation, tokenize=False, add_generation_prompt=True
         ):
-            # Convert messages to a string representation
-            text = ""
-            for msg in conversation:
-                text += f"{msg['role']}: {msg['content']} "
-            return text.strip()
+            # Return token id list; size scales with number of messages
+            return list(range(len(conversation) * 5))
 
         def mock_encode(text, **kwargs):
-            # Return tokens based on the text content
-            if "assistant: Hi there!" in text:
-                # Prompt + completion: return extended tokens
-                return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-            elif "user: Hello" in text:
-                # Just prompt: return base tokens
-                return [1, 2, 3, 4, 5]
-            else:
-                # Default case
-                return [1, 2, 3]
+            return list(range(3))
 
         mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
         mock_tokenizer.encode = Mock(side_effect=mock_encode)
 
         prompts = [[{"role": "user", "content": "Hello"}]]
         completions = [[{"role": "assistant", "content": "Hi there!"}]]
-        states = [{}]
+        # Minimal vLLM-style chat completion mock for assistant turn
+        token_entries = [
+            Mock(logprob=-0.1, token="token_id:101"),
+            Mock(logprob=-0.2, token="token_id:102"),
+            Mock(logprob=-0.3, token="token_id:103"),
+        ]
+        mock_choice = Mock()
+        mock_choice.logprobs = Mock()
+        mock_choice.logprobs.content = token_entries
+        mock_chat_completion = Mock()
+        mock_chat_completion.choices = [mock_choice]
+        states = [{"responses": [mock_chat_completion]}]
         rewards = [1.0]
 
-        results = env.process_env_results(
+        results = env.process_env_results_vllm(
             prompts, completions, states, rewards, mock_tokenizer
         )
 
@@ -343,33 +371,37 @@ class TestEnvironmentBase:
         def mock_apply_chat_template(
             conversation, tokenize=False, add_generation_prompt=True
         ):
-            # Convert messages to a string representation
-            text = ""
-            for msg in conversation:
-                text += f"{msg['role']}: {msg['content']} "
-            return text.strip()
+            # Return deterministic token ids based on number of messages
+            # Ensures prefix property when conversation grows
+            return list(range(len(conversation) * 5))
 
         def mock_encode(text, **kwargs):
-            # Return tokens based on the text content
-            if "assistant: Hi there!" in text:
-                # Prompt + completion: return extended tokens
-                return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-            elif "user: Hello" in text:
-                # Just prompt: return base tokens
-                return [1, 2, 3, 4, 5]
-            else:
-                # Default case
-                return [1, 2, 3]
+            # Not used by chat path; keep for compatibility
+            return list(range(3))
 
         mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
         mock_tokenizer.encode = Mock(side_effect=mock_encode)
 
         prompts = [[{"role": "user", "content": "Hello"}]]
         completions = [[{"role": "assistant", "content": "Hi there!"}]]
-        states = [{}]
+        # Produce enough assistant tokens to force truncation
+        token_entries = [
+            Mock(logprob=-0.1, token="token_id:201"),
+            Mock(logprob=-0.2, token="token_id:202"),
+            Mock(logprob=-0.3, token="token_id:203"),
+            Mock(logprob=-0.4, token="token_id:204"),
+            Mock(logprob=-0.5, token="token_id:205"),
+            Mock(logprob=-0.6, token="token_id:206"),
+        ]
+        mock_choice = Mock()
+        mock_choice.logprobs = Mock()
+        mock_choice.logprobs.content = token_entries
+        mock_chat_completion = Mock()
+        mock_chat_completion.choices = [mock_choice]
+        states = [{"responses": [mock_chat_completion]}]
         rewards = [1.0]
 
-        results = env.process_env_results(
+        results = env.process_env_results_vllm(
             prompts,
             completions,
             states,

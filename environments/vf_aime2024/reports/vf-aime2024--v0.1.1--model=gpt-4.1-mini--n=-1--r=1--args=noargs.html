@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-aime2024: gpt-4.1-mini (n=-1, r=1)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-aime2024 (v0.1.1)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=-1, r=1</div>
+      <div><b>Date</b>: 2025-08-11</div>
+      <div><b>Time</b>: 21:02:54</div>
+      <div><b>Sampling</b>: max_tokens=4096, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.4333</td>
+        <td>0.4955</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>0.4333</td>
+        <td>0.4955</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 30 of 30)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s analyze the problem step by step.
+
+---
+
+### Given:
+
+- Distance of the walk: \(9\) kilometers
+- Aya walks at speed \(s\) km/h, total time including coffee break is 4 hours.
+- Aya walks at speed \(s + 2\) km/h, total time including coffee break is 2 hours 24 minutes.
+- The time spent at the cof…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Given:**
+- Triangle \( ABC \) inscribed in circle \(\omega\).
+- Tangents to \(\omega\) at points \(B\) and \(C\) intersect at \(D\).
+- Line \(AD\) intersects \(\omega\) again at \(P\).
+- Side lengths: \(AB=5\), \(BC=9\), \(AC=10\).
+- We want to find \(AP\) in simplest form \(\frac{m}{n}\) and com…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+Each vertex of a regular octagon is colored red or blue independently with probability \( \frac{1}{2} \) each. We want the probability that there exists a rotation of the octagon such that **all blue vertices move to positions that were originally red**.
+
+---
+
+**Step 1: U…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+\[
+f(x) = \left|\,|x| - \frac{1}{2}\right|, \quad g(x) = \left|\,|x| - \frac{1}{4}\right|
+\]
+We want to find the number of intersections of the graphs:
+\[
+y = 4g(f(\sin(2\pi x))) \quad \text{and} \quad x = 4g(f(\cos(3\pi y))).
+\]
+
+---
+
+### Step 1: Understand the functions \( f \) and \( g \)…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+
+- \( p \) is the least prime such that there exists a positive integer \( n \) with \( p^{2} \mid n^{4} + 1 \).
+- We want to find the least positive integer \( m \) such that \( p^{2} \mid m^{4} + 1 \).
+
+---
+
+### Step 1: Understand the problem
+
+We want to find the smallest prime \( p \) suc…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+Given a tetrahedron \(ABCD\) with edge lengths:
+\[
+AB = CD = \sqrt{41}, \quad AC = BD = \sqrt{80}, \quad BC = AD = \sqrt{89},
+\]
+there exists a point \(I\) inside the tetrahedron such that the distances from \(I\) to each of the four faces are equal. We want to find this c…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given:
+- Rectangular boxes with dimensions \( x, y, z &gt; 0 \).
+- Surface area constraint:
+\[
+2(xy + yz + zx) = 54 \implies xy + yz + zx = 27.
+\]
+- Volume constraint:
+\[
+xyz = 23.
+\]
+
+We want to find \( r \), the radius of the smallest sphere that can contain each box in the set \(\mathcal{B}\).
+
+---…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given:
+\[
+\log_x(y^x) = 10 \quad \text{and} \quad \log_y(x^{4y}) = 10,
+\]
+where \( x &gt; 1 \) and \( y &gt; 1 \).
+
+---
+
+**Step 1: Convert the logs to exponential form**
+
+From the first equation:
+\[
+\log_x(y^x) = 10 \implies y^x = x^{10}.
+\]
+
+From the second equation:
+\[
+\log_y(x^{4y}) = 10 \implies x^{4…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Problem restatement:**  
+Alice and Bob play a game with a stack of \( n \) tokens. Alice goes first. On each turn, a player removes either 1 or 4 tokens. The player who takes the last token wins. For which \( n \leq 2024 \) does Bob have a winning strategy regardless of Alice&#39;s play?
+
+---
+
+### St…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s analyze the problem step-by-step.
+
+---
+
+### Problem Restatement:
+- Set \( S = \{1,2,3,\ldots,10\} \).
+- Jen picks 4 distinct numbers from \( S \).
+- Then, 4 numbers are randomly chosen from \( S \) (all subsets of size 4 are equally likely).
+- Jen **wins a prize** if **at least 2** of her cho…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Given:**
+
+- Rectangles \(ABCD\) and \(EFGH\).
+- Points \(D, E, C, F\) are collinear.
+- Points \(A, D, H, G\) lie on a circle.
+- \(BC = 16\), \(AB = 107\), \(FG = 17\), \(EF = 184\).
+- Find the length \(CE\).
+
+---
+
+### Step 1: Understand the problem and set up coordinates
+
+Since \(ABCD\) and \(EFG…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>**Problem restatement:**
+We have an \(8 \times 8\) grid and consider lattice paths from the lower-left corner \((0,0)\) to the upper-right corner \((8,8)\). Each path consists of exactly 16 steps: 8 steps right (R) and 8 steps up (U). We want to count the number of such paths that **change directio…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the expression:
+\[
+(75 + 117i) z + \frac{96 + 144i}{z}
+\]
+where \( z \) is a complex number with \(|z| = 4\), we want to find the largest possible real part of this expression.
+
+---
+
+### Step 1: Parameterize \( z \)
+
+Since \(|z| = 4\), write
+\[
+z = 4 e^{i\theta}
+\]
+for some \(\theta \in \math…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+We have a triangle \( ABC \), and inside it, we arrange circles of equal radius tangent in a chain, where:
+
+- The first circle is tangent to side \( AB \).
+- The last circle is tangent to side \( BC \).
+- Each circle is tangent to the next one in the sequence.
+- The chain …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the hyperbola:
+\[
+\frac{x^2}{20} - \frac{y^2}{24} = 1
+\]
+and points \( A, B, C, D \) on this hyperbola such that \(ABCD\) is a rhombus with diagonals intersecting at the origin \(O\).
+
+---
+
+### Step 1: Understand the problem
+
+- \(A, B, C, D\) lie on the hyperbola.
+- \(ABCD\) is a rhombus.
+- T…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>15</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s define the sets and variables first:
+
+- Total residents: \( N = 900 \)
+- Own diamond ring: \( |D| = 195 \)
+- Own golf clubs: \( |G| = 367 \)
+- Own garden spade: \( |S| = 562 \)
+- Own candy hearts: \( |C| = 900 \) (since every resident owns candy hearts)
+- Own exactly two of these things: 437
+…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>16</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+- \(\triangle ABC\) with circumcenter \(O\) and incenter \(I\).
+- \(IA \perp OI\).
+- Circumradius \(R = 13\).
+- Inradius \(r = 6\).
+
+We want to find \(AB \cdot AC\).
+
+---
+
+### Step 1: Set up notation and known facts
+
+Let:
+- \(a = BC\),
+- \(b = AC\),
+- \(c = AB\).
+
+Recall:
+- \(O\) is the circ…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>17</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are looking for the number of triples of nonnegative integers \((a,b,c)\) such that:
+\[
+a + b + c = 300,
+\]
+and
+\[
+a^2b + a^2c + b^2a + b^2c + c^2a + c^2b = 6,000,000.
+\]
+
+---
+
+### Step 1: Simplify the second condition
+
+Rewrite the second sum:
+\[
+a^2b + a^2c + b^2a + b^2c + c^2a + c^2b.
+\]
+
+Grou…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>18</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Step 1: Understanding the problem**
+
+We have three points:
+- \( O = (0,0) \),
+- \( A = \left(\frac{1}{2}, 0\right) \),
+- \( B = \left(0, \frac{\sqrt{3}}{2}\right) \).
+
+The segment \(\overline{AB}\) lies in the first quadrant.
+
+Define \(\mathcal{F}\) as the family of segments \(\overline{PQ}\) of …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>19</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given \(\omega \neq 1\) is a 13th root of unity, i.e., \(\omega^{13} = 1\) and \(\omega^k \neq 1\) for \(1 \leq k \leq 12\).
+
+We want to find the remainder when
+\[
+\prod_{k=0}^{12} (2 - 2\omega^k + \omega^{2k})
+\]
+is divided by 1000.
+
+---
+
+### Step 1: Understand the expression inside the product
+
+T…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>20</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+For an integer base \( b \geq 2 \), call a positive integer \( n \) **\(b\)-eautiful** if:
+
+1. \( n \) has exactly two digits in base \( b \). That is,
+   \[
+   n = x b + y
+   \]
+   where \( x,y \) are digits in base \( b \), so
+   \[
+   1 \leq x \leq b-1, \quad 0 \leq y \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>21</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+We have a regular 12-gon (dodecagon). We want to find the number of rectangles that can be formed such that each side of the rectangle lies on either a side or a diagonal of the dodecagon.
+
+---
+
+### Step 1: Understand the problem and setup
+
+- The vertices of the dodecagon…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>22</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Let&#39;s analyze the problem step-by-step.
+
+---
+
+### Given:
+- A list of positive integers.
+- Sum of the list = 30.
+- The unique mode of the list = 9.
+- The median is a positive integer **not appearing in the list**.
+
+We want to find:  
+\[
+\sum (\text{items in the list})^2
+\]
+
+---
+
+### Step 1: Understa…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>23</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s define the grid and variables clearly first.
+
+We have a 2x3 grid of digits:
+\[
+\begin{array}{|c|c|c|}
+\hline
+a &amp; b &amp; c \\
+\hline
+d &amp; e &amp; f \\
+\hline
+\end{array}
+\]
+where each of \(a,b,c,d,e,f\) is a digit from 0 to 9.
+
+---
+
+### Step 1: Conditions from the problem
+
+1. **Sum of the two numbers …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>24</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the system:
+\[
+\log_2\left(\frac{x}{yz}\right) = \frac{1}{2}, \quad \log_2\left(\frac{y}{xz}\right) = \frac{1}{3}, \quad \log_2\left(\frac{z}{xy}\right) = \frac{1}{4}
+\]
+where \(x, y, z &gt; 0\).
+
+---
+
+### Step 1: Rewrite the equations in exponential form
+
+\[
+\frac{x}{yz} = 2^{\frac{1}{2}} = \sq…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>25</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**
+
+We have a convex equilateral hexagon \( ABCDEF \) where all pairs of opposite sides are parallel. The hexagon is equilateral, so all sides have the same length \( s \).
+
+The three lines extending sides \( AB \), \( CD \), and \( EF \) form a triangle with side lengths 200,…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>26</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s analyze the problem carefully:
+
+---
+
+**Problem restatement:**
+
+- Alice chooses a set \( A \) of positive integers.
+- Bob then lists all finite **nonempty** sets \( B \) of positive integers such that the **maximum element** of \( B \) belongs to \( A \).
+- The total number of such sets \( B \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>27</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+- \( N \) is the greatest four-digit number with the property:
+- If any one digit of \( N \) is changed to 1, the resulting number is divisible by 7.
+
+We want to find \( Q \) and \( R \) where:
+\[
+N = 1000Q + R,
+\]
+and then find \( Q + R \).
+
+---
+
+### Step 1: Understanding the problem
+
+Let t…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>28</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem Restatement:**
+
+We have a torus \( T \) generated by revolving a circle of radius 3 around an axis in the same plane, at a distance 6 from the center of the circle. So the torus has a major radius \( R = 6 \) and minor radius \( r = 3 \).
+
+We have a sphere \( S \) of radius 11.
+
+- When th…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>29</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>**Problem restatement:**  
+We have a \(5 \times 5\) grid (25 cells). We have 25 white chips (indistinguishable) and 25 black chips (indistinguishable). We want to place some chips (possibly none or all) in the grid such that:
+
+1. Each cell contains at most one chip.
+2. All chips in the same row hav…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

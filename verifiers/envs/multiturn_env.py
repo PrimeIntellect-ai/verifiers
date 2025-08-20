@@ -1,6 +1,5 @@
 from abc import abstractmethod
 from copy import deepcopy
-from typing import Tuple
 
 from openai import AsyncOpenAI
 
@@ -11,19 +10,15 @@ from verifiers.types import (
     Completion,
     Info,
     Messages,
-    MessageType,
     SamplingArgs,
     State,
 )
 
 
 class MultiTurnEnv(Environment):
-    def __init__(
-        self, message_type: MessageType = "chat", max_turns: int = 10, **kwargs
-    ):
+    def __init__(self, max_turns: int = 10, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
-        self.message_type = message_type
 
     def setup_state(self, state: State, **kwargs) -> State:
         return state
@@ -35,7 +30,7 @@ class MultiTurnEnv(Environment):
     @abstractmethod
     def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         """
         Generate a response from the environment (messages, state).
         """
@@ -48,13 +43,14 @@ class MultiTurnEnv(Environment):
         prompt: Messages,
         answer: str = "",
         task: str = "default",
-        info: Info = {},
-        sampling_args: SamplingArgs = {},
+        info: Info | None = None,
+        sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         """
         Generate a multi-turn rollout with the environment (messages, state).
         """
+        info = info or {}
         is_completed = False
         state = {
             "prompt": prompt,
@@ -72,6 +68,7 @@ class MultiTurnEnv(Environment):
         else:
             assert isinstance(prompt, str)
             completion = ""
+            state["responses_start_idx"] = []
         rollout = deepcopy(prompt)
         while not is_completed:
             if self.is_completed(rollout, state, **kwargs):
@@ -105,6 +102,7 @@ class MultiTurnEnv(Environment):
                 assert isinstance(rollout, str)
                 assert isinstance(completion, str)
                 assert isinstance(response, Completion)
+                state["responses_start_idx"].append(len(completion))
                 response_text: str = response.choices[0].text or ""  # type: ignore
                 rollout += response_text
                 completion += response_text

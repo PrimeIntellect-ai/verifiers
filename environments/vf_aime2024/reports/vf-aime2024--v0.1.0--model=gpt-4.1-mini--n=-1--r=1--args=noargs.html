@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-aime2024: gpt-4.1-mini (n=-1, r=1)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-aime2024 (v0.1.0)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=-1, r=1</div>
+      <div><b>Date</b>: 2025-08-08</div>
+      <div><b>Time</b>: 19:30:58</div>
+      <div><b>Sampling</b>: max_tokens=1024, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.1333</td>
+        <td>0.3399</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>0.1333</td>
+        <td>0.3399</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+      </tr>
+      
+      <tr>
+        <td>format_reward_func</td>
+        <td>0.0667</td>
+        <td>0.2494</td>
+        <td>30</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.55</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 30 of 30)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>&lt;think&gt;
+Let the walking speed be \( s \) km/h, and the coffee shop time be \( t \) minutes.
+
+Given:
+- Distance \( d = 9 \) km.
+- When walking at speed \( s \), total time = 4 hours (including the coffee shop time \( t \) minutes).
+- When walking at speed \( s + 2 \), total time = 2 hours 24 minutes…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have triangle \( ABC \) inscribed in circle \(\omega\). The tangents to \(\omega\) at points \(B\) and \(C\) intersect at \(D\). Line \(AD\) intersects \(\omega\) again at \(P\).
+
+Given:
+- \(AB = 5\)
+- \(BC = 9\)
+- \(AC = 10\)
+
+We want to find the length \(AP\).
+
+---
+
+**Step 1: Recognize…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a regular octagon with vertices independently colored red or blue with probability \( \frac{1}{2} \) each.
+
+We want the probability that there exists a rotation of the octagon such that all blue vertices are mapped to positions that were originally red vertices.
+
+---
+
+Step 1: Unders…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given functions:
+\[
+f(x) = \left| |x| - \frac{1}{2} \right|, \quad g(x) = \left| |x| - \frac{1}{4} \right|.
+\]
+
+We need to find the number of intersections of the graphs of the system:
+\[
+y = 4 g(f(\sin(2\pi x))), \quad x = 4 g(f(\cos(3\pi y))).
+\]
+
+---
+
+&lt;think&gt;
+**Step 1: Understanding the function…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given:
+- \( p \) is the least prime such that there exists a positive integer \( n \) with \( p^2 \mid n^4 + 1 \).
+- We want to find the least positive integer \( m \) such that \( p^2 \mid m^4 + 1 \).
+
+---
+
+&lt;think&gt;
+Step 1: Understanding the problem
+
+We want to find the smallest prime \( p \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a tetrahedron \(ABCD\) with edges:
+\[
+AB = CD = \sqrt{41}, \quad AC = BD = \sqrt{80}, \quad BC = AD = \sqrt{89}.
+\]
+
+We are told there exists a point \(I\) inside the tetrahedron such that the distances from \(I\) to each face are all equal. This means \(I\) is the incenter of the t…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a rectangular box with edge lengths \(x, y, z &gt; 0\). The box satisfies:
+\[
+2(xy + yz + zx) = 54 \implies xy + yz + zx = 27
+\]
+and
+\[
+xyz = 23.
+\]
+
+We want to find the smallest radius \(r\) of a sphere that can contain the box. The smallest enclosing sphere of a rectangular box is th…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given that \(x &gt; 1\), \(y &gt; 1\), and
+\[
+\log_x(y^x) = \log_y(x^{4y}) = 10,
+\]
+we want to find \(xy\).
+
+&lt;think&gt;
+First, from the equation \(\log_x(y^x) = 10\), using the property of logarithms:
+\[
+\log_x(y^x) = x \log_x y = 10.
+\]
+Recall that \(\log_x y = \frac{\log y}{\log x}\) (for any base of loga…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+This is a classic impartial combinatorial game problem, where the allowed moves are removing 1 or 4 tokens from a pile, and the player who takes the last token wins.
+
+Alice goes first, and we want to find for how many \( n \leq 2024 \), Bob (the second player) has a winning strategy regardl…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>&lt;think&gt;
+Step 1: Understand the problem setup.
+
+- There is a set \( S = \{1,2,3,\ldots,10\} \).
+- Jen picks 4 distinct numbers from \( S \).
+- Then, 4 numbers are randomly chosen from \( S \) (also distinct, presumably).
+- Jen wins a prize if at least 2 of her chosen numbers are in the randomly chos…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+Let&#39;s first analyze the problem and the given data carefully.
+
+We have two rectangles \( ABCD \) and \( EFGH \).
+
+Given:
+- \( BC = 16 \)
+- \( AB = 107 \)
+- \( FG = 17 \)
+- \( EF = 184 \)
+
+Also:
+- Points \( D, E, C, F \) are collinear.
+- Points \( A, D, H, G \) lie on a circle.
+
+We are asked…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have an \(8 \times 8\) grid, and we want to move from the lower-left corner to the upper-right corner following the grid lines. Each path consists of exactly 16 steps: 8 steps right (R) and 8 steps up (U).
+
+We are asked to find the number of such paths that change direction exactly 4 tim…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the expression:
+\[
+(75 + 117i)z + \frac{96 + 144i}{z}
+\]
+where \( z \) is a complex number with \(|z| = 4\).
+
+---
+
+&lt;think&gt;
+1. Let \( z = 4e^{i\theta} \) since \(|z| = 4\).
+
+2. Substitute \( z = 4e^{i\theta} \) into the expression:
+\[
+(75 + 117i)(4e^{i\theta}) + \frac{96 + 144i}{4e^{i\theta}} …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+Let&#39;s carefully analyze the problem:
+
+1. We have triangle \( ABC \), and two sides \( AB \) and \( BC \).
+2. We place circles tangent sequentially inside the angle at \( B \), such that:
+   - The first circle of radius \( r \) is tangent to \( AB \),
+   - The last circle (the \( n \)-th cir…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+- The hyperbola \(\frac{x^2}{20} - \frac{y^2}{24} = 1\).
+- Points \(A, B, C, D\) lie on this hyperbola.
+- \(ABCD\) is a rhombus.
+- The diagonals intersect at the origin.
+
+Goal:
+Find the greatest real number that is less than \(BD^2\) for **all** such rhombi.
+
+---
+
+&lt;think&gt;
+**Step 1: Parametri…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>15</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+Let the sets be:
+- D: diamond ring owners (|D| = 195)
+- G: golf clubs owners (|G| = 367)
+- S: garden spade owners (|S| = 562)
+- C: candy hearts owners (|C| = 900) (since all 900 own candy hearts)
+
+Each resident owns candy hearts, so candy hearts is universal in this population.
+
+We are also…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>16</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+Given:
+- \(\triangle ABC\) with circumcenter \(O\) and incenter \(I\).
+- \(IA \perp OI\).
+- Circumradius \(R = 13\).
+- Inradius \(r = 6\).
+
+We want to find \(AB \cdot AC\).
+
+---
+
+Step 1: Understand the configuration.
+
+- \(O\) is the circumcenter, so \(OA = OB = OC = 13\).
+- \(I\) is the inc…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>17</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given nonnegative integers \(a, b, c\) satisfying
+\[
+a + b + c = 300,
+\]
+and
+\[
+a^2b + a^2c + b^2a + b^2c + c^2a + c^2b = 6,000,000.
+\]
+
+We want to find the number of such triples \((a,b,c)\).
+
+---
+
+&lt;think&gt;
+
+**Step 1: Simplify the given expression**
+
+The expression is symmetric in \(a,b,c\):
+\[
+a^2…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>18</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have points:
+- \(O = (0,0)\)
+- \(A = \left(\frac{1}{2},0\right)\)
+- \(B = \left(0, \frac{\sqrt{3}}{2}\right)\)
+
+The segment \(\overline{AB}\) lies in the first quadrant.
+
+The family \(\mathcal{F}\) consists of all segments \(\overline{PQ}\) of length 1 where:
+- \(P\) is on the \(x\)-axis…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>19</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We are given \(\omega \neq 1\) as a 13th root of unity, i.e., \(\omega^{13} = 1\) and \(\omega^k \neq 1\) for \(1 \leq k \leq 12\).
+
+We want to find the remainder when
+\[
+\prod_{k=0}^{12} (2 - 2\omega^k + \omega^{2k})
+\]
+is divided by 1000.
+
+Step 1: Analyze the expression inside the product…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>20</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We are given an integer base \(b \geq 2\). A positive integer \(n\) is called \(b\text{-eautiful}\) if:
+1. When \(n\) is expressed in base \(b\), it has exactly two digits.
+2. The sum of these two digits equals \(\sqrt{n}\).
+
+We want to find the smallest \(b \geq 2\) for which there are mor…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>21</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a regular dodecagon (12-gon). We want to count the number of rectangles that can be formed such that each side of the rectangle lies on a side or a diagonal of the dodecagon. The vertices of the rectangle must lie on the vertices of the dodecagon because the sides of the rectangle l…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>22</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a list of positive integers with:
+1. Sum of items = 30
+2. Unique mode = 9
+3. Median is a positive integer that does not appear in the list
+
+We want to find the sum of the squares of all items.
+
+---
+
+Step 1: Understand the constraints
+
+- The mode is 9 and unique. So 9 appears more ti…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>23</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We have a \(2 \times 3\) grid, where each cell contains a digit. Let&#39;s label the cells as follows:
+
+\[
+\begin{array}{|c|c|c|}
+\hline
+a &amp; b &amp; c \\
+\hline
+d &amp; e &amp; f \\
+\hline
+\end{array}
+\]
+
+The problem states:
+
+1. The sum of the two numbers formed by reading the rows left to right is 999.
+2. The sum…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>24</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the system:
+\[
+\log_2\left(\frac{x}{yz}\right) = \frac{1}{2}, \quad \log_2\left(\frac{y}{xz}\right) = \frac{1}{3}, \quad \log_2\left(\frac{z}{xy}\right) = \frac{1}{4}
+\]
+
+Let:
+\[
+a = \log_2 x, \quad b = \log_2 y, \quad c = \log_2 z
+\]
+
+Rewrite each equation in terms of \(a,b,c\):
+
+1. \(\log_2…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>25</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We are given a convex equilateral hexagon ABCDEF with all pairs of opposite sides parallel. The hexagon is equilateral, so all its sides have the same length, say \( s \).
+
+The hexagon has the property that opposite sides are parallel:
+- \( AB \parallel DE \)
+- \( BC \parallel EF \)
+- \( CD…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>26</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We are given a set \( A \) of positive integers. Bob lists all finite nonempty sets \( B \) of positive integers such that the maximum element of \( B \) belongs to \( A \).
+
+We want to find the sum of the elements of \( A \) given that the total number of sets \( B \) in Bob&#39;s list is 2024…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>27</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We are given a four-digit number \( N \) such that whenever one of its digits is changed to 1, the resulting number is divisible by 7.
+
+Let \( N = ABCD \), where \( A, B, C, D \) are its digits, and \( A \neq 0 \).
+
+We consider changing each digit to 1 one at a time:
+
+1. Change \( A \) to 1…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>28</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a torus \( T \) generated by revolving a circle of radius 3 about an axis in the plane of the circle, distance 6 from the circle&#39;s center. This creates a torus with:
+
+- Major radius \( R = 6 \) (distance from the axis to the center of the revolving circle)
+- Minor radius \( r = 3 \)…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>29</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+We have a \(5 \times 5\) grid with 25 cells. We can place some of the chips (white or black) in cells, with the following conditions:
+
+1. Each cell contains at most one chip.
+2. All chips in the same row have the same color.
+3. All chips in the same column have the same color.
+4. The placem…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

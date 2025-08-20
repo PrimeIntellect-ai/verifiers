@@ -382,8 +382,8 @@ class GRPOConfig(TrainingArguments):
             )
         possible_values = [
             n_gen
-            for n_gen in range(2, self.generation_batch_size + 1)  # type: ignore
-            if (self.generation_batch_size) % n_gen == 0  # type: ignore
+            for n_gen in range(2, self.generation_batch_size + 1)
+            if (self.generation_batch_size) % n_gen == 0
         ]
 
         if self.num_generations not in possible_values:

@@ -1,7 +1,6 @@
 import asyncio
 import inspect
 import logging
-from typing import List
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import (
@@ -19,41 +18,43 @@ class Rubric:
     Rubric class for reward functions.
 
     Each reward function takes:
-    - prompt: List[Dict[str, str]] | str
-    - completion: List[Dict[str, str]] | str
+    - prompt: list[dict[str, str]] | str
+    - completion: list[dict[str, str]] | str
     - answer: Any (metadata for scoring)
     - task (optional): str (type of task)
     - **kwargs: additional kwargs
 
     Returns:
-    - float | List[float] | Dict[str, float]
+    - float | list[float] | dict[str, float]
     """
 
     def __init__(
         self,
-        funcs: List[RewardFunc] = [],
-        weights: List[float] = [],
-        parser: Parser = Parser(),
+        funcs: list[RewardFunc] | None = None,
+        weights: list[float] | None = None,
+        parser: Parser | None = None,
         parallelize_scoring: bool = True,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.rubrics.{self.__class__.__name__}")
-        self.parser = parser
+
+        self.reward_funcs = funcs or []
+        self.reward_weights = weights or []
+        self.parser = parser or Parser()
+
         for key, value in kwargs.items():
             setattr(self, key, value)
-        self.reward_funcs = funcs
-        self.reward_weights = weights
         if not self.reward_weights:
             self.reward_weights = [1.0] * len(self.reward_funcs)
         self.parallelize_scoring = parallelize_scoring
 
-    def get_reward_func_names(self) -> List[str]:
+    def get_reward_func_names(self) -> list[str]:
         return [func.__name__ for func in self.reward_funcs]
 
-    def get_reward_funcs(self) -> List[RewardFunc]:
+    def get_reward_funcs(self) -> list[RewardFunc]:
         return self.reward_funcs  # type: ignore
 
-    def get_reward_weights(self) -> List[float]:
+    def get_reward_weights(self) -> list[float]:
         return self.reward_weights  # type: ignore
 
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
@@ -69,7 +70,7 @@ class Rubric:
         answer: str,
         state: State,
         task: str = "default",
-        info: Info = {},
+        info: Info | None = None,
         **kwargs,
     ) -> float:
         """
@@ -81,6 +82,7 @@ class Rubric:
             ...
         ``
         """
+        info = info or {}
         sig = inspect.signature(func)
 
         common = dict(
@@ -116,7 +118,7 @@ class Rubric:
         answer: str,
         state: State,
         task: str = "default",
-        info: Info = {},
+        info: Info | None = None,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -169,12 +171,12 @@ class Rubric:
 
     async def score_rollouts(
         self,
-        prompts: List[Messages],
-        completions: List[Messages],
-        answers: List[str],
-        states: List[State],
-        tasks: List[str],
-        infos: List[Info] = [],
+        prompts: list[Messages],
+        completions: list[Messages],
+        answers: list[str],
+        states: list[State],
+        tasks: list[str],
+        infos: list[Info],
         **kwargs,
     ) -> RolloutScores:
         """

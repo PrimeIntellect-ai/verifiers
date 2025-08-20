@@ -60,7 +60,6 @@ To initialize a blank Environment module template, do:
 ```bash
 vf-init vf-environment-name # -p /path/to/environments (defaults to "./environments")
 ```
-We recommend using the `vf-` prefix for clarity and avoiding conflicts with other dependencies, and we prepend it by fault if it is not present, though you can pass `--skip-vf-prefix` to override. Names are auto-standardized to use `"-"` in IDs and `"_"` in paths.
 
 To an install an Environment module into your project, do:
 ```bash
@@ -106,9 +105,11 @@ dataset = load_dataset("my-account/my-dataset", split="train")
 def reward_A(prompt, completion, info) -> float:
 	# reward fn, e.g. correctness
 	...
+
 def reward_B(parser, completion) -> float:
 	# auxiliary reward fn, e.g. format
 	...
+
 def metric(completion) -> float:
 	# non-reward metric, e.g. proper noun count
 	...
@@ -137,9 +138,11 @@ The following named attributes available for use by reward functions in your Rub
 - `state`: can be modified during rollout to accumulate any metadata (`state['responses']` includes full OpenAI response objects by default)
 - `info`: auxiliary info needed for reward computation (e.g. test cases), optional if `answer` is used
 - `task`: tag for task type (used by `EnvGroup` and `RubricGroup`)
-- `parser`: the parser object declared, defaults to `vf.Parser()`
+- `parser`: the parser object declared. Note: `vf.Parser().get_format_reward_func()` is a no-op (always 1.0); use `vf.ThinkParser` or a custom parser if you want a real format adherence reward.
 
 For tasks involving LLM judges, you may wish to use `vf.JudgeRubric()` for managing requests to auxiliary models.
+
+Note on concurrency: environment APIs accept `max_concurrent` to control parallel rollouts. The `vf-eval` CLI currently exposes `--max-concurrent-requests`; ensure this maps to your environment’s concurrency as expected.
 
 ### ToolEnv
 
@@ -207,10 +210,26 @@ CUDA_VISIBLE_DEVICES=6,7 accelerate launch --num-processes 2 \
     --config-file configs/zero3.yaml examples/grpo/train_wordle.py --size 1.7B
 ```
 
+Alternatively, you can train environments with the external `prime-rl` project (FSDP-first orchestration). See the `prime-rl` README for installation and examples. For example:
+
+```toml
+# orchestrator config (prime-rl)
+[environment]
+id = "vf-math-python"  # or your environment ID
+```
+
+```bash
+# run (prime-rl)
+uv run rl \
+  --trainer @ configs/your_exp/train.toml \
+  --orchestrator @ configs/your_exp/orch.toml \
+  --inference @ configs/your_exp/infer.toml
+```
+
 ### Troubleshooting 
 - Ensure your `wandb` and `huggingface-cli` logins are set up (or set `report_to=None` in `training_args`). You should also have something set as your `OPENAI_API_KEY` in your environment (can be a dummy key for vLLM). 
 - If using high max concurrency, increase the number of allowed open sockets (e.g. `ulimit -n 4096`)
-- On some setups, inter-GPU communication can [hang](https://github.com/huggingface/trl/issues/2923) or crash during vLLM weight syncing. This can usually be alleviated by setting (or unsetting) `NCCL_P2P_DISABLE=1` in your environment. Try this as your first step if you experience NCCL-related issues.
+- On some setups, inter-GPU communication can [hang](https://github.com/huggingface/trl/issues/2923) or crash during vLLM weight syncing. This can usually be alleviated by setting (or unsetting) `NCCL_P2P_DISABLE=1` in your environment (or potentially `NCCL_CUMEM_ENABLE=1`). Try this as your first step if you experience NCCL-related issues.
 - If problems persist, please open an [issue](https://github.com/willccbb/verifiers/issues).
 
 ### Resource Requirements

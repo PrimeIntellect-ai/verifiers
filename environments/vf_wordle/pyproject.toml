@@ -1,8 +1,10 @@
 [project]
 name = "vf-wordle"
-version = "0.1.0"
+description = "Game environment for Wordle, built on top of TextArena"
+tags = ["textarena", "multi-turn", "reasoning", "game", "train", "eval"]
+version = "0.1.3"
 dependencies = [
-    "verifiers>=0.1.2",
+    "verifiers>=0.1.2.post0",
     "nltk",
     "textarena",
 ]

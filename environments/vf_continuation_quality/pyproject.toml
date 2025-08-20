@@ -1,9 +1,8 @@
 [project]
-name = "vf-reverse-text-mini"
+name = "vf-continuation-quality"
 version = "0.1.0"
 dependencies = [
     "verifiers>=0.1.2",
-    "datasets"
 ]
 
 [build-system]
@@ -11,4 +10,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["vf_reverse_text_mini.py"]
+include = ["vf_continuation_quality.py"]

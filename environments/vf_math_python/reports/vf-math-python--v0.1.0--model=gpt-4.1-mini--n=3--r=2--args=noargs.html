@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-math-python: gpt-4.1-mini (n=3, r=2)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-math-python (v0.1.0)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=3, r=2</div>
+      <div><b>Date</b>: 2025-08-08</div>
+      <div><b>Time</b>: 16:57:08</div>
+      <div><b>Sampling</b>: max_tokens=1024, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.8167</td>
+        <td>0.367</td>
+        <td>6</td>
+        <td>0.225</td>
+        <td>0.925</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>0.8333</td>
+        <td>0.3727</td>
+        <td>6</td>
+        <td>0.25</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+      <tr>
+        <td>num_turns</td>
+        <td>1.5</td>
+        <td>0.7638</td>
+        <td>6</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.75</td>
+        <td>2.75</td>
+      </tr>
+      
+      <tr>
+        <td>num_tool_calls</td>
+        <td>1.0</td>
+        <td>1.5275</td>
+        <td>6</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.5</td>
+        <td>3.5</td>
+      </tr>
+      
+      <tr>
+        <td>num_errors</td>
+        <td>0.1667</td>
+        <td>0.3727</td>
+        <td>6</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.75</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 6 of 6)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>0.9</td>
+          <td>1.0</td>
+          <td><pre>The solution for the system of equations is:
+\[
+a = -3, \quad b = 3.
+\]
+
+Now, let&#39;s find the sum \( a + b \):
+\[
+a + b = -3 + 3 = 0.
+\]
+
+Therefore, \( a + b = 0 \).</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Let&#39;s define the variables:
+- \( m \) = number of band members in each row initially,
+- \( r \) = number of rows initially,
+- \( N \) = total number of band members in the band.
+
+From the problem:
+1. The band has less than 100 members, so \( N &lt; 100 \).
+2. Initially, the band is arranged in a recta…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The polynomial given is:
+
+\[
+4 + 5x^3 + 100 + 2\pi x^4 + \sqrt{10} x^4 + 9
+\]
+
+To find the degree of the polynomial, we need to identify the term with the highest power of \(x\).
+
+The terms are:
+- \(4\) (constant term, degree 0)
+- \(5x^3\) (degree 3)
+- \(100\) (constant term, degree 0)
+- \(2\pi x^4…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The solutions to the continuity equations are \(a = -3\) and \(b = 3\). Therefore, the sum \(a + b = -3 + 3 = 0\).
+
+So, \(a + b = 0\).</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s denote:
+- \( m \) = number of band members in each row in the original formation,
+- \( r \) = number of rows in the original formation,
+- \( N \) = total number of band members in the band.
+
+From the problem:
+1. The band has less than 100 members, so \( N &lt; 100 \).
+2. When arranged in the ori…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The polynomial is \( 4 + 5x^3 + 100 + 2\pi x^4 + \sqrt{10} x^4 + 9 \).
+
+To find the degree, we look for the highest power of \( x \) with a nonzero coefficient.
+
+- \(4\), \(100\), and \(9\) are constants (degree 0).
+- \(5x^3\) has degree 3.
+- \(2\pi x^4\) has degree 4.
+- \(\sqrt{10} x^4\) has degre…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

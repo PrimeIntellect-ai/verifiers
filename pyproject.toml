@@ -30,6 +30,8 @@ dependencies = [
     "datasets",
     "pydantic>=2.11.7",
     "trl>=0.20.0",
+    "jinja2>=3.1.6",
+    "rich",
 ]
 
 [project.optional-dependencies]
@@ -46,7 +48,6 @@ all = [
     "deepspeed",
     "peft",
     "wandb",
-    "rich",
     "trl>=0.17.0",
     "vllm>=0.9.2",
     "liger-kernel>=0.5.10",
@@ -71,7 +72,7 @@ dev = [
 docs = [
     "sphinx",
     "myst-parser",
-    "sphinx-rtd-theme"
+    "furo"
 ]
 
 train = [
@@ -81,7 +82,6 @@ train = [
     "requests",
     "peft",
     "wandb",
-    "rich",
     "trl>=0.17.0",
     "vllm>=0.9.2",
     "liger-kernel>=0.5.10",

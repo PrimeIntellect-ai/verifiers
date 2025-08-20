@@ -1,6 +1,5 @@
 import logging
 import sys
-from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -12,8 +11,8 @@ from verifiers.types import Messages
 
 def setup_logging(
     level: str = "INFO",
-    log_format: Optional[str] = None,
-    date_format: Optional[str] = None,
+    log_format: str | None = None,
+    date_format: str | None = None,
 ) -> None:
     """
     Setup basic logging configuration for the verifiers package.

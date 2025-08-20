@@ -1,9 +1,20 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
 import random
-from typing import Dict, Callable, Any
+from typing import Any, Callable
 
-from datasets import Dataset, load_dataset, concatenate_datasets  # type: ignore
+from datasets import Dataset, concatenate_datasets, load_dataset  # type: ignore
+
+### PROMPTS ###
+
+THINK_BOXED_SYSTEM_PROMPT = "Think step-by-step inside <think>...</think> tags. \
+    Then, give your final answer inside \\boxed{}."
+
+### https://github.com/huggingface/lighteval/blob/ecef2c662b9418866b6447d33b5e7d5dedd74af8/src/lighteval/tasks/default_prompts.py#L1474
+BOXED_SYSTEM_PROMPT = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
+)
+###############
 
 
 def extract_boxed_answer(text: str) -> str:
@@ -42,10 +53,10 @@ def extract_hash_answer(text: str) -> str:
     return text.split("####")[1].strip()
 
 
-def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
+def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
     if name == "aime2024":
 
-        def preprocess_aime2024(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_aime2024(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["problem"],
                 "answer": str(int(x["answer"])),
@@ -54,7 +65,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_aime2024
     elif name == "aime2025":
 
-        def preprocess_aime2025(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_aime2025(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["question"],
                 "answer": strip_non_numeric(x["answer"]),
@@ -63,7 +74,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_aime2025
     elif name == "amc2023":
 
-        def preprocess_amc2023(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_amc2023(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["problem"],
                 "answer": x["answer"],
@@ -72,7 +83,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_amc2023
     elif name in ["gpqa_diamond", "gpqa_main"]:
 
-        def preprocess_gpqa(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_gpqa(x: dict[str, Any]) -> dict[str, Any]:
             q = x["Question"]
             letters = ["A", "B", "C", "D"]
             random.shuffle(letters)
@@ -97,7 +108,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_gpqa
     elif name == "gsm8k":
 
-        def preprocess_gsm8k(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_gsm8k(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["question"],
                 "answer": extract_hash_answer(x["answer"]),
@@ -106,7 +117,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_gsm8k
     elif name == "math":
 
-        def preprocess_math(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_math(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["problem"],
                 "answer": extract_boxed_answer(x["solution"]),
@@ -115,7 +126,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_math
     elif name == "math500":
 
-        def preprocess_math500(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_math500(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["problem"],
                 "answer": x["answer"],
@@ -125,7 +136,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
     elif name == "mmlu":
         mmlu_map = ["A", "B", "C", "D"]
 
-        def preprocess_mmlu(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_mmlu(x: dict[str, Any]) -> dict[str, Any]:
             options = x["choices"]
             answer = x["answer"]
             question = f"Question: {x['question']}\n"
@@ -140,7 +151,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
     elif name == "mmlu_pro":
         mmlu_map = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
 
-        def preprocess_mmlu(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_mmlu(x: dict[str, Any]) -> dict[str, Any]:
             options = x["options"]
             answer = x["answer"]
             question = f"Question: {x['question']}\n"
@@ -154,7 +165,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_mmlu
     elif name == "openbookqa":
 
-        def preprocess_openbookqa(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_openbookqa(x: dict[str, Any]) -> dict[str, Any]:
             choices_texts = x["choices"]["text"]
             choices_labels = x["choices"]["label"]
 
@@ -173,7 +184,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_openbookqa
     elif name in ["openrs", "openrs_easy", "openrs_hard"]:
 
-        def preprocess_openrs(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_openrs(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["problem"],
                 "answer": x["answer"],
@@ -182,7 +193,7 @@ def get_preprocess_fn(name: str) -> Callable[[Dict], Dict]:
         return preprocess_openrs
     elif name == "prime_code":
 
-        def preprocess_prime_code(x: Dict[str, Any]) -> Dict[str, Any]:
+        def preprocess_prime_code(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["prompt"],
                 "answer": x["verification_info"],

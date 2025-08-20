@@ -27,7 +27,6 @@ extensions = [
     "myst_parser",
 ]
 
-html_theme = "sphinx_rtd_theme"
 
 source_suffix = {
     ".rst": "restructuredtext",
@@ -49,5 +48,10 @@ exclude_patterns = []
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "alabaster"
+html_theme = "furo"
+html_title = "Verifiers"
+html_theme_options = {
+    "sidebar_hide_name": True,
+    "navigation_with_keys": True,
+}
 # html_static_path = ["_static"]

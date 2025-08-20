@@ -1,6 +1,6 @@
 import random
 from copy import deepcopy
-from typing import Any, Callable, Tuple
+from typing import Any, Callable
 
 try:
     import nltk  # type: ignore
@@ -44,17 +44,21 @@ class TextArenaEnv(MultiTurnEnv):
         num_train_examples: int = 1000,
         num_eval_examples: int = 0,
         system_prompt: str | None = None,
-        parser: XMLParser = XMLParser(fields=["think", "guess"], answer_field="guess"),
-        rubric: Rubric = Rubric(),
+        parser: XMLParser | None = None,
+        rubric: Rubric | None = None,
         feedback_fn: Callable[[str], str] = lambda x: x,
         seed: int = 0,
         **kwargs,
     ):
+        # default parser in textarena is XMLParser
+        parser = parser or XMLParser(fields=["think", "guess"], answer_field="guess")
+
         self.game = game
         self.ta_env = ta.make(env_id=game)
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
+        self.feedback_fn = feedback_fn
 
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
@@ -69,19 +73,17 @@ class TextArenaEnv(MultiTurnEnv):
             message_type="chat",
             **kwargs,
         )
-        self.parser = parser
-        self.rubric = rubric
-        self.feedback_fn = feedback_fn
 
     def is_completed(self, messages: Messages, state: State, **kwargs: Any) -> bool:
         if "is_finished" in state and state["is_finished"]:
             state.pop("ta_env")
             return state["is_finished"]
+        self.parser
         return False
 
     def env_response(
         self, messages: Messages, state: State, **kwargs: Any
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         # load env
         if "ta_env" not in state:
             ta_env = deepcopy(self.ta_env)
@@ -100,7 +102,7 @@ class TextArenaEnv(MultiTurnEnv):
         feedback = self.feedback_fn(observation)
         return [{"role": "user", "content": str(feedback)}], state
 
-    def ta_to_hf(self) -> Tuple[Dataset, Dataset | None]:
+    def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []
         eval_dataset_rows = []
         ta_env = ta.make(env_id=self.game)

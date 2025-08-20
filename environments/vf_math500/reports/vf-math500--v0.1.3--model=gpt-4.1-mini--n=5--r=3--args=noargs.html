@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-math500: gpt-4.1-mini (n=5, r=3)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-math500 (v0.1.3)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=5, r=3</div>
+      <div><b>Date</b>: 2025-08-12</div>
+      <div><b>Time</b>: 18:54:39</div>
+      <div><b>Sampling</b>: max_tokens=1024, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.4</td>
+        <td>0.4899</td>
+        <td>15</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>0.4</td>
+        <td>0.4899</td>
+        <td>15</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 15 of 15)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the point \((0,3)\) in rectangular coordinates, we want to convert it to polar coordinates \((r, \theta)\), where \(r &gt; 0\) and \(0 \leq \theta &lt; 2\pi\).
+
+**Step 1: Find \(r\).**
+
+The radius \(r\) is the distance from the origin to the point:
+\[
+r = \sqrt{x^2 + y^2} = \sqrt{0^2 + 3^2} = \sqrt…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given:
+\[
+p = \sum_{k=1}^\infty \frac{1}{k^2}, \quad q = \sum_{k=1}^\infty \frac{1}{k^3},
+\]
+we want to express
+\[
+S = \sum_{j=1}^\infty \sum_{k=1}^\infty \frac{1}{(j+k)^3}
+\]
+in terms of \(p\) and \(q\).
+
+---
+
+### Step 1: Rewrite the sum in terms of \(n = j+k\)
+
+For fixed \(n = j+k\), where \(j, k…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the function:
+\[
+f(x) = \frac{3x - 2}{x - 2}
+\]
+
+We need to find:
+\[
+f(-2) + f(-1) + f(0)
+\]
+
+Step 1: Calculate \( f(-2) \)
+\[
+f(-2) = \frac{3(-2) - 2}{-2 - 2} = \frac{-6 - 2}{-4} = \frac{-8}{-4} = 2
+\]
+
+Step 2: Calculate \( f(-1) \)
+\[
+f(-1) = \frac{3(-1) - 2}{-1 - 2} = \frac{-3 - 2}{-3} = \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>First, factorize 196 into its prime factors:
+
+1. Start by finding the prime factorization of 196:
+   - 196 ÷ 2 = 98
+   - 98 ÷ 2 = 49
+   - 49 = 7 × 7
+
+So, the prime factorization is:
+\[
+196 = 2^2 \times 7^2
+\]
+
+2. The formula for the number of positive divisors for a number \( n = p^a q^b \cdots \) …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>The graph shows points representing the distance each student ran versus the time taken. To find the student with the greatest average speed, we need to calculate the average speed for each student:
+
+\[
+\text{Average speed} = \frac{\text{Distance}}{\text{Time}}
+\]
+
+From the graph, approximate the c…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the point in rectangular coordinates \((0,3)\):
+
+Step 1: Find \(r\), the distance from the origin:
+\[
+r = \sqrt{x^2 + y^2} = \sqrt{0^2 + 3^2} = \sqrt{9} = 3
+\]
+
+Step 2: Find \(\theta\), the angle with the positive \(x\)-axis:
+\[
+\theta = \tan^{-1}\left(\frac{y}{x}\right)
+\]
+
+Since \(x = 0\) a…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given:
+\[
+p = \sum_{k=1}^\infty \frac{1}{k^2}, \quad q = \sum_{k=1}^\infty \frac{1}{k^3}.
+\] 
+We want to express
+\[
+S = \sum_{j=1}^\infty \sum_{k=1}^\infty \frac{1}{(j+k)^3}
+\]
+in terms of \(p\) and \(q\).
+
+---
+
+### Step 1: Change variables
+Notice that the summand depends only on the sum \(j…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the function:
+\[
+f(x) = \frac{3x - 2}{x - 2}
+\]
+
+We need to find:
+\[
+f(-2) + f(-1) + f(0)
+\]
+
+---
+
+**Step 1: Calculate \( f(-2) \)**
+
+\[
+f(-2) = \frac{3(-2) - 2}{-2 - 2} = \frac{-6 - 2}{-4} = \frac{-8}{-4} = 2
+\]
+
+---
+
+**Step 2: Calculate \( f(-1) \)**
+
+\[
+f(-1) = \frac{3(-1) - 2}{-1 - 2} = \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>First, factorize 196 into its prime factors:
+
+1. Start with 196:
+   - 196 ÷ 2 = 98
+2. 98 ÷ 2 = 49
+3. 49 = 7 × 7
+
+So the prime factorization of 196 is:
+\[
+196 = 2^2 \times 7^2
+\]
+
+The formula for the number of positive divisors given the prime factorization
+\[
+n = p_1^{a_1} \times p_2^{a_2} \times \…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given a graph plotting distance (vertical axis) versus time (horizontal axis) for several students: Evelyn, Briana, Carla, Debra, and Angela.
+
+**Goal:** Find the student with the greatest average speed.
+
+---
+
+### Step 1: Understand the graph axes
+- Horizontal axis: time (units not specified,…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>Given the point \((0, 3)\) in rectangular coordinates, we want to express it in polar coordinates \((r, \theta)\).
+
+**Step 1: Find \(r\)**  
+The radial coordinate \(r\) is the distance from the origin to the point:
+\[
+r = \sqrt{x^2 + y^2} = \sqrt{0^2 + 3^2} = \sqrt{9} = 3.
+\]
+
+**Step 2: Find \(\the…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given:
+\[
+p = \sum_{k=1}^\infty \frac{1}{k^2}, \quad q = \sum_{k=1}^\infty \frac{1}{k^3}
+\]
+and we want to express
+\[
+S = \sum_{j=1}^\infty \sum_{k=1}^\infty \frac{1}{(j+k)^3}
+\]
+in terms of \(p\) and \(q\).
+
+---
+
+### Step 1: Rewrite the double sum in terms of a single sum
+
+Define a new vari…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Given the function:
+\[
+f(x) = \frac{3x - 2}{x - 2}
+\]
+
+We want to find:
+\[
+f(-2) + f(-1) + f(0)
+\]
+
+**Step 1: Calculate \( f(-2) \)**
+
+\[
+f(-2) = \frac{3(-2) - 2}{-2 - 2} = \frac{-6 - 2}{-4} = \frac{-8}{-4} = 2
+\]
+
+**Step 2: Calculate \( f(-1) \)**
+
+\[
+f(-1) = \frac{3(-1) - 2}{-1 - 2} = \frac{-3 - …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>First, let&#39;s find the prime factorization of 196.
+
+1. Start with the smallest prime number 2:
+   \[
+   196 ÷ 2 = 98
+   \]
+
+2. Divide 98 by 2:
+   \[
+   98 ÷ 2 = 49
+   \]
+
+3. Now, 49 is not divisible by 2, try 7:
+   \[
+   49 ÷ 7 = 7
+   \]
+
+4. Divide 7 by 7:
+   \[
+   7 ÷ 7 = 1
+   \]
+
+So the prime fact…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>0.0</td>
+          <td>0.0</td>
+          <td><pre>We are given a graph showing the results of a cross-country team&#39;s training run with the horizontal axis representing time and the vertical axis representing distance.
+
+The students marked are Evelyn, Briana, Carla, Debra, and Angela, each with a point indicating their distance run at a certain tim…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

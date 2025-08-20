@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-reverse-text: gpt-4.1-mini (n=5, r=3)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-reverse-text (v0.1.0)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=5, r=3</div>
+      <div><b>Date</b>: 2025-08-11</div>
+      <div><b>Time</b>: 19:43:01</div>
+      <div><b>Sampling</b>: max_tokens=2048, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.5033</td>
+        <td>0.27</td>
+        <td>15</td>
+        <td>0.16</td>
+        <td>0.1911</td>
+        <td>0.6048</td>
+        <td>0.7475</td>
+        <td>0.8502</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>lcs_reward_func</td>
+        <td>0.3139</td>
+        <td>0.2567</td>
+        <td>15</td>
+        <td>0.0</td>
+        <td>0.0111</td>
+        <td>0.4048</td>
+        <td>0.5475</td>
+        <td>0.6502</td>
+      </tr>
+      
+      <tr>
+        <td>format_reward_func</td>
+        <td>0.9467</td>
+        <td>0.0884</td>
+        <td>15</td>
+        <td>0.8</td>
+        <td>0.9</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 15 of 15)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>lcs_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>0.8622</td>
+          <td>0.6622</td>
+          <td><pre>&lt;think&gt;
+The task is to reverse the entire given text, character by character, preserving the spacing and punctuation as is.
+&lt;/think&gt;
+&lt;answer&gt;
+.)ecinorP nrehtroN( anew&#39;Ng aP ayfesekuU ,)ecinorP agnihcuM( abminahkavniV ,)ecinorP latneC( ihsum akalwebiC ,)ecinorP nretsaW htroN( awkakluL adnubM ,)nrets…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>0.3464</td>
+          <td>0.1464</td>
+          <td><pre>&lt;think&gt;
+To reverse the given text, I will start from the last sentence and proceed to the first, reversing the order of words and characters accordingly while maintaining the punctuation and coherence of the text.
+&lt;/think&gt;
+&lt;answer&gt;
+.yratsih tnemnaruot CWW ni laog ht000,1 eht gnidda adna adnaB arabr…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>0.16</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+I will reverse the entire given text character by character.
+&lt;/think&gt;
+&lt;answer&gt;
+.hstnom wef a revo ecalp ekat ot srappa ti tub ,suoiugibma tnawemos si mlif eht fo emitemarfi ehT .noituloveR eht fo ytilaeR eht ot ecneiduA eht esopxe ot noitarran s&#39;oirgeS revo deyalp dna mlif eht otni detaropr…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>0.16</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+The original text discusses the film adaptation of a novel and includes quotes and opinions from various people about the adaptation process and its success. To reverse the text, I will write the entire passage backward, starting from the last character to the first, maintaining the origina…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>0.7455</td>
+          <td>0.5455</td>
+          <td><pre>&lt;think&gt;
+The task is to reverse the given text completely, character by character.
+&lt;/think&gt;
+&lt;answer&gt;
+. srotsevni nretsaW truoc ot tfihs ycilop regnof a fo trap erew seinapmoc enihC dna ratahC ,kruT ,naisalaM tniaga snoitca s&#39;tnemnrevog lanoitartsnart esenesduS eht taht denipo deh mA misaN rotubirtno…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>0.8451</td>
+          <td>0.6451</td>
+          <td><pre>&lt;think&gt;
+The task is to reverse the entire given text, maintaining the original punctuation and capitalization as they appear, but reversing the order of characters so the text reads backward.
+&lt;/think&gt;
+&lt;answer&gt;
+.)ecinorP nrehtroN( anew&#39;Ng aP ayfesukU .)ecinorP agnihcuM( abminakahnkniV .)ecinorP lart…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>0.6048</td>
+          <td>0.4048</td>
+          <td><pre>&lt;think&gt;
+To reverse the given text, I will write the entire paragraph backwards, starting from the last character to the first.
+&lt;/think&gt;
+&lt;answer&gt;
+.yrotsih tnemuratroT CWW ni laog ht000,1 eht gnidda adna adnaB arabraB ,tnemuratrot eht ta laog tsetsaF eht gnirrocs abmeW omhsuL htiw ,raey tsrif rieht n…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>0.16</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+The text discusses the film &#34;Memories of Underdevelopment,&#34; focusing on the character Sergio, a bourgeois writer who stays in Cuba. It mentions the historical context (Cuban Revolution, missile crisis), the narrative style (fragmented, subjective), and the film&#39;s portrayal of social changes…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>0.2223</td>
+          <td>0.0223</td>
+          <td><pre>&lt;think&gt;
+I will reverse the entire text word by word, maintaining the punctuation associated with the original words.
+&lt;/think&gt;
+&lt;answer&gt;
+.table round a in panelist a as himself appears Desnoes. density.&#34; social &#34;adding by book&#34; the in abstract still and … shapeless was that world a &#34;objectivized Alea…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>0.7496</td>
+          <td>0.5496</td>
+          <td><pre>&lt;think&gt;
+To reverse the text, I will reverse the order of all characters in the provided passage, maintaining the same characters but in reverse sequence.
+&lt;/think&gt;
+&lt;answer&gt;
+. srotsevni nretsE tnuoc ot tfihs ycilop rengof a fo trap erew seinapmoc enihC dna rhtaQ ,ksruT ,naisylanaM tniaga snoitca s&#39;tn…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>0.8172</td>
+          <td>0.6172</td>
+          <td><pre>&lt;think&gt;
+The text lists various types of ceremonies in Zambia, distinguishing between disclosed and undisclosed ones, and mentions specific named ceremonies and their associated provinces. To reverse the text, I need to invert the order of all characters, including punctuation and spacing, from the …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>0.16</td>
+          <td>0.0</td>
+          <td><pre>&lt;think&gt;
+To reverse the given text, I will start from the end and work my way to the beginning, reversing the order of characters in the entire text.
+&lt;/think&gt;
+&lt;answer&gt;
+.yrotsih tnaruatrommuwC WWT ni laog ht000,1 eht gnidda adna adnaB arabraB ,tnemaruot eht ta laog tsetsaf eht gnirrocs abmewM omohsuL…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>0.6734</td>
+          <td>0.4734</td>
+          <td><pre>&lt;think&gt;
+The task is to reverse the entire given text exactly as it is, including punctuation and capitalization.
+&lt;/think&gt;
+&lt;answer&gt;
+.shtnom wef a revo ecalp ekat ot sraepi ti tub ,suoiuqibma tnawemos si mlif eht fo emitemarf ehT .noituloveR eht fo ytilaer eht ot ecneidua eht esopxe ot noitarran s&#39;oi…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>0.6077</td>
+          <td>0.4077</td>
+          <td><pre>&lt;think&gt;
+I will reverse the entire text, including punctuation and capitalization, to create the reversed version of the original passage.
+&lt;/think&gt;
+&lt;answer&gt;
+.talbat dnuor a ni tsilanap a sa flesmih sraepse senoDseD .&#34;ycnetsed laicos&#34; gnidda yb &#34;koob eht ni tcartsba llits dna …sselpahts saw taht dlro…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>0.4348</td>
+          <td>0.2348</td>
+          <td><pre>&lt;think&gt;
+To reverse the given text, I will write the entire passage backwards, starting from the last character to the first. This includes reversing the order of words, letters, and punctuation marks so that the text reads completely backward.
+&lt;/think&gt;
+&lt;answer&gt;
+. srotsevnI nrets eW truoc ot tfihs y…</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

@@ -83,6 +83,12 @@ class TestXMLParser:
         ]
         result = xml_parser.parse_answer(completion)
         assert result == "43"  # Should get the last answer
+    
+    def test_parse_answer_from_string_completion(self, xml_parser):
+        """Test extracting answer from string completion."""
+        completion = "<answer>44</answer><reasoning>Actually, that's not right either.</reasoning><answer>45</answer>"
+        result = xml_parser.parse_answer(completion)
+        assert result == "45" # Should return just the last answer, not a full parse() namespace
 
     def test_parse_answer_no_answer_field(self, xml_parser):
         """Test parse_answer when no answer field is found."""

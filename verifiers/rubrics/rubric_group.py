@@ -1,5 +1,3 @@
-from typing import List
-
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Info, Messages, RewardFunc, RolloutScores, State
 
@@ -9,25 +7,27 @@ class RubricGroup(Rubric):
     Class for aggregating multiple rubrics.
     """
 
-    def __init__(self, rubrics: List[Rubric], **kwargs):
-        self.rubrics = rubrics
-        assert len(rubrics) > 0, "RubricGroup must have at least one rubric"
+    def __init__(self, rubrics: list[Rubric], **kwargs):
+        if not rubrics:
+            raise ValueError("RubricGroup must have at least one rubric")
+
         super().__init__(**kwargs)
+        self.rubrics = rubrics
         self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
 
-    def get_reward_func_names(self) -> List[str]:
+    def get_reward_func_names(self) -> list[str]:
         names = []
         for rubric in self.rubrics:
             names.extend(rubric.get_reward_func_names())
         return names
 
-    def get_reward_funcs(self) -> List[RewardFunc]:
+    def get_reward_funcs(self) -> list[RewardFunc]:
         funcs = []
         for rubric in self.rubrics:
             funcs.extend(rubric.get_reward_funcs())
         return funcs
 
-    def get_reward_weights(self) -> List[float]:
+    def get_reward_weights(self) -> list[float]:
         weights = []
         for rubric in self.rubrics:
             weights.extend(rubric.get_reward_weights())
@@ -40,12 +40,12 @@ class RubricGroup(Rubric):
 
     async def score_rollouts(
         self,
-        prompts: List[Messages],
-        completions: List[Messages],
-        answers: List[str],
-        states: List[State],
-        tasks: List[str],
-        infos: List[Info] = [],
+        prompts: list[Messages],
+        completions: list[Messages],
+        answers: list[str],
+        states: list[State],
+        tasks: list[str],
+        infos: list[Info],
         **kwargs,
     ) -> RolloutScores:
         """

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 import datasets
 import numpy as np
 import torch
+import wandb
 from accelerate.utils import broadcast_object_list, gather_object, is_peft_model
 from peft import PeftConfig, get_peft_model
 from torch.utils.data import DataLoader, Sampler
@@ -23,7 +24,6 @@ from trl.models import create_reference_model, prepare_deepspeed
 from trl.trainer.callbacks import SyncRefModelCallback
 from trl.trainer.utils import disable_dropout_in_model, pad, selective_log_softmax
 
-import wandb
 from verifiers import Environment
 from verifiers.trainers.async_batch_generator import AsyncBatchGenerator, BatchRequest
 from verifiers.trainers.async_dataloader_wrapper import AsyncDataLoaderWrapper

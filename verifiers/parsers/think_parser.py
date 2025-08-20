@@ -1,4 +1,4 @@
-from typing import Callable, List
+from typing import Callable
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import ChatMessage
@@ -12,6 +12,8 @@ class ThinkParser(Parser):
     def parse(self, text: str) -> str:
         if "</think>" in text:
             text = text.split("</think>")[-1].strip()
+        else:  # do not allow any further extraction/ parsing if no </think> is found
+            text = ""
         return self.extract_fn(text.strip())
 
     def get_format_reward_func(self) -> Callable:
@@ -33,8 +35,8 @@ class ThinkParser(Parser):
                 return 1.0
             return 0.0
 
-        def format_reward_func(completion: List[ChatMessage], **kwargs) -> float:
+        def format_reward_func(completion: list[ChatMessage], **kwargs) -> float:
             messages = self.get_assistant_messages(completion)
-            return sum(follows_format(m["content"]) for m in messages) / len(messages)
+            return sum(follows_format(m["content"]) for m in messages) / len(messages)  # type: ignore
 
         return format_reward_func

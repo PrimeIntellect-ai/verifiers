@@ -30,7 +30,7 @@ class TestThinkParser:
         """Test parsing text without think tags."""
         text = "Just a simple answer without thinking tags."
         result = think_parser.parse(text)
-        assert result == text
+        assert result == ""
 
     def test_parse_with_multiple_think_blocks(self, think_parser):
         """Test parsing with multiple think blocks (should use content after last one)."""

@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from typing import TYPE_CHECKING, List, Literal, Tuple
+from typing import TYPE_CHECKING, Literal
 
 from datasets import Dataset
 from openai import AsyncOpenAI, OpenAI
@@ -15,6 +15,7 @@ from verifiers.types import (
     ChatCompletion,
     ChatCompletionToolParam,
     ChatMessage,
+    Completion,
     GenerateInputs,
     GenerateOutputs,
     Info,
@@ -45,21 +46,23 @@ class Environment(ABC):
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         system_prompt: str | None = None,
-        few_shot: List[ChatMessage] = [],
-        parser: Parser = Parser(),
-        rubric: Rubric = Rubric(),
-        sampling_args: SamplingArgs = {},
+        few_shot: list[ChatMessage] | None = None,
+        parser: Parser | None = None,
+        rubric: Rubric | None = None,
+        sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
-        oai_tools: List[ChatCompletionToolParam] | None = None,
+        oai_tools: list[ChatCompletionToolParam] | None = None,
         max_workers: int = 512,
         **kwargs,
     ):
         self.client = client
         self.model = model
         self.message_type: Literal["chat", "completion"] = message_type
-        self.oai_tools: List[ChatCompletionToolParam] | None = oai_tools
+        self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
         self.system_prompt = system_prompt
         self.few_shot = few_shot
+        self.parser = parser or Parser()
+        self.rubric = rubric or Rubric()
 
         if self.message_type == "chat":
             if dataset is not None:
@@ -83,14 +86,16 @@ class Environment(ABC):
                 )
             self.dataset = dataset
             self.eval_dataset = eval_dataset
-        self.parser = parser
-        self.rubric = rubric
+
         self.sampling_args = {"n": 1, "extra_body": {}}
-        if sampling_args is not None and "extra_body" in sampling_args:
-            self.sampling_args["extra_body"].update(sampling_args["extra_body"])
-        for k, v in sampling_args.items():
-            if k != "extra_body":
-                self.sampling_args[k] = v
+        if sampling_args is not None:
+            # merge extra_body if provided
+            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))
+            # copy other keys
+            for key, value in sampling_args.items():
+                if key != "extra_body":
+                    self.sampling_args[key] = value
+
         self.max_workers = max_workers
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
         for key, value in kwargs.items():
@@ -103,8 +108,8 @@ class Environment(ABC):
         self,
         prompt_str: str,
         system_prompt: str | None = None,
-        few_shot: List[ChatMessage] | None = None,
-    ) -> List[ChatMessage]:
+        few_shot: list[ChatMessage] | None = None,
+    ) -> list[ChatMessage]:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -117,7 +122,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: List[ChatMessage] | None = None,
+        few_shot: list[ChatMessage] | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
     ) -> Dataset:
@@ -126,7 +131,7 @@ class Environment(ABC):
             return dataset
 
         # extract format_prompt as a standalone function to avoid capturing self
-        def format_prompt_fn(prompt_str: str) -> List[ChatMessage]:
+        def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
@@ -170,10 +175,10 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
-    def get_reward_funcs(self) -> List[RewardFunc]:
+    def get_reward_funcs(self) -> list[RewardFunc]:
         return self.rubric.get_reward_funcs()
 
-    def get_reward_weights(self) -> List[float]:
+    def get_reward_weights(self) -> list[float]:
         return self.rubric.get_reward_weights()
 
     async def get_model_response(
@@ -181,8 +186,8 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
-        oai_tools: List[ChatCompletionToolParam] | None = None,
-        sampling_args: SamplingArgs = {},
+        oai_tools: list[ChatCompletionToolParam] | None = None,
+        sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
         **kwargs,
     ) -> ModelResponse:
@@ -192,6 +197,8 @@ class Environment(ABC):
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
         """
+        sampling_args = sampling_args or {}
+
         try:
             if message_type is None:
                 message_type = self.message_type
@@ -234,10 +241,10 @@ class Environment(ABC):
         prompt: Messages,
         answer: str = "",
         task: str = "default",
-        info: Info = {},
-        sampling_args: SamplingArgs = {},
+        info: Info | None = None,
+        sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         """
         Run a rollout for a given prompt.
         Returns a tuple of (completion, state).
@@ -252,10 +259,10 @@ class Environment(ABC):
         prompt: Messages,
         answer: str = "",
         task: str = "default",
-        info: Info = {},
-        sampling_args: SamplingArgs = {},
+        info: Info | None = None,
+        sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> Tuple[Messages, State]:
+    ) -> tuple[Messages, State]:
         """
         Run a rollout with a semaphore.
         """
@@ -268,14 +275,14 @@ class Environment(ABC):
         self,
         client: AsyncOpenAI,
         model: str,
-        prompts: List[Messages],
-        answers: List[str],
-        tasks: List[str] = [],
-        infos: List[Info] = [],
-        sampling_args: SamplingArgs = {},
+        prompts: list[Messages],
+        answers: list[str],
+        tasks: list[str],
+        infos: list[Info],
+        sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         **kwargs,
-    ) -> List[Tuple[Messages, State]]:
+    ) -> list[tuple[Messages, State]]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
@@ -313,7 +320,7 @@ class Environment(ABC):
         inputs: GenerateInputs | Dataset | dict,
         client: AsyncOpenAI | None = None,
         model: str | None = None,
-        sampling_args: SamplingArgs = {},
+        sampling_args: SamplingArgs | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         **kwargs,
@@ -331,7 +338,8 @@ class Environment(ABC):
             assert self.model is not None
             model = self.model
         gen_sampling_args = deepcopy(self.sampling_args)
-        gen_sampling_args.update(sampling_args)
+        if sampling_args is not None:
+            gen_sampling_args.update(sampling_args)
 
         # preprocess dataset or GenerateInputs to GenerateOutputs
         results_dict = {}
@@ -405,7 +413,7 @@ class Environment(ABC):
         inputs: GenerateInputs | Dataset,
         client: AsyncOpenAI | OpenAI,
         model: str | None = None,
-        sampling_args: SamplingArgs = {},
+        sampling_args: SamplingArgs | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         **kwargs,
@@ -445,195 +453,9 @@ class Environment(ABC):
             # shutdown the executor to prevent thread leaks
             executor.shutdown(wait=False)
 
-    def process_chat_format(
-        self,
-        prompt: List[ChatMessage],
-        completion: List[ChatMessage],
-        processing_class: "PreTrainedTokenizerBase",
-        mask_env_responses: bool = False,
-    ) -> Tuple[List[int], List[int], List[int], List[int]]:
-        """
-        Process chat format conversations using incremental prefixes.
-
-        Logic:
-        1. For each step, tokenize conversation prefix (prompt + completion[:i])
-        2. Calculate token differences between steps to get individual message tokens
-        3. Apply masking for intermediate responses if needed
-
-        Returns:
-            prompt_ids, prompt_mask, completion_ids, completion_mask
-        """
-        # tokenize just the prompt
-        prompt_text = processing_class.apply_chat_template(
-            prompt,  # type: ignore
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        assert isinstance(prompt_text, str)
-        prompt_ids = processing_class.encode(prompt_text)
-        prompt_mask = [0] * len(prompt_ids)
-
-        # track completion tokens and masks by processing incrementally
-        completion_ids = []
-        completion_mask = []
-
-        # previous tokenization (starts with just prompt)
-        prev_ids = prompt_ids
-
-        # process each completion message incrementally
-        for i, msg in enumerate(completion):
-            # create conversation prefix: prompt + completion[:i+1]
-            conversation_prefix = prompt + completion[: i + 1]
-
-            # tokenize the full prefix
-            prefix_text = processing_class.apply_chat_template(
-                conversation_prefix,  # type: ignore
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            assert isinstance(prefix_text, str)
-            current_ids = processing_class.encode(prefix_text)
-            assert current_ids[: len(prev_ids) - 1] == prev_ids[:-1], (
-                f"Tokenization difference in chat format. Current ids: {current_ids[: len(prev_ids) - 1]}, previous ids: {prev_ids[:-1]}"
-            )
-
-            # add new tokens to completion tokens
-            new_tokens = current_ids[len(prev_ids) :]
-            assert len(new_tokens) > 0, (
-                f"No new tokens in chat format. Current ids: {current_ids}, previous ids: {prev_ids}"
-            )
-            completion_ids.extend(new_tokens)
-
-            # create mask
-            if msg["role"] == "assistant":
-                msg_mask = [1] * len(new_tokens)
-            elif msg["role"] != "assistant" and mask_env_responses:
-                # mask intermediate 'user' and/or 'tool' messages
-                msg_mask = [0] * len(new_tokens)
-            else:
-                # default to not masking
-                msg_mask = [1] * len(new_tokens)
-
-            completion_mask.extend(msg_mask)
-            # update previous tokenization for next iteration
-            prev_ids = current_ids
-            assert len(completion_ids) == len(completion_mask), (
-                f"Length mismatch in chat format. \
-Completion ids: {completion_ids}, completion mask: {completion_mask}. \
-This often occurs with models whose tokenizer chat templates discard <think> tokens \
-from previous turns, such as Qwen3 or DeepSeek-R1-Distill models. \
-For Qwen3 models, you may want to replace the chat template with the Qwen2.5 chat template. \
-Model copies with swapped templates are available here: https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5"
-            )
-
-        return prompt_ids, prompt_mask, completion_ids, completion_mask
-
-    def process_completion_format(
-        self, prompt: str, completion: str, processing_class: "PreTrainedTokenizerBase"
-    ) -> Tuple[List[int], List[int], List[int], List[int]]:
-        """
-        Process completion format text.
-
-        Logic:
-        1. Tokenize prompt separately to get boundary
-        2. Tokenize completion
-        3. Create masks (prompt mask all 1s, completion mask handles EOS)
-
-        Returns:
-            prompt_ids, prompt_mask, completion_ids, completion_mask
-        """
-        # Tokenize prompt
-        prompt_ids = processing_class.encode(prompt)
-        prompt_mask = [0] * len(prompt_ids)
-
-        # Tokenize completion
-        completion_ids = processing_class.encode(completion)
-        completion_mask = [1] * len(completion_ids)
-
-        return prompt_ids, prompt_mask, completion_ids, completion_mask
-
-    def process_env_results(
-        self,
-        prompts: List[Messages],
-        completions: List[Messages],
-        states: List[State],
-        rewards: List[float],
-        processing_class: "PreTrainedTokenizerBase",
-        max_seq_len: int = -1,
-        mask_env_responses: bool = False,
-        mask_truncated_completions: bool = False,
-        zero_truncated_completions: bool = False,
-    ) -> ProcessedOutputs:
-        """
-        Main tokenization pipeline that handles both chat and completion formats.
-
-        Returns:
-            Dict with prompt_ids, prompt_mask, completion_ids, completion_mask, rewards
-        """
-        # Determine format from first prompt
-        is_chat_format = isinstance(prompts[0], list)
-
-        all_prompt_ids = []
-        all_prompt_masks = []
-        all_completion_ids = []
-        all_completion_masks = []
-        all_completion_logprobs = []
-        all_rewards = []
-        for i, (prompt, completion, state, reward) in enumerate(
-            zip(prompts, completions, states, rewards)
-        ):
-            # Format-specific processing
-            if is_chat_format:
-                assert isinstance(prompt, list) and isinstance(completion, list)
-                prompt_ids, prompt_mask, completion_ids, completion_mask = (
-                    self.process_chat_format(
-                        prompt, completion, processing_class, mask_env_responses
-                    )
-                )
-            else:
-                assert isinstance(prompt, str) and isinstance(completion, str)
-                prompt_ids, prompt_mask, completion_ids, completion_mask = (
-                    self.process_completion_format(prompt, completion, processing_class)
-                )
-            is_truncated = False
-            if max_seq_len > 0 and len(prompt_ids) + len(completion_ids) > max_seq_len:
-                if len(prompt_ids) > max_seq_len:
-                    prompt_ids = prompt_ids[:max_seq_len]
-                completion_ids = completion_ids[: max_seq_len - len(prompt_ids)]
-                completion_mask = completion_mask[: max_seq_len - len(prompt_ids)]
-                is_truncated = True
-                assert len(prompt_ids) + len(completion_ids) <= max_seq_len, (
-                    f"Prompt length: {len(prompt_ids)}, completion length: {len(completion_ids)}, max_seq_len: {max_seq_len}"
-                )
-            if is_truncated and mask_truncated_completions:
-                completion_mask = [0] * len(completion_ids)
-            assert len(prompt_ids) == len(prompt_mask), (
-                f"Prompt ids: {len(prompt_ids)}, prompt mask: {len(prompt_mask)}"
-            )
-            assert len(completion_ids) == len(completion_mask), (
-                f"Completion ids: {len(completion_ids)}, completion mask: {len(completion_mask)}"
-            )
-            all_prompt_ids.append(prompt_ids)
-            all_prompt_masks.append(prompt_mask)
-            all_completion_ids.append(completion_ids)
-            all_completion_masks.append(completion_mask)
-            all_completion_logprobs.append([0.0] * len(completion_ids))
-            if zero_truncated_completions and is_truncated:
-                all_rewards.append(0.0)
-            else:
-                all_rewards.append(reward)
-        return ProcessedOutputs(
-            prompt_ids=all_prompt_ids,
-            prompt_mask=all_prompt_masks,
-            completion_ids=all_completion_ids,
-            completion_mask=all_completion_masks,
-            completion_logprobs=all_completion_logprobs,
-            rewards=all_rewards,
-        )
-
     def parse_chat_completion_logprobs(
         self, chat_completion: ChatCompletion
-    ) -> List[float]:
+    ) -> list[float]:
         """Parses the completion logprobs from a vLLM chat completion"""
         assert len(chat_completion.choices) == 1, (
             "Response should always have one choice"
@@ -649,9 +471,20 @@ Model copies with swapped templates are available here: https://huggingface.co/c
         ]
         return logprobs
 
+    def parse_completion_logprobs(self, completion: Completion) -> list[float]:
+        """Parses the completion logprobs from a vLLM chat completion"""
+        assert len(completion.choices) == 1, "Response should always have one choice"
+        assert completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
+        )
+        assert completion.choices[0].logprobs.token_logprobs is not None, (
+            "Logprob token_logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
+        )
+        return completion.choices[0].logprobs.token_logprobs
+
     def parse_chat_completion_tokens(
         self, chat_completion: ChatCompletion
-    ) -> List[int]:
+    ) -> list[int]:
         """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
         assert len(chat_completion.choices) == 1, (
             "Response should always have one choice"
@@ -663,19 +496,36 @@ Model copies with swapped templates are available here: https://huggingface.co/c
             "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
         )
         tokens = [
+            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
             int(token.token.split(":")[-1])
             for token in chat_completion.choices[0].logprobs.content
         ]
         return tokens
 
+    def parse_completion_tokens(self, completion: Completion) -> list[int]:
+        """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
+        assert len(completion.choices) == 1, "Response should always have one choice"
+        assert completion.choices[0].logprobs is not None, (
+            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
+        )
+        assert completion.choices[0].logprobs.tokens is not None, (
+            "Logprob tokens should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
+        )
+        tokens = [
+            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
+            int(token.split(":")[-1])
+            for token in completion.choices[0].logprobs.tokens
+        ]
+        return tokens
+
     def process_chat_format_vllm(
         self,
-        prompt: List[ChatMessage],
-        completion: List[ChatMessage],
+        prompt: list[ChatMessage],
+        completion: list[ChatMessage],
         state: State,
         processing_class: "PreTrainedTokenizerBase",
         mask_env_responses: bool = False,
-    ) -> Tuple[List[int], List[int], List[int], List[int], List[float]]:
+    ) -> tuple[list[int], list[int], list[int], list[int], list[float]]:
         """
         Process chat format conversations using incremental prefixes.
         """
@@ -752,12 +602,87 @@ Model copies with swapped templates are available here: https://huggingface.co/c
             completion_logprobs,
         )
 
+    def process_completion_format_vllm(
+        self,
+        prompt: str,
+        completion: str,
+        state: State,
+        processing_class: "PreTrainedTokenizerBase",
+        mask_env_responses: bool = False,
+    ) -> tuple[list[int], list[int], list[int], list[int], list[float]]:
+        """
+        Process completion format conversations using incremental prefixes.
+        """
+        responses: list[Completion] = state["responses"]
+        responses_start_idx: list[int] = state["responses_start_idx"]
+        assert len(responses) == len(responses_start_idx), (
+            "Should have an index for each completion response"
+        )
+
+        idx = 0
+        zipped: list[tuple[str, Completion | None]] = []
+        for response, response_start_idx in zip(responses, responses_start_idx):
+            if response_start_idx > idx:
+                # non-model-generated section
+                zipped.append((completion[idx:response_start_idx], None))
+            response_text = response.choices[0].text or ""
+            zipped.append((response_text, response))
+            idx = response_start_idx + len(response_text)
+        assert idx == len(completion), "Completion not fully consumed"
+
+        prompt_ids: list[int] = processing_class.encode(prompt)
+        rollout_consumed = prompt
+        prompt_mask: list[int] = [0] * len(prompt_ids)
+        completion_ids: list[int] = []
+        completion_mask: list[int] = []
+        completion_logprobs: list[float] = []
+        i = 0
+        while i < len(zipped):
+            text, response = zipped[i]
+            # model-generated case -- use response
+            if response is not None:
+                completion_turn_ids = self.parse_completion_tokens(response)
+                completion_turn_mask = [1] * len(completion_turn_ids)
+                completion_turn_logprobs = self.parse_completion_logprobs(response)
+                completion_ids.extend(completion_turn_ids)
+                completion_mask.extend(completion_turn_mask)
+                completion_logprobs.extend(completion_turn_logprobs)
+                rollout_consumed += text
+                i += 1
+            # non-model-generated (user/tool case) -- use text
+            else:
+                token_prefix: list[int] = processing_class.encode(rollout_consumed)
+                token_prefix_with_turn: list[int] = processing_class.encode(
+                    rollout_consumed + text
+                )
+                assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
+                    f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
+                )
+                completion_turn_ids = token_prefix_with_turn[len(token_prefix) :]
+                if mask_env_responses:
+                    completion_turn_mask = [0] * len(completion_turn_ids)
+                else:
+                    completion_turn_mask = [1] * len(completion_turn_ids)
+                completion_turn_logprobs = [0.0] * len(completion_turn_ids)
+                completion_ids.extend(completion_turn_ids)
+                completion_mask.extend(completion_turn_mask)
+                completion_logprobs.extend(completion_turn_logprobs)
+                rollout_consumed += text
+                i += 1
+        return (
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            completion_logprobs,
+        )
+
     def process_env_results_vllm(
         self,
-        prompts: List[Messages],
-        completions: List[Messages],
-        states: List[State],
-        rewards: List[float],
+        prompts: list[Messages],
+        completions: list[Messages],
+        states: list[State],
+        rewards: list[float],
         processing_class: "PreTrainedTokenizerBase",
         max_seq_len: int = -1,
         mask_env_responses: bool = False,
@@ -768,10 +693,8 @@ Model copies with swapped templates are available here: https://huggingface.co/c
         Process results with vLLM tokens/logprobs.
         """
         # Determine format from first prompt
+        # TODO: why not from self.message_type?
         is_chat_format = isinstance(prompts[0], list)
-        assert is_chat_format, (
-            "vLLM output parsing is not yet supported for completion format"
-        )
 
         all_prompt_ids = []
         all_prompt_masks = []
@@ -796,10 +719,15 @@ Model copies with swapped templates are available here: https://huggingface.co/c
                 )
             else:
                 assert isinstance(prompt, str) and isinstance(completion, str)
-                prompt_ids, prompt_mask, completion_ids, completion_mask = (
-                    self.process_completion_format(prompt, completion, processing_class)
+                (
+                    prompt_ids,
+                    prompt_mask,
+                    completion_ids,
+                    completion_mask,
+                    completion_logprobs,
+                ) = self.process_completion_format_vllm(
+                    prompt, completion, state, processing_class, mask_env_responses
                 )
-                completion_logprobs = [0] * len(completion_ids)
             is_truncated = False
             if max_seq_len > 0 and len(prompt_ids) + len(completion_ids) > max_seq_len:
                 if len(prompt_ids) > max_seq_len:
@@ -828,7 +756,7 @@ Model copies with swapped templates are available here: https://huggingface.co/c
             all_completion_ids.append(completion_ids)
             all_completion_masks.append(completion_mask)
             all_completion_logprobs.append(completion_logprobs)
-            if zero_truncated_completions:
+            if zero_truncated_completions and is_truncated:
                 all_rewards.append(0)
             else:
                 all_rewards.append(reward)
@@ -841,12 +769,15 @@ Model copies with swapped templates are available here: https://huggingface.co/c
             rewards=all_rewards,
         )
 
+    # alias for process_env_results_vllm
+    process_env_results = process_env_results_vllm
+
     # Evaluation and dataset generation
     def evaluate(
         self,
         client: AsyncOpenAI | OpenAI,
         model: str,
-        sampling_args: SamplingArgs = {},
+        sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         score_rollouts: bool = True,
@@ -903,12 +834,14 @@ Model copies with swapped templates are available here: https://huggingface.co/c
         results: GenerateOutputs,
         push_to_hub: bool = False,
         hub_name: str | None = None,
-        state_columns: List[str] = [],
+        state_columns: list[str] | None = None,
         **kwargs,
     ) -> Dataset:
         """
         Make a dataset from the evaluation results.
         """
+        state_columns = state_columns or []
+
         if push_to_hub and hub_name is None:
             raise ValueError("hub_name must be provided if push_to_hub is True")
 
@@ -927,6 +860,7 @@ Model copies with swapped templates are available here: https://huggingface.co/c
                 self._sanitize_tool_calls(results.completion[i])
             )
         results_dict.update(results.metrics)
+        cols.extend(results.metrics.keys())
         if results.state[0] is not None:
             for col in state_columns:
                 if col in results.state[0]:

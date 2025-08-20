@@ -162,6 +162,35 @@ results = env.evaluate(client, model="llama-3.1-8b")
 4. **Rubric** evaluates quality through reward functions
 5. **Results** include full interaction traces and scores
 
+## Evaluation lifecycle
+
+- **Inputs expected by environments**:
+  - `prompt`: str or list[ChatMessage] (chat-style). If you use `question` in your dataset, environments will turn it into a chat message using `system_prompt`/`few_shot` if provided.
+  - `answer` or `info`: at least one is required. `answer` is a string; `info` is a dict for richer metadata.
+  - `task`: optional string used by `EnvGroup`/`RubricGroup` to route behavior.
+
+- **Running evaluation**:
+  ```python
+  results = env.evaluate(
+      client, model,
+      num_examples=100,
+      rollouts_per_example=2,
+      max_concurrent=32,
+  )
+  ```
+  - `rollouts_per_example > 1` repeats dataset entries internally.
+  - `max_concurrent` throttles concurrent rollouts.
+
+- **Scoring**:
+  - Each reward function returns a float. Weights applied inside `Rubric` combine them into `results.reward`.
+  - All individual scores are logged under `results.metrics` keyed by function name (even if weight is 0.0).
+
+- **Outputs** (`GenerateOutputs`):
+  - `prompt`, `completion`, `answer`, `state`, `info`, `task`, `reward`, `metrics: dict[str, list[float]]`.
+
+- **Message types**:
+  - `message_type="chat"` (default) expects chat messages; `"completion"` expects raw text continuation. Choose based on your task (e.g., continuation quality uses completion).
+
 ## Optional Utilities
 
 ### Parsers

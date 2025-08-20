@@ -61,11 +61,11 @@ group = vf.RubricGroup([
     efficiency_rubric    # Weight: 1.0
 ])
 
-# With custom weights
-group = vf.RubricGroup(
-    rubrics=[correctness_rubric, style_rubric],
-    weights=[2.0, 1.0]  # Correctness counts twice as much
-)
+# With custom weights: set weights inside each Rubric, then group them
+correctness = vf.Rubric(funcs=[check_answer], weights=[2.0])
+style = vf.Rubric(funcs=[style_score], weights=[1.0])
+
+group = vf.RubricGroup([correctness, style])
 ```
 
 **Example: Multi-Criteria Code Evaluation**
@@ -93,14 +93,25 @@ class CodeEvalEnv(vf.MultiTurnEnv):
 
 ### ToolRubric: Tracking Tool Usage
 
-Monitor and reward appropriate tool usage:
+Count total and per-tool calls during a rollout. Pass your tool functions to enable per-tool counters. By default, counts are added as metrics with zero weight; adjust `reward_weights` if you want the counts to affect reward.
 
 ```python
-tool_rubric = vf.ToolRubric(
-    completion_reward=1.0,      # Reward for task completion
-    efficiency_reward=0.2,      # Penalty for excessive tool calls
-    tool_failure_penalty=-0.1   # Penalty for failed tool calls
-)
+# Define tools (type hints + docstrings omitted for brevity)
+def calculate(expr: str) -> float: ...
+def search_web(query: str, max_results: int = 5) -> list[dict]: ...
+
+# Initialize with tools to track
+tool_rubric = vf.ToolRubric(tools=[calculate, search_web])
+
+# Metrics exposed (names):
+# - total_tool_calls
+# - calculate_calls
+# - search_web_calls
+
+# Optional: turn counts into rewards by setting weights
+# Index 0 corresponds to total_tool_calls; subsequent indices follow the tools order
+tool_rubric.reward_weights[0] = -0.1   # penalize excessive tool calls
+tool_rubric.reward_weights[2] = 0.2    # reward using search_web specifically
 ```
 
 ## Tools
@@ -147,7 +158,7 @@ def load_environment(**kwargs):
     )
 ```
 
-**Important**: ToolEnv uses the model's native tool calling format via the tokenizer's chat template. It does NOT impose any specific XML structure or require hardcoded patterns.
+**Important**: ToolEnv uses the model's native tool calling format via the tokenizer's chat template. It automatically injects tool schemas into request payloads and treats `role: tool` messages as tool outputs. It does NOT impose any XML structure or require hardcoded patterns.
 
 ### Tool Design Best Practices
 
@@ -219,14 +230,16 @@ Parsers extract structured information from model outputs. While many tasks work
 Extract XML-tagged content:
 
 ```python
+# Define which tags are expected in the output
+# Strings define fixed tags; tuples define canonical name + allowed aliases
 parser = vf.XMLParser(
-    extract_tag="answer",  # Extracts <answer>...</answer>
-    #prefix_tag="thinking"  # Can also extract prefix content
+    fields=["think", ("answer", "final", "result")],
+    answer_field="answer",
 )
 
 # In practice
-response = "<thinking>Let me calculate...</thinking>\n<answer>42</answer>"
-answer = parser.parse_answer(response)  # Returns: "42"
+response = "<think>Let me calculate...</think>\n<answer>42</answer>"
+answer = parser.parse_answer(response)  # => "42"
 ```
 
 #### ThinkParser
@@ -234,16 +247,12 @@ answer = parser.parse_answer(response)  # Returns: "42"
 Separate reasoning from final answers:
 
 ```python
-parser = vf.ThinkParser(
-    answer_prefix="Therefore:",  # Default prefix
-    extract_fn=None  # Optional custom extraction
-)
+# Strip any content before </think>, then apply extract_fn
 
-# Custom extraction
-def extract_number(text):
+def extract_number(text: str) -> str:
     import re
-    match = re.search(r'[-+]?\d*\.?\d+', text)
-    return match.group() if match else ""
+    m = re.search(r"[-+]?\d*\.?\d+", text)
+    return m.group() if m else ""
 
 parser = vf.ThinkParser(extract_fn=extract_number)
 ```

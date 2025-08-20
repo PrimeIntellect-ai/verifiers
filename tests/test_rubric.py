@@ -422,3 +422,94 @@ class TestRubric:
 
         assert results.metrics["scalar_func"] == [0.5]
         assert results.reward == [0.5]
+
+    @pytest.mark.asyncio
+    async def test_call_reward_func_kwargs_filtering(self):
+        """Test that functions without **kwargs get filtered kwargs."""
+        
+        def f_no_kwargs(completion, answer):
+            return 0.5
+
+        def f_with_kwargs(completion, **kwargs):
+            assert kwargs.get("extra") == 123
+            return 1.0
+
+        rubric = Rubric(funcs=[f_no_kwargs, f_with_kwargs], weights=[1.0, 2.0])
+        
+        result = await rubric.score_rollout(
+            prompt=[{"role": "user", "content": "q"}],
+            completion=[{"role": "assistant", "content": "a"}],
+            answer="ans",
+            state={},
+            task="default",
+            info={},
+            extra=123,
+        )
+        
+        # Weighted sum: 0.5*1 + 1.0*2 = 2.5
+        assert result.reward == pytest.approx(2.5)
+        assert set(result.metrics.keys()) == {"f_no_kwargs", "f_with_kwargs"}
+
+    @pytest.mark.asyncio
+    async def test_score_rollout_serial_execution_order(self):
+        """Test that serial mode respects execution order."""
+        calls = []
+
+        def g1(**kwargs):
+            calls.append("g1")
+            return 0.2
+
+        def g2(**kwargs):
+            calls.append("g2")
+            return 0.3
+
+        rubric = Rubric(funcs=[g1, g2], weights=[1.0, 1.0], parallelize_scoring=False)
+        
+        result = await rubric.score_rollout(
+            prompt="q",
+            completion="a",
+            answer="ans",
+            state={},
+            task="default",
+        )
+        
+        assert result.reward == pytest.approx(0.5)
+        assert calls == ["g1", "g2"]  # serial order respected
+
+    @pytest.mark.asyncio
+    async def test_call_reward_func_error_handling_both_paths(self):
+        """Test error handling for both kwargs and no-kwargs functions."""
+        
+        def error_func_no_kwargs(completion, answer):
+            raise ValueError("Test error without kwargs")
+        
+        def error_func_with_kwargs(completion, **kwargs):
+            raise RuntimeError("Test error with kwargs")
+        
+        rubric = Rubric()
+        
+        # Test both error paths return 0.0
+        result1 = await rubric.call_reward_func(
+            func=error_func_no_kwargs,
+            parser=rubric.parser,
+            prompt="test",
+            completion="test", 
+            answer="test",
+            state={},
+            task="test",
+            info={},
+        )
+        
+        result2 = await rubric.call_reward_func(
+            func=error_func_with_kwargs,
+            parser=rubric.parser,
+            prompt="test",
+            completion="test",
+            answer="test", 
+            state={},
+            task="test",
+            info={},
+        )
+        
+        assert result1 == 0.0
+        assert result2 == 0.0

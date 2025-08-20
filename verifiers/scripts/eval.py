@@ -3,17 +3,17 @@ import importlib
 import importlib.util
 import json
 import os
-import sys
 from pathlib import Path
 
 import numpy as np
 from openai import OpenAI
 
 import verifiers as vf
-
-current_dir = Path.cwd()
-if str(current_dir) not in sys.path:
-    sys.path.insert(0, str(current_dir))
+from verifiers.utils.report_utils import (
+    ReportMeta,
+    get_env_version,
+    write_html_report,
+)
 
 
 def eval_environment(
@@ -28,21 +28,28 @@ def eval_environment(
     max_concurrent_requests: int,
     max_tokens: int,
     temperature: float,
+    verbose: bool,
+    write_report: bool,
     save_dataset: bool,
     save_path: str,
     save_to_hf_hub: bool,
     hf_hub_dataset_name: str,
 ):
     try:
-        endpoints = Path(endpoints_path)
-        if endpoints.exists():
-            spec = importlib.util.spec_from_file_location("endpoints", endpoints)
+        endpoints_path_obj = Path(endpoints_path)
+        if endpoints_path_obj.is_dir():
+            endpoints_file = endpoints_path_obj / "endpoints.py"
+        else:
+            endpoints_file = endpoints_path_obj
+
+        if endpoints_file.exists():
+            spec = importlib.util.spec_from_file_location("endpoints", endpoints_file)
             assert spec and spec.loader
             endpoints_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(endpoints_module)
             ENDPOINTS = endpoints_module.ENDPOINTS
         else:
-            raise ImportError(f"endpoints.py not found in {current_dir}")
+            raise ImportError(f"endpoints.py not found at {endpoints_file}")
     except (ImportError, AttributeError):
         print(
             f"No local endpoint registry found at {endpoints_path}. \
@@ -87,9 +94,19 @@ Please specify the model name (-m), API host base URL (-b), and API key variable
     )
     n = num_examples
     r = rollouts_per_example
+    if verbose:
+        for i in range(len(results.prompt)):
+            print(f"Prompt: {results.prompt[i]}")
+            print(f"Completion: {results.completion[i]}")
+            print(f"Reward: {results.reward[i]}")
+            print(f"Answer: {results.answer[i]}")
+            print(f"Info: {results.info[i]}")
+            print(f"Task: {results.task[i]}")
+    if n < 0:
+        n = len(results.reward) // r
     for i in range(r):
         # rounded to 3 decimal places
-        trials = [round(results.reward[(i * r) + j], 3) for j in range(n)]
+        trials = [round(results.reward[(i * n) + j], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
     for k in results.metrics:
@@ -97,7 +114,7 @@ Please specify the model name (-m), API host base URL (-b), and API key variable
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
             # rounded to 3 decimal places
-            trials = [round(v[(i * r) + j], 3) for j in range(n)]
+            trials = [round(v[(i * n) + j], 3) for j in range(n)]
             out = f"r{i + 1}: {trials}"
             print(out)
     if save_dataset:
@@ -110,6 +127,34 @@ Please specify the model name (-m), API host base URL (-b), and API key variable
         else:
             dataset_name = hf_hub_dataset_name
         vf_env.make_dataset(results, push_to_hub=True, hub_name=dataset_name)
+
+    if write_report:
+        try:
+            # Determine environment directory under ./environments if present; otherwise fall back to cwd
+            # module file path
+            module_name = env.replace("-", "_")
+            local_env_dir = Path("./environments") / module_name
+            if local_env_dir.exists():
+                report_dir = local_env_dir / "reports"
+            else:
+                report_dir = Path("./reports")
+
+            meta = ReportMeta(
+                env_id=env,
+                env_version=get_env_version(module_name),
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                api_base_url=api_base_url,
+                sampling_args=sampling_args,
+                env_args=env_args,
+            )
+            out_path = write_html_report(
+                report_dir=report_dir, meta=meta, results=results
+            )
+            print(f"Saved HTML report to {out_path}")
+        except Exception as e:
+            print(f"Failed to write HTML report: {e}")
 
 
 def main():
@@ -184,6 +229,16 @@ def main():
         "--temperature", "-T", type=float, default=0.7, help="Temperature for sampling"
     )
     parser.add_argument(
+        "--verbose", "-v", default=False, action="store_true", help="Verbose output"
+    )
+    parser.add_argument(
+        "--write-report",
+        "-w",
+        default=False,
+        action="store_true",
+        help="Write HTML report",
+    )
+    parser.add_argument(
         "--save-dataset",
         "-s",
         default=False,
@@ -225,6 +280,8 @@ def main():
         max_concurrent_requests=args.max_concurrent_requests,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        verbose=args.verbose,
+        write_report=args.write_report,
         save_dataset=args.save_dataset,
         save_path=args.save_path,
         save_to_hf_hub=args.save_to_hf_hub,

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, sans-serif; margin: 24px; }
+      h1, h2, h3 { margin: 0.4em 0; }
+      table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: left; }
+      th { background: #f6f8fa; }
+      .meta { margin-bottom: 16px; color: #444; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+      .examples pre { white-space: pre-wrap; }
+      .muted { color: #777; }
+    </style>
+  </head>
+  <body>
+    <h3>vf-math-python: gpt-4.1-mini (n=5, r=3)</h3>
+    <div class="meta">
+      <div><b>Environment</b>: vf-math-python (v0.1.0)</div>
+      <div><b>Model</b>: <span class="code">gpt-4.1-mini</span></div>
+      <div><b>Provider</b>: https://api.openai.com/v1</div>
+      <div><b>Samples</b>: n=5, r=3</div>
+      <div><b>Date</b>: 2025-08-08</div>
+      <div><b>Time</b>: 17:25:56</div>
+      <div><b>Sampling</b>: max_tokens=1024, temperature=0.7</div>
+    </div>
+
+    <h2>Reward</h2>
+    <table>
+      <tr><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th></tr>
+      <tr>
+        <td>0.9933</td>
+        <td>0.0249</td>
+        <td>15</td>
+        <td>0.97</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+    </table>
+
+    
+    <h2>Metrics</h2>
+    <table>
+      <tr>
+        <th>metric</th><th>mean</th><th>std</th><th>n</th><th>p5</th><th>p25</th><th>p50</th><th>p75</th><th>p95</th>
+      </tr>
+      
+      <tr>
+        <td>correct_answer_reward_func</td>
+        <td>1.0</td>
+        <td>0.0</td>
+        <td>15</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+      </tr>
+      
+      <tr>
+        <td>num_turns</td>
+        <td>1.6</td>
+        <td>0.4899</td>
+        <td>15</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>2.0</td>
+        <td>2.0</td>
+        <td>2.0</td>
+      </tr>
+      
+      <tr>
+        <td>num_tool_calls</td>
+        <td>0.7333</td>
+        <td>0.6799</td>
+        <td>15</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>1.0</td>
+        <td>1.0</td>
+        <td>2.0</td>
+      </tr>
+      
+      <tr>
+        <td>num_errors</td>
+        <td>0.0667</td>
+        <td>0.2494</td>
+        <td>15</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.0</td>
+        <td>0.3</td>
+      </tr>
+      
+    </table>
+    
+
+    <h2>Examples <span class="muted">(showing up to 15 of 15)</span></h2>
+    <div class="examples">
+      <table>
+        <tr><th>#</th><th>reward</th><th>correct_answer_reward_func</th><th>completion</th></tr>
+        
+        <tr>
+          <td>0</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The values of \(a\) and \(b\) that make the piecewise function continuous are \(a = -3\) and \(b = 3\). The sum \(a + b\) is:
+
+\[
+a + b = -3 + 3 = 0
+\]
+
+So, \(a + b = 0\).</pre></td>
+        </tr>
+        
+        <tr>
+          <td>1</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s denote:
+- \( r \) = the original number of rows,
+- \( m \) = the original number of members in each row,
+- \( N \) = the total number of band members.
+
+From the problem, we have the following conditions:
+
+1. The total number of band members is less than 100:
+   \[
+   N &lt; 100
+   \]
+
+2. When ar…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>2</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The polynomial given is:
+
+\[ 4 + 5x^3 + 100 + 2\pi x^4 + \sqrt{10} x^4 + 9 \]
+
+Let&#39;s identify the degree by analyzing the powers of \(x\) in each term.
+
+- \(4\) is a constant term (degree 0).
+- \(5x^3\) is a term with degree 3.
+- \(100\) is a constant term (degree 0).
+- \(2\pi x^4\) is a term with …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>3</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The value of \(\left\lceil3\left(6-\frac12\right)\right\rceil\) is 17.</pre></td>
+        </tr>
+        
+        <tr>
+          <td>4</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Sam did not work for 6 days.</pre></td>
+        </tr>
+        
+        <tr>
+          <td>5</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The values of \( a \) and \( b \) that make the function continuous are:
+\[
+a = -3, \quad b = 3.
+\]
+
+Therefore,
+\[
+a + b = -3 + 3 = 0.
+\]
+
+The value of \( a + b \) is \( \boxed{0} \).</pre></td>
+        </tr>
+        
+        <tr>
+          <td>6</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let&#39;s denote:
+
+- \( m \) = number of members in each row in the original formation,
+- \( r \) = number of rows in the original formation,
+- \( N \) = total number of band members.
+
+From the problem:
+
+1. \( N &lt; 100 \).
+2. The original formation is \( m \times r \) but with 2 members left over, so:
+ …</pre></td>
+        </tr>
+        
+        <tr>
+          <td>7</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The polynomial given is:
+
+\[4 + 5x^3 + 100 + 2\pi x^4 + \sqrt{10} x^4 + 9\]
+
+Let&#39;s identify the degree of each term:
+- \(4\) is a constant term (degree 0).
+- \(5x^3\) has degree 3.
+- \(100\) is a constant term (degree 0).
+- \(2\pi x^4\) has degree 4.
+- \(\sqrt{10} x^4\) has degree 4.
+- \(9\) is a c…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>8</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The value of \(\left\lceil3\left(6-\frac12\right)\right\rceil\) is 17.</pre></td>
+        </tr>
+        
+        <tr>
+          <td>9</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Sam did not work for 6 days.</pre></td>
+        </tr>
+        
+        <tr>
+          <td>10</td>
+          <td>0.9</td>
+          <td>1.0</td>
+          <td><pre>From the first calculation, we have the values:
+\[
+a = -3, \quad b = 3
+\]
+
+Now, let&#39;s find \( a + b \):
+\[
+a + b = -3 + 3 = 0
+\]
+
+So, the value of \( a + b \) is 0.</pre></td>
+        </tr>
+        
+        <tr>
+          <td>11</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Let the number of members in each of the \( r \) rows be \( m \). Then the total number of band members \( N \) satisfies:
+\[
+N = mr + 2
+\]
+since there are 2 members left over when arranged in \( r \) rows of \( m \) members.
+
+If the director increases the number of members per row by 1 (i.e., \( m…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>12</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The polynomial is:
+
+\[4 + 5x^3 + 100 + 2\pi x^4 + \sqrt{10} x^4 + 9\]
+
+Let&#39;s identify the degree by the highest power of \(x\) with a nonzero coefficient.
+
+The terms and their degrees are:
+- \(4\) (degree 0)
+- \(5x^3\) (degree 3)
+- \(100\) (degree 0)
+- \(2\pi x^4\) (degree 4)
+- \(\sqrt{10} x^4\) (d…</pre></td>
+        </tr>
+        
+        <tr>
+          <td>13</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>The value of \(\left\lceil3\left(6-\frac{1}{2}\right)\right\rceil\) is \(\boxed{17}\).</pre></td>
+        </tr>
+        
+        <tr>
+          <td>14</td>
+          <td>1.0</td>
+          <td>1.0</td>
+          <td><pre>Sam did not work for 6 days.</pre></td>
+        </tr>
+        
+      </table>
+    </div>
+  </body>
+ </html>

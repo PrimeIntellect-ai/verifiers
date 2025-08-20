@@ -106,7 +106,12 @@ env = vf.load_environment("my-math-env")
 
 # Test with a model
 client = OpenAI()
-results = env.evaluate(client, "gpt-4.1-mini", num_examples=5, rollouts_per_example=2)
+results = env.evaluate(
+    client, "gpt-4.1-mini",
+    num_examples=5,
+    rollouts_per_example=2,
+    max_concurrent=32,
+)
 print(results)
 ```
 

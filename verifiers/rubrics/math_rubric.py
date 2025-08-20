@@ -1,37 +1,38 @@
-from typing import List
+from math_verify import parse, verify
 
 from verifiers.parsers.parser import Parser
-from verifiers.parsers.xml_parser import XMLParser
+from verifiers.parsers.think_parser import ThinkParser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import RewardFunc
+from verifiers.types import Messages, RewardFunc
+from verifiers.utils.data_utils import extract_boxed_answer
 
 
 class MathRubric(Rubric):
     def __init__(
         self,
-        funcs: List[RewardFunc] = [],
-        weights: List[float] = [],
-        parser: Parser = XMLParser(fields=["think", "answer"]),
+        funcs: list[RewardFunc] | None = None,
+        weights: list[float] | None = None,
+        parser: Parser | None = None,
     ):
+        parser = parser or ThinkParser(extract_fn=extract_boxed_answer)
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer_reward_func)
-        self.add_reward_func(self.parser.get_format_reward_func(), weight=0.2)
 
-    def correct_answer_reward_func(self, completion, answer, **kwargs) -> float:
+    def correct_answer_reward_func(
+        self, parser: Parser, completion: Messages, answer: str, **kwargs
+    ) -> float:
         """Reward function that checks if the final answer matches the expected answer."""
         try:
-            from verifiers.rubrics.utils.math_utils import (
-                grade_answer_mathd,
-                grade_answer_sympy,
-            )
-
-            response = self.parser.parse_answer(completion) or ""
-            return (
-                1.0
-                if grade_answer_mathd(response, answer)
-                or grade_answer_sympy(response, answer)
-                else 0.0
-            )
-        except Exception as e:
-            self.logger.error("Please install math_verify to use this reward function.")
-            raise e
+            response = parser.parse_answer(completion) or ""
+            if response == "":
+                return 0.0
+            if verify(
+                parse(f"\\boxed{{{answer}}}", parsing_timeout=5),
+                parse(f"\\boxed{{{response}}}", parsing_timeout=5),
+                timeout_seconds=5,
+            ):
+                return 1.0
+            else:
+                return 0.0
+        except BaseException:
+            return 0.0
