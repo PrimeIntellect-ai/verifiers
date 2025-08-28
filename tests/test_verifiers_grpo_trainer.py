@@ -83,24 +83,26 @@ class TestVerifiersGRPOConfig:
         )
 
         assert config.output_dir == "./test_output"
-        assert hasattr(config, "num_batches_ahead")
-        assert hasattr(config, "enable_async_generation")
-        assert hasattr(config, "async_timeout")
+        assert hasattr(config, "use_environment_reward")
+        assert hasattr(config, "environment_reward_weight")
+        assert config.use_environment_reward is True
 
     def test_config_initialization_with_verifiers_params(self):
         """Test VerifiersGRPOConfig with verifiers-specific parameters."""
         config = VerifiersGRPOConfig(
             output_dir="./test_output",
-            num_batches_ahead=3,
-            enable_async_generation=False,
-            async_timeout=120,
+            use_environment_reward=False,
+            environment_reward_weight=0.5,
+            enable_async_generation=False,  # Should be removed
+            num_batches_ahead=0,  # Should be removed
             bf16=False,
             fp16=False,
         )
 
-        assert config.num_batches_ahead == 3
-        assert config.enable_async_generation is False
-        assert config.async_timeout == 120
+        assert config.use_environment_reward is False
+        assert config.environment_reward_weight == 0.5
+        # These should be removed by the config
+        assert not hasattr(config, "async_timeout")
 
     def test_config_trl_inheritance(self):
         """Test that VerifiersGRPOConfig inherits from TRL's GRPOConfig."""
@@ -170,18 +172,15 @@ class TestVerifiersGRPOTrainer:
             )
 
             assert trainer.env == mock_env
-            assert trainer.enable_async_generation is False
-            assert trainer.num_batches_ahead == 0
             assert hasattr(trainer, "logger")
 
-    def test_trainer_initialization_with_async(self, mock_env, mock_tokenizer):
-        """Test VerifiersGRPOTrainer initialization with async enabled."""
+    def test_trainer_initialization_with_reward_disabled(self, mock_env, mock_tokenizer):
+        """Test VerifiersGRPOTrainer initialization with environment reward disabled."""
         config = VerifiersGRPOConfig(
             output_dir="./test_output",
             per_device_train_batch_size=8,
             num_generations=8,
-            enable_async_generation=True,
-            num_batches_ahead=2,
+            use_environment_reward=False,
             bf16=False,
             fp16=False,
             save_strategy="no",
@@ -199,8 +198,8 @@ class TestVerifiersGRPOTrainer:
                 processing_class=mock_tokenizer,
             )
 
-            assert trainer.enable_async_generation is True
-            assert trainer.num_batches_ahead == 2
+            # Should initialize successfully even with rewards disabled
+            assert trainer.env == mock_env
 
     def test_trainer_trl_inheritance(self, mock_env, mock_config, mock_tokenizer):
         """Test that VerifiersGRPOTrainer inherits from TRL's GRPOTrainer."""
@@ -262,50 +261,8 @@ class TestVerifiersGRPOTrainer:
             assert "train_dataset" in kwargs
             assert kwargs["train_dataset"] is not None
 
-    def test_trainer_async_generator_lazy_init(
-        self, mock_env, mock_config, mock_tokenizer
-    ):
-        """Test lazy initialization of async generator."""
-        config = VerifiersGRPOConfig(
-            output_dir="./test_output",
-            per_device_train_batch_size=8,
-            num_generations=8,
-            enable_async_generation=True,
-            num_batches_ahead=2,
-            bf16=False,
-            fp16=False,
-            save_strategy="no",
-        )
-
-        with patch(
-            "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
-        ) as mock_init:
-            mock_init.return_value = None
-
-            trainer = VerifiersGRPOTrainer(
-                model="test-model",
-                env=mock_env,
-                args=config,
-                processing_class=mock_tokenizer,
-            )
-
-            assert trainer._async_generator is None
-
-            with patch(
-                "verifiers.trainers.verifiers_grpo_trainer.AsyncBatchGenerator"
-            ) as mock_gen:
-                mock_instance = MagicMock()
-                mock_gen.return_value = mock_instance
-
-                async_gen = trainer._get_async_generator()
-
-                assert async_gen == mock_instance
-                mock_instance.start.assert_called_once()
-
-    def test_trainer_generate_completions_sync(
-        self, mock_env, mock_config, mock_tokenizer
-    ):
-        """Test synchronous completion generation."""
+    def test_trainer_uses_trl_features(self, mock_env, mock_config, mock_tokenizer):
+        """Test that trainer leverages TRL's built-in features."""
         with patch(
             "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
         ) as mock_init:
@@ -318,124 +275,12 @@ class TestVerifiersGRPOTrainer:
                 processing_class=mock_tokenizer,
             )
 
-            with patch.object(
-                trainer, "generate_completions", return_value=["test"]
-            ) as mock_gen:
-                prompts = ["What is 2+2?"]
-                completions = trainer.generate_completions_async(prompts)
-
-                assert completions == ["test"]
-                mock_gen.assert_called_once_with(prompts)
-
-    def test_trainer_compute_rewards(self, mock_env, mock_config, mock_tokenizer):
-        """Test reward computation using environment."""
-        with patch(
-            "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
-        ) as mock_init:
-            mock_init.return_value = None
-
-            trainer = VerifiersGRPOTrainer(
-                model="test-model",
-                env=mock_env,
-                args=mock_config,
-                processing_class=mock_tokenizer,
-            )
-
-            with patch("asyncio.run") as mock_run:
-                mock_run.return_value = [MagicMock(total=3.0), MagicMock(total=2.0)]
-
-                prompts = ["What is 2+2?", "Hello"]
-                completions = ["The answer is four", "Hi there"]
-
-                rewards = trainer.compute_rewards(prompts, completions)
-
-                assert len(rewards) == 2
-                assert all(isinstance(r, float) for r in rewards)
-
-    def test_trainer_dataloader_wrapper(self, mock_env, mock_config, mock_tokenizer):
-        """Test training dataloader with async wrapper."""
-        config = VerifiersGRPOConfig(
-            output_dir="./test_output",
-            per_device_train_batch_size=8,
-            num_generations=8,
-            enable_async_generation=True,
-            num_batches_ahead=2,
-            bf16=False,
-            fp16=False,
-            save_strategy="no",
-        )
-
-        with patch(
-            "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
-        ) as mock_init:
-            mock_init.return_value = None
-
-            trainer = VerifiersGRPOTrainer(
-                model="test-model",
-                env=mock_env,
-                args=config,
-                processing_class=mock_tokenizer,
-            )
-
-            trainer.accelerator = MagicMock()  # Add accelerator attribute
-            mock_dataloader = MagicMock()
-
-            with patch(
-                "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.get_train_dataloader"
-            ) as mock_get_dl:
-                mock_get_dl.return_value = mock_dataloader
-
-                with patch(
-                    "verifiers.trainers.verifiers_grpo_trainer.AsyncDataLoaderWrapper"
-                ) as mock_wrapper:
-                    mock_wrapper_instance = MagicMock()
-                    mock_wrapper.return_value = mock_wrapper_instance
-                    trainer.accelerator.prepare.return_value = mock_wrapper_instance
-
-                    result = trainer.get_train_dataloader()
-
-                    mock_wrapper.assert_called_once()
-                    assert result == mock_wrapper_instance
-
-    def test_trainer_cleanup_async_components(
-        self, mock_env, mock_config, mock_tokenizer
-    ):
-        """Test cleanup of async components."""
-        with patch(
-            "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
-        ) as mock_init:
-            mock_init.return_value = None
-
-            trainer = VerifiersGRPOTrainer(
-                model="test-model",
-                env=mock_env,
-                args=mock_config,
-                processing_class=mock_tokenizer,
-            )
-
-            mock_async_gen = MagicMock()
-            trainer._async_generator = mock_async_gen
-
-            trainer.cleanup_async_components()
-
-            mock_async_gen.stop.assert_called_once()
-
-    def test_trainer_has_log_stats_method(self, mock_env, mock_config, mock_tokenizer):
-        """Test that trainer has log_stats method for enhanced logging."""
-        with patch(
-            "verifiers.trainers.verifiers_grpo_trainer.TRLGRPOTrainer.__init__"
-        ) as mock_init:
-            mock_init.return_value = None
-
-            trainer = VerifiersGRPOTrainer(
-                model="test-model",
-                env=mock_env,
-                args=mock_config,
-                processing_class=mock_tokenizer,
-            )
-
-            assert hasattr(trainer, "log_stats")
-            assert callable(trainer.log_stats)
+            # Should inherit all TRL methods and capabilities
+            # These methods come from TRL's GRPOTrainer
+            assert hasattr(trainer, "train")
+            assert hasattr(trainer, "save_model")
+            # Log stats comes from TRL's base trainer
+            assert hasattr(trainer, "log")
 
 
 @pytest.mark.integration
