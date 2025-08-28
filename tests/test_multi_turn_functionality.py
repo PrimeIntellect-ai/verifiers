@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from datasets import Dataset
 
 from verifiers.trainers import VerifiersGRPOTrainer, VerifiersGRPOConfig, MultiTurnMixin
-from verifiers.trainers.multi_turn_mixin import MultiTurnMixin
 from verifiers.envs.environment import Environment
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.envs.tool_env import ToolEnv

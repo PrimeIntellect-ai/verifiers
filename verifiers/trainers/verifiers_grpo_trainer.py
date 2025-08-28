@@ -8,7 +8,7 @@ with TRL's robust GRPOTrainer implementation.
 import asyncio
 import concurrent.futures
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase, TrainerCallback
 from trl import GRPOTrainer as TRLGRPOTrainer
@@ -178,72 +178,3 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             f"VerifiersGRPOTrainer initialized with Environment reward integration. "
             f"Multi-turn: {'enabled' if self.is_multi_turn else 'disabled'}"
         )
-
-    def generate_completions(
-        self, prompts: list[str], **generation_kwargs
-    ) -> list[str]:
-        """
-        Generate completions using Environment.
-        Both single-turn and multi-turn are handled transparently by the Environment.
-        """
-        try:
-            # Use environment's generation capability - it handles multi-turn automatically
-            if hasattr(self.env, "generate") and callable(self.env.generate):
-                # Convert string prompts to the format expected by Environment
-                # Most environments expect a dataset-like input
-                env_inputs = {"prompt": prompts}
-                
-                # Call environment generation (this handles both single and multi-turn)
-                results = self.env.generate(
-                    env_inputs,
-                    client=getattr(self.env, 'client', None),
-                    model=getattr(self.env, 'model', None),
-                    sampling_args=getattr(self.env, 'sampling_args', {}),
-                    score_rollouts=True,
-                    **generation_kwargs
-                )
-                
-                # Extract completions from results
-                if hasattr(results, 'completion'):
-                    return results.completion
-                elif isinstance(results, dict) and 'completion' in results:
-                    return results['completion']
-                else:
-                    # Fallback - try to convert results to strings
-                    return [str(result) for result in results]
-                    
-        except Exception as e:
-            self.logger.warning(f"Environment generation failed: {e}")
-        
-        # Fallback: return simple completions
-        return [f"Generated completion for: {prompt[:50]}..." for prompt in prompts]
-
-    def compute_rewards(
-        self, prompts: list[str], completions: list[str]
-    ) -> list[float]:
-        """
-        Compute rewards using the Environment reward adapter.
-        Both single-turn and multi-turn use the same reward computation path.
-        """
-        try:
-            # Use the reward adapter (works for both single-turn and multi-turn)
-            if hasattr(self, "_reward_adapter") and self._reward_adapter:
-                return self._reward_adapter(prompts, completions)
-            else:
-                # Create temporary adapter
-                adapter = EnvironmentRewardAdapter(self.env)
-                return adapter(prompts, completions)
-
-        except Exception as e:
-            self.logger.error(f"Environment reward computation failed: {e}")
-            # Return fallback rewards
-            return [1.0] * len(prompts)
-
-    def get_train_dataloader(self):
-        """
-        Get training dataloader - use TRL's standard approach for both single and multi-turn.
-        The Environment handles the complexity of multi-turn generation transparently.
-        """
-        # Both single-turn and multi-turn use TRL's standard dataloader
-        # The Environment.a_generate() method handles multi-turn automatically
-        return super().get_train_dataloader()
