@@ -30,14 +30,14 @@ class VerifiersGRPOConfig(TRLGRPOConfig):
         self.environment_reward_weight = kwargs.pop("environment_reward_weight", 1.0)
 
         # Remove any other verifiers-specific parameters that would break TRL
-        self.enable_async_generation = kwargs.pop("enable_async_generation", False)
-        self.num_batches_ahead = kwargs.pop("num_batches_ahead", 0)
+        # These are legacy parameters from the original implementation
+        kwargs.pop("enable_async_generation", False)  # Not used in TRL version
+        kwargs.pop("num_batches_ahead", 0)  # Not used in TRL version
 
         # Multi-turn conversation parameters
         self.enable_multi_turn = kwargs.pop(
             "enable_multi_turn", None
         )  # Auto-detect if None
-        self.max_conversation_turns = kwargs.pop("max_conversation_turns", 10)
 
         # Initialize TRL config with remaining parameters
         super().__init__(*args, **kwargs)
@@ -160,13 +160,8 @@ class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):
             **kwargs,
         )
 
-        # Store verifiers-specific config for multi-turn support
-        self.num_batches_ahead = getattr(args, "num_batches_ahead", 0)
-        self.enable_async_generation = getattr(args, "enable_async_generation", False)
-
         # Multi-turn configuration
         enable_multi_turn = getattr(args, "enable_multi_turn", None)
-        self.max_conversation_turns = getattr(args, "max_conversation_turns", 10)
 
         # Auto-detect multi-turn capability if not explicitly set
         if enable_multi_turn is None:
