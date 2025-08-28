@@ -1,4 +1,11 @@
-from peft import LoraConfig
+try:
+    import torch._dynamo  # type: ignore
+
+    torch._dynamo.config.suppress_errors = True  # type: ignore
+except ImportError:
+    pass
+
+from peft import LoraConfig  # type: ignore
 
 from .grpo_config import GRPOConfig
 from .grpo_trainer import GRPOTrainer

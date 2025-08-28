@@ -1,6 +1,6 @@
 # Verifiers Documentation
 
-Welcome to Verifiers! This library provides a flexible framework for creating RL environments with custom multi-turn interaction protocols between LLMs and environments.
+Welcome to Verifiers! This library provides a flexible framework for creating RL environments and evaluations with custom multi-turn interaction protocols.
 
 ```{toctree}
 :maxdepth: 2
@@ -18,15 +18,18 @@ api_reference
 
 Verifiers enables you to:
 - Define custom interaction protocols between models and environments
-- Build multi-turn conversations, tool-augmented reasoning, and interactive games
+- Build agents, multi-turn conversations, tool-augmented reasoning, and interactive games
 - Create reusable evaluation environments with multi-criteria reward functions
-- Train models using GRPO or integrate with other RL frameworks
+- Train models with the included HF GRPO trainer or integrate with other RL frameworks
 
 Key features:
-- **Flexible multi-turn interactions** via `MultiTurnEnv` 
+- **First-class OpenAI-compatibility** for `ChatCompletions` and `Completions`
+- **Extensible multi-turn interactions** via `MultiTurnEnv` 
 - **Native tool calling** support with `ToolEnv`
-- **Modular reward functions** through rubrics
-- **Environment modules** for easy sharing and reuse
+- **Modular reward functions** through `Rubric` classes
+- **End-to-end async compatibility** with sync support where you want it
+- **Full-spectrum scaling** from CPU evaluations in Jupyter to multi-node GPU RL training
+- **Environments as Python modules** for easy installation, sharing, and reuse
 
 ## Installation
 
@@ -64,6 +67,10 @@ uv run pre-commit install
 ### Integration with prime-rl
 
 For large-scale FSDP training, see [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
+
+### Integration with Prime Intellect Environments Hub
+
+Coming soon.
 
 ## Documentation
 

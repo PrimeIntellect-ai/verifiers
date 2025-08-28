@@ -2,13 +2,18 @@
 
 Verifiers provides a flexible framework for defining custom interaction protocols between LLMs and environments, enabling sophisticated multi-turn reasoning, tool use, and interactive evaluation.
 
+The three key pieces of environments in Verifiers are:
+- Your dataset (`str` or `List[ChatMessage]`)
+- Your Rubric (one or more *reward functions*)
+- Your *interaction protocol*, extended from `MultiTurnEnv`
+
 ## Core Concept: Interaction Protocols
 
-The power of Verifiers lies in its ability to define arbitrary interaction patterns between models and environments:
+Verifiers allows defining arbitrary interaction patterns between models and environments:
 
 ```
 Environment (orchestration layer)
-    ├── Defines interaction protocol (when to respond, how to respond)
+    ├── Defines interaction protocol (what to observe respond, how to respond, when to terminate)
     ├── Manages conversation state
     ├── Integrates tools and external resources
     └── Evaluates performance via Rubrics
@@ -29,11 +34,12 @@ Environment (orchestration layer)
 The base class for custom interaction protocols:
 
 ```python
+import verifiers as vf
 from verifiers.types import Messages, State
 from typing import Tuple
 
 class MyProtocol(vf.MultiTurnEnv):
-    def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
+    async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
         """Define how environment responds to model"""
         # Custom logic for your protocol
         response = [{"role": "user", "content": "Environment feedback"}]
@@ -41,7 +47,7 @@ class MyProtocol(vf.MultiTurnEnv):
         state["turn"] = state.get("turn", 0) + 1
         return response, state
     
-    def is_completed(self, messages: Messages, state: State) -> bool:
+    async def is_completed(self, messages: Messages, state: State) -> bool:
         """Define when interaction ends"""
         return state.get("task_complete", False)
 ```
@@ -59,7 +65,7 @@ env = vf.ToolEnv(
 )
 ```
 
-Tools are automatically converted to JSON schemas and integrated with the model's native function calling format.
+Tools may be sync or async, and are automatically converted to JSON schemas and integrated with the model's native function calling format.
 
 ### SingleTurnEnv: Simple Evaluation
 
@@ -68,8 +74,8 @@ For straightforward Q&A tasks without interaction:
 ```python
 env = vf.SingleTurnEnv(
     dataset=dataset,
-    rubric=rubric,
     system_prompt="Answer the question."
+    rubric=rubric,
 )
 ```
 
@@ -80,9 +86,9 @@ env = vf.SingleTurnEnv(
 Rubrics define how to evaluate model responses by combining multiple criteria:
 
 ```python
-# Simple reward function
-def correctness(prompt, response, answer, state):
-    return 1.0 if answer.lower() in response.lower() else 0.0
+# Simple reward function (can be sync or async)
+async def correctness(prompt, completion, answer, state):
+    return 1.0 if answer.lower() in completion[-1]['content'].lower() else 0.0
 
 # Combine multiple criteria
 rubric = vf.Rubric(
@@ -105,7 +111,8 @@ Package your interaction protocol as a reusable module:
 
 ```
 my_environment/
-├── my_environment.py      # Defines load_environment()
+├── outputs/                # Evaluation logs
+├── my_environment.py      # Defines load_environment() -> vf.Environment
 ├── pyproject.toml        # Dependencies
 └── README.md            # Documentation
 ```
@@ -115,19 +122,29 @@ This enables:
 - Dependency isolation
 - Standardized interfaces
 
+
 ### State Management
 
 Environments maintain state throughout interactions:
 
 ```python
 state = {
-    "turn": 0,                    # Interaction count
-    "history": [],                # Previous exchanges
-    "game_state": {...},          # Domain-specific state
-    "responses": [...],           # Raw API responses
-    "tool_calls": [...],          # Tool invocations
+    # automatically managed  
+    "prompt": prompt, # inputs from dataset
+    "completion": [], # trajectory so far
+    "answer": answer, # golden answer (str)
+    "task": task, # optional environment ID column
+    "info": info, # evaluation metadata (dict) -- can use answer/info/both
+    "responses": [], # Raw API responses from OpenAI client
+    "turn": 0,
+    # custom user-managed state
+    "lives_remaining": 2,
+    "inventory": {"potion": 1, "power-up": 2}
+    ...
 }
 ```
+
+A wide variety of complex interaction protocols, reward schemes, and training algorithms can be coordinated via tracking appropriate data in `state`.
 
 ## Design Philosophy
 
@@ -150,7 +167,7 @@ Build complex evaluation from simple parts:
 Works with any OpenAI-compatible API:
 ```python
 # OpenAI, vLLM, or any compatible endpoint
-client = OpenAI(base_url="http://localhost:8000/v1")
+client = OpenAI(base_url="http://localhost:8000/v1") # or AsyncOpenAI
 results = env.evaluate(client, model="llama-3.1-8b")
 ```
 
@@ -165,7 +182,7 @@ results = env.evaluate(client, model="llama-3.1-8b")
 ## Evaluation lifecycle
 
 - **Inputs expected by environments**:
-  - `prompt`: str or list[ChatMessage] (chat-style). If you use `question` in your dataset, environments will turn it into a chat message using `system_prompt`/`few_shot` if provided.
+  - `prompt`: str or list[ChatMessage] (chat-style). If you use `question` in your dataset, environments will turn it into a chat message, adding `system_prompt`/`few_shot` if provided.
   - `answer` or `info`: at least one is required. `answer` is a string; `info` is a dict for richer metadata.
   - `task`: optional string used by `EnvGroup`/`RubricGroup` to route behavior.
 
@@ -206,6 +223,18 @@ Parsers are optional conveniences - many environments work perfectly with raw te
 
 ### For Evaluation
 
+The most convenient way to run quick evaluations is via the `vf-eval` CLI tool:
+```bash
+vf-install my-environment-module # from ./environments/my_environment_module 
+vf-eval my-environment-module -m gpt-5 -n 10 -r 5 -s 
+```
+
+We also provide a TUI for browsing locally-cached (with `-s`) eval results:
+```bash
+vf-tui 
+```
+
+You can also evaluate models in your environments programmatically:
 ```python
 results = env.evaluate(client, model, num_examples=100)
 ```
@@ -213,13 +242,15 @@ results = env.evaluate(client, model, num_examples=100)
 ### For Training
 
 ```python
-# Environments provide rollout interfaces for RL
+# Environments provide rollout-level interfaces for RL
 completion, state = await env.rollout(
     client, model, prompt, answer
 )
 rewards = await env.rubric.score_rollout(
     prompt, completion, answer, state
 )
+# Or, process rollouts in batches for high throughput and configurable coordination
+outputs = await env.a_generate(inputs, client, model, sampling_args) # `generate` for sync
 ```
 
 ### For Custom Workflows
@@ -227,7 +258,7 @@ rewards = await env.rubric.score_rollout(
 All components can be used independently:
 ```python
 # Use rubrics standalone
-scores = rubric.score_rollout(prompt, completion, answer, state)
+scores = await rubric.score_rollout(prompt, completion, answer, state)
 
 # Create custom protocols
 class MyProtocol(vf.MultiTurnEnv):

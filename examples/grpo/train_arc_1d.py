@@ -2,10 +2,10 @@ import verifiers as vf
 
 """
 # install
-vf-install vf-reasoning-gym (-p /path/to/environments)
+vf-install reasoning-gym (-p /path/to/environments)
 
 # quick eval
-vf-eval vf-reasoning-gym (-m model_name in endpoints.py)
+vf-eval reasoning-gym (-m model_name in endpoints.py)
 
 inference:
 CUDA_VISIBLE_DEVICES=0,1,2,3 vf-vllm --model willcb/Qwen3-14B-Arc-1D-SFT \
@@ -22,7 +22,7 @@ model_name = f"willcb/Qwen3-{size}-Arc-1D-SFT"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
 vf_env = vf.load_environment(
-    env_id="vf-reasoning-gym", gym="arc_1d", num_samples=4000, seed=1
+    env_id="reasoning-gym", gym="arc_1d", num_samples=4000, seed=1
 )
 
 run_name = f"arc_1d-grpo-{size}"

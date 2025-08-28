@@ -41,7 +41,6 @@ uv run vf-eval {env_id_dash} \
 
 Notes:
 - Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
-- Reports are written under `./environments/{env_id_underscore}/reports/`.
 
 ### Environment Arguments
 Document any supported environment arguments and their meaning. Example:
@@ -59,15 +58,15 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 | `reward` | Main scalar reward (weighted sum of criteria) |
 | `accuracy` | Exact match on target answer |
 
-
 """
 
 PYPROJECT_TEMPLATE = f"""\
 [project]
 name = "{{env_id}}"
 description = "Your environment description here"
+tags = ["placeholder-tag", "train", "eval"]
 version = "0.1.0"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11"
 dependencies = [
     "verifiers>={vf.__version__}",
 ]
@@ -150,9 +149,7 @@ def main():
     parser.add_argument(
         "env",
         type=str,
-        help=(
-            "The environment id to init"
-        ),
+        help=("The environment id to init"),
     )
     parser.add_argument(
         "--path",

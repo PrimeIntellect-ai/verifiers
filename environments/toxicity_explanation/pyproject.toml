@@ -1,0 +1,18 @@
+[project]
+name = "toxicity-explanation"
+version = "0.1.0"
+description = "Explain why a given text is toxic"
+tags = ["toxicity-explanation", "llm-judge", "single-turn", "train", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    "datasets",
+    "openai",
+    "verifiers>=0.1.2.post0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["toxicity_explanation.py"]

@@ -1,0 +1,17 @@
+[project]
+name = "sentence-repeater"
+description = "Interactively repeat sentences from a paragraph in a random order"
+version = "0.1.0"
+tags = ["sentence-repeater", "multi-turn", "train", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.2.post0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["sentence_repeater.py"]

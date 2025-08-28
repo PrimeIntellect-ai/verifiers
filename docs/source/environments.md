@@ -36,8 +36,9 @@ def load_environment(**kwargs):
     # 2. Configure parser
     parser = vf.ThinkParser()
     
-    # 3. Define reward functions
-    def correct_answer(completion, answer, **kwargs):
+    # 3. Define reward functions -- can automatically reference:
+    # - parser, prompt, completion, answer, state , task, info 
+    def correct_answer(parser, completion, answer):
         response = parser.parse_answer(completion) or ''
         return 1.0 if response.strip() == answer.strip() else 0.0
     
@@ -68,7 +69,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "my_math_env"
+description = "Single-turn math environment"
+tags = ["math", "verifiable-reward"]
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
     "verifiers",
     "sympy",  # For symbolic math
@@ -132,13 +136,15 @@ Rubrics are central to defining what makes a good response in your environment. 
 A reward function takes the full context and returns a score (typically 0.0 to 1.0):
 
 ```python
-def exact_match(prompt, response, answer, state):
+def exact_match(prompt, completion, answer, state):
     """Reward exact matches."""
+    response = completion[-1]['content']
     return 1.0 if response.strip() == answer.strip() else 0.0
 
-def partial_credit(prompt, response, answer, state):
+def partial_credit(prompt, completion, answer, state):
     """Give partial credit for containing key terms."""
     key_terms = answer.lower().split()
+    response = completion[-1]['content']
     found = sum(1 for term in key_terms if term in response.lower())
     return found / len(key_terms) if key_terms else 0.0
 ```
@@ -163,12 +169,16 @@ rubric = vf.Rubric(
 Parsers often provide format reward functions:
 
 ```python
-parser = vf.ThinkParser()
+parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
+
+def correct_answer(parser, completion, answer):
+    parsed = parser.parse_answer(completion) # applies extract_fn to final message
+    return 1.0 if parsed == answer else 0.0
 
 rubric = vf.Rubric(
     funcs=[
         correct_answer,
-        parser.get_format_reward_func()  # Rewards proper thinking format
+        parser.get_format_reward_func()  # Rewards proper <think> format
     ],
     weights=[1.0, 0.2]
 )
@@ -198,7 +208,7 @@ For one-shot tasks with clear input/output:
 def load_environment(**kwargs):
     return vf.SingleTurnEnv(
         dataset=dataset,
-        system_prompt="Answer the question.",
+        system_prompt="Answer the question.", # only used if dataset has 'question' (str) and not 'prompt'
         parser=parser,
         rubric=rubric,
         **kwargs
@@ -214,7 +224,8 @@ from verifiers.types import Messages, State
 from typing import Tuple
 
 class MyGameEnv(vf.MultiTurnEnv):
-    def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
+
+    async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
         """Define how the environment responds."""
         # Get the last message from the assistant
         last_msg = messages[-1]
@@ -336,7 +347,7 @@ def load_environment(**kwargs):
     # Create grouped environment
     return vf.EnvGroup(
         envs=[gsm8k_env, math_env],
-        env_names=["gsm8k", "math"]
+        env_names=["gsm8k", "math"] # stored as "task" column
     )
 ```
 
@@ -373,34 +384,6 @@ vf-install --list
 4. **Handle Errors**: Ensure parsers and reward functions handle edge cases
 5. **Version Dependencies**: Pin specific versions in pyproject.toml
 
-## Troubleshooting
-
-### Common Issues
-
-**Import errors after installation:**
-```bash
-# Reinstall in development mode
-vf-install my-env --dev
-```
-
-**Environment not found:**
-```python
-# Check installed environments
-import verifiers as vf
-print(vf.list_environments())
-```
-
-**Reward function errors:**
-```python
-# Add error handling
-def safe_reward_func(completion, answer, **kwargs):
-    try:
-        # Your logic here
-        return 1.0
-    except Exception as e:
-        print(f"Reward error: {e}")
-        return 0.0
-```
 
 ## Next Steps
 

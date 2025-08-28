@@ -14,7 +14,8 @@ class ToolRubric(Rubric):
         self.tool_names = [tool.__name__ for tool in self.tools]
 
         # Build initial reward functions and weights
-        reward_funcs = [self.total_tool_calls]
+        reward_funcs = []
+        reward_funcs.append(self.total_tool_calls)
         reward_weights = [0.0]
 
         for tool_name in self.tool_names:
@@ -24,9 +25,10 @@ class ToolRubric(Rubric):
         # Pass them to parent class
         super().__init__(funcs=reward_funcs, weights=reward_weights)
 
-    def total_tool_calls(self, completion: Messages, **kwargs) -> float:
+    async def total_tool_calls(self, completion: Messages) -> float:
         """Count the total number of tool calls across all assistant messages."""
         total = 0
+        assert isinstance(completion, list)
         for msg in completion:
             if msg.get("role") == "assistant" and "tool_calls" in msg:
                 tool_calls = msg.get("tool_calls", [])
@@ -37,11 +39,12 @@ class ToolRubric(Rubric):
     def get_tool_call_count_func(self, tool_name: str) -> Callable:
         """Create a reward function that counts calls to a specific tool."""
 
-        def tool_call_count_func(completion: Messages, **kwargs) -> float:
+        async def tool_call_count_func(completion: Messages) -> float:
             """Count calls to {tool_name} tool."""
             count = 0
 
             # Find tool calls in assistant messages
+            assert isinstance(completion, list)
             for msg in completion:
                 if msg.get("role") == "assistant" and "tool_calls" in msg:
                     tool_calls = msg.get("tool_calls", [])
@@ -49,10 +52,9 @@ class ToolRubric(Rubric):
                         continue
 
                     for tool_call in tool_calls:
-                        if hasattr(tool_call, "function") and hasattr(
-                            tool_call.function, "name"
-                        ):
-                            if tool_call.function.name == tool_name:
+                        if hasattr(tool_call, "function"):
+                            assert hasattr(getattr(tool_call, "function"), "name")
+                            if getattr(tool_call, "function").name == tool_name:
                                 count += 1
 
             return float(count)

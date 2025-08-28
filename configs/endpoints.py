@@ -24,8 +24,13 @@ ENDPOINTS = {
         "url": "http://0.0.0.0:8000/v1",
         "key": "EMPTY",
     },
-    "deepseek-v3": {
+    "deepseek-chat": {
         "model": "deepseek-chat",
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+    },
+    "deepseek-reasoner": {
+        "model": "deepseek-reasoner",
         "url": "https://api.deepseek.com/v1",
         "key": "DEEPSEEK_API_KEY",
     },

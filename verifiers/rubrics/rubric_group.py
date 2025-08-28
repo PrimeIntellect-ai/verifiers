@@ -61,6 +61,13 @@ class RubricGroup(Rubric):
             rubric_scores = await rubric.score_rollouts(
                 prompts, completions, answers, states, tasks, infos, **kwargs
             )
+            # aggregate reward (element-wise sum across rubrics)
+            if not all_scores.reward:
+                all_scores.reward = rubric_scores.reward
+            else:
+                all_scores.reward = [
+                    a + b for a, b in zip(all_scores.reward, rubric_scores.reward)
+                ]
             for key, value in rubric_scores.metrics.items():
                 if key in all_scores.metrics:
                     # element-wise sum

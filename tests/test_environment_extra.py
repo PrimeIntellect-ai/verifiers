@@ -20,7 +20,8 @@ from datasets import Dataset
 from verifiers.envs.environment import Environment
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import GenerateOutputs
+from verifiers.types import GenerateOutputs, Info, Messages, SamplingArgs
+from verifiers.utils.message_utils import sanitize_tool_calls
 
 
 # Local simple concrete Environment for testing
@@ -29,16 +30,17 @@ class DummyEnvironment(Environment):
         self,
         client,
         model,
-        prompt,
+        prompt: Messages,
         answer: str = "",
         task: str = "default",
-        info: dict = {},
-        sampling_args: dict = {},
+        info: Info | None = {},
+        sampling_args: SamplingArgs | None = None,
         **kwargs,
     ):
         response = await self.get_model_response(
             prompt=prompt, client=client, model=model, sampling_args=sampling_args
         )
+        assert response is not None
         if self.message_type == "chat":
             completion = [
                 {"role": "assistant", "content": response.choices[0].message.content}
@@ -119,7 +121,6 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
 
 
 def test_process_env_results_zero_truncated_reward_vllm(mock_openai_client):
-    print("begin_zero_truncated")
     # Use pre-formatted dataset to avoid map/progress side effects in test
     ds = Dataset.from_dict(
         {
@@ -127,7 +128,7 @@ def test_process_env_results_zero_truncated_reward_vllm(mock_openai_client):
             "answer": ["a"],
         }
     )
-    env = _make_env(mock_openai_client, dataset=ds)
+    env = _make_env(mock_openai_client, dataset=ds, message_type="completion")
 
     # Mock tokenizer: encode maps length to token list
     class Tok:
@@ -190,9 +191,7 @@ async def test_generate_inside_running_loop(mock_openai_client):
     assert hasattr(out, "completion") and len(out.completion) == 1
 
 
-def test_sanitize_tool_calls_outputs_strings(mock_openai_client):
-    env = _make_env(mock_openai_client)
-
+def test_sanitize_tool_calls_outputs_strings():
     # Use a lightweight object with model_dump to mimic OAI tool call
     class ToolCall:
         def __init__(self, name: str, args: str):
@@ -211,7 +210,7 @@ def test_sanitize_tool_calls_outputs_strings(mock_openai_client):
     msgs = [
         [{"role": "assistant", "content": "", "tool_calls": [ToolCall("echo", "{}")]}]
     ]
-    sanitized = env._sanitize_tool_calls(msgs[0])
+    sanitized = sanitize_tool_calls(msgs[0])
     assert isinstance(sanitized[0]["tool_calls"][0], str)
 
 
@@ -239,7 +238,7 @@ def test_truncation_masks_completion_format_vllm(mock_openai_client):
             "answer": ["a"],
         }
     )
-    env = _make_env(mock_openai_client, dataset=ds)
+    env = _make_env(mock_openai_client, dataset=ds, message_type="completion")
 
     class Tok:
         def encode(self, text, **kwargs):

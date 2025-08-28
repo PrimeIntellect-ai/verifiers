@@ -32,6 +32,7 @@ dependencies = [
     "trl>=0.20.0",
     "jinja2>=3.1.6",
     "rich",
+    "textual",
 ]
 
 [project.optional-dependencies]
@@ -100,6 +101,7 @@ envs = [
 vf-eval = "verifiers.scripts.eval:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
+vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.inference.vllm_server:main"
 
 # Hatchling configuration

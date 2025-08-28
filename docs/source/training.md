@@ -95,6 +95,7 @@ args.gradient_accumulation_steps = 4    # Steps before optimizer update
 
 ```python
 # Sampling configuration
+args.max_tokens = 1024           # Max tokens per (turn-level) response 
 args.temperature = 1.0          # Higher = more diverse completions
 args.top_p = 1.0               # Nucleus sampling threshold
 args.top_k = None              # Top-k filtering (None = disabled)
@@ -232,6 +233,8 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 
 ### Common Issues
 
+**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn GRPO-style training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+
 **OOM during generation:**
 - Reduce `num_generations` or `per_device_train_batch_size`
 - Use LoRA instead of full finetuning
@@ -248,6 +251,7 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 - Ensure your rubric differentiates quality levels
 
 ### Infrastructure
+- Ensure `huggingface` and `wandb` logins are configured
 - Set `OPENAI_API_KEY` (can be dummy for vLLM)
 - Increase ulimit for high concurrency: `ulimit -n 4096`
 - For NCCL issues: try `NCCL_P2P_DISABLE=1`

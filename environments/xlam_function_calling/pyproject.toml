@@ -1,0 +1,17 @@
+[project]
+name = "xlam-function-calling"
+version = "0.1.1"
+description = "XLM Function Calling environment"
+tags = ["salesforce-xlam", "single-turn", "function-calling", "tool-use", "train"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.2.post0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["xlam_function_calling.py"]

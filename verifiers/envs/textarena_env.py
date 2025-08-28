@@ -74,14 +74,16 @@ class TextArenaEnv(MultiTurnEnv):
             **kwargs,
         )
 
-    def is_completed(self, messages: Messages, state: State, **kwargs: Any) -> bool:
+    async def is_completed(
+        self, messages: Messages, state: State, **kwargs: Any
+    ) -> bool:
         if "is_finished" in state and state["is_finished"]:
             state.pop("ta_env")
             return state["is_finished"]
         self.parser
         return False
 
-    def env_response(
+    async def env_response(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> tuple[Messages, State]:
         # load env

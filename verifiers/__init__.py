@@ -1,28 +1,11 @@
-__version__ = "0.1.2.post1"
+__version__ = "0.1.3"
 
+import importlib
 import logging
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from .types import *  # noqa: F403
-
-try:
-    import torch._dynamo  # type: ignore
-
-    torch._dynamo.config.suppress_errors = True  # type: ignore
-except ImportError:
-    pass
-
-try:
-    from .utils.logging_utils import (  # noqa: F401
-        print_prompt_completions_sample,
-        setup_logging,
-    )
-
-    _HAS_RICH = True
-except ImportError:
-    _HAS_RICH = False
-
+from .types import *  # noqa # isort: skip
 from .envs.env_group import EnvGroup
 from .envs.environment import Environment
 from .envs.multiturn_env import MultiTurnEnv
@@ -41,29 +24,7 @@ from .utils.data_utils import (
     load_example_dataset,
 )
 from .utils.env_utils import load_environment
-
-# Conditional import based on trl availability
-try:
-    import trl  # type: ignore # noqa: F401
-
-    from .trainers import (  # noqa: F401
-        GRPOConfig,
-        GRPOTrainer,
-        VerifiersGRPOTrainer,
-        VerifiersGRPOConfig,
-        EnvironmentRewardAdapter,
-        grpo_defaults,
-        lora_defaults,
-    )
-    from .utils.model_utils import (  # noqa: F401
-        get_model,
-        get_model_and_tokenizer,
-        get_tokenizer,
-    )
-
-    _HAS_TRL = True
-except ImportError:
-    _HAS_TRL = False
+from .utils.logging_utils import print_prompt_completions_sample
 
 
 # Setup default logging configuration
@@ -118,28 +79,49 @@ __all__ = [
     "load_example_dataset",
     "setup_logging",
     "load_environment",
+    "print_prompt_completions_sample",
+    "get_model",
+    "get_tokenizer",
+    "get_model_and_tokenizer",
+    "GRPOTrainer",
+    "GRPOConfig",
+    "grpo_defaults",
+    "lora_defaults",
 ]
 
-# Add trainer exports only if trl is available
-if _HAS_TRL:
-    __all__.extend(
-        [
-            "get_model",
-            "get_tokenizer",
-            "get_model_and_tokenizer",
-            "GRPOTrainer",
-            "GRPOConfig",
-            "VerifiersGRPOTrainer",
-            "VerifiersGRPOConfig", 
-            "EnvironmentRewardAdapter",
-            "grpo_defaults",
-            "lora_defaults",
-        ]
-    )
+_LAZY_IMPORTS = {
+    "get_model": "verifiers.utils.model_utils:get_model",
+    "get_model_and_tokenizer": "verifiers.utils.model_utils:get_model_and_tokenizer",
+    "get_tokenizer": "verifiers.utils.model_utils:get_tokenizer",
+    "GRPOConfig": "verifiers.trainers:GRPOConfig",
+    "GRPOTrainer": "verifiers.trainers:GRPOTrainer",
+    "grpo_defaults": "verifiers.trainers:grpo_defaults",
+    "lora_defaults": "verifiers.trainers:lora_defaults",
+}
 
-if _HAS_RICH:
-    __all__.extend(
-        [
-            "print_prompt_completions_sample",
-        ]
+
+def __getattr__(name: str):
+    try:
+        module, attr = _LAZY_IMPORTS[name].split(":")
+        return getattr(importlib.import_module(module), attr)
+    except KeyError:
+        raise AttributeError(f"module 'verifiers' has no attribute '{name}'")
+    except ModuleNotFoundError as e:
+        # warn that accessed var needs [all] to be installed
+        raise AttributeError(
+            f"To use verifiers.{name}, install as `verifiers[all]`. "
+        ) from e
+
+
+if TYPE_CHECKING:
+    from .trainers import (  # noqa: F401
+        GRPOConfig,
+        GRPOTrainer,
+        grpo_defaults,
+        lora_defaults,
+    )
+    from .utils.model_utils import (  # noqa: F401
+        get_model,
+        get_model_and_tokenizer,
+        get_tokenizer,
     )

@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from copy import deepcopy
 
 from openai import AsyncOpenAI
 
@@ -13,6 +12,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
+from verifiers.utils.async_utils import maybe_await
 
 
 class MultiTurnEnv(Environment):
@@ -20,15 +20,15 @@ class MultiTurnEnv(Environment):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
-    def setup_state(self, state: State, **kwargs) -> State:
+    async def setup_state(self, state: State, **kwargs) -> State:
         return state
 
     @abstractmethod
-    def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         pass
 
     @abstractmethod
-    def env_response(
+    async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> tuple[Messages, State]:
         """
@@ -61,7 +61,7 @@ class MultiTurnEnv(Environment):
             "responses": [],
             "turn": 0,
         }
-        state = self.setup_state(state)
+        state = await maybe_await(self.setup_state, state, **kwargs)
         if self.message_type == "chat":
             assert isinstance(prompt, list)
             completion = []
@@ -69,9 +69,9 @@ class MultiTurnEnv(Environment):
             assert isinstance(prompt, str)
             completion = ""
             state["responses_start_idx"] = []
-        rollout = deepcopy(prompt)
+        rollout = list(prompt) if not isinstance(prompt, str) else prompt
         while not is_completed:
-            if self.is_completed(rollout, state, **kwargs):
+            if await maybe_await(self.is_completed, rollout, state, **kwargs):
                 is_completed = True
                 break
             response = await self.get_model_response(
@@ -108,12 +108,14 @@ class MultiTurnEnv(Environment):
                 completion += response_text
             state["turn"] += 1
             if (
-                self.is_completed(rollout, state, **kwargs)
+                await maybe_await(self.is_completed, rollout, state, **kwargs)
                 or state["turn"] >= self.max_turns
             ):
                 is_completed = True
             else:
-                env_msgs, state = self.env_response(rollout, state, **kwargs)
+                env_msgs, state = await maybe_await(
+                    self.env_response, rollout, state, **kwargs
+                )
                 if self.message_type == "chat":
                     assert isinstance(env_msgs, list)
                     assert isinstance(rollout, list)

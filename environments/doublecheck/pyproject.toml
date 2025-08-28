@@ -1,0 +1,16 @@
+[project]
+name = "doublecheck"
+description = "Test environment for double-checking math answers"
+tags = ["doublecheck", "multi-turn", "math", "hendrycks", "train", "eval", "example"]
+version = "0.1.4"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.2.post0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["doublecheck.py"]

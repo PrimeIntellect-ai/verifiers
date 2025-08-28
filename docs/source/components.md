@@ -120,7 +120,7 @@ Verifiers provides native support for tool calling, leveraging models' built-in 
 
 ### Defining Tools
 
-Tools are simple Python functions with type hints:
+Tools are simple Python functions with type hints, and can be either sync or async:
 
 ```python
 def calculate(expression: str) -> float:
@@ -129,7 +129,7 @@ def calculate(expression: str) -> float:
     import ast
     return eval(expression, {"__builtins__": {}}, {})
 
-def search_web(query: str, max_results: int = 5) -> list[dict]:
+async def search_web(query: str, max_results: int = 5) -> list[dict]:
     """Search the web for information.
     
     Args:
@@ -158,7 +158,7 @@ def load_environment(**kwargs):
     )
 ```
 
-**Important**: ToolEnv uses the model's native tool calling format via the tokenizer's chat template. It automatically injects tool schemas into request payloads and treats `role: tool` messages as tool outputs. It does NOT impose any XML structure or require hardcoded patterns.
+**Note**: ToolEnv uses the model's native tool calling format via the tokenizer's chat template. It automatically injects tool schemas into request payloads and treats `role: tool` messages as tool outputs. It does NOT impose any XML structure or require hardcoded patterns.
 
 ### Tool Design Best Practices
 
@@ -233,7 +233,7 @@ Extract XML-tagged content:
 # Define which tags are expected in the output
 # Strings define fixed tags; tuples define canonical name + allowed aliases
 parser = vf.XMLParser(
-    fields=["think", ("answer", "final", "result")],
+    fields=["think", ("answer", "code")],
     answer_field="answer",
 )
 

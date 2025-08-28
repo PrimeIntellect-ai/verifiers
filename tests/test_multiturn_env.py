@@ -228,7 +228,7 @@ class TestMultiTurnEnv:
         # Verify sampling args were passed
         call_args = mock_multiturn_env.client.chat.completions.create.call_args
         assert "temperature" in call_args.kwargs
-        assert "max_tokens" in call_args.kwargs
+        assert "max_completion_tokens" in call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_completion_format_multiturn(self, mock_openai_client):

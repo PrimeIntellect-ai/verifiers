@@ -2,10 +2,10 @@ import verifiers as vf
 
 """
 # install
-vf-install vf-math-group (-p /path/to/environments)
+vf-install math-group (-p /path/to/environments)
 
 # quick eval
-vf-eval vf-math-group (-m model_name in endpoints.py)
+vf-eval math-group (-m model_name in endpoints.py)
 
 inference:
 CUDA_VISIBLE_DEVICES=0 vf-vllm --model willcb/Qwen3-0.6B \
@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=1 accelerate launch --num-processes 1 \
     --config-file configs/zero3.yaml examples/grpo/train_math_group.py
 """
 
-vf_env = vf.load_environment(env_id="vf-math-group")
+vf_env = vf.load_environment(env_id="math-group")
 
 model_name = "willcb/Qwen3-0.6B"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)

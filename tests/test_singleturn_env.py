@@ -48,23 +48,25 @@ class TestSingleTurnEnv:
         )
         assert env.message_type == "completion"
 
-    def test_is_completed_method(self, mock_singleturn_env):
+    @pytest.mark.asyncio
+    async def test_is_completed_method(self, mock_singleturn_env):
         """Test the is_completed method logic."""
         # No responses yet
         messages = [{"role": "user", "content": "Hello"}]
         state = {"responses": []}
-        assert not mock_singleturn_env.is_completed(messages, state)
+        assert not await mock_singleturn_env.is_completed(messages, state)
 
         # With responses
         state = {"responses": [MagicMock()]}
-        assert mock_singleturn_env.is_completed(messages, state)
+        assert await mock_singleturn_env.is_completed(messages, state)
 
-    def test_env_response_method(self, mock_singleturn_env):
+    @pytest.mark.asyncio
+    async def test_env_response_method(self, mock_singleturn_env):
         """Test the env_response method (which should never be called in practice)."""
         messages = [{"role": "user", "content": "Hello"}]
         state = {}
 
-        response, new_state = mock_singleturn_env.env_response(messages, state)
+        response, new_state = await mock_singleturn_env.env_response(messages, state)
 
         # Should return minimal response (env_response returns a list of messages)
         assert len(response) == 1
@@ -144,7 +146,7 @@ class TestSingleTurnEnv:
         # Verify sampling args were passed
         call_args = mock_singleturn_env.client.chat.completions.create.call_args
         assert "temperature" in call_args.kwargs
-        assert "max_tokens" in call_args.kwargs
+        assert "max_completion_tokens" in call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_rollout_with_task_and_info(self, mock_singleturn_env):
@@ -345,12 +347,12 @@ class TestSingleTurnEnv:
 
         # Before any responses
         state = {"responses": []}
-        assert not env.is_completed([], state)
+        assert not await env.is_completed([], state)
 
         # After one response
         state = {"responses": [MagicMock()]}
-        assert env.is_completed([], state)
+        assert await env.is_completed([], state)
 
         # Even with multiple responses (shouldn't happen), it's still completed
         state = {"responses": [MagicMock(), MagicMock()]}
-        assert env.is_completed([], state)
+        assert await env.is_completed([], state)

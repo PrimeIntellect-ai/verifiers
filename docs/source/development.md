@@ -52,7 +52,7 @@ uv run pytest tests/ -xvs
 uv run pytest tests/ -k "xml_parser"
 ```
 
-The test suite includes 130+ tests covering parsers, rubrics, and environments with 90%+ coverage.
+The test suite includes 130+ tests covering parsers, rubrics, and environments. The test suite does not currently cover example environments or the trainer. If you require robust performance guarantees for training, you will likely want to use [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
 
 ## Writing Tests
 
@@ -205,6 +205,7 @@ uv run pytest tests/ --cov=verifiers   # With coverage
 vf-init new-env                        # Create environment
 vf-install new-env                     # Install environment
 vf-eval new-env                        # Test environment
+vf-tui                                 # Browse eval results in your terminal
 
 # Documentation
 cd docs && make html                   # Build docs

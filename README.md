@@ -94,7 +94,7 @@ The primary constraint we impose on rollout logic is that token sequences must b
 
 ### SingleTurnEnv
 
-For tasks requiring only a single response from a model for each prompt, you can use `SingleTurnEnv` directly by specifying a Dataset and a Rubric.
+For tasks requiring only a single response from a model for each prompt, you can use `SingleTurnEnv` directly by specifying a Dataset and a Rubric. Rubrics are sets of reward functions, which can be either sync or async.
 
 ```python
 from datasets import load_dataset
@@ -110,7 +110,7 @@ def reward_B(parser, completion) -> float:
 	# auxiliary reward fn, e.g. format
 	...
 
-def metric(completion) -> float:
+async def metric(completion) -> float:
 	# non-reward metric, e.g. proper noun count
 	...
 
@@ -121,7 +121,7 @@ vf_env = SingleTurnEnv(
 	rubric=rubric
 )
 results = vf_env.evaluate(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
-vf_env.make_dataset(results, push_to_hub=True, hub_name="my-new-environment-eval-results") # save results to HF hub
+vf_env.make_dataset(results) # HF dataset format
 ```
 
 Datasets should be formatted with columns for:
@@ -143,6 +143,14 @@ The following named attributes available for use by reward functions in your Rub
 For tasks involving LLM judges, you may wish to use `vf.JudgeRubric()` for managing requests to auxiliary models.
 
 Note on concurrency: environment APIs accept `max_concurrent` to control parallel rollouts. The `vf-eval` CLI currently exposes `--max-concurrent-requests`; ensure this maps to your environment’s concurrency as expected.
+
+`vf-eval` also supports specifying `sampling_args` as a JSON object, which is sent to the vLLM inference engine:
+
+```bash
+vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
+```
+
+Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`.
 
 ### ToolEnv
 
@@ -177,10 +185,10 @@ class YourMultiTurnEnv(vf.MultiTurnEnv):
 				 max_turns: int,
                  **kwargs):
 	
-  def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+  async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
     # return whether or not a rollout is completed
 
-  def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:
+  async def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:
     # return new environment message(s) + updated state
 ```
 
@@ -240,21 +248,7 @@ If you do not require LoRA support, you may want to use the `prime-rl` trainer, 
 
 ## Further Documentation
 
-See the full [docs](https://verifiers.readthedocs.io/en/latest/) for more info, including:
-- Dataset configuration options (system prompts, few-shot examples, eval datasets)
-- Parsers (e.g. ThinkParser, XMLParser)
-- Advanced Rubric patterns
-- Composing Environments (EnvGroup) and Rubrics (RubricGroup)
-- Creating and saving rollout datasets using Environments
-- More Environment example walkthroughs
-- Hardware considerations
-- SFT warmup for improving small-model training efficiency
-- RL + GRPO best practices
-- Common footguns
-
-## Footguns
-
-**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn GRPO-style training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+See the full [docs](https://verifiers.readthedocs.io/en/latest/) for more information.
 
 ## Contributions
 
@@ -278,10 +272,7 @@ If you use this code in your research, please cite:
 
 
 ## Roadmap
-
 - A community Environments hub for crowdsourcing, sharing, and discovering new RL environments built with `verifiers`
 - Default patterns for hosted resources such as code sandboxes, auxiliary models, and MCP servers
 - Multimodal input support
 - Non-increasing token sequences via REINFORCE
-
-

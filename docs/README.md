@@ -7,11 +7,8 @@ This directory contains source files for the `verifiers` documentation.
 ### Prerequisites
 
 ```bash
-# Install documentation dependencies
-pip install sphinx sphinx-rtd-theme myst-parser
-
 # Or using uv
-uv add sphinx sphinx-rtd-theme myst-parser
+uv add sphinx furo myst-parser
 ```
 
 ### Build Commands

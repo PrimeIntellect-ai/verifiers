@@ -11,6 +11,7 @@ from verifiers.types import (
     RolloutScores,
     State,
 )
+from verifiers.utils.async_utils import maybe_await
 
 
 class Rubric:
@@ -47,6 +48,10 @@ class Rubric:
         if not self.reward_weights:
             self.reward_weights = [1.0] * len(self.reward_funcs)
         self.parallelize_scoring = parallelize_scoring
+        # class objects for reward functions
+        self.class_objects = {}
+        if self.parser:
+            self.class_objects["parser"] = self.parser
 
     def get_reward_func_names(self) -> list[str]:
         return [func.__name__ for func in self.reward_funcs]
@@ -64,7 +69,6 @@ class Rubric:
     async def call_reward_func(
         self,
         func: RewardFunc,
-        parser: Parser,
         prompt: Messages,
         completion: Messages,
         answer: str,
@@ -86,7 +90,6 @@ class Rubric:
         sig = inspect.signature(func)
 
         common = dict(
-            parser=parser,
             prompt=prompt,
             completion=completion,
             answer=answer,
@@ -94,18 +97,18 @@ class Rubric:
             task=task,
             info=info,
         )
-        ans = 0.0
+        common.update(self.class_objects)
         merged = {**common, **kwargs}
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
-                ans = func(**merged)
+                ans = float(await maybe_await(func, **merged))
             except Exception as e:
                 self.logger.error(f"Error calling reward function {func.__name__}: {e}")
                 ans = 0.0
         else:
             allowed = {k: v for k, v in merged.items() if k in sig.parameters}
             try:
-                ans = func(**allowed)
+                ans = float(await maybe_await(func, **allowed))
             except Exception as e:
                 self.logger.error(f"Error calling reward function {func.__name__}: {e}")
                 ans = 0.0
@@ -128,7 +131,7 @@ class Rubric:
             score_tasks = [
                 self.call_reward_func(
                     func=func,
-                    parser=self.parser,
+                    # **self.class_objects,
                     prompt=prompt,
                     completion=completion,
                     answer=answer,
@@ -145,7 +148,7 @@ class Rubric:
             for func in self.get_reward_funcs():
                 score = await self.call_reward_func(
                     func=func,
-                    parser=self.parser,
+                    # **self.class_objects,
                     prompt=prompt,
                     completion=completion,
                     answer=answer,

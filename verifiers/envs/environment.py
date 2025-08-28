@@ -27,6 +27,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
+from verifiers.utils.message_utils import cleanup_messages, sanitize_tool_calls
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
@@ -198,11 +199,24 @@ class Environment(ABC):
         Returns special error messages for context length issues.
         """
         sampling_args = sampling_args or {}
-
+        # Resolve message type first
+        if message_type is None:
+            message_type = self.message_type
+        # Normalize sampling args:
+        # - If max_tokens is provided for chat, rename to max_completion_tokens
+        # - Drop any None-valued entries to avoid sending them to the client
+        if "max_tokens" in sampling_args:
+            if sampling_args["max_tokens"] is None:
+                sampling_args.pop("max_tokens")
+            elif message_type == "chat":
+                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
+        if (
+            "max_completion_tokens" in sampling_args
+            and sampling_args["max_completion_tokens"] is None
+        ):
+            sampling_args.pop("max_completion_tokens")
+        clean_sampling_args = {k: v for k, v in sampling_args.items() if v is not None}
         try:
-            if message_type is None:
-                message_type = self.message_type
-
             if message_type == "chat":
                 assert isinstance(prompt, list)
                 if oai_tools:
@@ -210,13 +224,13 @@ class Environment(ABC):
                         model=model,
                         messages=prompt,  # type: ignore
                         tools=oai_tools,
-                        **sampling_args,
+                        **clean_sampling_args,
                     )
                 else:
                     response = await client.chat.completions.create(
                         model=model,
                         messages=prompt,  # type: ignore
-                        **sampling_args,
+                        **clean_sampling_args,
                     )
                 return response
             elif message_type == "completion":
@@ -226,7 +240,7 @@ class Environment(ABC):
                     )
                 assert isinstance(prompt, str)
                 response = await client.completions.create(
-                    model=model, prompt=prompt, **sampling_args
+                    model=model, prompt=prompt, **clean_sampling_args
                 )
                 return response
         except Exception as e:
@@ -370,6 +384,8 @@ class Environment(ABC):
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
 
+        results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
+
         # prepare GenerateOutputs and run rollouts
         results = GenerateOutputs(
             prompt=results_dict["prompt"],
@@ -452,6 +468,98 @@ class Environment(ABC):
             asyncio.set_event_loop(None)
             # shutdown the executor to prevent thread leaks
             executor.shutdown(wait=False)
+
+    #########################################################
+    # Helper functions for evaluation and dataset generation
+    #########################################################
+
+    def evaluate(
+        self,
+        client: AsyncOpenAI | OpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        score_rollouts: bool = True,
+        max_concurrent: int = -1,
+        **kwargs,
+    ) -> GenerateOutputs:
+        """
+        Evaluate model on the Environment evaluation dataset.
+        """
+        if self.eval_dataset is None:
+            self.logger.info("eval_dataset is not set, falling back to train dataset")
+            assert self.dataset is not None
+            inputs = self.get_dataset(n=num_examples)
+        else:
+            inputs = self.get_eval_dataset(n=num_examples)
+        assert inputs is not None, "No dataset found"
+        if rollouts_per_example > 1:
+            inputs = inputs.repeat(rollouts_per_example)
+        results = self.generate(
+            inputs,
+            client,
+            model,
+            sampling_args,
+            score_rollouts,
+            max_concurrent,
+            **kwargs,
+        )
+        return results
+
+    def make_dataset(
+        self,
+        results: GenerateOutputs,
+        push_to_hub: bool = False,
+        hub_name: str | None = None,
+        state_columns: list[str] | None = None,
+        **kwargs,
+    ) -> Dataset:
+        """
+        Make a dataset from the evaluation results.
+        """
+        # TODO: enable saving of multimodal datasets
+        state_columns = state_columns or []
+
+        if push_to_hub and hub_name is None:
+            raise ValueError("hub_name must be provided if push_to_hub is True")
+
+        cols = ["prompt", "completion", "answer", "task", "reward"]
+
+        results_dict = {
+            "prompt": results.prompt,
+            "completion": [],
+            "answer": results.answer,
+            "task": results.task,
+            "reward": results.reward,
+        }
+        if results.info[0] != {}:
+            results_dict["info"] = results.info
+            cols.append("info")
+        for i in range(len(results.completion)):
+            results_dict["completion"].append(
+                sanitize_tool_calls(results.completion[i])
+            )
+        results_dict.update(results.metrics)
+        cols.extend(results.metrics.keys())
+        if results.state[0] is not None:
+            for col in state_columns:
+                if col in results.state[0]:
+                    results_dict[col] = [state[col] for state in results.state]
+                    cols.append(col)
+                else:
+                    self.logger.warning(
+                        f"Column {col} not found in state, skipping from dataset."
+                    )
+        dataset = Dataset.from_dict({col: results_dict[col] for col in cols})
+        if push_to_hub:
+            assert hub_name is not None
+            dataset.push_to_hub(hub_name)
+        return dataset
+
+    #########################################################
+    # Optional helper functions for parsing vLLM completions
+    #########################################################
 
     def parse_chat_completion_logprobs(
         self, chat_completion: ChatCompletion
@@ -544,7 +652,7 @@ class Environment(ABC):
             conversation=prompt,  # type: ignore
             add_generation_prompt=True,
         )
-        messages_consumed = deepcopy(prompt)
+        messages_consumed = [m for m in prompt]
         prompt_mask: list[int] = [0] * len(prompt_ids)
         completion_ids: list[int] = []
         completion_mask: list[int] = []
@@ -692,9 +800,7 @@ class Environment(ABC):
         """
         Process results with vLLM tokens/logprobs.
         """
-        # Determine format from first prompt
-        # TODO: why not from self.message_type?
-        is_chat_format = isinstance(prompts[0], list)
+        is_chat_format = self.message_type == "chat"
 
         all_prompt_ids = []
         all_prompt_masks = []
@@ -771,107 +877,3 @@ class Environment(ABC):
 
     # alias for process_env_results_vllm
     process_env_results = process_env_results_vllm
-
-    # Evaluation and dataset generation
-    def evaluate(
-        self,
-        client: AsyncOpenAI | OpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-        num_examples: int = -1,
-        rollouts_per_example: int = 1,
-        score_rollouts: bool = True,
-        max_concurrent: int = -1,
-        **kwargs,
-    ) -> GenerateOutputs:
-        """
-        Evaluate model on the Environment evaluation dataset.
-        """
-        if self.eval_dataset is None:
-            self.logger.info("eval_dataset is not set, falling back to train dataset")
-            assert self.dataset is not None
-            inputs = self.get_dataset(n=num_examples)
-        else:
-            inputs = self.get_eval_dataset(n=num_examples)
-        assert inputs is not None, "No dataset found"
-        if rollouts_per_example > 1:
-            inputs = inputs.repeat(rollouts_per_example)
-        results = self.generate(
-            inputs,
-            client,
-            model,
-            sampling_args,
-            score_rollouts,
-            max_concurrent,
-            **kwargs,
-        )
-        return results
-
-    def _sanitize_tool_calls(self, completion: Messages) -> Messages:
-        """
-        Sanitize tool calls from a completion.
-        """
-
-        assert isinstance(completion, list)
-        sanitized_completion = []
-        for m in completion:
-            if "tool_calls" in m:
-                new_m = {
-                    "role": m["role"],
-                    "content": m.get("content", ""),
-                    "tool_calls": [
-                        json.dumps(tc.model_dump())  # type: ignore
-                        for tc in m.get("tool_calls", [])
-                    ],
-                }
-                sanitized_completion.append(new_m)
-            else:
-                sanitized_completion.append(m)
-        return sanitized_completion
-
-    def make_dataset(
-        self,
-        results: GenerateOutputs,
-        push_to_hub: bool = False,
-        hub_name: str | None = None,
-        state_columns: list[str] | None = None,
-        **kwargs,
-    ) -> Dataset:
-        """
-        Make a dataset from the evaluation results.
-        """
-        state_columns = state_columns or []
-
-        if push_to_hub and hub_name is None:
-            raise ValueError("hub_name must be provided if push_to_hub is True")
-
-        cols = ["prompt", "completion", "answer", "info", "task", "reward"]
-
-        results_dict = {
-            "prompt": results.prompt,
-            "completion": [],
-            "answer": results.answer,
-            "info": results.info,
-            "task": results.task,
-            "reward": results.reward,
-        }
-        for i in range(len(results.completion)):
-            results_dict["completion"].append(
-                self._sanitize_tool_calls(results.completion[i])
-            )
-        results_dict.update(results.metrics)
-        cols.extend(results.metrics.keys())
-        if results.state[0] is not None:
-            for col in state_columns:
-                if col in results.state[0]:
-                    results_dict[col] = [state[col] for state in results.state]
-                    cols.append(col)
-                else:
-                    self.logger.warning(
-                        f"Column {col} not found in state, skipping from dataset."
-                    )
-        dataset = Dataset.from_dict({col: results_dict[col] for col in cols})
-        if push_to_hub:
-            assert hub_name is not None
-            dataset.push_to_hub(hub_name)
-        return dataset

@@ -2,10 +2,10 @@ import verifiers as vf
 
 """
 # install
-vf-install vf-reverse-text (-p /path/to/environments)
+vf-install reverse-text (-p /path/to/environments)
 
 # quick eval
-vf-eval vf-reverse-text (-m model_name in endpoints.py)
+vf-eval reverse-text (-m model_name in endpoints.py)
 
 inference:
 CUDA_VISIBLE_DEVICES=0 vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \
@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES=1 accelerate launch --num-processes 1 \
 model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
-vf_env = vf.load_environment(env_id="vf-reverse-text")
+vf_env = vf.load_environment(env_id="reverse-text")
 
 args = vf.grpo_defaults(run_name="reverse-text")
 args.per_device_train_batch_size = 12

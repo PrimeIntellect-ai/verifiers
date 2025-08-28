@@ -4,10 +4,10 @@ import verifiers as vf
 
 """
 # install
-vf-install vf-wordle (-p /path/to/environments)
+vf-install wordle (-p /path/to/environments)
 
 # quick eval
-vf-eval vf-wordle -m (model_name in endpoints.py)
+vf-eval wordle -m (model_name in endpoints.py)
 
 1.7b inference:
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model willcb/Qwen3-1.7B-Wordle \
@@ -31,7 +31,7 @@ def main(args):
     size = args.size
     model_name = f"willcb/Qwen3-{size}-Wordle"
     model, tokenizer = vf.get_model_and_tokenizer(model_name)
-    vf_env = vf.load_environment(env_id="vf-wordle", use_think=True)
+    vf_env = vf.load_environment(env_id="wordle", use_think=True)
     run_name = f"wordle-grpo-{size}"
     training_args = vf.grpo_defaults(run_name=run_name)
     training_args.per_device_train_batch_size = 8
