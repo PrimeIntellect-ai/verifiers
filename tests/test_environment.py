@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from datasets import Dataset
 
-from verifiers import Environment, Parser, Rubric
+from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import GenerateOutputs, RolloutScores
 
 
@@ -96,6 +96,31 @@ class TestEnvironmentBase:
                 system_prompt="test prompt",
                 parser=Parser(),
                 rubric=Rubric(),
+            )
+
+    def test_different_parser_rubric_parser_warns(
+        self, mock_openai_client, sample_dataset
+    ):
+        """Test that warning is logged when parser and rubric parser are different."""
+        from unittest.mock import patch, Mock
+
+        think_parser = ThinkParser()
+        rubric = Rubric()  # Different parser class
+
+        with patch("logging.getLogger") as mock_get_logger:
+            mock_logger = Mock()
+            mock_get_logger.return_value = mock_logger
+
+            _ = SimpleEnvironment(
+                client=mock_openai_client,
+                model="test-model",
+                dataset=sample_dataset,
+                parser=think_parser,
+                rubric=rubric,
+            )
+
+            mock_logger.warning.assert_called_once_with(
+                "The parser and rubric parser are different. This may cause unexpected behavior."
             )
 
     def test_format_prompt(self, mock_openai_client, sample_dataset):

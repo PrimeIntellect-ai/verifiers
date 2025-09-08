@@ -56,6 +56,7 @@ class Environment(ABC):
         max_workers: int = 512,
         **kwargs,
     ):
+        self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
         self.client = client
         self.model = model
         self.message_type: Literal["chat", "completion"] = message_type
@@ -64,6 +65,10 @@ class Environment(ABC):
         self.few_shot = few_shot
         self.parser = parser or Parser()
         self.rubric = rubric or Rubric()
+        if self.parser.__class__ != self.rubric.parser.__class__:
+            self.logger.warning(
+                "The parser and rubric parser are different. This may cause unexpected behavior."
+            )
 
         if self.message_type == "chat":
             if dataset is not None:
@@ -83,7 +88,7 @@ class Environment(ABC):
                 raise ValueError(
                     'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
                     'Please use message_type="chat" instead, or pre-format your dataset '
-                    'to contain "prompt" and "answer" columns.'
+                    'to contain a "prompt" column.'
                 )
             self.dataset = dataset
             self.eval_dataset = eval_dataset
@@ -98,7 +103,6 @@ class Environment(ABC):
                     self.sampling_args[key] = value
 
         self.max_workers = max_workers
-        self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -363,7 +367,10 @@ class Environment(ABC):
             for col in inputs.column_names:
                 if col == "info":
                     # handle info column to ensure mutable dicts
-                    results_dict[col] = [dict(item) for item in inputs[col]]
+                    if isinstance(inputs[col][0], str):
+                        results_dict[col] = [json.loads(item) for item in inputs[col]]
+                    else:
+                        results_dict[col] = [dict(item) for item in inputs[col]]
                 else:
                     results_dict[col] = deepcopy(inputs[col])
         else:
@@ -371,7 +378,12 @@ class Environment(ABC):
         if "prompt" not in results_dict:
             raise ValueError("prompt column not found in inputs")
         if "answer" not in results_dict and "info" not in results_dict:
-            raise ValueError("answer or info column must be found in inputs")
+            self.logger.warning(
+                "Neither 'answer' nor 'info' column found in inputs. "
+                "Some environments can evaluate using only prompt/completion/state, "
+                "but reward functions requiring ground truth data may return 0.0. "
+                "Proceeding with empty values."
+            )
         if "answer" not in results_dict:
             results_dict["answer"] = [""] * len(results_dict["prompt"])
         if "task" not in results_dict:
@@ -418,6 +430,7 @@ class Environment(ABC):
                 states=results.state,
                 tasks=results.task,
                 infos=results.info,
+                max_concurrent=max_concurrent,
                 apply_weights=True,
             )
             results.reward = rollout_scores.reward

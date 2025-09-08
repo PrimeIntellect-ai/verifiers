@@ -33,6 +33,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "rich",
     "textual",
+    "openai-agents>=0.0.7",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,9 @@ dev = [
     "nest-asyncio>=1.6.0",
     "ipykernel",
     "ipywidgets",
+    "sphinx",
+    "myst-parser",
+    "furo"
 ]
 
 docs = [

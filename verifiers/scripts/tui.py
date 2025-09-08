@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Textual-based TUI for viewing verifiers eval results.
 """
@@ -9,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich.markup import escape as safe_escape
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -126,42 +127,54 @@ def load_run_results(run: RunInfo) -> List[Dict[str, Any]]:
 # ----------------------------
 
 
-def format_prompt_or_completion(prompt_or_completion) -> str:
+def format_prompt_or_completion(prompt_or_completion) -> Text:
     """Format completion for display."""
+    out = Text()
     if isinstance(prompt_or_completion, list):
-        lines = []
         for msg in prompt_or_completion:
-            assert isinstance(msg, dict)
+            if not isinstance(msg, dict):
+                out.append(str(msg))
+                out.append("\n\n")
+                continue
             role = msg.get("role", "")
             content = str(msg.get("content", ""))
-            # Assistant in white, all others in grey
+            # Style by role
             if role == "assistant":
-                lines.append(f"[b]{role}:[/b] {content}")
+                out.append("assistant: ", style="bold")
+                out.append(content)
             elif role == "tool":
-                lines.append(f"[dim][b]tool result:[/b] {content}[/dim]")
+                out.append("tool result: ", style="bold dim")
+                out.append(content)
             else:
-                lines.append(f"[dim][b]{role}:[/b] {content}[/dim]")
-            if "tool_calls" in msg and msg["tool_calls"]:
-                tool_calls_data = msg["tool_calls"]
-                if isinstance(tool_calls_data, list) and len(tool_calls_data) > 0 and isinstance(tool_calls_data[0], str):
-                    import json
-                    parsed_tool_calls = []
+                out.append(f"{role}: ", style="bold dim")
+                out.append(content)
+            out.append("\n")
+            # Tool calls
+            tool_calls_data = msg.get("tool_calls", [])
+            if isinstance(tool_calls_data, list) and tool_calls_data:
+                if isinstance(tool_calls_data[0], str):
+                    parsed = []
                     for tc_str in tool_calls_data:
                         try:
-                            parsed_tool_calls.append(json.loads(tc_str))
-                        except (json.JSONDecodeError, TypeError):
-                            parsed_tool_calls.append(tc_str)
-                    tool_calls_data = parsed_tool_calls
-                
-                for tool_call in tool_calls_data:
-                    if isinstance(tool_call, dict) and 'function' in tool_call:
-                        lines.append(
-                            f"[b]tool call:[/b] {tool_call['function']['name']}\n{tool_call['function']['arguments']}"
-                        )
-                    elif isinstance(tool_call, str):
-                        lines.append(f"[b]tool call:[/b] {tool_call}")
-        return "\n\n".join(lines)
-    return str(prompt_or_completion)
+                            parsed.append(json.loads(tc_str))
+                        except Exception:
+                            parsed.append(tc_str)
+                    tool_calls_data = parsed
+
+                for tc in tool_calls_data:
+                    out.append("\ntool call: ", style="bold")
+                    if isinstance(tc, dict) and "function" in tc:
+                        fn = tc["function"]
+                        out.append(str(fn.get("name", "")))
+                        out.append("\n")
+                        out.append(str(fn.get("arguments", "")))
+                    else:
+                        out.append(str(tc))
+                    out.append("\n")
+            out.append("\n")
+        return out
+    out.append(str(prompt_or_completion))
+    return out
 
 
 # ----------------------------
@@ -198,7 +211,7 @@ class SelectEnvScreen(Screen):
     def compose(self) -> ComposeResult:
         with Container():
             yield Panel(
-                Label("Select Environment", classes="title"),
+                Label(Text("Select Environment", style="bold"), classes="title"),
                 OptionList(id="env-list"),
             )
         yield Footer()
@@ -207,7 +220,9 @@ class SelectEnvScreen(Screen):
         option_list = self.query_one("#env-list", OptionList)
 
         if not self.env_ids:
-            option_list.add_option("No completed evals found")
+            option_list.add_option(
+                Option("No completed evals found", id="__none__", disabled=True)
+            )
             return
 
         for env_id in self.env_ids:
@@ -215,7 +230,8 @@ class SelectEnvScreen(Screen):
             total_runs = sum(len(runs) for runs in models.values())
             option_list.add_option(
                 Option(
-                    f"{env_id} - Models: {len(models)}, Runs: {total_runs}", id=env_id
+                    f"{safe_escape(env_id)} - Models: {len(models)}, Runs: {total_runs}",
+                    id=env_id,
                 )
             )
 
@@ -254,8 +270,8 @@ class SelectModelScreen(Screen):
     def compose(self) -> ComposeResult:
         with Container():
             yield Panel(
-                Label(f"[b]Environment:[/b] {self.env_id}", classes="title"),
-                Label("Select Model", classes="subtitle"),
+                Label(Text.assemble(("Environment: ", "bold"), str(self.env_id))),
+                Label(Text("Select Model")),
                 OptionList(id="model-list"),
             )
         yield Footer()
@@ -265,7 +281,9 @@ class SelectModelScreen(Screen):
 
         for model in self.models:
             runs = self.index[self.env_id][model]
-            option_list.add_option(Option(f"{model} - Runs: {len(runs)}", id=model))
+            option_list.add_option(
+                Option(f"{safe_escape(model)} - Runs: {len(runs)}", id=model)
+            )
 
         option_list.focus()
 
@@ -312,9 +330,9 @@ class SelectRunScreen(Screen):
     def compose(self) -> ComposeResult:
         with Container():
             yield Panel(
-                Label(f"[b]Environment:[/b] {self.env_id}", classes="title"),
-                Label(f"[b]Model:[/b] {self.model}", classes="subtitle"),
-                Label("Select Run", classes="subtitle"),
+                Label(Text.assemble(("Environment: ", "bold"), str(self.env_id))),
+                Label(Text.assemble(("Model: ", "bold"), str(self.model))),
+                Label(Text("Select Run")),
                 OptionList(id="run-list"),
             )
         yield Footer()
@@ -332,7 +350,10 @@ class SelectRunScreen(Screen):
                 reward_str = f"Reward: {reward}"
 
             option_list.add_option(
-                Option(f"{run.run_id} - {datetime_str} | {reward_str}", id=str(i))
+                Option(
+                    f"{safe_escape(run.run_id)} - {safe_escape(datetime_str)} | {safe_escape(reward_str)}",
+                    id=str(i),
+                )
             )
 
         option_list.focus()
@@ -379,79 +400,95 @@ class ViewRunScreen(Screen):
         with Container():
             # Metadata section
             yield Panel(
-                Static(self._get_metadata_text(), id="metadata"),
+                Static(self._get_metadata_text(), id="metadata", markup=False),
                 classes="metadata-panel",
             )
 
             # Rollout section with two columns
             with Horizontal(classes="rollout-container"):
                 with Panel(classes="column-panel"):
-                    yield Label("Prompt", classes="column-header")
+                    yield Label(Text("Prompt", style="bold"), classes="column-header")
                     yield VerticalScroll(
-                        Static("", id="prompt-content"),
+                        Static("", id="prompt-content", markup=False),
                         id="prompt-scroll",
                     )
 
                 with Panel(classes="column-panel"):
-                    yield Label("Completion", classes="column-header")
+                    yield Label(
+                        Text("Completion", style="bold"), classes="column-header"
+                    )
                     yield VerticalScroll(
-                        Static("", id="completion-content"),
+                        Static("", id="completion-content", markup=False),
                         id="completion-scroll",
                     )
 
             # Details section (horizontal scroll)
-            yield Panel(Static("", id="details"), classes="details-panel")
+            yield Panel(Static("", id="details", markup=False), classes="details-panel")
 
         yield Footer()
 
-    def _get_metadata_text(self) -> str:
-        """Generate metadata text in columns."""
+    def _get_metadata_text(self) -> Text:
         meta = self.run.metadata
         avg_reward = meta.get("avg_reward", "")
         if isinstance(avg_reward, (int, float)):
             avg_reward_str = f"{avg_reward:.3f}"
         else:
             avg_reward_str = str(avg_reward) if avg_reward else "N/A"
-
-        # Create three columns of information
-        col1 = [
-            f"[b]Environment:[/b] {self.run.env_id}",
-            f"[b]Model:[/b] {self.run.model}",
-            f"[b]Run ID:[/b] {self.run.run_id}",
-            f"[b]Date:[/b] {meta.get('date', '')} {meta.get('time', '')}",
+        # Create three columns of information without markup, with styled labels
+        col1_items = [
+            ("Environment: ", str(self.run.env_id)),
+            ("Model: ", str(self.run.model)),
+            ("Run ID: ", str(self.run.run_id)),
+            (
+                "Date: ",
+                f"{str(meta.get('date', ''))} {str(meta.get('time', ''))}".strip(),
+            ),
         ]
 
-        col2 = [
-            f"[b]Record:[/b] {self.current_record_idx + 1}/{len(self.records)}",
-            f"[b]Examples:[/b] {meta.get('num_examples', '')}",
-            f"[b]Rollouts/ex:[/b] {meta.get('rollouts_per_example', '')}",
-            "",  # Empty for alignment
+        col2_items = [
+            ("Record: ", f"{self.current_record_idx + 1}/{len(self.records)}"),
+            ("Examples: ", str(meta.get("num_examples", ""))),
+            ("Rollouts/ex: ", str(meta.get("rollouts_per_example", ""))),
+            ("", ""),
         ]
 
-        col3 = [
-            f"[b]Avg reward:[/b] {avg_reward_str}",
-            f"[b]Max tokens:[/b] {meta.get('max_tokens', '')}",
-            f"[b]Temperature:[/b] {meta.get('temperature', '')}",
-            "",  # Empty for alignment
+        col3_items = [
+            ("Avg reward: ", avg_reward_str),
+            ("Max tokens: ", str(meta.get("max_tokens", ""))),
+            ("Temperature: ", str(meta.get("temperature", ""))),
+            ("", ""),
         ]
 
-        # Format as columns with consistent spacing
-        lines = []
-        for i in range(max(len(col1), len(col2), len(col3))):
-            parts = []
-            if i < len(col1):
-                parts.append(f"{col1[i]:<45}")
-            else:
-                parts.append(" " * 45)
-            if i < len(col2):
-                parts.append(f"{col2[i]:<35}")
-            else:
-                parts.append(" " * 35)
-            if i < len(col3):
-                parts.append(col3[i] if i < len(col3) else "")
-            lines.append("".join(parts).rstrip())
+        def build_padded(label: str, value: str, width: int) -> Text:
+            combined = f"{label}{value}"
+            pad_len = max(0, width - len(combined))
+            t = Text()
+            if label:
+                t.append(label, style="bold")
+            if value:
+                t.append(value)
+            if pad_len:
+                t.append(" " * pad_len)
+            return t
 
-        return "\n".join(lines)
+        lines: List[Text] = []
+        num_rows = max(len(col1_items), len(col2_items), len(col3_items))
+        for i in range(num_rows):
+            left_label, left_value = col1_items[i] if i < len(col1_items) else ("", "")
+            mid_label, mid_value = col2_items[i] if i < len(col2_items) else ("", "")
+            right_label, right_value = (
+                col3_items[i] if i < len(col3_items) else ("", "")
+            )
+
+            row = Text()
+            row += build_padded(left_label, left_value, 45)
+            row += build_padded(mid_label, mid_value, 35)
+            if right_label or right_value:
+                row.append(right_label, style="bold")
+                row.append(right_value)
+            lines.append(row)
+
+        return Text("\n").join(lines)
 
     def on_mount(self) -> None:
         self.update_display()
@@ -474,31 +511,40 @@ class ViewRunScreen(Screen):
         completion_widget.update(format_prompt_or_completion(completion))
 
         # Update details
-        details_lines = []
+        details_lines = Text()
         reward = record.get("reward", None)
         if reward is not None:
-            if isinstance(reward, (int, float)):
-                reward_str = f"{reward:.3f}"
-            else:
-                reward_str = str(reward)
-            details_lines.append(f"[b]Reward:[/b] {reward_str}")
+            reward_str = (
+                f"{reward:.3f}" if isinstance(reward, (int, float)) else str(reward)
+            )
+            details_lines.append("Reward: ", style="bold")
+            details_lines.append(f"{reward_str}\n")
+
         answer = record.get("answer", None)
         if answer not in (None, ""):
-            details_lines.append(f"[b]Answer:[/b] {answer}")
+            details_lines.append("Answer: ", style="bold")
+            details_lines.append(str(answer))
+            details_lines.append("\n")
+
         info = record.get("info", None)
         if info not in (None, {}):
-            details_lines.append(f"[b]Info:[/b] {str(info)}")
+            details_lines.append("Info: ", style="bold")
+            try:
+                details_lines.append(json.dumps(info, ensure_ascii=False, indent=2))
+            except Exception:
+                details_lines.append(str(info))
+
         task = record.get("task", None)
         if task not in (None, ""):
-            details_lines.append(f"[b]Task:[/b] {task}")
+            details_lines.append("Task: ", style="bold")
+            details_lines.append(str(task))
 
         details_widget = self.query_one("#details", Static)
         details_widget.update(
-            "\n".join(details_lines)
-            if details_lines
-            else "[dim]No additional details[/dim]"
+            details_lines
+            if details_lines.plain.strip()
+            else Text("No additional details", style="dim")
         )
-
         # Update metadata with current record index
         metadata_widget = self.query_one("#metadata", Static)
         metadata_widget.update(self._get_metadata_text())

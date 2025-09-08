@@ -21,7 +21,7 @@ def load_environment(
         response = parser.parse_answer(completion) or ""
         return 1.0 if response.startswith(str(answer)) else 0.0
 
-    rubric = vf.Rubric(funcs=[correct_answer_reward_func], weights=[1.0])
+    rubric = vf.Rubric(parser=parser, funcs=[correct_answer_reward_func], weights=[1.0])
     vf_env = vf.SingleTurnEnv(
         eval_dataset=eval_dataset,
         system_prompt=system_prompt,

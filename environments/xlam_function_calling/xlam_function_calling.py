@@ -44,7 +44,7 @@ as a JSON array with 'name' and 'arguments' keys for each tool call."""
         except Exception:
             return 0
 
-    rubric = vf.Rubric(funcs=[check_tools_reward_func])
+    rubric = vf.Rubric(parser=parser, funcs=[check_tools_reward_func])
 
     vf_env = vf.SingleTurnEnv(
         dataset=dataset,

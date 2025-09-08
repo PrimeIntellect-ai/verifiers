@@ -16,7 +16,7 @@ from verifiers.utils.async_utils import maybe_await
 
 
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = 10, **kwargs):
+    def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
@@ -107,9 +107,8 @@ class MultiTurnEnv(Environment):
                 rollout += response_text
                 completion += response_text
             state["turn"] += 1
-            if (
-                await maybe_await(self.is_completed, rollout, state, **kwargs)
-                or state["turn"] >= self.max_turns
+            if await maybe_await(self.is_completed, rollout, state, **kwargs) or (
+                state["turn"] >= self.max_turns and self.max_turns > 0
             ):
                 is_completed = True
             else:

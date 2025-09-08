@@ -29,6 +29,7 @@ def load_environment(
         return 1.0 if response == answer else 0.0
 
     rubric = vf.Rubric(
+        parser=parser,
         funcs=[correct_answer_reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.0],
     )

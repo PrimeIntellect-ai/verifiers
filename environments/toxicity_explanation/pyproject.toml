@@ -1,13 +1,13 @@
 [project]
 name = "toxicity-explanation"
-version = "0.1.0"
+version = "0.1.1"
 description = "Explain why a given text is toxic"
 tags = ["toxicity-explanation", "llm-judge", "single-turn", "train", "eval"]
 requires-python = ">=3.11"
 dependencies = [
     "datasets",
     "openai",
-    "verifiers>=0.1.2.post0",
+    "verifiers>=0.1.3",
 ]
 
 [build-system]

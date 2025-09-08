@@ -21,6 +21,7 @@ def load_environment(**kwargs):
         return 1.0 if response == answer else 0.0
 
     rubric1 = vf.Rubric(
+        parser=parser,
         funcs=[gsm8k_answer_reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.0],
     )
@@ -38,6 +39,7 @@ def load_environment(**kwargs):
         return 1.0 if response == answer else 0.0
 
     rubric2 = vf.Rubric(
+        parser=parser,
         funcs=[math_answer_reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.2],
     )

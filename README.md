@@ -12,7 +12,7 @@ Environments for LLM Reinforcement Learning
 
 ## Overview
 
-Verifiers is a library of modular components for creating RL environments and training LLM agents. Verifiers includes an async GRPO implementation built around the `transformers` Trainer, is supported by `prime-rl` for large-scale FSDP training, and can easily be integrated into any RL framework which exposes an OpenAI-compatible inference client. In addition to RL training, Verifiers can be used directly for building LLM evaluations, creating synthetic data pipelines, and implementing agent harnesses.
+Verifiers is a library of modular components for creating RL environments and training LLM agents. Environments built with Verifiers can be used directly as LLM evaluations, synthetic data pipelines, or agent harnesses for any OpenAI-compatible model endpoint, in addition to RL training. Verifiers includes an async GRPO implementation built around the `transformers` Trainer, is supported by `prime-rl` for large-scale FSDP training, and can easily be integrated into any RL framework which exposes an OpenAI-compatible inference client.
 
 Full documentation is available [here](https://verifiers.readthedocs.io/en/latest/). 
 
@@ -83,7 +83,7 @@ vf-eval vf-environment-name # vf-eval -h for config options; defaults to gpt-4.1
 ```
 
 The core elements of Environments in are:
-- Datasets: a Hugging Face `Dataset` with a `prompt` column for inputs, and either `answer (str)` or `info (dict)` columns for evaluation
+- Datasets: a Hugging Face `Dataset` with a `prompt` column for inputs, and optionally `answer (str)` or `info (dict)` columns for evaluation (both can be omitted for environments that evaluate based solely on completion quality)
 - Rollout logic: interactions between models and the environment (e.g. `env_response` + `is_completed` for any `MultiTurnEnv`)
 - Rubrics: an encapsulation for one or more reward functions
 - Parsers: optional; an encapsulation for reusable parsing logic
@@ -128,17 +128,19 @@ Datasets should be formatted with columns for:
 - `'prompt' (List[ChatMessage])` OR `'question' (str)` fields
 	- `ChatMessage` = e.g. `{'role': 'user', 'content': '...'}`
 	- if `question` is set instead of `prompt`, you can also pass `system_prompt (str)` and/or `few_shot (List[ChatMessage])`
-- `answer (str)` AND/OR `info (dict)`
+- `answer (str)` AND/OR `info (dict)` (both optional, can be omitted entirely)
 - `task (str)`: optional, used by `EnvGroup` and `RubricGroup` for orchestrating composition of Environments and Rubrics
 
 The following named attributes available for use by reward functions in your Rubric:
 - `prompt`: sequence of input messages
 - `completion`: sequence of messages generated during rollout by model and Environment
-- `answer`: primary answer column, optional if `info` is used
+- `answer`: primary answer column, optional (defaults to empty string if omitted)
 - `state`: can be modified during rollout to accumulate any metadata (`state['responses']` includes full OpenAI response objects by default)
-- `info`: auxiliary info needed for reward computation (e.g. test cases), optional if `answer` is used
+- `info`: auxiliary info needed for reward computation (e.g. test cases), optional (defaults to empty dict if omitted)
 - `task`: tag for task type (used by `EnvGroup` and `RubricGroup`)
 - `parser`: the parser object declared. Note: `vf.Parser().get_format_reward_func()` is a no-op (always 1.0); use `vf.ThinkParser` or a custom parser if you want a real format adherence reward.
+
+**Note**: Some environments can fully evaluate using only `prompt`, `completion`, and `state` without requiring ground truth `answer` or `info` data. Examples include format compliance checking, completion quality assessment, or length-based rewards.
 
 For tasks involving LLM judges, you may wish to use `vf.JudgeRubric()` for managing requests to auxiliary models.
 
@@ -159,7 +161,7 @@ For many applications involving tool use, you can use `ToolEnv` to leverage mode
 ```python
 import verifiers as vf
 vf_env = vf.ToolEnv(
-	dataset= ... # HF Dataset with 'prompt'/'question' + 'answer'/'info' columns
+	dataset= ... # HF Dataset with 'prompt'/'question' and optionally 'answer'/'info' columns
 	rubric= ... # Rubric object; vf.ToolRubric() can be optionally used for counting tool invocations in each rollout
 	tools=[search_tool, read_article_tool, python_tool], # python functions with type hints + docstrings
 	max_turns=10
@@ -270,9 +272,7 @@ If you use this code in your research, please cite:
 }
 ```
 
-
 ## Roadmap
-- A community Environments hub for crowdsourcing, sharing, and discovering new RL environments built with `verifiers`
 - Default patterns for hosted resources such as code sandboxes, auxiliary models, and MCP servers
 - Multimodal input support
 - Non-increasing token sequences via REINFORCE

@@ -35,6 +35,7 @@ def load_environment(num_train_examples=2000, num_eval_examples=200, **kwargs):
         return lcs_ratio(response, answer)
 
     rubric = vf.Rubric(
+        parser=parser,
         funcs=[
             lcs_reward_func,
             parser.get_format_reward_func(),

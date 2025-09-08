@@ -11,7 +11,7 @@ This directory contains the test suite for the verifiers package.
 Install test dependencies:
 
 ```bash
-uv sync --extra tests
+uv sync --extra dev
 ```
 
 ## Running Tests

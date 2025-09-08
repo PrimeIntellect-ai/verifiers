@@ -114,6 +114,18 @@ class Rubric:
                 ans = 0.0
         return ans
 
+    async def score_rollout_with_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        *args,
+        **kwargs,
+    ) -> RolloutScore:
+        """
+        Score a rollout with a semaphore.
+        """
+        async with semaphore:
+            return await self.score_rollout(*args, **kwargs)
+
     async def score_rollout(
         self,
         prompt: Messages,
@@ -131,7 +143,6 @@ class Rubric:
             score_tasks = [
                 self.call_reward_func(
                     func=func,
-                    # **self.class_objects,
                     prompt=prompt,
                     completion=completion,
                     answer=answer,
@@ -148,7 +159,6 @@ class Rubric:
             for func in self.get_reward_funcs():
                 score = await self.call_reward_func(
                     func=func,
-                    # **self.class_objects,
                     prompt=prompt,
                     completion=completion,
                     answer=answer,
@@ -180,6 +190,7 @@ class Rubric:
         states: list[State],
         tasks: list[str],
         infos: list[Info],
+        max_concurrent: int = -1,
         **kwargs,
     ) -> RolloutScores:
         """
@@ -195,10 +206,18 @@ class Rubric:
         """
         from tqdm.asyncio import tqdm_asyncio
 
-        rollout_tasks = [
-            self.score_rollout(*pcasti, **kwargs)
-            for pcasti in zip(prompts, completions, answers, states, tasks, infos)
-        ]
+        if max_concurrent > 0:
+            semaphore = asyncio.Semaphore(max_concurrent)
+            rollout_tasks = [
+                self.score_rollout_with_semaphore(semaphore, *pcasti, **kwargs)
+                for pcasti in zip(prompts, completions, answers, states, tasks, infos)
+            ]
+        else:
+            rollout_tasks = [
+                self.score_rollout(*pcasti, **kwargs)
+                for pcasti in zip(prompts, completions, answers, states, tasks, infos)
+            ]
+
         rewards = await tqdm_asyncio.gather(
             *rollout_tasks,
             total=len(prompts),

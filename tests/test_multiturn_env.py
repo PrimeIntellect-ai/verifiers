@@ -27,7 +27,7 @@ class TestMultiTurnEnv:
             parser=Parser(),
             rubric=Rubric(),
         )
-        assert env.max_turns == 10  # Default value
+        assert env.max_turns == -1  # Default value
 
     @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env):

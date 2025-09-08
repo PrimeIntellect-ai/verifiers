@@ -46,6 +46,7 @@ class RubricGroup(Rubric):
         states: list[State],
         tasks: list[str],
         infos: list[Info],
+        max_concurrent: int = -1,
         **kwargs,
     ) -> RolloutScores:
         """
@@ -59,7 +60,14 @@ class RubricGroup(Rubric):
         )
         for rubric in self.rubrics:
             rubric_scores = await rubric.score_rollouts(
-                prompts, completions, answers, states, tasks, infos, **kwargs
+                prompts,
+                completions,
+                answers,
+                states,
+                tasks,
+                infos,
+                max_concurrent,
+                **kwargs,
             )
             # aggregate reward (element-wise sum across rubrics)
             if not all_scores.reward:

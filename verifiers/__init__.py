@@ -1,4 +1,4 @@
-__version__ = "0.1.3"
+__version__ = "0.1.3.post0"
 
 import importlib
 import logging
@@ -69,6 +69,7 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "ToolRubric",
+    "MathRubric",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -101,10 +102,14 @@ _LAZY_IMPORTS = {
     "GRPOTrainer": "verifiers.trainers:GRPOTrainer",
     "grpo_defaults": "verifiers.trainers:grpo_defaults",
     "lora_defaults": "verifiers.trainers:lora_defaults",
+<<<<<<< HEAD
     "VerifiersGRPOTrainer": "verifiers.trainers:VerifiersGRPOTrainer",
     "VerifiersGRPOConfig": "verifiers.trainers:VerifiersGRPOConfig",
     "EnvironmentRewardAdapter": "verifiers.trainers:EnvironmentRewardAdapter",
     "MultiTurnMixin": "verifiers.trainers:MultiTurnMixin",
+=======
+    "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
+>>>>>>> origin/main
 }
 
 
@@ -122,6 +127,7 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .trainers import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,

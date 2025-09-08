@@ -60,7 +60,7 @@ Leverages models' built-in tool calling for agentic workflows:
 env = vf.ToolEnv(
     tools=[search, calculate, execute_code],  # Python functions
     max_turns=10,
-    dataset=dataset,
+    dataset=dataset, # HuggingFace dataset
     rubric=rubric
 )
 ```
@@ -183,7 +183,7 @@ results = env.evaluate(client, model="llama-3.1-8b")
 
 - **Inputs expected by environments**:
   - `prompt`: str or list[ChatMessage] (chat-style). If you use `question` in your dataset, environments will turn it into a chat message, adding `system_prompt`/`few_shot` if provided.
-  - `answer` or `info`: at least one is required. `answer` is a string; `info` is a dict for richer metadata.
+  - `answer` or `info`: optional. `answer` is a string; `info` is a dict for richer metadata. Both can be omitted for environments that evaluate based solely on completion quality (e.g., format adherence, length constraints, style assessment).
   - `task`: optional string used by `EnvGroup`/`RubricGroup` to route behavior.
 
 - **Running evaluation**:

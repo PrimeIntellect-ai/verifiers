@@ -57,7 +57,7 @@ def test_cli_sampling_args_precedence_over_flags(monkeypatch):
         api_base_url="https://api.openai.com/v1",
         num_examples=1,
         rollouts_per_example=1,
-        max_concurrent_requests=1,
+        max_concurrent=1,
         max_tokens=42,
         temperature=0.9,
         sampling_args={
@@ -106,7 +106,7 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
         api_base_url="https://api.openai.com/v1",
         num_examples=1,
         rollouts_per_example=1,
-        max_concurrent_requests=1,
+        max_concurrent=1,
         max_tokens=55,
         temperature=0.8,
         sampling_args={

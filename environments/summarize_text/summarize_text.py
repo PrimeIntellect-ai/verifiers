@@ -37,6 +37,7 @@ def load_environment(**kwargs) -> vf.Environment:
         return lcs_ratio(response, answer)
 
     rubric = vf.Rubric(
+        parser=parser,
         funcs=[
             sentence_reward_func,
             lcs_reward_func,
