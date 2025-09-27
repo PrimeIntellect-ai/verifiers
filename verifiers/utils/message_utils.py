@@ -114,3 +114,38 @@ def sanitize_tool_calls(messages: Messages):
         else:
             sanitized_messages.append(m)
     return sanitized_messages
+
+
+def deserialize_tool_calls(messages: Messages) -> Messages:
+    """
+    Deserialize tool calls in messages, if any are present. Iterates
+    over all messages in a message list and tries to find
+    "tool_calls" key. If found, assumes it is a OAI format and has
+    key "function" with "arguments" key which is stringified. It
+    will then deserialize the argument so that chat tmeplates like
+    Qwen3's can be used.
+    """
+    if isinstance(messages, str):
+        return messages
+
+    def deserialize_tool_call(tool_call) -> dict:
+        tool_call = dict(tool_call)
+        function = dict(tool_call["function"])
+        return {
+            **tool_call,
+            "function": {
+                **function,
+                "arguments": json.loads(function["arguments"]),
+            },
+        }
+
+    return [
+        {
+            **message,
+            "tool_calls": [
+                deserialize_tool_call(tool_call)
+                for tool_call in message.get("tool_calls", []) or []
+            ],
+        }
+        for message in messages
+    ]

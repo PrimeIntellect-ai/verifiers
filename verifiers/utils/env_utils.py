@@ -51,9 +51,6 @@ def load_environment(env_id: str, **env_args) -> Environment:
         if provided_params:
             provided_values = []
             for param_name in provided_params:
-                assert param_name in all_params, (
-                    f"Parameter {param_name} not supported by environment {env_id}"
-                )
                 provided_values.append(f"{param_name}={env_args[param_name]}")
             logger.info(f"Using provided args: {', '.join(provided_values)}")
 

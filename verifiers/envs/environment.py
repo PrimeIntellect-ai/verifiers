@@ -27,7 +27,11 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-from verifiers.utils.message_utils import cleanup_messages, sanitize_tool_calls
+from verifiers.utils.message_utils import (
+    cleanup_messages,
+    deserialize_tool_calls,
+    sanitize_tool_calls,
+)
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
@@ -823,37 +827,7 @@ class Environment(ABC):
         i = 0
         while i < len(zipped):
             message, response = zipped[i]
-
-            def deserialize_tool_calls(message: dict) -> dict:
-                """
-                Deserialize tool calls in messages, if any are present. Iterates
-                over all messages in a message list and tries to find
-                "tool_calls" key. If found, assumes it is a OAI format and has
-                key "function" with "arguments" key which is stringified. It
-                will then deserialize the argument so that chat tmeplates like
-                Qwen3's can be used.
-                """
-
-                def deserialize_tool_call(tool_call) -> dict:
-                    tool_call = dict(tool_call)
-                    function = dict(tool_call["function"])
-                    return {
-                        **tool_call,
-                        "function": {
-                            **function,
-                            "arguments": json.loads(function["arguments"]),
-                        },
-                    }
-
-                return {
-                    **message,
-                    "tool_calls": [
-                        deserialize_tool_call(tool_call)
-                        for tool_call in message.get("tool_calls", []) or []
-                    ],
-                }
-
-            message = deserialize_tool_calls(message)
+            message = deserialize_tool_calls([message])[0]
 
             # assistant case -- use response
             if message["role"] == "assistant":
