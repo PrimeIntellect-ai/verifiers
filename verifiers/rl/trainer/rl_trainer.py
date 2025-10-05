@@ -317,30 +317,12 @@ class RLTrainer(Trainer):
             processing_class.pad_token = processing_class.eos_token  # type: ignore
 
         # Training arguments
-        self.per_device_train_batch_size = args.per_device_train_batch_size
+        self.micro_batch_size = args.micro_batch_size
+        self.per_device_train_batch_size = self.micro_batch_size
         self.max_prompt_length = args.max_prompt_length
         self.max_seq_len = args.max_seq_len  # max sequence length
-        self.max_completion_length = (
-            args.max_completion_length
-        )  # = |o_i| in the GRPO paper
-        if self.max_completion_length is not None:
-            self.logger.warning(
-                "max_completion_length is deprecated. Use max_seq_len instead."
-            )
-            if self.max_seq_len is None and self.max_prompt_length is not None:
-                self.max_seq_len = self.max_prompt_length + self.max_completion_length
-                self.logger.info(
-                    f"max_seq_len is set to {self.max_seq_len} (max_prompt_length={self.max_prompt_length} + max_completion_length={self.max_completion_length})"
-                )
-            else:
-                self.max_seq_len = self.max_completion_length
-                self.logger.info(
-                    f"max_seq_len is set to {self.max_seq_len} (max_completion_length={self.max_completion_length})"
-                )
         if self.max_seq_len is None:
-            raise ValueError(
-                "max_seq_len is required when max_completion_length is not provided"
-            )
+            raise ValueError("max_seq_len must be configured for training")
         if self.max_prompt_length is None:
             self.max_prompt_length = self.max_seq_len
             self.logger.info(
@@ -352,7 +334,8 @@ class RLTrainer(Trainer):
             self.logger.info(
                 f"max_tokens is set to {self.max_tokens} (max_seq_len={self.max_seq_len})"
             )
-        self.num_generations = args.num_generations  # = G in the GRPO paper
+        self.rollouts_per_example = args.rollouts_per_example
+        self.batch_size = args.batch_size
         self.max_concurrent = args.max_concurrent
         self.max_data_workers = args.max_data_workers
         self.temperature = args.temperature
@@ -387,9 +370,7 @@ class RLTrainer(Trainer):
         self.zero_truncated_completions = args.zero_truncated_completions
         self.delta = args.delta
         self.importance_sampling_level = args.importance_sampling_level
-        self.vllm_importance_sampling_correction = (
-            args.vllm_importance_sampling_correction
-        )
+        self.vllm_importance_sampling_correction = True
         self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         # Reference model parameters
@@ -398,7 +379,6 @@ class RLTrainer(Trainer):
         self.generation_batch_size: int = args.generation_batch_size  # type: ignore
 
         # Multi-step
-        self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
         self.epsilon_low = args.epsilon
         self.epsilon_high = (
             args.epsilon_high if args.epsilon_high is not None else args.epsilon
@@ -502,44 +482,34 @@ class RLTrainer(Trainer):
             self.adapter_save_dir.mkdir(parents=True, exist_ok=True)
         self.accelerator.wait_for_everyone()
 
-        self.per_device_prompt_batch_size = args.per_device_prompt_batch_size
-        if self.per_device_prompt_batch_size is None:
-            self.per_device_prompt_batch_size = (
-                self.per_device_train_batch_size // self.num_generations
-            )
+        self.prompts_per_batch = args.prompts_per_batch
 
         if self.train_dataset is not None:
-            unique_prompts_per_device_batch = self.per_device_prompt_batch_size
-            unique_prompts_per_gradient_step = (
-                unique_prompts_per_device_batch * self.gradient_accumulation_steps
-            )
-            global_batch_size = (
-                unique_prompts_per_gradient_step * self.accelerator.num_processes
-            )
             dataset_size = len(self.train_dataset)  # type: ignore
+            global_prompts_per_batch = self.prompts_per_batch
+            global_rollouts = self.batch_size
             self.logger.info(
-                f"Dataset size: {dataset_size}, global batch size: {global_batch_size}"
+                f"Dataset size: {dataset_size}, prompts per global batch: {global_prompts_per_batch}"
             )
             self.logger.info(
-                f"Unique prompts per device batch: {unique_prompts_per_device_batch}, unique prompts per gradient step: {unique_prompts_per_gradient_step}"
+                f"Gradient accumulation steps: {self.gradient_accumulation_steps}"
             )
-            truncated_dataset_size = int(
-                (dataset_size // global_batch_size) * global_batch_size
-            )
+            truncated_dataset_size = (
+                dataset_size // global_prompts_per_batch
+            ) * global_prompts_per_batch
             if truncated_dataset_size < dataset_size:
                 self.logger.info(
-                    f"Truncating dataset from {dataset_size} to {truncated_dataset_size} examples ({dataset_size - truncated_dataset_size} examples were too long)"
+                    f"Truncating dataset from {dataset_size} to {truncated_dataset_size} examples ({dataset_size - truncated_dataset_size} prompts dropped to fit whole batches)"
                 )
                 self.train_dataset = self.train_dataset.select(
                     range(truncated_dataset_size)
                 )
             self.logger.info(
-                f"Batches per epoch: {truncated_dataset_size / global_batch_size}"
+                f"Batches per epoch: {truncated_dataset_size / global_prompts_per_batch}"
             )
             self.logger.info(
-                f"Steps per epoch: {truncated_dataset_size / global_batch_size * self.num_iterations} (num_iterations={self.num_iterations})"
+                f"Rollouts per global batch: {global_rollouts}, gradient accumulation steps: {self.gradient_accumulation_steps}"
             )
-            self.logger.info("Number of epochs:")
         # Reference model
         if self.beta == 0.0:
             # If beta is 0.0, the reference model is not needed
@@ -579,8 +549,8 @@ class RLTrainer(Trainer):
         # final optimization step.
         maxlen = (
             self.accelerator.num_processes
-            * args.per_device_train_batch_size
-            * args.gradient_accumulation_steps
+            * self.micro_batch_size
+            * self.gradient_accumulation_steps
         )
         self._textual_logs = {
             "prompt": deque(maxlen=maxlen),
@@ -610,7 +580,7 @@ class RLTrainer(Trainer):
             0  # Initialize to 0 since vLLM already has initial weights
         )
         # Weight updates to vLLM happen only when generating new completions
-        # Frequency: every (gradient_accumulation_steps * num_iterations) training steps
+        # Frequency: every `gradient_accumulation_steps` training steps
         # When using vLLM, the main process is responsible for loading the model weights. This can cause process
         # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
         # synchronize all processes after vLLM has been fully initialized.
@@ -706,8 +676,8 @@ class RLTrainer(Trainer):
         #                                      |    Accum step 0     |
         #                                      |   GPU 0  |   GPU 1  |
         #
-        #                 global_step   step    <-───>  num_generations=2
-        #                                       <-───────> per_device_train_batch_size=3
+        #                 global_step   step    <-───>  rollouts_per_example=2
+        #                                       <-───────> micro_batch_size=3
         #  grad_accum    ▲  ▲  0          0     0   0   1   1   2   2   <- Generate for the first gradient_accumulation_steps (prompts 0 to 11); store the completions; use the first slice to compute the loss
         #     =2         ▼  |  0          1     3   3   4   4   5   5   <- Take the stored generations and use the second slice to compute the loss
         #                   |
@@ -720,9 +690,9 @@ class RLTrainer(Trainer):
 
         return RepeatSampler(
             data_source=self.train_dataset,  # type: ignore
-            mini_repeat_count=self.num_generations,
-            batch_size=self.generation_batch_size // self.num_generations,
-            repeat_count=self.num_iterations * self.gradient_accumulation_steps,
+            mini_repeat_count=self.rollouts_per_example,
+            batch_size=self.generation_batch_size // self.rollouts_per_example,
+            repeat_count=self.gradient_accumulation_steps,
             shuffle=self.shuffle_dataset,
             seed=self.args.seed,
         )
@@ -1026,7 +996,7 @@ class RLTrainer(Trainer):
         # Ensure all processes are synchronized at the start
         self.accelerator.wait_for_everyone()
         # inputs = list of dicts for all gradient accumulation steps
-        generate_every = self.gradient_accumulation_steps * self.num_iterations
+        generate_every = self.gradient_accumulation_steps
 
         # Check if we need to generate new completions
         if self._step % generate_every == 0 or self._buffered_inputs is None:
@@ -1144,16 +1114,33 @@ class RLTrainer(Trainer):
             broadcast_data = broadcast_list[0]
             self.accelerator.wait_for_everyone()
 
-            # Each process takes its slice
+            # Determine how many rollouts belong to each process in the global batch
+            assert broadcast_data is not None, (
+                "broadcast_data should be populated on all processes"
+            )
+            global_batch_size = len(broadcast_data["rewards"])
+            if global_batch_size % self.accelerator.num_processes != 0:
+                raise ValueError(
+                    "Generation batch size must be divisible by the number of processes. "
+                    "Check RepeatSampler configuration."
+                )
+            per_process_rollouts = global_batch_size // self.accelerator.num_processes
+            if per_process_rollouts % self.gradient_accumulation_steps != 0:
+                raise ValueError(
+                    "Per-process rollouts must be divisible by gradient_accumulation_steps."
+                )
+            if inputs and len(inputs) != per_process_rollouts:
+                raise ValueError(
+                    "DataLoader provided a batch size that does not match the expected "
+                    "per-process rollouts. Ensure RepeatSampler is configured correctly."
+                )
+
             process_slice = slice(
-                self.accelerator.process_index * len(inputs),
-                (self.accelerator.process_index + 1) * len(inputs),
+                self.accelerator.process_index * per_process_rollouts,
+                (self.accelerator.process_index + 1) * per_process_rollouts,
             )
 
             # Create rewards tensor and compute advantages using full batch
-            assert (
-                broadcast_data is not None
-            )  # After broadcast, all processes have data
             all_rewards = torch.tensor(
                 broadcast_data["rewards"], device=self.accelerator.device
             )
@@ -1309,9 +1296,9 @@ class RLTrainer(Trainer):
         rewards: torch.Tensor,
     ) -> torch.Tensor:
         """Compute advantages from rewards with normalization using full batch statistics."""
-        grouped_rewards = rewards.view(-1, self.num_generations)
+        grouped_rewards = rewards.view(-1, self.rollouts_per_example)
         mean_grouped = grouped_rewards.mean(dim=1)
-        mean_grouped = mean_grouped.repeat_interleave(self.num_generations, dim=0)
+        mean_grouped = mean_grouped.repeat_interleave(self.rollouts_per_example, dim=0)
         advantages = rewards - mean_grouped
 
         if self.scale_rewards_mode == "batch":
@@ -1319,7 +1306,7 @@ class RLTrainer(Trainer):
             std = std.expand_as(rewards)
         else:
             std = grouped_rewards.std(dim=1)
-            std = std.repeat_interleave(self.num_generations, dim=0)
+            std = std.repeat_interleave(self.rollouts_per_example, dim=0)
 
         if self.scale_rewards_mode != "none":
             advantages = advantages / (std + 1e-4)
@@ -1719,8 +1706,8 @@ class RLTrainer(Trainer):
         This handles reward statistics and per-reward-function metrics using the full batch data.
         """
         # Log reward statistics using full batch
-        mean_rewards = all_rewards.view(-1, self.num_generations).mean(dim=1)
-        std_rewards = all_rewards.view(-1, self.num_generations).std(dim=1)
+        mean_rewards = all_rewards.view(-1, self.rollouts_per_example).mean(dim=1)
+        std_rewards = all_rewards.view(-1, self.rollouts_per_example).std(dim=1)
         self._metrics[mode]["reward"].append(mean_rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_rewards.mean().item())
 
