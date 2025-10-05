@@ -302,7 +302,7 @@ class RLTrainer(Trainer):
             args.sync_ref_model = False
 
         self.max_saved_adapters = args.max_saved_adapters
-        self.adapter_save_dir = Path(args.output_dir) / "adapters"
+        self.adapter_save_dir: Path | None = None
         self._saved_adapters: deque[tuple[str, Path]] = deque()
 
         # Enable gradient checkpointing if requested
@@ -496,6 +496,7 @@ class RLTrainer(Trainer):
             optimizers=optimizers,
         )
 
+        self.adapter_save_dir = self._init_adapter_save_dir(Path(self.args.output_dir))
         if self.accelerator.is_main_process:
             self.adapter_save_dir.mkdir(parents=True, exist_ok=True)
         self.accelerator.wait_for_everyone()
@@ -877,7 +878,22 @@ class RLTrainer(Trainer):
     def _format_adapter_name(self, step: int) -> str:
         return f"adapter-step-{step:06d}"
 
+    def _init_adapter_save_dir(self, output_dir: Path) -> Path:
+        """Compute where LoRA adapters are stored for vLLM hot-swapping.
+
+        The directory always lives alongside the Trainer's checkpoint folders so
+        that transient adapters do not get mixed with checkpoint artifacts like
+        optimizer states.
+        """
+
+        run_dir = output_dir.resolve()
+        if run_dir.name.startswith("checkpoint-"):
+            run_dir = run_dir.parent
+        return run_dir / "adapters"
+
     def _save_active_adapter(self, adapter_name: str) -> Path:
+        if self.adapter_save_dir is None:
+            raise RuntimeError("Adapter save directory has not been initialized.")
         adapter_dir = self.adapter_save_dir / adapter_name
         if adapter_dir.exists():
             shutil.rmtree(adapter_dir)
