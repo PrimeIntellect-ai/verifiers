@@ -4,7 +4,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sized, Tuple, Union, cast
+from typing import Any, Dict, List, Mapping, Optional, Sized, Tuple, Union, cast
 
 import datasets
 import numpy as np
@@ -835,8 +835,11 @@ class RLTrainer(Trainer):
         adapter_dirname = self._format_adapter_path_name(step)
 
         with gather_if_zero3(list(self.model.parameters())):  # type: ignore[arg-type]
+            state_dict = self.accelerator.get_state_dict(self.model)
             if self.accelerator.is_main_process:
-                adapter_path = self._save_active_adapter(adapter_dirname)
+                adapter_path = self._save_active_adapter(
+                    adapter_dirname, state_dict=state_dict
+                )
                 self.logger.info(
                     "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
                 )
@@ -870,7 +873,9 @@ class RLTrainer(Trainer):
             run_dir = run_dir.parent
         return run_dir / "adapters"
 
-    def _save_active_adapter(self, adapter_name: str) -> Path:
+    def _save_active_adapter(
+        self, adapter_name: str, *, state_dict: Mapping[str, torch.Tensor]
+    ) -> Path:
         if self.adapter_save_dir is None:
             raise RuntimeError("Adapter save directory has not been initialized.")
         adapter_dir = self.adapter_save_dir / adapter_name
@@ -878,7 +883,9 @@ class RLTrainer(Trainer):
             shutil.rmtree(adapter_dir)
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         assert isinstance(unwrapped_model, PreTrainedModel)
-        unwrapped_model.save_pretrained(adapter_dir, safe_serialization=True)
+        unwrapped_model.save_pretrained(
+            adapter_dir, state_dict=state_dict, safe_serialization=True
+        )
         assert isinstance(self.processing_class, PreTrainedTokenizerBase)
         if hasattr(self.processing_class, "save_pretrained"):
             self.processing_class.save_pretrained(adapter_dir)
