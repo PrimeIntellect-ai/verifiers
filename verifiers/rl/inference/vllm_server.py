@@ -2,6 +2,12 @@ import os
 import signal
 from argparse import Namespace
 
+# vLLM inspects these flags during module import to decide whether to register
+# the LoRA hot-swapping endpoints. Set them before importing any vLLM modules so
+# the `/v1/load_lora_adapter` and `/v1/unload_lora_adapter` routes are present.
+os.environ.setdefault("VLLM_ALLOW_RUNTIME_LORA_UPDATING", "1")
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
 import uvloop
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -17,9 +23,6 @@ from vllm.entrypoints.openai.cli_args import (
 )
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import FlexibleArgumentParser, set_ulimit
-
-os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-os.environ.setdefault("VLLM_ALLOW_RUNTIME_LORA_UPDATING", "1")
 
 
 async def run_server(args: Namespace):
