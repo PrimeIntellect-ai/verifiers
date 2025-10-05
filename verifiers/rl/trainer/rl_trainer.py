@@ -877,7 +877,11 @@ class RLTrainer(Trainer):
         if adapter_dir.exists():
             shutil.rmtree(adapter_dir)
         unwrapped_model = self.accelerator.unwrap_model(self.model)
-        unwrapped_model.save_pretrained(adapter_dir, safe_serialization=True)  # type: ignore[call-arg]
+        assert isinstance(unwrapped_model, PreTrainedModel)
+        unwrapped_model.save_pretrained(adapter_dir, safe_serialization=True)
+        assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+        if hasattr(self.processing_class, "save_pretrained"):
+            self.processing_class.save_pretrained(adapter_dir)
         return adapter_dir
 
     def _register_saved_adapter(self, adapter_name: str, adapter_path: Path) -> None:
