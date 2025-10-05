@@ -24,7 +24,9 @@ class RLConfig(TrainingArguments):
     # LoRA parameters
     use_lora: bool = field(
         default=True,
-        metadata={"help": "Whether to use LoRA."},
+        metadata={
+            "help": "Whether to use LoRA. Must remain `True` – the trainer only supports LoRA fine-tuning."
+        },
     )
     lora_rank: int = field(
         default=8,
@@ -53,6 +55,13 @@ class RLConfig(TrainingArguments):
     lora_config: Optional[LoraConfig] = field(
         default=None,
         metadata={"help": "LoRA configuration."},
+    )
+
+    max_saved_adapters: int = field(
+        default=3,
+        metadata={
+            "help": "Number of most recent LoRA adapters to keep on disk during training. Older adapters are deleted."
+        },
     )
 
     # Parameters that control the training
@@ -481,7 +490,13 @@ class RLConfig(TrainingArguments):
                 "down_proj",
                 "up_proj",
             ]
-        if self.use_lora and self.lora_config is None:
+        if not self.use_lora:
+            raise ValueError("RLTrainer is LoRA-only; set `use_lora=True`.")
+
+        if self.max_saved_adapters <= 0:
+            raise ValueError("max_saved_adapters must be a positive integer.")
+
+        if self.lora_config is None:
             self.lora_config = LoraConfig(
                 r=self.lora_rank,
                 lora_alpha=self.lora_alpha,

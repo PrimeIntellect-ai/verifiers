@@ -1,7 +1,9 @@
 import logging
+import shutil
 import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sized, Tuple, Union, cast
 
 import datasets
@@ -287,15 +289,21 @@ class RLTrainer(Trainer):
         self.logger = logging.getLogger(__name__)
 
         # configure LoRA
-        if args.lora_config is not None:
-            model = cast(PreTrainedModel, get_peft_model(model, args.lora_config))
+        if args.lora_config is None:
+            raise ValueError("RLTrainer requires a LoRA configuration.")
 
-            # Override sync_ref_model if PEFT is used since ref_model will be None
-            if args.sync_ref_model:
-                self.logger.warning(
-                    "sync_ref_model=True is not compatible with PEFT. Setting sync_ref_model=False."
-                )
-                args.sync_ref_model = False
+        model = cast(PreTrainedModel, get_peft_model(model, args.lora_config))
+
+        # Override sync_ref_model if PEFT is used since ref_model will be None
+        if args.sync_ref_model:
+            self.logger.warning(
+                "sync_ref_model=True is not compatible with PEFT. Setting sync_ref_model=False."
+            )
+            args.sync_ref_model = False
+
+        self.max_saved_adapters = args.max_saved_adapters
+        self.adapter_save_dir = Path(args.output_dir) / "adapters"
+        self._saved_adapters: deque[tuple[str, Path]] = deque()
 
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
@@ -488,6 +496,10 @@ class RLTrainer(Trainer):
             optimizers=optimizers,
         )
 
+        if self.accelerator.is_main_process:
+            self.adapter_save_dir.mkdir(parents=True, exist_ok=True)
+        self.accelerator.wait_for_everyone()
+
         self.per_device_prompt_batch_size = args.per_device_prompt_batch_size
         if self.per_device_prompt_batch_size is None:
             self.per_device_prompt_batch_size = (
@@ -591,10 +603,6 @@ class RLTrainer(Trainer):
         self.vllm_client = VLLMClient(
             host=host, port=port, connection_timeout=args.vllm_server_timeout
         )
-        # Only initialize communicator on the main process
-        # Other processes will only use the client for non-NCCL operations
-        if self.accelerator.is_main_process:
-            self.vllm_client.init_communicator()
 
         self._last_loaded_step = (
             0  # Initialize to 0 since vLLM already has initial weights
@@ -812,6 +820,9 @@ class RLTrainer(Trainer):
         else:
             gather_if_zero3 = nullcontext
 
+        if not is_peft_model(self.model):
+            raise RuntimeError("RLTrainer requires a PEFT LoRA model for vLLM syncing.")
+
         # Check if background batch generation is complete on main process
         # and broadcast the state to all processes
         is_generating = False
@@ -846,49 +857,46 @@ class RLTrainer(Trainer):
             f"Process {self.accelerator.process_index}: Starting weight sync to vLLM"
         )
 
-        # ALL processes must participate in model operations for DeepSpeed ZeRO-3
-        if is_peft_model(self.model):
-            # With PEFT and DeepSpeed ZeRO Stage 3, we must gather the full model at once before merging
-            with gather_if_zero3(list(self.model.parameters())):  # type: ignore
-                self.model.merge_adapter()  # type: ignore
+        adapter_name = self._format_adapter_name(self.state.global_step)
 
-                # Update vLLM weights while parameters are gathered
-                for name, param in self.model.named_parameters():  # type: ignore
-                    # When using PEFT, we need to recover the original parameter name and discard some parameters
-                    name = name.removeprefix("base_model.model.").replace(
-                        ".base_layer", ""
-                    )
-                    if self.model.prefix in name:  # type: ignore
-                        continue
-                    # When module to save, remove its prefix and discard the original module
-                    if "original_module" in name:
-                        continue
-                    name = name.replace("modules_to_save.default.", "")
-
-                    if self.accelerator.is_main_process:
-                        self.vllm_client.update_named_param(name, param.data)
-                self.model.unmerge_adapter()  # type: ignore
-        else:
-            # For non-PEFT models, gather and update each parameter individually
-            for name, param in self.model.named_parameters():  # type: ignore
-                with gather_if_zero3([param]):
-                    if self.accelerator.is_main_process:
-                        self.vllm_client.update_named_param(name, param.data)
-
-        # Reset cache on vLLM (main process only)
-        if self.accelerator.is_main_process:
-            self.vllm_client.reset_prefix_cache()
-
-        # Wait for all background tasks to complete
-        if self.accelerator.is_main_process:
-            while self.vllm_client.get_num_background_tasks() > 0:
-                time.sleep(0.5)
+        with gather_if_zero3(list(self.model.parameters())):  # type: ignore[arg-type]
+            if self.accelerator.is_main_process:
+                adapter_path = self._save_active_adapter(adapter_name)
                 self.logger.info(
-                    "Waiting for weight syncing background tasks to complete before submitting new batches."
+                    "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
                 )
+                self.vllm_client.load_lora_adapter(
+                    adapter_name, str(adapter_path.resolve())
+                )
+                self._register_saved_adapter(adapter_name, adapter_path)
+                self.vllm_client.reset_prefix_cache()
 
         # Ensure all processes wait for the main process to finish updating weights
         self.accelerator.wait_for_everyone()
+
+    def _format_adapter_name(self, step: int) -> str:
+        return f"adapter-step-{step:06d}"
+
+    def _save_active_adapter(self, adapter_name: str) -> Path:
+        adapter_dir = self.adapter_save_dir / adapter_name
+        if adapter_dir.exists():
+            shutil.rmtree(adapter_dir)
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        unwrapped_model.save_pretrained(adapter_dir, safe_serialization=True)  # type: ignore[call-arg]
+        return adapter_dir
+
+    def _register_saved_adapter(self, adapter_name: str, adapter_path: Path) -> None:
+        self._saved_adapters.append((adapter_name, adapter_path))
+        while len(self._saved_adapters) > self.max_saved_adapters:
+            old_name, old_path = self._saved_adapters.popleft()
+            try:
+                self.vllm_client.unload_lora_adapter(old_name)
+            except Exception as exc:  # noqa: BLE001 - log and continue cleanup
+                self.logger.warning(
+                    "Failed to unload LoRA adapter '%s' from vLLM: %s", old_name, exc
+                )
+            if old_path.exists():
+                shutil.rmtree(old_path, ignore_errors=True)
 
     def _get_sampling_args(self) -> Dict[str, Any]:
         """Get sampling arguments for Environment generation."""
