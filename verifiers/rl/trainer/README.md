@@ -63,9 +63,9 @@ CUDA_VISIBLE_DEVICES=6,7 accelerate launch --config-file configs/zero3.yaml \
 
 ### Key Arguments (GRPO)
 
-- **Batching**: `per_device_train_batch_size`, `num_generations`, `gradient_accumulation_steps`
-- **Lengths**: `max_prompt_length`, `max_completion_length`, `max_seq_len`, `max_tokens`
-- **Optimization**: `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`, `max_grad_norm`, `num_iterations`
+- **Batching**: `micro_batch_size`, `rollouts_per_example`, `batch_size`
+- **Lengths**: `max_prompt_length`, `max_seq_len`, `max_tokens`
+- **Optimization**: `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`, `max_grad_norm`
 - **KL/Ref**: `beta`, `sync_ref_model`, `ref_model_sync_steps`, `ref_model_mixup_alpha`, `loss_type`
 - **Async**: `num_batches_ahead`, `async_generation_timeout`, `max_concurrent`
 

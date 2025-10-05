@@ -70,12 +70,6 @@ class RLConfig(TrainingArguments):
             "training speed, but may be numerically unstable for long training runs."
         },
     )
-    num_iterations: int = field(
-        default=1,
-        metadata={
-            "help": "Number of iterations per batch (denoted as μ in the algorithm)."
-        },
-    )
     epsilon: float = field(
         default=0.2,
         metadata={"help": "Epsilon value for clipping."},
@@ -129,7 +123,7 @@ class RLConfig(TrainingArguments):
             "global accumulated batch. This method was introduced in the DAPO paper to eliminate length bias. "
             "'dr_grpo': Aggregates token-level losses by normalizing with a global constant. This method was "
             "introduced in the Dr. GRPO paper to eliminate length bias. The value of the constant corresponds to "
-            "`max_completion_length`. "
+            "`max_seq_len`. "
             "'bnpo': Aggregates token-level losses by normalizing with the number of active token in the local batch. "
             "Note that normalization is performed over the local batch only, so results may slightly vary depending "
             "on the local batch size, despite a constant effective batch size. When using "
@@ -175,12 +169,6 @@ class RLConfig(TrainingArguments):
         metadata={
             "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
             "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
-        },
-    )
-    vllm_importance_sampling_correction: bool = field(
-        default=True,
-        metadata={
-            "help": "Apply truncated importance sampling using vLLM log probabilities to correct distribution mismatch during training.",
         },
     )
     vllm_importance_sampling_cap: float = field(
@@ -231,13 +219,24 @@ class RLConfig(TrainingArguments):
         default=1.0,
         metadata={"help": "Max gradient norm for clipping."},
     )
+    micro_batch_size: int = field(
+        default=16,
+        metadata={"help": "Rollouts per device per optimizer micro step."},
+    )
     per_device_train_batch_size: int = field(
         default=16,
-        metadata={"help": "Batch size per device for training."},
+        init=False,
+        repr=False,
     )
     gradient_accumulation_steps: int = field(
-        default=16,
-        metadata={"help": "Number of steps to accumulate before backward/update."},
+        default=1,
+        init=False,
+        repr=False,
+    )
+    prompts_per_batch: int = field(
+        default=0,
+        init=False,
+        repr=False,
     )
     gradient_checkpointing: bool = field(
         default=True,
@@ -297,16 +296,17 @@ class RLConfig(TrainingArguments):
             "help": "Maximum length of the prompt. If the prompt is longer than this value, it will be removed from the dataset."
         },
     )
-    num_generations: int = field(
+    rollouts_per_example: int = field(
         default=16,
         metadata={
-            "help": "Number of generations to sample. The effective batch size (num_processes * per_device_batch_size "
-            "* gradient_accumulation_steps) must be evenly divisible by this value."
+            "help": "Number of rollouts to sample per prompt when generating training data."
         },
     )
-    max_completion_length: Optional[int] = field(
-        default=None,
-        metadata={"help": "Deprecated. Use `max_seq_len` instead."},
+    batch_size: int = field(
+        default=512,
+        metadata={
+            "help": "Global batch size measured in rollouts across all devices and accumulation steps."
+        },
     )
     shuffle_dataset: bool = field(
         default=True,
@@ -314,14 +314,6 @@ class RLConfig(TrainingArguments):
     )
 
     # Parameters that control generation
-    per_device_prompt_batch_size: Optional[int] = field(
-        default=8,
-        metadata={
-            "help": "Number of unique prompts per device in each optimizer step. When set, the per-device train batch "
-            "size is derived as `per_device_prompt_batch_size * num_generations`, decoupling prompt microbatches from "
-            "the number of completions sampled per prompt.",
-        },
-    )
     generation_batch_size: Optional[int] = field(
         default=None,
         metadata={
@@ -466,6 +458,8 @@ class RLConfig(TrainingArguments):
     )
 
     def __post_init__(self):
+        # Ensure the base class sees the micro-batch size as the per-device batch size
+        self.per_device_train_batch_size = self.micro_batch_size
         super().__post_init__()
 
         if self.output_dir is None:
@@ -490,86 +484,49 @@ class RLConfig(TrainingArguments):
                 task_type="CAUSAL_LM",
             )
 
-        num_processes = self.world_size
-        if self.per_device_prompt_batch_size is not None:
-            if self.per_device_prompt_batch_size <= 0:
-                raise ValueError(
-                    "per_device_prompt_batch_size must be positive when provided."
-                )
-            self.per_device_train_batch_size = (
-                self.per_device_prompt_batch_size * self.num_generations
-            )
-        # The current default effective batch size
-        if (
-            self.generation_batch_size is not None
-            and self.steps_per_generation is not None
-        ):
+        if self.rollouts_per_example < 2:
             raise ValueError(
-                "'generation_batch_size' and 'steps_per_generation' can not be both configured at the same time"
+                "GRPO requires at least 2 rollouts per example to compute advantages."
             )
+        if self.micro_batch_size <= 0:
+            raise ValueError("micro_batch_size must be positive.")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
 
-        if self.steps_per_generation is None:
-            self.steps_per_generation = self.gradient_accumulation_steps
+        num_processes = self.world_size
+        global_rollouts_per_step = self.micro_batch_size * num_processes
+        if global_rollouts_per_step == 0:
+            raise ValueError("At least one process and a positive micro batch are required.")
+
+        if self.batch_size % global_rollouts_per_step != 0:
+            raise ValueError(
+                "batch_size must be divisible by micro_batch_size * world_size."
+            )
+        self.gradient_accumulation_steps = (
+            self.batch_size // global_rollouts_per_step
+        )
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError("Derived gradient_accumulation_steps must be positive.")
+
+        if self.batch_size % self.rollouts_per_example != 0:
+            raise ValueError(
+                "batch_size must be divisible by rollouts_per_example so each prompt receives an equal number of rollouts."
+            )
+        self.prompts_per_batch = self.batch_size // self.rollouts_per_example
 
         if self.generation_batch_size is None:
-            self.generation_batch_size = (
-                self.per_device_train_batch_size
-                * num_processes
-                * self.steps_per_generation
-            )
+            self.generation_batch_size = self.batch_size
+        else:
+            if self.generation_batch_size % self.rollouts_per_example != 0:
+                raise ValueError(
+                    "generation_batch_size must be divisible by rollouts_per_example."
+                )
 
-        # Type narrowing for static checkers
-        assert self.generation_batch_size is not None
+        self.steps_per_generation = self.gradient_accumulation_steps
 
-        if (
-            self.generation_batch_size
-            % self.per_device_train_batch_size
-            * num_processes
-            != 0
-        ):
-            raise ValueError(
-                f"generation_batch_size ({self.generation_batch_size}) must be divisible by the global batch size "
-                f"({self.per_device_train_batch_size * num_processes})."
-            )
-
-        self.steps_per_generation = self.generation_batch_size // (
-            self.per_device_train_batch_size * num_processes
-        )
-
-        assert self.generation_batch_size is not None
-        # Check if the effective batch size can be divided by the number of generations
-        if self.num_generations < 2:
-            raise ValueError(
-                "GRPO requires at least 2 generations per prompt to calculate the advantages. You provided "
-                f"{self.num_generations}, which is less than the minimum required."
-            )
-        possible_values = [
-            n_gen
-            for n_gen in range(2, self.generation_batch_size + 1)
-            if (self.generation_batch_size) % n_gen == 0
-        ]
-
-        if self.num_generations not in possible_values:
-            raise ValueError(
-                f"The effective train batch size ({num_processes} x {self.per_device_train_batch_size} x "
-                f"{self.steps_per_generation}) must be evenly divisible by the number of generations per "
-                f"prompt ({self.num_generations}). Given the current effective train batch size, the valid values for "
-                f"the number of generations are: {possible_values}."
-            )
-        self.per_device_prompt_batch_size = (
-            self.per_device_train_batch_size // self.num_generations
-        )
         if self.eval_strategy != "no":
             global_eval_batch_size = self.per_device_eval_batch_size * num_processes
-            possible_values = [
-                n_gen
-                for n_gen in range(2, global_eval_batch_size + 1)
-                if (global_eval_batch_size) % n_gen == 0
-            ]
-            if self.num_generations not in possible_values:
+            if global_eval_batch_size % self.rollouts_per_example != 0:
                 raise ValueError(
-                    f"The global eval batch size ({num_processes} x {self.per_device_eval_batch_size}) must be "
-                    f"evenly divisible by the number of generations per prompt ({self.num_generations}). Given the "
-                    "current global eval batch size, the valid values for the number of generations are: "
-                    f"{possible_values}."
+                    "The global eval batch size must be divisible by rollouts_per_example."
                 )

@@ -23,10 +23,9 @@ model, tokenizer = vf.get_model_and_tokenizer(model_name)
 run_name = "wiki-trivia-grpo_" + model_name.split("/")[-1].lower()
 
 training_args = vf.grpo_defaults(run_name=run_name)
-training_args.per_device_train_batch_size = 8
-training_args.num_generations = 16
-training_args.gradient_accumulation_steps = 16
-training_args.num_iterations = 1
+training_args.micro_batch_size = 8
+training_args.rollouts_per_example = 16
+training_args.batch_size = 128
 training_args.num_train_epochs = 5
 training_args.max_seq_len = 4096
 training_args.max_steps = 500

@@ -78,18 +78,18 @@ CUDA_VISIBLE_DEVICES=6,7 accelerate launch --config-file configs/zero3.yaml \
 args = vf.grpo_defaults(run_name="experiment")
 
 # Core batch settings
-args.per_device_train_batch_size = 8    # Prompts per GPU per step
-args.num_generations = 16               # Completions per prompt (group size)
-args.gradient_accumulation_steps = 4    # Steps before optimizer update
+args.micro_batch_size = 8           # Rollouts per GPU per micro step
+args.rollouts_per_example = 16      # Rollouts sampled per prompt
+args.batch_size = 512               # Global rollouts across devices & accumulation
 
-# Effective batch size = per_device_train_batch_size * num_processes * gradient_accumulation_steps
-# Must be divisible by num_generations
+# Derived: gradient_accumulation_steps = batch_size / (micro_batch_size * num_processes)
+# Prompts per batch = batch_size / rollouts_per_example
 ```
 
 **How to think about batch settings:**
-- `num_generations`: Larger groups (16-32) increase reward diversity but use more memory
-- `per_device_train_batch_size`: Limited by GPU memory after model weights
-- `gradient_accumulation_steps`: Use to achieve larger effective batch sizes
+- `rollouts_per_example`: Larger groups (16-32) increase reward diversity but use more memory
+- `micro_batch_size`: Limited by GPU memory after model weights
+- `batch_size`: Controls total rollouts per optimizer step (after accumulation)
 
 ### Generation Parameters
 
@@ -102,7 +102,6 @@ args.top_k = None              # Top-k filtering (None = disabled)
 
 # Length limits
 args.max_prompt_length = 1024      # Truncate prompts (left-truncated)
-args.max_completion_length = 2048  # Truncate completions
 args.max_seq_len = 4096           # Model's context window
 ```
 
@@ -119,7 +118,6 @@ args.learning_rate = 1e-6              # Conservative default
 args.lr_scheduler_type = "constant_with_warmup"
 args.warmup_steps = 10                 # Gradual warmup
 args.max_steps = 500                   # Total training steps
-args.num_iterations = 1                # PPO-style updates per batch
 
 # Gradient control
 args.max_grad_norm = 0.01              # Aggressive clipping for stability
@@ -127,7 +125,6 @@ args.max_grad_norm = 0.01              # Aggressive clipping for stability
 
 **Training dynamics:**
 - Start with default `learning_rate = 1e-6` for stability
-- `num_iterations > 1` does multiple updates per batch (more off-policy)
 - Lower `max_grad_norm` for more stable but slower training
 
 ### GRPO-Specific Parameters
@@ -206,14 +203,12 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 **For more aggressive training** (higher risk of collapse):
 - Set `beta = 0` (no KL penalty)
 - Increase learning rate (2e-6 to 5e-6)
-- Increase `num_iterations` (2-4)
 
 **For more stable training** (slower progress):
-- Increase `num_generations` (32-64)
-- Increase batch size via `gradient_accumulation_steps`
+- Increase `rollouts_per_example` (32-64)
+- Increase global `batch_size`
 - Decrease `max_grad_norm` (0.001-0.005)
 - Use larger models (14B+)
-- Keep `num_iterations = 1` (stay on-policy)
 
 ### Best Practices
 
@@ -236,7 +231,7 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 **Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn GRPO-style training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
-- Reduce `num_generations` or `per_device_train_batch_size`
+- Reduce `rollouts_per_example` or `micro_batch_size`
 - Use LoRA instead of full finetuning
 - Check vLLM server has sufficient memory
 

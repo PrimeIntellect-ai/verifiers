@@ -25,9 +25,9 @@ run_name = "tool-test_" + model_name.split("/")[-1].lower()
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 training_args = vf.grpo_defaults(run_name=run_name)
 
-training_args.per_device_train_batch_size = 12
-training_args.num_generations = 12
-training_args.gradient_accumulation_steps = 8
+training_args.micro_batch_size = 12
+training_args.rollouts_per_example = 12
+training_args.batch_size = 96
 training_args.max_tokens = 2048
 training_args.max_seq_len = 2048
 training_args.eval_strategy = "steps"
