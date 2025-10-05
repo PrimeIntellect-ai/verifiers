@@ -1,17 +1,11 @@
-import atexit
 import logging
 import time
 
 import requests
-import torch  # type: ignore
 from openai import AsyncOpenAI
 from requests import ConnectionError
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException, Timeout
-from vllm.distributed.device_communicators.pynccl import (
-    PyNcclCommunicator,
-)
-from vllm.distributed.utils import StatelessProcessGroup
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +14,14 @@ class VLLMClient(AsyncOpenAI):
     """
     A client class to interact with a vLLM server.
 
-    This class provides methods to generate completions, initialize and manage weight update groups, and update model
-    weights in a distributed setting. Before using it, start the vLLM server with `trl vllm-serve`.
+    This class provides methods to generate completions and hot-swap LoRA adapters using vLLM's native APIs.
+    Before using it, start the vLLM server with `trl vllm-serve`.
 
     Args:
         host (`str`, *optional*, defaults to `"0.0.0.0"`):
             IP address of the vLLM server.
         server_port (`int`, *optional*, defaults to `8000`):
             Port number of the vLLM server.
-        group_port (`int`, *optional*, defaults to `51216`):
-            Port number for the weight update group.
         connection_timeout (`float`, *optional*, defaults to `0.0`):
             Total timeout duration in seconds to wait for the server to be up. If the server is not up after the
             timeout, a `ConnectionError` is raised.
@@ -44,7 +36,7 @@ class VLLMClient(AsyncOpenAI):
         INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
         ```
 
-        Use the client to generate completions and update model weights:
+        Use the client to generate completions and load LoRA adapters on the fly:
 
         ```python
         >>> from trl.extras.vllm_client import VLLMClient
@@ -53,9 +45,7 @@ class VLLMClient(AsyncOpenAI):
         [[2980, 498, 1492, 752, 448, 264, 13027, 8645, 30, 358, 2776, 4460, 311, 3270, 264, 2025],
          [911, 7988, 1251, 382, 3838, 653, 498, 1618, 4325, 879, 2581, 20027, 264, 21428, 30, 362]]
 
-        >>> from transformers import AutoModelForCausalLM
-        >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B", device_map="cuda")
-        >>> client.update_model_params(model)
+        >>> client.load_lora_adapter("experiment", "/path/to/adapter")
         ```
     """
 
@@ -63,7 +53,6 @@ class VLLMClient(AsyncOpenAI):
         self,
         host: str = "0.0.0.0",
         port: int = 8000,
-        group_port: int = 51216,
         connection_timeout: float = 0.0,
     ):
         super().__init__(base_url=f"http://{host}:{port}/v1", api_key="local")
@@ -78,8 +67,6 @@ class VLLMClient(AsyncOpenAI):
         self.host = host
         self.server_port = port  # Renamed from server_port to port to match super init
         self.server_url = f"http://{self.host}:{self.server_port}"
-
-        self.group_port = group_port
         self.check_server(connection_timeout)  # check server and fail after timeout
 
     def check_server(self, total_timeout: float = 0.0, retry_interval: float = 2.0):
@@ -118,98 +105,63 @@ class VLLMClient(AsyncOpenAI):
             )
             time.sleep(retry_interval)
 
-    def init_communicator(self):
+    def load_lora_adapter(
+        self, lora_name: str, adapter_path: str, timeout: float = 300.0
+    ) -> None:
         """
-        Initializes the weight update group in a distributed setup for model synchronization.
-        """
-
-        # Get the world size from the server
-        url = f"{self.server_url}/get_world_size"
-        try:
-            response = requests.get(url)
-        except Exception as e:
-            logger.error(f"Failed to get world size: {e}")
-            raise
-
-        if response.status_code == 200:
-            vllm_world_size = response.json()["world_size"]
-            logger.info(f"vLLM world size: {vllm_world_size}")
-        else:
-            raise Exception(f"Request failed: {response.status_code}, {response.text}")
-
-        world_size = vllm_world_size + 1  # add the client to the world
-        self.rank = vllm_world_size  # the client's rank is the last process
-        logger.info(f"Client rank: {self.rank}, total world size: {world_size}")
-
-        # Initialize weight update group
-        url = f"{self.server_url}/init_communicator"
-        # Send the actual host address for the StatelessProcessGroup connection
-        try:
-            response = self.session.post(
-                url,
-                json={
-                    "host": self.host,
-                    "port": self.group_port,
-                    "world_size": world_size,
-                },
-            )
-        except Exception as e:
-            logger.error(f"Failed to init communicator: {e}")
-            raise
-
-        if response.status_code != 200:
-            raise Exception(f"Request failed: {response.status_code}, {response.text}")
-
-        # Brief delay to allow server initialization. While not strictly required (client socket will retry on
-        # connection failure), this prevents log warnings like:
-        # [W416 23:24:57.460001114 socket.cpp:204] [c10d] The hostname of the client socket cannot be retrieved. err=-3
-        time.sleep(0.1)
-
-        # Set up the communication group for weight broadcasting
-        pg = StatelessProcessGroup.create(
-            host=self.host, port=self.group_port, rank=self.rank, world_size=world_size
-        )
-        # Use device 0 like the old code - this seems to work better for multi-GPU setups
-        device = 0
-        logger.info(
-            f"Initializing PyNcclCommunicator on device {device}, rank {self.rank}, world_size {world_size}"
-        )
-        self.pynccl_comm = PyNcclCommunicator(pg, device=device)
-
-        # When the client object is deleted, close the weight update group
-        atexit.register(self.close_communicator)
-
-    def update_named_param(self, name: str, weights: torch.Tensor):
-        """
-        Updates a specific named parameter in the model and broadcasts it to other processes.
+        Load a LoRA adapter on the vLLM server using its native hot-swapping API.
 
         Args:
-            name (`str`):
-                Name of the layer whose weights are being updated.
-            weights (`torch.Tensor`):
-                Tensor containing the updated weights.
+            lora_name (`str`):
+                Identifier used by vLLM to register the adapter.
+            adapter_path (`str`):
+                Absolute path to the saved LoRA adapter directory.
+            timeout (`float`, *optional*, defaults to `300.0`):
+                Timeout for the HTTP request.
         """
-        dtype, shape = str(weights.dtype), tuple(weights.shape)
-        url = f"{self.server_url}/update_named_param"
 
-        # Add timeout to prevent hanging on HTTP request
+        url = f"{self.server_url}/v1/load_lora_adapter"
+        payload = {"lora_name": lora_name, "lora_path": adapter_path}
         try:
-            response = self.session.post(
-                url, json={"name": name, "dtype": dtype, "shape": shape}, timeout=300.0
+            response = self.session.post(url, json=payload, timeout=timeout)
+        except Timeout as exc:
+            logger.error(
+                "Timeout waiting for vLLM to load adapter '%s' after %.1f seconds",
+                lora_name,
+                timeout,
             )
-        except Timeout:
-            logger.error(f"Timeout waiting for server response for {name} after 300s")
-            raise Exception(f"Request timeout for {name} after 300s")
-        except Exception as e:
-            logger.error(f"Error sending request for {name}: {e}")
+            raise Exception(
+                f"Request timeout while loading adapter '{lora_name}'"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - log and propagate
+            logger.error("Error loading LoRA adapter '%s': %s", lora_name, exc)
             raise
 
         if response.status_code != 200:
-            raise Exception(f"Request failed: {response.status_code}, {response.text}")
+            raise Exception(
+                f"Failed to load LoRA adapter '{lora_name}': {response.status_code} {response.text}"
+            )
 
-        # Broadcast the weights to the other processes
-        self.pynccl_comm.broadcast(weights, src=self.rank)
-        self.pynccl_comm.group.barrier()
+        logger.info(
+            "Loaded LoRA adapter '%s' from %s", lora_name, adapter_path
+        )
+
+    def unload_lora_adapter(self, lora_name: str) -> None:
+        """Unload a LoRA adapter from the vLLM server if it is present."""
+
+        url = f"{self.server_url}/v1/unload_lora_adapter"
+        try:
+            response = self.session.post(url, json={"lora_name": lora_name}, timeout=60.0)
+        except Exception as exc:  # noqa: BLE001 - log and propagate
+            logger.error("Error unloading LoRA adapter '%s': %s", lora_name, exc)
+            raise
+
+        if response.status_code != 200:
+            raise Exception(
+                f"Failed to unload LoRA adapter '{lora_name}': {response.status_code} {response.text}"
+            )
+
+        logger.info("Unloaded LoRA adapter '%s'", lora_name)
 
     def reset_prefix_cache(self):
         """
@@ -219,28 +171,3 @@ class VLLMClient(AsyncOpenAI):
         response = self.session.post(url)
         if response.status_code != 200:
             raise Exception(f"Request failed: {response.status_code}, {response.text}")
-
-    def get_num_background_tasks(self):
-        """
-        Gets the number of background tasks.
-        """
-        url = f"{self.server_url}/get_num_background_tasks"
-        response = self.session.post(url)
-        return response.json()["num_background_tasks"]
-
-    def close_communicator(self):
-        """
-        Closes the weight update group and cleans up the communication group.
-        """
-        url = f"http://{self.host}:{self.server_port}/close_communicator"
-
-        try:
-            response = self.session.post(url)
-        except ConnectionError:
-            # The server might be already down, so we don't need to close the communicator
-            pass
-        else:
-            if response.status_code != 200:
-                raise Exception(
-                    f"Request failed: {response.status_code}, {response.text}"
-                )
