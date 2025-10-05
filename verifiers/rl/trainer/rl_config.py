@@ -245,7 +245,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Batch size per device for training."},
     )
     gradient_accumulation_steps: int = field(
-        default=16,
+        default=4,
         metadata={"help": "Number of steps to accumulate before backward/update."},
     )
     gradient_checkpointing: bool = field(
@@ -402,7 +402,7 @@ class RLConfig(TrainingArguments):
         },
     )
     max_concurrent: int = field(
-        default=1024,
+        default=10000,
         metadata={"help": "Maximum number of concurrent requests to the environment."},
     )
     # Async generation parameters
@@ -475,10 +475,10 @@ class RLConfig(TrainingArguments):
     )
 
     def __post_init__(self):
-        super().__post_init__()
-
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
+
+        super().__post_init__()
 
         if self.lora_target_modules is None:
             self.lora_target_modules = [

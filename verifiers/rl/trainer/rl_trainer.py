@@ -495,7 +495,8 @@ class RLTrainer(Trainer):
             callbacks=callbacks,
             optimizers=optimizers,
         )
-
+        assert self.args.output_dir is not None
+        print(self.args.output_dir)
         self.adapter_save_dir = self._init_adapter_save_dir(Path(self.args.output_dir))
         if self.accelerator.is_main_process:
             self.adapter_save_dir.mkdir(parents=True, exist_ok=True)

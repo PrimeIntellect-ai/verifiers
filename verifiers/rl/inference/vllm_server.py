@@ -32,7 +32,6 @@ async def run_server(args: Namespace):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, signal_handler)
-
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine = AsyncLLMEngine.from_engine_args(
         engine_args, usage_context=UsageContext.OPENAI_API_SERVER
@@ -51,6 +50,7 @@ async def run_server(args: Namespace):
 
     vllm_config = await engine.get_vllm_config()
     await init_app_state(engine, vllm_config, app.state, args)
+
     shutdown_task = await serve_http(
         app,
         sock,
@@ -63,9 +63,6 @@ async def run_server(args: Namespace):
         ssl_cert_reqs=args.ssl_cert_reqs,
     )
     await shutdown_task
-
-    await engine.aclose()
-
     sock.close()
 
 
@@ -75,8 +72,9 @@ def main():
     )
     parser = make_arg_parser(parser)
     args = parser.parse_args() or Namespace()
+    # required
+    args.enable_lora = True
     validate_parsed_serve_args(args)
-    print(args)
     uvloop.run(run_server(args))
 
 
