@@ -376,7 +376,7 @@ class RLConfig(TrainingArguments):
 
     # Parameters that control generation
     per_device_prompt_batch_size: Optional[int] = field(
-        default=None,
+        default=8,
         metadata={
             "help": "Number of unique prompts per device in each optimizer step. When set, the per-device train batch "
             "size is derived as `per_device_prompt_batch_size * num_generations`, decoupling prompt microbatches from "

@@ -1220,13 +1220,16 @@ class RLTrainer(Trainer):
             with torch.no_grad():
                 completion_mask = attention_mask[:, 1:]
                 logits_to_keep = completion_mask.size(1)
-                if (
-                    sampling_per_token_logps is not None
-                    and sampling_per_token_logps.size(1) != logits_to_keep
-                ):
+                if sampling_per_token_logps is not None:
+                    # Align width with sampling logprobs (completion-only) if present
+                    logits_to_keep = min(
+                        logits_to_keep, sampling_per_token_logps.size(1)
+                    )
                     sampling_per_token_logps = sampling_per_token_logps[
                         :, :logits_to_keep
                     ]
+
+                # Compute model per-token logps for the aligned width
                 old_per_token_logps = self._get_per_token_logps(
                     self.model,
                     input_ids,
@@ -1234,6 +1237,10 @@ class RLTrainer(Trainer):
                     logits_to_keep,
                     batch_size=self.per_device_train_batch_size,
                 )
+
+                # Align completion mask width for downstream masking/where
+                completion_mask = completion_mask[:, -logits_to_keep:]
+
                 if (
                     sampling_per_token_logps is not None
                     and self.vllm_importance_sampling_correction
@@ -1308,6 +1315,15 @@ class RLTrainer(Trainer):
         # prompt is at least 1 token
         completion_mask = attention_mask[:, 1:]
         logits_to_keep = completion_mask.size(1)
+        # If importance_sampling_ratio provided (from sampling logprobs), align widths
+        if (
+            self.vllm_importance_sampling_correction
+            and inputs.get("importance_sampling_ratio") is not None
+        ):
+            ratio = inputs["importance_sampling_ratio"]
+            logits_to_keep = min(logits_to_keep, ratio.size(1))
+            # Align completion mask width to ratio width
+            completion_mask = completion_mask[:, -logits_to_keep:]
         per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
@@ -1370,6 +1386,11 @@ class RLTrainer(Trainer):
             and inputs.get("importance_sampling_ratio") is not None
         ):
             importance_sampling_ratio = inputs["importance_sampling_ratio"]
+            # Ensure the ratio width matches current logits_to_keep
+            if importance_sampling_ratio.size(1) != per_token_loss.size(1):
+                importance_sampling_ratio = importance_sampling_ratio[
+                    :, : per_token_loss.size(1)
+                ]
             per_token_loss = per_token_loss * importance_sampling_ratio
 
         if self.loss_type == "grpo":
