@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from verifiers import GenerateOutputs
 from verifiers.types import ProcessedOutputs
 
-
 class BatchRequest(BaseModel):
     """Request for batch generation"""
 
@@ -265,6 +264,7 @@ class AsyncBatchGenerator:
         """
         # Call environment generation
         self.is_generating = True
+
         env_results = await self.env.a_generate(
             request.env_inputs,
             client=self.client,
@@ -273,6 +273,7 @@ class AsyncBatchGenerator:
             score_rollouts=True,
             max_concurrent=request.max_concurrent,
         )
+        
         self.is_generating = False
 
         # Extract all reward-related keys

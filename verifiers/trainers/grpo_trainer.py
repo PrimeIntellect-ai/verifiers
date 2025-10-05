@@ -988,46 +988,48 @@ class GRPOTrainer(Trainer):
     def _gather_batch_data(self, batch_offset: int = 0):
         """
         Gather batch data from all processes and convert PIL images in prompts to base64 image_url.
+        If prompt already has an image_url, leave it as is.
+        If prompt has a placeholder {"type": "image"} and x has a PIL image, convert it.
         """
         batches = self._async_dataloader.peek_ahead(batch_offset)
-
+    
         if batch_offset == 0:
             batch = batches[0] if batches else None
         else:
             batch = batches[batch_offset - 1] if batches else None
-
+    
         if batch is None:
             return [], [], [], []
-
+    
         if isinstance(batch, dict):
             batch = [batch]
-
+    
         prompts = []
         for x in batch:
             prompt = x["prompt"]
+            image = x.get("image")
             for message in prompt:
                 content = message.get("content", [])
                 if isinstance(content, list):
                     for c in content:
-                        if isinstance(c, dict):
-                            if c.get("type") == "image":  # Convert only if not already base64
-                                if "image_url" not in c:
-                                    if "image" in x:  # only convert if PIL image exists
-                                        img_url = pil_to_base64_url(x["image"])
-                                        c.clear()
-                                        c.update({
-                                            "type": "image_url",
-                                            "image_url": {"url": img_url}
-                                        })
-                            elif c.get("type") == "image_url": # Already base64, leave as is
-                                pass
+                        if not isinstance(c, dict):
+                            continue
+                        if c.get("type") == "image_url": # If already base64, skip
+                            continue
+                        if c.get("type") == "image" and "image" in x and x["image"] is not None: # If placeholder and we have a PIL image, convert
+                            img_url = pil_to_base64_url(x["image"])
+                            c.clear()
+                            c.update({
+                                "type": "image_url",
+                                "image_url": {"url": img_url}
+                            })
                 elif isinstance(content, str):
                     pass
                 else:
                     print("Unknown content type:", type(content))
     
             prompts.append(prompt)
-        
+    
         answers = [x["answer"] for x in batch]
         tasks = [x.get("task", "default") for x in batch]
         infos = [x.get("info", {}) for x in batch]
@@ -1036,7 +1038,6 @@ class GRPOTrainer(Trainer):
         all_answers = gather_object(answers)
         all_tasks = gather_object(tasks)
         all_infos = gather_object(infos)
-    
         return all_prompts, all_answers, all_tasks, all_infos
 
     def _prepare_inputs(  # type: ignore

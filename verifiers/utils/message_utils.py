@@ -60,38 +60,37 @@ def cleanup_message(message: ChatMessage) -> ChatMessage:
 
     if isinstance(content, str):
         new_message["content"] = content
-        
-    else :
-        for c in content:
-            c_dict = dict(c)
-            c_type = c_dict.get("type")
+        return cast(ChatMessage, new_message)
 
-            if c_type == "text":
-                if c_dict.get("text") is not None:
-                    new_message["content"].append({
-                        "type": "text",
-                        "text": c_dict["text"]
-                    })
+    for c in content:
+        c_dict = dict(c)
+        c_type = c_dict.get("type")
 
-            elif c_type == "image_url":
-                if "image_url" in c_dict:
-                    new_message["content"].append({
-                        "type": "image_url",
-                        "image_url": c_dict["image_url"]
-                    })
+        if c_type == "text":
+            if c_dict.get("text") is not None:
+                new_message["content"].append({
+                    "type": "text",
+                    "text": c_dict["text"]
+                })
 
-            elif c_type == "input_audio":
-                if "input_audio" in c_dict:
-                    new_message["content"].append({
-                        "type": "input_audio",
-                        "input_audio": c_dict["input_audio"]
-                    })
+        elif c_type == "image_url":
+            if "image_url" in c_dict:
+                new_message["content"].append({
+                    "type": "image_url",
+                    "image_url": c_dict["image_url"]
+                })
 
-            else:
-                new_message["content"].append(c_dict)
+        elif c_type == "input_audio":
+            if "input_audio" in c_dict:
+                new_message["content"].append({
+                    "type": "input_audio",
+                    "input_audio": c_dict["input_audio"]
+                })
+
+        else:
+            new_message["content"].append(c_dict)
 
     return cast(ChatMessage, new_message)
-
 
 def cleanup_messages(messages: Messages) -> Messages:
     if isinstance(messages, str):

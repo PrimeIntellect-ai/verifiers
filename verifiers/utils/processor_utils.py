@@ -24,14 +24,13 @@ def encode_chat_with_processor(
     Apply chat template and return token IDs, handling both tokenizer and processor.
     Supports base64-encoded images in the conversation.
     """
-        
+
     if supports_images(processing_class): 
         prompt_text = processing_class.apply_chat_template(
             conversation=conversation,
             add_generation_prompt=add_generation_prompt,
             tokenize=False,
         )
-
         images = []
         for msg in conversation:
             for c in msg.get("content", []):

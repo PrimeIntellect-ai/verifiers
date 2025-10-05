@@ -55,8 +55,8 @@ class GenerateInputs(BaseModel):
 class GenerateOutputs(BaseModel):
     """Pydantic model for generation outputs."""
 
-    prompt: list[Messages]
-    completion: list[Messages]
+    prompt: list[list[dict]]
+    completion: list[list[dict]]
     answer: list[str]
     state: list[State]
     info: list[Info]

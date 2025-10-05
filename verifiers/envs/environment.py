@@ -429,6 +429,7 @@ class Environment(ABC):
             reward=[],
             metrics={},
         )
+        
         n = len(results.prompt)
 
         # Resolve concurrency knobs
