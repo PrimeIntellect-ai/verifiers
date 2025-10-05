@@ -1007,7 +1007,6 @@ class GRPOTrainer(Trainer):
         prompts = []
         for x in batch:
             prompt = x["prompt"]
-            image = x.get("image")
             for message in prompt:
                 content = message.get("content", [])
                 if isinstance(content, list):
