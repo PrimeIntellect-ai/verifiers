@@ -308,15 +308,6 @@ class RLConfig(TrainingArguments):
         default=None,
         metadata={"help": "Deprecated. Use `max_seq_len` instead."},
     )
-    ds3_gather_for_generation: bool = field(
-        default=True,
-        metadata={
-            "help": "This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for "
-            "generation, improving generation speed. However, disabling this option allows training models that "
-            "exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation. Disabling this option "
-            "is not compatible with vLLM generation."
-        },
-    )
     shuffle_dataset: bool = field(
         default=True,
         metadata={"help": "Whether to shuffle the training dataset."},
