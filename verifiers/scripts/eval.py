@@ -194,7 +194,7 @@ def eval_environment(
                 )
             else:
                 dataset_name = hf_hub_dataset_name
-            dataset.push_to_hub(dataset_name)
+            dataset.push_to_hub(dataset_name, env)
             logger.info(f"Saved dataset to Hugging Face Hub: {dataset_name}")
 
 
