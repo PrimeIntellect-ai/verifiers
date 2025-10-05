@@ -829,11 +829,14 @@ class RLTrainer(Trainer):
             f"Process {self.accelerator.process_index}: Starting weight sync to vLLM"
         )
 
-        adapter_name = self._format_adapter_name(self.state.global_step)
+        step = self.state.global_step
+        base_model_name = self._get_model_name()
+        adapter_name = self._format_adapter_name(base_model_name, step)
+        adapter_dirname = self._format_adapter_path_name(step)
 
         with gather_if_zero3(list(self.model.parameters())):  # type: ignore[arg-type]
             if self.accelerator.is_main_process:
-                adapter_path = self._save_active_adapter(adapter_name)
+                adapter_path = self._save_active_adapter(adapter_dirname)
                 self.logger.info(
                     "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
                 )
@@ -842,12 +845,17 @@ class RLTrainer(Trainer):
                 )
                 self._register_saved_adapter(adapter_name, adapter_path)
                 self.vllm_client.reset_prefix_cache()
+                # Point async generation to the freshly loaded adapter by name
+                self.async_generator.model_name = adapter_name
 
         # Ensure all processes wait for the main process to finish updating weights
         self.accelerator.wait_for_everyone()
 
-    def _format_adapter_name(self, step: int) -> str:
-        return f"adapter-step-{step:06d}"
+    def _format_adapter_name(self, model_name: str, step: int) -> str:
+        return f"{model_name}-step-{int(step)}"
+
+    def _format_adapter_path_name(self, step: int) -> str:
+        return f"adapter-step-{int(step)}"
 
     def _init_adapter_save_dir(self, output_dir: Path) -> Path:
         """Compute where LoRA adapters are stored for vLLM hot-swapping.
