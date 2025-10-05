@@ -24,7 +24,9 @@ class RLConfig(TrainingArguments):
     # LoRA parameters
     use_lora: bool = field(
         default=True,
-        metadata={"help": "Whether to use LoRA."},
+        metadata={
+            "help": "Whether to use LoRA. Must remain `True` – the trainer only supports LoRA fine-tuning."
+        },
     )
     lora_rank: int = field(
         default=8,
@@ -53,6 +55,13 @@ class RLConfig(TrainingArguments):
     lora_config: Optional[LoraConfig] = field(
         default=None,
         metadata={"help": "LoRA configuration."},
+    )
+
+    max_saved_adapters: int = field(
+        default=3,
+        metadata={
+            "help": "Number of most recent LoRA adapters to keep on disk during training. Older adapters are deleted."
+        },
     )
 
     # Parameters that control the training
@@ -385,7 +394,7 @@ class RLConfig(TrainingArguments):
         },
     )
     max_concurrent: int = field(
-        default=1024,
+        default=10000,
         metadata={"help": "Maximum number of concurrent requests to the environment."},
     )
     # Async generation parameters
@@ -460,10 +469,10 @@ class RLConfig(TrainingArguments):
     def __post_init__(self):
         # Ensure the base class sees the micro-batch size as the per-device batch size
         self.per_device_train_batch_size = self.micro_batch_size
-        super().__post_init__()
-
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
+
+        super().__post_init__()
 
         if self.lora_target_modules is None:
             self.lora_target_modules = [
@@ -475,7 +484,13 @@ class RLConfig(TrainingArguments):
                 "down_proj",
                 "up_proj",
             ]
-        if self.use_lora and self.lora_config is None:
+        if not self.use_lora:
+            raise ValueError("RLTrainer is LoRA-only; set `use_lora=True`.")
+
+        if self.max_saved_adapters <= 0:
+            raise ValueError("max_saved_adapters must be a positive integer.")
+
+        if self.lora_config is None:
             self.lora_config = LoraConfig(
                 r=self.lora_rank,
                 lora_alpha=self.lora_alpha,
@@ -496,15 +511,15 @@ class RLConfig(TrainingArguments):
         num_processes = self.world_size
         global_rollouts_per_step = self.micro_batch_size * num_processes
         if global_rollouts_per_step == 0:
-            raise ValueError("At least one process and a positive micro batch are required.")
+            raise ValueError(
+                "At least one process and a positive micro batch are required."
+            )
 
         if self.batch_size % global_rollouts_per_step != 0:
             raise ValueError(
                 "batch_size must be divisible by micro_batch_size * world_size."
             )
-        self.gradient_accumulation_steps = (
-            self.batch_size // global_rollouts_per_step
-        )
+        self.gradient_accumulation_steps = self.batch_size // global_rollouts_per_step
         if self.gradient_accumulation_steps <= 0:
             raise ValueError("Derived gradient_accumulation_steps must be positive.")
 

@@ -79,7 +79,7 @@ def get_model(
 ) -> Any:
     if model_kwargs is None:
         model_kwargs = dict(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",
             use_cache=False,
         )
