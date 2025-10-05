@@ -55,7 +55,7 @@ dev = [
 [project.optional-dependencies]
 train = [
     "torch>=2.7.0",
-    "transformers",
+    "transformers>=4.51.0",
     "accelerate>=1.4.0",
     "requests",
     "peft",
@@ -101,7 +101,7 @@ vf-eval = "verifiers.scripts.eval:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.inference.vllm_server:main"
+vf-vllm = "verifiers.rl.inference.vllm_server:main"
 
 # hatchling configuration
 [tool.hatch.version]

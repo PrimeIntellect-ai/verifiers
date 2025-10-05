@@ -2,21 +2,20 @@ import logging
 import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Sized, Tuple, Union
+from typing import Any, Dict, List, Optional, Sized, Tuple, Union, cast
 
 import datasets
 import numpy as np
-import torch 
-import wandb 
+import torch
 from accelerate.utils import (
     broadcast_object_list,
     gather_object,
     is_peft_model,
 )
-from peft import PeftConfig, get_peft_model 
-from torch.utils.data import DataLoader, Sampler 
+from peft import get_peft_model
+from torch.utils.data import DataLoader, Sampler
 from transformers import AutoModelForCausalLM
-from transformers.integrations.deepspeed import ( 
+from transformers.integrations.deepspeed import (
     is_deepspeed_zero3_enabled,
 )
 from transformers.modeling_utils import (
@@ -25,12 +24,12 @@ from transformers.modeling_utils import (
 from transformers.tokenization_utils_base import (
     PreTrainedTokenizerBase,
 )
-from transformers.trainer import Trainer 
+from transformers.trainer import Trainer
 from transformers.trainer_callback import (
     TrainerCallback,
 )
-from transformers.trainer_utils import seed_worker 
-from trl.models.modeling_base import create_reference_model 
+from transformers.trainer_utils import seed_worker
+from trl.models.modeling_base import create_reference_model
 from trl.models.utils import prepare_deepspeed
 from trl.trainer.callbacks import SyncRefModelCallback
 from trl.trainer.utils import (
@@ -40,12 +39,12 @@ from trl.trainer.utils import (
 )
 
 import verifiers as vf
-
+import wandb
+from verifiers.rl.inference.vllm_client import VLLMClient
 from verifiers.rl.trainer.async_batch_generator import AsyncBatchGenerator, BatchRequest
 from verifiers.rl.trainer.async_dataloader_wrapper import AsyncDataLoaderWrapper
 from verifiers.rl.trainer.rl_config import RLConfig
 from verifiers.utils.logging_utils import print_prompt_completions_sample
-from verifiers.rl.inference.vllm_client import VLLMClient
 
 
 class RepeatSampler(Sampler):
@@ -193,17 +192,26 @@ def split_tensor_dict(
             {"x": tensor([[ 8,  9], [10, 11]]), "y": tensor([[4], [5]])}
         ]
     """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    chunk_size = first_tensor.shape[0] // num_chunks
-    return [
-        {
-            key: tensor[i * chunk_size : (i + 1) * chunk_size]
-            if tensor is not None
-            else None
-            for key, tensor in tensor_dict.items()
-        }
-        for i in range(num_chunks)
-    ]
+    first_value = next(value for value in tensor_dict.values() if value is not None)
+    if isinstance(first_value, list):
+        chunk_size = len(first_value) // num_chunks
+    else:
+        chunk_size = first_value.shape[0] // num_chunks
+
+    chunks: list[dict[str, Optional[torch.Tensor]]] = []
+    for i in range(num_chunks):
+        chunk: dict[str, Optional[torch.Tensor]] = {}
+        for key, tensor in tensor_dict.items():
+            if tensor is None:
+                chunk[key] = None
+            elif isinstance(tensor, list):
+                chunk[key] = tensor[i * chunk_size : (i + 1) * chunk_size]
+            elif tensor.ndim == 0:
+                chunk[key] = tensor
+            else:
+                chunk[key] = tensor[i * chunk_size : (i + 1) * chunk_size]
+        chunks.append(chunk)
+    return chunks
 
 
 def shuffle_tensor_dict(
@@ -228,7 +236,7 @@ def shuffle_tensor_dict(
     batch_size = first_tensor.shape[0]
     permutation = torch.randperm(batch_size)
     return {
-        key: tensor[permutation] if tensor is not None else None
+        key: tensor[permutation] if tensor is not None and tensor.ndim > 0 else tensor
         for key, tensor in tensor_dict.items()
     }
 
@@ -274,14 +282,14 @@ class RLTrainer(Trainer):
         optimizers: tuple[
             Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]
         ] = (None, None),
-        peft_config: Optional[PeftConfig] = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(__name__)
 
-        # Models
-        if peft_config is not None:
-            model = get_peft_model(model, peft_config)  # type: ignore
+        # configure LoRA
+        if args.lora_config is not None:
+            model = cast(PreTrainedModel, get_peft_model(model, args.lora_config))
+
             # Override sync_ref_model if PEFT is used since ref_model will be None
             if args.sync_ref_model:
                 self.logger.warning(
@@ -347,10 +355,34 @@ class RLTrainer(Trainer):
         self.frequency_penalty = args.frequency_penalty
         self.top_k = args.top_k
         self.loss_type = args.loss_type
-        self.scale_rewards = args.scale_rewards
+        raw_scale_rewards = args.scale_rewards
+        if isinstance(raw_scale_rewards, bool):
+            self.scale_rewards_mode = "group" if raw_scale_rewards else "none"
+        elif isinstance(raw_scale_rewards, str):
+            normalized = raw_scale_rewards.lower()
+            if normalized in {"true", "group"}:
+                self.scale_rewards_mode = "group"
+            elif normalized == "batch":
+                self.scale_rewards_mode = "batch"
+            elif normalized in {"false", "none"}:
+                self.scale_rewards_mode = "none"
+            else:
+                raise ValueError(
+                    "scale_rewards must be a boolean or one of {'group', 'batch', 'none'}"
+                )
+        else:
+            raise ValueError(
+                "scale_rewards must be a boolean or one of {'group', 'batch', 'none'}"
+            )
+        self.scale_rewards = self.scale_rewards_mode != "none"
         self.mask_truncated_completions = args.mask_truncated_completions
         self.zero_truncated_completions = args.zero_truncated_completions
         self.delta = args.delta
+        self.importance_sampling_level = args.importance_sampling_level
+        self.vllm_importance_sampling_correction = (
+            args.vllm_importance_sampling_correction
+        )
+        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         # Reference model parameters
         self.beta = args.beta
@@ -456,10 +488,14 @@ class RLTrainer(Trainer):
             optimizers=optimizers,
         )
 
-        if self.train_dataset is not None:
-            unique_prompts_per_device_batch = (
-                self.per_device_train_batch_size / self.num_generations
+        self.per_device_prompt_batch_size = args.per_device_prompt_batch_size
+        if self.per_device_prompt_batch_size is None:
+            self.per_device_prompt_batch_size = (
+                self.per_device_train_batch_size // self.num_generations
             )
+
+        if self.train_dataset is not None:
+            unique_prompts_per_device_batch = self.per_device_prompt_batch_size
             unique_prompts_per_gradient_step = (
                 unique_prompts_per_device_batch * self.gradient_accumulation_steps
             )
@@ -552,8 +588,6 @@ class RLTrainer(Trainer):
         }
 
         # vLLM client for weight syncing only; only import if used
-        
-
         self.vllm_client = VLLMClient(
             host=host, port=port, connection_timeout=args.vllm_server_timeout
         )
@@ -565,7 +599,6 @@ class RLTrainer(Trainer):
         self._last_loaded_step = (
             0  # Initialize to 0 since vLLM already has initial weights
         )
-        self.model_accepts_loss_kwargs = False
         # Weight updates to vLLM happen only when generating new completions
         # Frequency: every (gradient_accumulation_steps * num_iterations) training steps
         # When using vLLM, the main process is responsible for loading the model weights. This can cause process
@@ -1070,6 +1103,7 @@ class RLTrainer(Trainer):
                     "prompt_mask": processed_results.prompt_mask,
                     "completion_ids": processed_results.completion_ids,
                     "completion_mask": processed_results.completion_mask,
+                    "completion_logprobs": processed_results.completion_logprobs,
                     "rewards": processed_results.rewards,
                     "all_reward_dict": batch_result.all_reward_dict,
                     "completions": batch_result.completions,
@@ -1100,9 +1134,18 @@ class RLTrainer(Trainer):
             )
             all_advantages = self._compute_advantages(all_rewards)
 
+            completion_token_counts = [
+                sum(mask) for mask in broadcast_data["completion_mask"]
+            ]
+            num_items_in_batch = torch.tensor(
+                float(sum(completion_token_counts)),
+                device=self.accelerator.device,
+            )
+
             # Now create tensors only for this process's slice
             input_ids_list = []
             attention_mask_list = []
+            sampling_logprobs_list: list[torch.Tensor] = []
 
             for i in range(process_slice.start, process_slice.stop):
                 input_ids_list.append(
@@ -1119,6 +1162,13 @@ class RLTrainer(Trainer):
                         device=self.accelerator.device,
                     )
                 )
+                sampling_logprobs_list.append(
+                    torch.tensor(
+                        broadcast_data["completion_logprobs"][i],
+                        device=self.accelerator.device,
+                        dtype=torch.float32,
+                    )
+                )
 
             input_ids = pad(
                 input_ids_list,
@@ -1126,6 +1176,14 @@ class RLTrainer(Trainer):
                 padding_side="right",
             )  # type: ignore
             attention_mask = pad(attention_mask_list, padding_side="right")  # type: ignore
+            if sampling_logprobs_list:
+                sampling_per_token_logps = pad(
+                    sampling_logprobs_list,
+                    padding_value=0,
+                    padding_side="right",
+                )
+            else:
+                sampling_per_token_logps = None
 
             # Truncate if needed
             if self.max_seq_len is not None and input_ids.size(1) > self.max_seq_len:
@@ -1157,9 +1215,18 @@ class RLTrainer(Trainer):
                     all_completion_ids=broadcast_data["completion_ids"],
                     all_prompt_mask=broadcast_data["prompt_mask"],
                 )
+            importance_sampling_ratio: Optional[torch.Tensor] = None
+
             with torch.no_grad():
                 completion_mask = attention_mask[:, 1:]
                 logits_to_keep = completion_mask.size(1)
+                if (
+                    sampling_per_token_logps is not None
+                    and sampling_per_token_logps.size(1) != logits_to_keep
+                ):
+                    sampling_per_token_logps = sampling_per_token_logps[
+                        :, :logits_to_keep
+                    ]
                 old_per_token_logps = self._get_per_token_logps(
                     self.model,
                     input_ids,
@@ -1167,6 +1234,21 @@ class RLTrainer(Trainer):
                     logits_to_keep,
                     batch_size=self.per_device_train_batch_size,
                 )
+                if (
+                    sampling_per_token_logps is not None
+                    and self.vllm_importance_sampling_correction
+                ):
+                    importance_sampling_ratio = torch.exp(
+                        old_per_token_logps - sampling_per_token_logps
+                    )
+                    importance_sampling_ratio = torch.clamp(
+                        importance_sampling_ratio, max=self.vllm_importance_sampling_cap
+                    )
+                    importance_sampling_ratio = torch.where(
+                        completion_mask.bool(),
+                        importance_sampling_ratio,
+                        torch.ones_like(importance_sampling_ratio),
+                    )
 
             # Concatenate all data for shuffling
             full_batch: dict[str, torch.Tensor | None] = {
@@ -1174,6 +1256,8 @@ class RLTrainer(Trainer):
                 "attention_mask": attention_mask,
                 "old_per_token_logps": old_per_token_logps,
                 "advantages": advantages,
+                "num_items_in_batch": num_items_in_batch,
+                "importance_sampling_ratio": importance_sampling_ratio,
             }
 
             # Shuffle and split for gradient accumulation
@@ -1193,17 +1277,20 @@ class RLTrainer(Trainer):
         rewards: torch.Tensor,
     ) -> torch.Tensor:
         """Compute advantages from rewards with normalization using full batch statistics."""
-        # Always use full batch statistics
-        mean_grouped = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped = rewards.view(-1, self.num_generations).std(dim=1)
-
-        # Normalize the rewards to compute advantages
+        grouped_rewards = rewards.view(-1, self.num_generations)
+        mean_grouped = grouped_rewards.mean(dim=1)
         mean_grouped = mean_grouped.repeat_interleave(self.num_generations, dim=0)
-        std_grouped = std_grouped.repeat_interleave(self.num_generations, dim=0)
         advantages = rewards - mean_grouped
 
-        if self.scale_rewards:
-            advantages = advantages / (std_grouped + 1e-4)
+        if self.scale_rewards_mode == "batch":
+            std = rewards.std()
+            std = std.expand_as(rewards)
+        else:
+            std = grouped_rewards.std(dim=1)
+            std = std.repeat_interleave(self.num_generations, dim=0)
+
+        if self.scale_rewards_mode != "none":
+            advantages = advantages / (std + 1e-4)
 
         return advantages
 
@@ -1224,26 +1311,34 @@ class RLTrainer(Trainer):
         per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
+        completion_mask_bool = completion_mask.bool()
+        completion_mask = completion_mask_bool.float()
         # Compute the loss
         advantages = inputs["advantages"]
-        # When using num_iterations == 1, old_per_token_logps == per_token_logps,
-        # so we can skip it's computation (see _generate_and_score_completions) and use per_token_logps.detach() instead.
-        old_per_token_logps = (
-            per_token_logps.detach()
-            if inputs["old_per_token_logps"] is None
-            else inputs["old_per_token_logps"]
-        )
-        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        old_per_token_logps = inputs["old_per_token_logps"]
+        if old_per_token_logps is None:
+            old_per_token_logps = per_token_logps.detach()
+
+        log_ratio = per_token_logps - old_per_token_logps
+        if self.importance_sampling_level == "token":
+            log_importance_weights = log_ratio
+        elif self.importance_sampling_level == "sequence":
+            log_importance_weights = (
+                (log_ratio * completion_mask).sum(-1)
+                / completion_mask.sum(-1).clamp(min=1.0)
+            ).unsqueeze(-1)
+        else:
+            raise ValueError(
+                f"Unknown importance sampling level: {self.importance_sampling_level}"
+            )
+
+        coef_1 = torch.exp(log_importance_weights)
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
 
         if self.delta is not None:
-            # Use clamp instead of min to handle tensor-float comparison
-            per_token_loss1 = torch.clamp(
-                coef_1, max=self.delta
-            ) * advantages.unsqueeze(1)
-        else:
-            # Original GRPO clipping (only lower bound implicitly applied by the final min)
-            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+            coef_1 = torch.clamp(coef_1, max=self.delta)
+
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
 
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -1270,6 +1365,13 @@ class RLTrainer(Trainer):
             self._metrics[mode]["kl"].append(
                 self.accelerator.gather_for_metrics(mean_kl).nanmean().item()  # type: ignore
             )
+        if (
+            self.vllm_importance_sampling_correction
+            and inputs.get("importance_sampling_ratio") is not None
+        ):
+            importance_sampling_ratio = inputs["importance_sampling_ratio"]
+            per_token_loss = per_token_loss * importance_sampling_ratio
+
         if self.loss_type == "grpo":
             loss = (
                 (per_token_loss * completion_mask).sum(-1)
@@ -1283,6 +1385,13 @@ class RLTrainer(Trainer):
             loss = (per_token_loss * completion_mask).sum() / (
                 per_token_loss.size(0) * self.max_seq_len
             )  # type: ignore
+        elif self.loss_type == "dapo":
+            normalizer = inputs.get("num_items_in_batch")
+            if normalizer is None:
+                normalizer = completion_mask.sum()
+            loss = (per_token_loss * completion_mask).sum() / (
+                normalizer / self.accelerator.num_processes
+            )
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -1315,6 +1424,31 @@ class RLTrainer(Trainer):
         self._metrics[mode]["clip_ratio/region_mean"].append(
             gathered_clip_ratio.nanmean().item()  # type: ignore
         )
+
+        if (
+            self.vllm_importance_sampling_correction
+            and inputs.get("importance_sampling_ratio") is not None
+        ):
+            importance_sampling_ratio = inputs["importance_sampling_ratio"]
+            flat_ratio: torch.Tensor = importance_sampling_ratio[completion_mask_bool]
+            if flat_ratio.numel() == 0:
+                flat_ratio = torch.tensor(
+                    float("nan"), device=importance_sampling_ratio.device
+                )
+                mean_ratio = flat_ratio
+            else:
+                mean_ratio = flat_ratio.mean()
+            min_ratio = nanmin(cast(torch.Tensor, self.accelerator.gather(flat_ratio)))
+            max_ratio = nanmax(cast(torch.Tensor, self.accelerator.gather(flat_ratio)))
+            self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
+                min_ratio.item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
+                cast(torch.Tensor, self.accelerator.gather(mean_ratio)).nanmean().item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
+                max_ratio.item()
+            )
         return loss
 
     def _sanitize_tool_calls(

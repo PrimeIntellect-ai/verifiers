@@ -84,7 +84,7 @@ class WeightSyncWorkerExtension:
         Args:
             name (`str`):
                 Name of the weight tensor being updated.
-            torch_dtype (`str`):
+            dtype (`str`):
                 Data type of the weight tensor (e.g., `torch.float32`).
             shape (`Sequence[int]`):
                 Shape of the weight tensor.
@@ -133,7 +133,7 @@ async def run_server(args: Namespace):
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.worker_extension_cls = (
-        "verifiers.inference.vllm_server.WeightSyncWorkerExtension"
+        "verifiers.rl.inference.vllm_server.WeightSyncWorkerExtension"
     )
     engine = AsyncLLMEngine.from_engine_args(
         engine_args, usage_context=UsageContext.OPENAI_API_SERVER

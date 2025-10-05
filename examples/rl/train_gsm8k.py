@@ -8,10 +8,10 @@ vf-install gsm8k (-p /path/to/environments)
 vf-eval gsm8k (-m model_name in endpoints.py)
 
 inference:
-CUDA_VISIBLE_DEVICES=0 vf-vllm --model willcb/Qwen3-0.6B --enforce-eager --disable-log-requests
+CUDA_VISIBLE_DEVICES=0 uv run vf-vllm --model willcb/Qwen3-0.6B --enforce-eager --disable-log-requests
 
 training:
-CUDA_VISIBLE_DEVICES=1 accelerate launch --num-processes 1 \
+CUDA_VISIBLE_DEVICES=1 uv run accelerate launch --num-processes 1 \
     --config-file configs/zero3.yaml examples/rl/train_gsm8k.py
 """
 

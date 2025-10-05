@@ -1,12 +1,11 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
-import transformers  # type: ignore[unresolved-import]
-from packaging import version
-from transformers import TrainingArguments  # type: ignore[unresolved-import]
-from transformers.training_args import SchedulerType  # type: ignore[unresolved-import]
+from peft import LoraConfig
+from transformers import TrainingArguments
+from transformers.trainer_utils import SchedulerType
 
-'''
+"""
 try:
     import torch._dynamo  # type: ignore[unresolved-import]
 
@@ -56,7 +55,7 @@ def lora_defaults(r=8, alpha=16) -> LoraConfig:
 
 
 __all__ = ["RLConfig", "RLTrainer", "rl_defaults", "lora_defaults"]
-'''
+"""
 
 
 @dataclass
@@ -72,16 +71,177 @@ class RLConfig(TrainingArguments):
     command line.
     """
 
-    if version.parse(transformers.__version__) <= version.parse("4.50.3"):
-        from transformers.training_args import (  # type: ignore[unresolved-import]
-            _VALID_DICT_FIELDS,
-        )
+    _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS + ["model_init_kwargs"]
 
-        _VALID_DICT_FIELDS.append("model_init_kwargs")
-    else:
-        _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS + [
-            "model_init_kwargs"
-        ]
+    # LoRA parameters
+    use_lora: bool = field(
+        default=True,
+        metadata={"help": "Whether to use LoRA."},
+    )
+    lora_rank: int = field(
+        default=8,
+        metadata={"help": "LoRA rank."},
+    )
+    lora_alpha: int = field(
+        default=8,
+        metadata={"help": "LoRA alpha."},
+    )
+    lora_dropout: float = field(
+        default=0.0,
+        metadata={"help": "LoRA dropout."},
+    )
+    lora_target_modules: List[str] | None = field(
+        default=None,
+        metadata={"help": "LoRA target modules."},
+    )
+    lora_modules_to_save: Optional[List[str]] = field(
+        default=None,
+        metadata={"help": "Full model modules to train (instead of LoRA modules)."},
+    )
+    lora_use_rslora: bool = field(
+        default=True,
+        metadata={"help": "Whether to use RSLoRA."},
+    )
+    lora_config: Optional[LoraConfig] = field(
+        default=None,
+        metadata={"help": "LoRA configuration."},
+    )
+
+    # Parameters that control the training
+    learning_rate: float = field(
+        default=1e-5,
+        metadata={
+            "help": "Initial learning rate for `AdamW` optimizer. The default value replaces that of "
+            "`transformers.TrainingArguments`."
+        },
+    )
+    beta: float = field(
+        default=0.0,
+        metadata={
+            "help": "KL coefficient. If `0.0`, the reference model is not loaded, reducing memory usage and improving "
+            "training speed, but may be numerically unstable for long training runs."
+        },
+    )
+    num_iterations: int = field(
+        default=1,
+        metadata={
+            "help": "Number of iterations per batch (denoted as μ in the algorithm)."
+        },
+    )
+    epsilon: float = field(
+        default=0.2,
+        metadata={"help": "Epsilon value for clipping."},
+    )
+    delta: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": "Enables the upper clipping bound in two-sided GRPO loss when set to a float. If `None` "
+            "(default), standard GRPO clipping is used. Recommended to be greater than `1 + ε` when enabled. This "
+            "method is introduced in the [INTELLECT-2 tech report](https://huggingface.co/papers/2505.07291)."
+        },
+    )
+    epsilon_high: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": "Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the "
+            "lower-bound specified in argument `epsilon`. Paper DAPO recommends `0.28`."
+        },
+    )
+    importance_sampling_level: str = field(
+        default="token",
+        metadata={
+            "help": "Controls whether importance sampling ratios are computed at the `'token'` or `'sequence'` level. "
+            "`'token'` keeps the raw per-token log-probability ratios (one weight per token).  `'sequence'` averages "
+            "the log-probability ratios across valid tokens to produce a single ratio per sequence. The GSPO paper "
+            "shows that sequence-level sampling often yields more stable training and better alignment with "
+            "sequence-level rewards."
+        },
+    )
+    scale_rewards: str = field(
+        default="none",
+        metadata={
+            "help": "Specifies the scaling strategy for rewards. Supported values are: "
+            "`True` or `group'` (default): rewards are scaled by the standard deviation within each group, ensuring "
+            "unit variance within a group. "
+            "`'batch'`: rewards are scaled by the standard deviation across the entire batch, as recommended in the "
+            "PPO Lite paper. "
+            "`False` or `'none'`: no scaling is applied. The Dr. GRPO paper recommends not scaling rewards, as "
+            "scaling by the standard deviation introduces a question-level difficulty bias."
+        },
+    )
+    loss_type: str = field(
+        default="dapo",
+        metadata={
+            "help": "Specifies the loss formulation to use. Supported values are 'grpo', 'dapo', 'bnpo', and "
+            "'dr_grpo'. "
+            "'grpo': Aggregates token-level losses by normalizing over sequence length. Not recommended due to length "
+            "bias—this approach tends to prefer shorter completions with positive advantages and longer ones with "
+            "negative advantages. "
+            "'dapo' (default): Aggregates token-level losses by normalizing with the number of active token in the "
+            "global accumulated batch. This method was introduced in the DAPO paper to eliminate length bias. "
+            "'dr_grpo': Aggregates token-level losses by normalizing with a global constant. This method was "
+            "introduced in the Dr. GRPO paper to eliminate length bias. The value of the constant corresponds to "
+            "`max_completion_length`. "
+            "'bnpo': Aggregates token-level losses by normalizing with the number of active token in the local batch. "
+            "Note that normalization is performed over the local batch only, so results may slightly vary depending "
+            "on the local batch size, despite a constant effective batch size. When using "
+            "`per_device_train_batch_size==1`, the loss is equivalent to the GRPO loss."
+        },
+    )
+    mask_env_responses: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to mask the environment responses. If `True`, the environment responses are masked, "
+            "preventing them from being incorrectly penalized and introducing noise during training."
+        },
+    )
+    mask_truncated_completions: bool = field(
+        default=True,
+        metadata={
+            "help": "When enabled, truncated completions are excluded from the loss calculation, preventing them from "
+            "being incorrectly penalized and introducing noise during training. According to the DAPO paper, this is "
+            "a good practice for training stability."
+        },
+    )
+    zero_truncated_completions: bool = field(
+        default=False,
+        metadata={"help": "Whether to give zero reward to truncated completions."},
+    )
+    sync_ref_model: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to synchronize the reference model with the active model every `ref_model_sync_steps` "
+            "steps, using the `ref_model_mixup_alpha` parameter."
+        },
+    )
+    ref_model_mixup_alpha: float = field(
+        default=0.6,
+        metadata={
+            "help": "α parameter from the TR-DPO paper, which controls the mix between the current policy and the "
+            "previous reference policy during updates. The reference policy is updated according to the equation: "
+            "`π_ref = α * π_θ + (1 - α) * π_ref_prev`. To use this parameter, you must set `sync_ref_model=True`."
+        },
+    )
+    ref_model_sync_steps: int = field(
+        default=100,
+        metadata={
+            "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
+            "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
+        },
+    )
+    vllm_importance_sampling_correction: bool = field(
+        default=True,
+        metadata={
+            "help": "Apply truncated importance sampling using vLLM log probabilities to correct distribution mismatch during training.",
+        },
+    )
+    vllm_importance_sampling_cap: float = field(
+        default=2.0,
+        metadata={
+            "help": "Truncation parameter C for Truncated Importance Sampling (TIS). This sets an upper bound on the "
+            "importance sampling ratio, improving training stability."
+        },
+    )
 
     # Parameters that control the model and reference model
     model_init_kwargs: Optional[Union[dict, str]] = field(
@@ -92,9 +252,9 @@ class RLConfig(TrainingArguments):
         },
     )
 
-    # Common TrainingArguments surfaced here for better typing in our tooling
+    # Common TrainingArguments surfaced for better typing
     output_dir: str | None = field(
-        default="",
+        default=None,
         metadata={"help": "Where to store artifacts and checkpoints."},
     )
     run_name: Optional[str] = field(
@@ -102,7 +262,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "An optional experiment name for logging."},
     )
     lr_scheduler_type: str | SchedulerType = field(
-        default="constant_with_warmup",
+        default="constant",
         metadata={"help": "Learning rate scheduler type."},
     )
     warmup_steps: int = field(
@@ -110,13 +270,13 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Linear warmup over warmup_steps."},
     )
     max_steps: int = field(
-        default=-1,
+        default=500,
         metadata={
             "help": "Total number of training steps to perform. -1 for full epochs."
         },
     )
     bf16: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to use bfloat16 precision."},
     )
     max_grad_norm: float = field(
@@ -124,35 +284,35 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Max gradient norm for clipping."},
     )
     per_device_train_batch_size: int = field(
-        default=8,
+        default=16,
         metadata={"help": "Batch size per device for training."},
     )
     gradient_accumulation_steps: int = field(
-        default=1,
+        default=16,
         metadata={"help": "Number of steps to accumulate before backward/update."},
     )
     gradient_checkpointing: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Enable gradient checkpointing to save memory."},
     )
     save_strategy: str = field(
         default="steps",
         metadata={"help": "When to save checkpoints (no, steps, epoch)."},
     )
-    save_steps: int = field(
-        default=500,
+    save_steps: float = field(
+        default=100,
         metadata={
             "help": "Save checkpoint every X updates steps when save_strategy=steps."
         },
     )
     save_only_model: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": "If True, save only model weights (not optimizer/scheduler)."
         },
     )
-    logging_steps: int = field(
-        default=500,
+    logging_steps: float = field(
+        default=1,
         metadata={"help": "Log every X updates steps."},
     )
     log_on_each_node: bool = field(
@@ -160,7 +320,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Whether to log on each node in multi-node setup."},
     )
     report_to: Optional[Union[str, List[str]]] = field(
-        default=None,
+        default="wandb",
         metadata={"help": "Integration to report results and logs to (e.g., 'wandb')."},
     )
 
@@ -190,7 +350,7 @@ class RLConfig(TrainingArguments):
         },
     )
     num_generations: int = field(
-        default=8,
+        default=16,
         metadata={
             "help": "Number of generations to sample. The effective batch size (num_processes * per_device_batch_size "
             "* gradient_accumulation_steps) must be evenly divisible by this value."
@@ -215,6 +375,14 @@ class RLConfig(TrainingArguments):
     )
 
     # Parameters that control generation
+    per_device_prompt_batch_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Number of unique prompts per device in each optimizer step. When set, the per-device train batch "
+            "size is derived as `per_device_prompt_batch_size * num_generations`, decoupling prompt microbatches from "
+            "the number of completions sampled per prompt.",
+        },
+    )
     generation_batch_size: Optional[int] = field(
         default=None,
         metadata={
@@ -234,7 +402,7 @@ class RLConfig(TrainingArguments):
     )
     max_seq_len: Optional[int] = field(
         default=2048,
-        metadata={"help": "Maximum number of tokens to generate per turn."},
+        metadata={"help": "Maximum number of tokens per training sequence."},
     )
     temperature: float = field(
         default=1.0,
@@ -335,113 +503,10 @@ class RLConfig(TrainingArguments):
             "after the timeout, a `ConnectionError` is raised."
         },
     )
-    # Parameters that control the training
-    learning_rate: float = field(
-        default=1e-6,
-        metadata={
-            "help": "Initial learning rate for `AdamW` optimizer. The default value replaces that of "
-            "`transformers.TrainingArguments`."
-        },
-    )
-    beta: float = field(
-        default=0.001,
-        metadata={
-            "help": "KL coefficient. If `0.0`, the reference model is not loaded, reducing memory usage and improving "
-            "training speed, but may be numerically unstable for long training runs."
-        },
-    )
-    num_iterations: int = field(
-        default=1,
-        metadata={
-            "help": "Number of iterations per batch (denoted as μ in the algorithm)."
-        },
-    )
-    epsilon: float = field(
-        default=0.2,
-        metadata={"help": "Epsilon value for clipping."},
-    )
-    delta: Optional[float] = field(
-        default=None,
-        metadata={
-            "help": "If set to a float value (e.g., 2.0), enables the upper clipping bound in two-sided GRPO loss. If None (default), the standard GRPO clipping is used. Recommended to be > 1 + epsilon when enabled."
-        },
-    )
-    epsilon_high: Optional[float] = field(
-        default=None,
-        metadata={
-            "help": "Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the "
-            "lower-bound specified in argument `epsilon`. Paper DAPO recommends `0.28`."
-        },
-    )
-    scale_rewards: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to scale the rewards by dividing them by their standard deviation. If `True` (default), "
-            "the rewards are normalized by the standard deviation, ensuring they have unit variance. If `False`, no "
-            "scaling is applied. The Dr. GRPO paper recommends not scaling the rewards, as scaling by the standard "
-            "deviation introduces a question-level difficulty bias."
-        },
-    )
-    loss_type: str = field(
-        default="dr_grpo",
-        metadata={
-            "help": "Specifies the loss formulation to use. Supported values are `grpo`, `bnpo`, and `dr_grpo`. "
-            "`'grpo'`: Aggregates token-level losses by normalizing over sequence length. Not recommended due to "
-            "length bias—this approach tends to prefer shorter completions with positive advantages and longer ones "
-            "with negative advantages. "
-            "`'bnpo'`: Aggregates token-level losses by normalizing number of active token in the local batch. "
-            "Note that normalization is performed over the local batch only, so results may slightly vary depending "
-            "on the local batch size, despite a constant effective batch size. When using "
-            "`per_device_train_batch_size==1`, the loss is equivalent to the GRPO loss. "
-            "`'dr_grpo'`: Aggregates token-level losses by normalizing with a global constant. This method was "
-            "introduced in the Dr. GRPO paper to eliminate length bias. The value of the constant corresponds to "
-            "`max_completion_length`."
-        },
-    )
-    mask_env_responses: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to mask the environment responses. If `True`, the environment responses are masked, "
-            "preventing them from being incorrectly penalized and introducing noise during training."
-        },
-    )
-    mask_truncated_completions: bool = field(
-        default=True,
-        metadata={
-            "help": "When enabled, truncated completions are excluded from the loss calculation, preventing them from "
-            "being incorrectly penalized and introducing noise during training. According to the DAPO paper, this is "
-            "a good practice for training stability."
-        },
-    )
-    zero_truncated_completions: bool = field(
-        default=False,
-        metadata={"help": "Whether to give zero reward to truncated completions."},
-    )
-    sync_ref_model: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to synchronize the reference model with the active model every `ref_model_sync_steps` "
-            "steps, using the `ref_model_mixup_alpha` parameter."
-        },
-    )
-    ref_model_mixup_alpha: float = field(
-        default=0.5,
-        metadata={
-            "help": "α parameter from the TR-DPO paper, which controls the mix between the current policy and the "
-            "previous reference policy during updates. The reference policy is updated according to the equation: "
-            "`π_ref = α * π_θ + (1 - α) * π_ref_prev`. To use this parameter, you must set `sync_ref_model=True`."
-        },
-    )
-    ref_model_sync_steps: int = field(
-        default=100,
-        metadata={
-            "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
-            "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
-        },
-    )
+
     # Parameters that control the logging
     log_completions: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": "Whether to log a sample of (prompt, completion) pairs every `logging_steps` steps. If `rich` is "
             "installed, it prints the sample. If `wandb` logging is enabled, it logs it to `wandb`."
@@ -464,7 +529,37 @@ class RLConfig(TrainingArguments):
     def __post_init__(self):
         super().__post_init__()
 
+        if self.output_dir is None:
+            self.output_dir = f"outputs/{self.run_name}"
+
+        if self.lora_target_modules is None:
+            self.lora_target_modules = [
+                "q_proj",
+                "v_proj",
+                "k_proj",
+                "o_proj",
+                "gate_proj",
+                "down_proj",
+                "up_proj",
+            ]
+        if self.use_lora and self.lora_config is None:
+            self.lora_config = LoraConfig(
+                r=self.lora_rank,
+                lora_alpha=self.lora_alpha,
+                target_modules=self.lora_target_modules,
+                lora_dropout=self.lora_dropout,
+                task_type="CAUSAL_LM",
+            )
+
         num_processes = self.world_size
+        if self.per_device_prompt_batch_size is not None:
+            if self.per_device_prompt_batch_size <= 0:
+                raise ValueError(
+                    "per_device_prompt_batch_size must be positive when provided."
+                )
+            self.per_device_train_batch_size = (
+                self.per_device_prompt_batch_size * self.num_generations
+            )
         # The current default effective batch size
         if (
             self.generation_batch_size is not None
@@ -522,6 +617,9 @@ class RLConfig(TrainingArguments):
                 f"prompt ({self.num_generations}). Given the current effective train batch size, the valid values for "
                 f"the number of generations are: {possible_values}."
             )
+        self.per_device_prompt_batch_size = (
+            self.per_device_train_batch_size // self.num_generations
+        )
         if self.eval_strategy != "no":
             global_eval_batch_size = self.per_device_eval_batch_size * num_processes
             possible_values = [
