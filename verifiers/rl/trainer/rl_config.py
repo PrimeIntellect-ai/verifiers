@@ -294,7 +294,7 @@ class RLConfig(TrainingArguments):
     max_prompt_length: Optional[int] = field(
         default=512,
         metadata={
-            "help": "Maximum length of the prompt. If the prompt is longer than this value, it will be truncated left."
+            "help": "Maximum length of the prompt. If the prompt is longer than this value, it will be removed from the dataset."
         },
     )
     num_generations: int = field(
