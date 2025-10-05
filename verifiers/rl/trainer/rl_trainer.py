@@ -545,7 +545,7 @@ class RLTrainer(Trainer):
             self.ref_model = None
         elif is_deepspeed_zero3_enabled():
             model_id = model.config._name_or_path
-            model_init_kwargs = {"torch_dtype": "auto"}
+            model_init_kwargs = {"dtype": "auto"}
             self.ref_model = AutoModelForCausalLM.from_pretrained(
                 model_id, **model_init_kwargs
             )
