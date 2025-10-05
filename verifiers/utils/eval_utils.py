@@ -1,7 +1,4 @@
-import json
-import uuid
 from datetime import datetime
-from pathlib import Path
 
 from datasets import Dataset
 
@@ -9,7 +6,7 @@ from verifiers.types import GenerateOutputs
 from verifiers.utils.message_utils import sanitize_tool_calls
 
 
-def prepare_dataset(
+def make_dataset(
     results: GenerateOutputs, num_examples: int, rollouts_per_example: int
 ) -> Dataset:
     """Prepare dataset from eval results."""
@@ -36,7 +33,7 @@ def prepare_dataset(
     return Dataset.from_dict(data_dict)
 
 
-def prepare_metadata(
+def make_metadata(
     env: str,
     model: str,
     num_examples: int,
@@ -61,41 +58,3 @@ def prepare_metadata(
         metadata[f"avg_{k}"] = sum(results.metrics[k]) / len(results.metrics[k])
 
     return metadata
-
-
-def save_results_to_disk(
-    dataset: Dataset, metadata: dict, env: str, model: str, env_dir_path: str
-) -> Path:
-    """Save eval results dataset to disk."""
-    env_model_str = f"{env}--{model.replace('/', '--')}"
-    uuid_str = str(uuid.uuid4())[:8]
-    module_name = env.replace("-", "_")
-    local_env_dir = Path(env_dir_path) / module_name
-    if local_env_dir.exists():
-        results_path = local_env_dir / "outputs" / "evals" / env_model_str / uuid_str
-    else:
-        results_path = Path("./outputs") / "evals" / env_model_str / uuid_str
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-    dataset.to_json(results_path / "results.jsonl")
-    with open(results_path / "metadata.json", "w") as f:
-        json.dump(metadata, f)
-    return results_path
-
-
-def save_results_to_hf_hub(
-    dataset: Dataset,
-    env: str,
-    model: str,
-    num_examples: int,
-    rollouts_per_example: int,
-    hf_hub_dataset_name: str,
-) -> str:
-    """Push eval results dataset to Hugging Face Hub."""
-    if hf_hub_dataset_name == "":
-        dataset_name = (
-            f"{env}_{model.replace('/', '-')}_n{num_examples}_r{rollouts_per_example}"
-        )
-    else:
-        dataset_name = hf_hub_dataset_name
-    dataset.push_to_hub(dataset_name, env)
-    return dataset_name

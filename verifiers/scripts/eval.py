@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, cast
 
@@ -14,10 +15,8 @@ from verifiers import setup_logging
 from verifiers.types import Endpoints
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.eval_utils import (
-    prepare_dataset,
-    prepare_metadata,
-    save_results_to_disk,
-    save_results_to_hf_hub,
+    make_dataset,
+    make_metadata,
 )
 from verifiers.utils.message_utils import messages_to_printable
 
@@ -159,8 +158,8 @@ def eval_environment(
             print(out)
 
     if save_dataset or save_to_hf_hub:
-        dataset = prepare_dataset(results, num_examples, rollouts_per_example)
-        metadata = prepare_metadata(
+        dataset = make_dataset(results, num_examples, rollouts_per_example)
+        metadata = make_metadata(
             env,
             model,
             num_examples,
@@ -171,20 +170,31 @@ def eval_environment(
             results,
         )
 
+        uuid_str = str(uuid.uuid4())[:8]
+        env_model_str = f"{env}--{model.replace('/', '--')}"
         if save_dataset:
-            results_path = save_results_to_disk(
-                dataset, metadata, env, model, env_dir_path
-            )
+            module_name = env.replace("-", "_")
+            local_env_dir = Path(env_dir_path) / module_name
+            if local_env_dir.exists():
+                results_path = (
+                    local_env_dir / "outputs" / "evals" / env_model_str / uuid_str
+                )
+            else:
+                results_path = Path("./outputs") / "evals" / env_model_str / uuid_str
+            results_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset.to_json(results_path / "results.jsonl")
+            with open(results_path / "metadata.json", "w") as f:
+                json.dump(metadata, f)
+
             logger.info(f"Saved dataset to {results_path}")
         if save_to_hf_hub:
-            dataset_name = save_results_to_hf_hub(
-                dataset,
-                env,
-                model,
-                num_examples,
-                rollouts_per_example,
-                hf_hub_dataset_name,
-            )
+            if hf_hub_dataset_name == "":
+                dataset_name = (
+                    f"{env}_{model.replace('/', '-')}_n{n}_r{rollouts_per_example}"
+                )
+            else:
+                dataset_name = hf_hub_dataset_name
+            dataset.push_to_hub(dataset_name)
             logger.info(f"Saved dataset to Hugging Face Hub: {dataset_name}")
 
 
