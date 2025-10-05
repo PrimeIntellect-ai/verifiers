@@ -2,6 +2,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Iterable,
     Literal,
     TypedDict,
 )
@@ -22,7 +23,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
@@ -49,6 +50,18 @@ class GenerateInputs(BaseModel):
     info: list[dict] | None = None
     task: list[str] | None = None
     completion: list[Messages] | None = None
+
+    # This patch is necessary to deal with Iterable types in OAI ChatCompletionMessageParam, typically used for multi-modal inputs
+    # For more details, see https://github.com/pydantic/pydantic/issues/9467#issuecomment-2442097291
+    @field_validator("prompt", mode="after")
+    def materialize_prompt_messages(cls, prompt) -> Iterable:
+        materialized_prompt = []
+        while True:
+            try:
+                materialized_prompt.append(next(prompt))
+            except StopIteration:
+                break
+        return materialized_prompt
 
 
 class GenerateOutputs(BaseModel):
