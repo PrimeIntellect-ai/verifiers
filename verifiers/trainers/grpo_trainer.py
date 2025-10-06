@@ -303,6 +303,9 @@ class GRPOTrainer(Trainer):
 
         # Suppress irrelevant warning
         model.warnings_issued["estimate_tokens"] = True
+
+        self.processor = processing_class
+        self._debug_batch_counter = 0
         
         # Handle pad token for processors or tokenizers
         if isinstance(processing_class, ProcessorMixin):
@@ -768,14 +771,17 @@ class GRPOTrainer(Trainer):
         logits_to_keep,
         pixel_values=None,
         image_grid_thw=None,
-        pixel_attention_mask=None,
-        image_sizes=None,
     ):
         if is_peft_model(unwrapped_model):
             unwrapped_model = unwrapped_model.base_model.model
 
         # Build model inputs - check if the model supports logits_to_keep (some models and VLMs don't)
         model_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+
+        if pixel_values is not None:
+            model_inputs["pixel_values"] = pixel_values
+        if image_grid_thw is not None:
+            model_inputs["image_grid_thw"] = image_grid_thw
 
         last_hidden_state = unwrapped_model.model(**model_inputs).last_hidden_state
         # Exclude the last value: it corresponds to the next token pred
@@ -799,6 +805,8 @@ class GRPOTrainer(Trainer):
             0
         )  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
+        raw_batch_data = {"input_ids":input_ids,"attention_mask":attention_mask,"pixel_values":pixel_values,"image_grid_thw":image_grid_thw}
+        
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
             attention_mask_batch = attention_mask[i : i + batch_size]
@@ -807,10 +815,9 @@ class GRPOTrainer(Trainer):
             model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch}
             
             if image_grid_thw is not None and pixel_values is not None:
-                model_inputs["image_grid_thw"] = image_grid_thw[i : i + batch_size]
-                start_pixel_idx = image_grid_thw[:i].prod(-1).sum().item()
-                end_pixel_idx = image_grid_thw[: i + batch_size].prod(-1).sum().item()
-                model_inputs["pixel_values"] = pixel_values[start_pixel_idx:end_pixel_idx]
+                model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
+                model_inputs["image_grid_thw"]= image_grid_thw[i : i + batch_size]
+                model_inputs["pixel_values"] = model_inputs["pixel_values"].reshape(-1, model_inputs["pixel_values"].shape[-1])
             elif pixel_values is not None:
                 model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
 
@@ -819,6 +826,7 @@ class GRPOTrainer(Trainer):
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
                 model_inputs["logits_to_keep"] = logits_to_keep + 1
 
+            print(model_inputs["pixel_values"].shape)
             logits = model(**model_inputs).logits
 
             # Exclude the last value: it corresponds to the next token pred
@@ -1055,7 +1063,6 @@ class GRPOTrainer(Trainer):
         self.accelerator.wait_for_everyone()
         # inputs = list of dicts for all gradient accumulation steps
         generate_every = self.gradient_accumulation_steps * self.num_iterations
-
         # Check if we need to generate new completions
         if self._step % generate_every == 0 or self._buffered_inputs is None:
             # Update weights to vLLM if needed
@@ -1241,6 +1248,9 @@ class GRPOTrainer(Trainer):
             if has_images:
                 pixel_values = torch.stack(pixel_values_list, dim=0)
                 image_grid_thw = torch.stack(image_grid_list, dim=0)
+            else :
+                pixel_values = None
+                image_grid_thw = None
 
             # Truncate if needed
             if self.max_seq_len is not None and input_ids.size(1) > self.max_seq_len:
@@ -1280,8 +1290,10 @@ class GRPOTrainer(Trainer):
                     self.model,
                     input_ids,
                     attention_mask,
-                    logits_to_keep,
-                    batch_size=self.per_device_train_batch_size,
+                    pixel_values=pixel_values,   
+                    image_grid_thw=image_grid_thw,
+                    logits_to_keep=logits_to_keep,
+                    batch_size=self.per_device_train_batch_size
                 )
 
             # Concatenate all data for shuffling

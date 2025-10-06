@@ -1,6 +1,7 @@
 from verifiers.utils.image_utils import _base64_to_pil
 from typing import Union, List, Dict, Any, TYPE_CHECKING
 from inspect import signature
+import json
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase, ProcessorMixin
@@ -44,9 +45,28 @@ def encode_chat_with_processor(
             return_tensors="pt",
             add_special_tokens=add_special_tokens,
         )
-        return inputs["input_ids"][0].tolist(), inputs["image_grid_thw"][0].tolist(), inputs["pixel_values"].tolist()
+        input_ids_list = inputs["input_ids"][0].tolist()
+        image_grid_list = inputs["image_grid_thw"][0].tolist()
+        pixel_values_list = inputs["pixel_values"].tolist()
+
+        # --- DEBUG CODE: Store conversation and encodings ---
+        debug_data = {
+            "conversation": conversation,
+            "input_ids": input_ids_list,
+            "image_grid_thw": image_grid_list,
+            "pixel_values_list": pixel_values_list,
+        }
+        
+        # Append the data to a JSON Lines file
+        file_path = "chat_encodings.jsonl"
+        with open(file_path, "a") as f:
+            f.write(json.dumps(debug_data) + "\n")
+        # ----------------------------------------------------
+
+        return input_ids_list, image_grid_list, pixel_values_list
 
     else:
+        print("NO_SUPPORT_CHAT")
         prompt_ids : List[int] = processing_class.apply_chat_template(
             conversation=conversation,
             add_generation_prompt=add_generation_prompt,
@@ -71,6 +91,7 @@ def encode_text_with_processor(
         pixel_values = inputs.get("pixel_values", [None]).tolist()
         return input_ids, image_grid, pixel_values
     else:
+        print("NO_SUPPORT_ENCODE")
         prompt_ids: list[int] = processing_class.encode(
             text
         )
