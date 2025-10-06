@@ -1021,13 +1021,36 @@ class RLTrainer(Trainer):
 
         # Check if we need to generate new completions
         if self._step % generate_every == 0 or self._buffered_inputs is None:
-            # Update weights to vLLM if needed
-            if self.state.global_step > self._last_loaded_step:
-                self.logger.info(
-                    f"Syncing weights to vLLM at step {self.state.global_step}"
-                )
+            # Determine whether we need to sync weights on the main process and
+            # broadcast that decision so every rank participates in the same
+            # synchronization primitives. Without this broadcast the main
+            # process can enter `_move_model_to_vllm` while others skip it,
+            # leading to a distributed deadlock when barriers are reached.
+            should_sync_list = [
+                self.state.global_step > self._last_loaded_step
+                if self.accelerator.is_main_process
+                else False
+            ]
+            broadcast_object_list(should_sync_list, from_process=0)
+            should_sync_weights = should_sync_list[0]
+
+            # Update weights to vLLM if needed (all ranks execute for barrier
+            # consistency, but only the main process performs IO-heavy work).
+            if should_sync_weights:
+                if self.accelerator.is_main_process:
+                    self.logger.info(
+                        f"Syncing weights to vLLM at step {self.state.global_step}"
+                    )
                 self._move_model_to_vllm()
-                self._last_loaded_step = self.state.global_step
+
+                # Ensure every rank updates `_last_loaded_step` using the step
+                # value from the main process so future sync decisions stay
+                # aligned.
+                last_loaded_step_list = [
+                    self.state.global_step if self.accelerator.is_main_process else 0
+                ]
+                broadcast_object_list(last_loaded_step_list, from_process=0)
+                self._last_loaded_step = last_loaded_step_list[0]
 
             # Start async generator if not started
             if not self._async_started and self.accelerator.is_main_process:
