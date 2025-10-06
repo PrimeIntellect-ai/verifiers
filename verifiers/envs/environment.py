@@ -535,7 +535,16 @@ class Environment(ABC):
             results_dict["state"] = results_state  # type: ignore[assignment]
             results_dict["reward"] = rewards
             results_dict["metrics"] = metrics
-            return GenerateOutputs(**results_dict)
+            return GenerateOutputs(
+                prompt=results_dict["prompt"],
+                answer=results_dict["answer"],
+                task=results_dict["task"],
+                info=results_dict["info"],
+                completion=results_dict.get("completion", []),
+                state=results_dict.get("state", []),
+                reward=results_dict.get("reward", []),
+                metrics=results_dict.get("metrics", {}),
+            )
         else:
             # Non-interleaved: generate all then score all
             rollouts = await self.run_rollouts(
@@ -566,7 +575,16 @@ class Environment(ABC):
                 )
                 results_dict["reward"] = rollout_scores.reward
                 results_dict["metrics"] = rollout_scores.metrics
-            return GenerateOutputs(**results_dict)
+            return GenerateOutputs(
+                prompt=results_dict["prompt"],
+                answer=results_dict["answer"],
+                task=results_dict["task"],
+                info=results_dict["info"],
+                completion=results_dict.get("completion", []),
+                state=results_dict.get("state", []),
+                reward=results_dict.get("reward", []),
+                metrics=results_dict.get("metrics", {}),
+            )
 
     def generate(
         self,
