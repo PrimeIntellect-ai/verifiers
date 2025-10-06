@@ -59,9 +59,6 @@ def setup_logging(
     logger.setLevel(level.upper())
     logger.addHandler(handler)
 
-    # Prevent the logger from propagating messages to the root logger
-    logger.propagate = False
-
 
 setup_logging()
 
