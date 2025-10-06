@@ -210,31 +210,29 @@ def split_tensor_dict(
     ]
 
 
-def shuffle_tensor_dict(
-    tensor_dict: dict[str, Optional[torch.Tensor]],
-) -> dict[str, Optional[torch.Tensor]]:
+def shuffle_dict_with_lists(
+    data_dict: Dict[str, Optional[Union[torch.Tensor, List]]],
+) -> Dict[str, Optional[Union[torch.Tensor, List]]]:
     """
-    Shuffles a dictionary of tensors along the first dimension in unison.
-
-    Example:
-        >>> x = torch.arange(6).reshape(3, 2)
-        >>> y = torch.arange(3).reshape(3, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> shuffle_tensor_dict(tensor_dict)
-        {'x': tensor([[2, 3],
-                      [0, 1],
-                      [4, 5]]),
-         'y': tensor([[1],
-                      [0],
-                      [2]])}
+    Shuffles a dictionary of tensors and/or lists along the first dimension in unison since pixel values can't be a schufflable tensor at the moment
     """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    batch_size = first_tensor.shape[0]
+    first_item = next(item for item in data_dict.values() if item is not None)
+    batch_size = len(first_item)
+    
     permutation = torch.randperm(batch_size)
-    return {
-        key: tensor[permutation] if tensor is not None else None
-        for key, tensor in tensor_dict.items()
-    }
+    
+    shuffled_dict = {}
+    for key, value in data_dict.items():
+        if value is None:
+            shuffled_dict[key] = None
+        elif isinstance(value, torch.Tensor):
+            shuffled_dict[key] = value[permutation]
+        elif isinstance(value, list):
+            shuffled_dict[key] = [value[i] for i in permutation]
+        else:
+            shuffled_dict[key] = value    
+    return shuffled_dict
+
     
 def nanmin(tensor: torch.Tensor) -> torch.Tensor:
     """
@@ -817,7 +815,7 @@ class GRPOTrainer(Trainer):
             if image_grid_thw is not None and pixel_values is not None:
                 model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
                 model_inputs["image_grid_thw"]= image_grid_thw[i : i + batch_size]
-                model_inputs["pixel_values"] = model_inputs["pixel_values"].reshape(-1, model_inputs["pixel_values"].shape[-1])
+                model_inputs["pixel_values"] = torch.cat(model_inputs["pixel_values"], dim=0)
             elif pixel_values is not None:
                 model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
 
@@ -1245,7 +1243,7 @@ class GRPOTrainer(Trainer):
             attention_mask = pad(attention_mask_list, padding_side="right")  # type: ignore
 
             if has_images:
-                pixel_values = torch.stack(pixel_values_list, dim=0)
+                pixel_values = pixel_values_list
                 image_grid_thw = torch.stack(image_grid_list, dim=0)
             else :
                 pixel_values = None
@@ -1307,7 +1305,7 @@ class GRPOTrainer(Trainer):
                 full_batch["image_grid_thw"] = image_grid_thw
 
             # Shuffle and split for gradient accumulation
-            full_batch = shuffle_tensor_dict(full_batch)
+            full_batch = shuffle_dict_with_lists(full_batch)
             self._buffered_inputs = split_tensor_dict(
                 full_batch, self.gradient_accumulation_steps
             )
