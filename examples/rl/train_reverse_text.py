@@ -8,33 +8,21 @@ vf-install reverse-text (-p /path/to/environments)
 vf-eval reverse-text (-m model_name in endpoints.py)
 
 inference:
-CUDA_VISIBLE_DEVICES=0 vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \
-    --enforce-eager --disable-log-requests
+CUDA_VISIBLE_DEVICES=0 uv run vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \
+    --enforce-eager
 
 training:
-CUDA_VISIBLE_DEVICES=1 accelerate launch --num-processes 1 \
-    --config-file configs/zero3.yaml examples/grpo/train_reverse_text.py
+CUDA_VISIBLE_DEVICES=1 uv run accelerate launch --num-processes 1 \
+    --config-file configs/zero3.yaml examples/rl/train_reverse_text.py
 """
 
 model_name = "willcb/Qwen2.5-0.5B-Reverse-SFT"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
-
 vf_env = vf.load_environment(env_id="reverse-text")
-
-args = vf.grpo_defaults(run_name="reverse-text")
-args.micro_batch_size = 12
-args.rollouts_per_example = 12
-args.batch_size = 96
-args.max_steps = 100
-args.eval_strategy = "steps"
-args.eval_steps = 2
-args.max_tokens = 1024
-
-trainer = vf.GRPOTrainer(
+trainer = vf.RLTrainer(
     model=model,
     processing_class=tokenizer,
     env=vf_env,
-    peft_config=vf.lora_defaults(),
-    args=args,
+    args=vf.RLConfig(run_name="reverse-text", batch_size=128, micro_batch_size=4),
 )
 trainer.train()

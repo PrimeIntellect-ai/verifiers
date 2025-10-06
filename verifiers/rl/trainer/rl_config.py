@@ -56,11 +56,28 @@ class RLConfig(TrainingArguments):
         default=None,
         metadata={"help": "LoRA configuration."},
     )
-
     max_saved_adapters: int = field(
         default=3,
         metadata={
             "help": "Number of most recent LoRA adapters to keep on disk during training. Older adapters are deleted."
+        },
+    )
+
+    # Batch size parameters
+    micro_batch_size: int = field(
+        default=16,
+        metadata={"help": "Rollouts per device per optimizer micro step."},
+    )
+    batch_size: int = field(
+        default=512,
+        metadata={
+            "help": "Global batch size measured in rollouts across all devices and accumulation steps."
+        },
+    )
+    rollouts_per_example: int = field(
+        default=16,
+        metadata={
+            "help": "Number of rollouts to sample per prompt when generating training data."
         },
     )
 
@@ -70,13 +87,6 @@ class RLConfig(TrainingArguments):
         metadata={
             "help": "Initial learning rate for `AdamW` optimizer. The default value replaces that of "
             "`transformers.TrainingArguments`."
-        },
-    )
-    beta: float = field(
-        default=0.0,
-        metadata={
-            "help": "KL coefficient. If `0.0`, the reference model is not loaded, reducing memory usage and improving "
-            "training speed, but may be numerically unstable for long training runs."
         },
     )
     epsilon: float = field(
@@ -136,7 +146,7 @@ class RLConfig(TrainingArguments):
             "'bnpo': Aggregates token-level losses by normalizing with the number of active token in the local batch. "
             "Note that normalization is performed over the local batch only, so results may slightly vary depending "
             "on the local batch size, despite a constant effective batch size. When using "
-            "`per_device_train_batch_size==1`, the loss is equivalent to the GRPO loss."
+            "`micro_batch_size==1`, the loss is equivalent to the GRPO loss."
         },
     )
     mask_env_responses: bool = field(
@@ -158,6 +168,29 @@ class RLConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to give zero reward to truncated completions."},
     )
+    vllm_importance_sampling_cap: float = field(
+        default=2.0,
+        metadata={
+            "help": "Truncation parameter C for Truncated Importance Sampling (TIS). This sets an upper bound on the "
+            "importance sampling ratio, improving training stability."
+        },
+    )
+
+    # Parameters that control the model and reference model
+    model_init_kwargs: Optional[Union[dict, str]] = field(
+        default=None,
+        metadata={
+            "help": "Keyword arguments for `transformers.AutoModelForCausalLM.from_pretrained`, used when the `model` "
+            "argument of the `GRPOTrainer` is provided as a string."
+        },
+    )
+    beta: float = field(
+        default=0.0,
+        metadata={
+            "help": "KL coefficient. If `0.0`, the reference model is not loaded, reducing memory usage and improving "
+            "training speed, but may be numerically unstable for long training runs."
+        },
+    )
     sync_ref_model: bool = field(
         default=False,
         metadata={
@@ -178,22 +211,6 @@ class RLConfig(TrainingArguments):
         metadata={
             "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
             "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
-        },
-    )
-    vllm_importance_sampling_cap: float = field(
-        default=2.0,
-        metadata={
-            "help": "Truncation parameter C for Truncated Importance Sampling (TIS). This sets an upper bound on the "
-            "importance sampling ratio, improving training stability."
-        },
-    )
-
-    # Parameters that control the model and reference model
-    model_init_kwargs: Optional[Union[dict, str]] = field(
-        default=None,
-        metadata={
-            "help": "Keyword arguments for `transformers.AutoModelForCausalLM.from_pretrained`, used when the `model` "
-            "argument of the `GRPOTrainer` is provided as a string."
         },
     )
 
@@ -231,11 +248,6 @@ class RLConfig(TrainingArguments):
     micro_batch_size: int = field(
         default=16,
         metadata={"help": "Rollouts per device per optimizer micro step."},
-    )
-    per_device_train_batch_size: int = field(
-        default=16,
-        init=False,
-        repr=False,
     )
     gradient_accumulation_steps: int = field(
         default=1,
@@ -305,37 +317,12 @@ class RLConfig(TrainingArguments):
             "help": "Maximum length of the prompt. If the prompt is longer than this value, it will be removed from the dataset."
         },
     )
-    rollouts_per_example: int = field(
-        default=16,
-        metadata={
-            "help": "Number of rollouts to sample per prompt when generating training data."
-        },
-    )
-    batch_size: int = field(
-        default=512,
-        metadata={
-            "help": "Global batch size measured in rollouts across all devices and accumulation steps."
-        },
-    )
     shuffle_dataset: bool = field(
         default=True,
         metadata={"help": "Whether to shuffle the training dataset."},
     )
 
     # Parameters that control generation
-    generation_batch_size: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "Batch size to use for generation. If `None`, it defaults to the effective training batch size: "
-            "`per_device_train_batch_size * num_processes * gradient_accumulation_steps`."
-        },
-    )
-    steps_per_generation: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "Number of optimization steps per generation. If `None`, it defaults to gradient_accumulation_steps."
-        },
-    )
     max_tokens: Optional[int] = field(
         default=None,
         metadata={"help": "Maximum number of tokens to generate per turn."},
@@ -467,8 +454,6 @@ class RLConfig(TrainingArguments):
     )
 
     def __post_init__(self):
-        # Ensure the base class sees the micro-batch size as the per-device batch size
-        self.per_device_train_batch_size = self.micro_batch_size
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
 
@@ -529,16 +514,6 @@ class RLConfig(TrainingArguments):
             )
         self.prompts_per_batch = self.batch_size // self.rollouts_per_example
 
-        if self.generation_batch_size is None:
-            self.generation_batch_size = self.batch_size
-        else:
-            if self.generation_batch_size % self.rollouts_per_example != 0:
-                raise ValueError(
-                    "generation_batch_size must be divisible by rollouts_per_example."
-                )
-
-        self.steps_per_generation = self.gradient_accumulation_steps
-
         if self.eval_strategy != "no":
             global_eval_batch_size = self.per_device_eval_batch_size * num_processes
             if global_eval_batch_size % self.rollouts_per_example != 0:
@@ -547,11 +522,8 @@ class RLConfig(TrainingArguments):
                 )
         # print all device/batch size params with keys
         print("micro_batch_size", self.micro_batch_size)
-        print("per_device_train_batch_size", self.per_device_train_batch_size)
         print("gradient_accumulation_steps", self.gradient_accumulation_steps)
         print("prompts_per_batch", self.prompts_per_batch)
         print("batch_size", self.batch_size)
         print("rollouts_per_example", self.rollouts_per_example)
-        print("generation_batch_size", self.generation_batch_size)
-        print("steps_per_generation", self.steps_per_generation)
         print("world_size", self.world_size)

@@ -4,7 +4,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sized, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Sized, Tuple, Union, cast
 
 import datasets
 import numpy as np
@@ -58,7 +58,7 @@ class RepeatSampler(Sampler):
             Dataset to sample from.
         mini_repeat_count (`int`):
             Number of times to repeat each index per batch.
-        batch_size (`int`, *optional*, defaults to `1`):
+        prompts_per_batch (`int`, *optional*, defaults to `1`):
             Number of unique indices per batch.
         repeat_count (`int`, *optional*, defaults to `1`):
             Number of times to repeat the full sampling process.
@@ -69,7 +69,7 @@ class RepeatSampler(Sampler):
 
     Example:
     ```python
-    >>> sampler = RepeatRandomSampler(["a", "b", "c", "d", "e", "f", "g"], mini_repeat_count=2, batch_size=3, repeat_count=4)
+    >>> sampler = RepeatRandomSampler(["a", "b", "c", "d", "e", "f", "g"], mini_repeat_count=2, prompts_per_batch=3, repeat_count=4)
     >>> list(sampler)
     [4, 4, 3, 3, 0, 0,
      4, 4, 3, 3, 0, 0,
@@ -95,7 +95,7 @@ class RepeatSampler(Sampler):
           ---------   ---------   ---------   ---------
            ---------   ---------   ---------   ---------
             ---------   ---------   ---------   ---------
-                         batch_size = 12
+                         prompts_per_batch = 12
     ```
     """
 
@@ -103,14 +103,14 @@ class RepeatSampler(Sampler):
         self,
         data_source: Sized,
         mini_repeat_count: int,
-        batch_size: int = 1,
+        prompts_per_batch: int = 1,
         repeat_count: int = 1,
         shuffle: bool = True,
         seed: Optional[int] = None,
     ):
         self.data_source = data_source
         self.mini_repeat_count = mini_repeat_count
-        self.batch_size = batch_size
+        self.prompts_per_batch = prompts_per_batch
         self.repeat_count = repeat_count
         self.num_samples = len(data_source)
         self.shuffle = shuffle
@@ -131,15 +131,15 @@ class RepeatSampler(Sampler):
             indexes = list(range(self.num_samples))
 
         #    [2, 4, 3, 1, 0, 6, 5]
-        # -> [[2, 4, 3], [1, 0, 6], [5]]  (batch_size = 3)
+        # -> [[2, 4, 3], [1, 0, 6], [5]]  (prompts_per_batch = 3)
         indexes = [
-            indexes[i : i + self.batch_size]
-            for i in range(0, len(indexes), self.batch_size)
+            indexes[i : i + self.prompts_per_batch]
+            for i in range(0, len(indexes), self.prompts_per_batch)
         ]
 
         #    [[2, 4, 3], [1, 0, 6], [5]]
         # -> [[2, 4, 3], [1, 0, 6]]
-        indexes = [chunk for chunk in indexes if len(chunk) == self.batch_size]
+        indexes = [chunk for chunk in indexes if len(chunk) == self.prompts_per_batch]
 
         for chunk in indexes:
             for _ in range(self.repeat_count):
@@ -149,8 +149,8 @@ class RepeatSampler(Sampler):
 
     def __len__(self) -> int:
         return (
-            (self.num_samples // self.batch_size)
-            * self.batch_size
+            (self.num_samples // self.prompts_per_batch)
+            * self.prompts_per_batch
             * self.mini_repeat_count
             * self.repeat_count
         )
@@ -376,7 +376,6 @@ class RLTrainer(Trainer):
         # Reference model parameters
         self.beta = args.beta
         self.sync_ref_model = args.sync_ref_model
-        self.generation_batch_size: int = args.generation_batch_size  # type: ignore
 
         # Multi-step
         self.epsilon_low = args.epsilon
@@ -691,7 +690,7 @@ class RLTrainer(Trainer):
         return RepeatSampler(
             data_source=self.train_dataset,  # type: ignore
             mini_repeat_count=self.rollouts_per_example,
-            batch_size=self.generation_batch_size // self.rollouts_per_example,
+            prompts_per_batch=self.batch_size // self.rollouts_per_example,
             repeat_count=self.gradient_accumulation_steps,
             shuffle=self.shuffle_dataset,
             seed=self.args.seed,
@@ -834,12 +833,24 @@ class RLTrainer(Trainer):
         adapter_name = self._format_adapter_name(base_model_name, step)
         adapter_dirname = self._format_adapter_path_name(step)
 
-        with gather_if_zero3(list(self.model.parameters())):  # type: ignore[arg-type]
-            state_dict = self.accelerator.get_state_dict(self.model)
+        # Gather only trainable (adapter) parameters under ZeRO-3 before saving
+        peft_model = self.accelerator.unwrap_model(self.model)
+        trainable_params = [p for p in peft_model.parameters() if p.requires_grad]
+        with gather_if_zero3(trainable_params):  # type: ignore[arg-type]
             if self.accelerator.is_main_process:
-                adapter_path = self._save_active_adapter(
-                    adapter_dirname, state_dict=state_dict
-                )
+                if self.adapter_save_dir is None:
+                    raise RuntimeError(
+                        "Adapter save directory has not been initialized."
+                    )
+                adapter_path = self.adapter_save_dir / adapter_dirname
+                if adapter_path.exists():
+                    shutil.rmtree(adapter_path)
+                if not is_peft_model(peft_model):
+                    raise RuntimeError("Expected a PEFT LoRA model to save adapter.")
+                peft_model.save_pretrained(adapter_path, safe_serialization=True)  # type: ignore[attr-defined]
+                assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+                if hasattr(self.processing_class, "save_pretrained"):
+                    self.processing_class.save_pretrained(adapter_path)
                 self.logger.info(
                     "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
                 )
@@ -873,23 +884,7 @@ class RLTrainer(Trainer):
             run_dir = run_dir.parent
         return run_dir / "adapters"
 
-    def _save_active_adapter(
-        self, adapter_name: str, *, state_dict: Mapping[str, torch.Tensor]
-    ) -> Path:
-        if self.adapter_save_dir is None:
-            raise RuntimeError("Adapter save directory has not been initialized.")
-        adapter_dir = self.adapter_save_dir / adapter_name
-        if adapter_dir.exists():
-            shutil.rmtree(adapter_dir)
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-        assert isinstance(unwrapped_model, PreTrainedModel)
-        unwrapped_model.save_pretrained(
-            adapter_dir, state_dict=state_dict, safe_serialization=True
-        )
-        assert isinstance(self.processing_class, PreTrainedTokenizerBase)
-        if hasattr(self.processing_class, "save_pretrained"):
-            self.processing_class.save_pretrained(adapter_dir)
-        return adapter_dir
+    # helper removed; inlined into _move_model_to_vllm for clarity
 
     def _register_saved_adapter(self, adapter_name: str, adapter_path: Path) -> None:
         self._saved_adapters.append((adapter_name, adapter_path))
@@ -1230,7 +1225,6 @@ class RLTrainer(Trainer):
                     mode="train",
                     all_reward_dict=broadcast_data["all_reward_dict"],
                     all_rewards=all_rewards,
-                    generation_batch_size=len(all_rewards),
                 )
 
                 self._log_textual_data_primary(
@@ -1718,7 +1712,6 @@ class RLTrainer(Trainer):
         mode: str,
         all_reward_dict: Dict[str, Any],
         all_rewards: torch.Tensor,
-        generation_batch_size: int,
     ) -> None:
         """
         Log generation metrics (PRIMARY PROCESS ONLY).
