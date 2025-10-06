@@ -283,6 +283,7 @@ class AsyncBatchGenerator:
         for k in env_results.metrics:
             all_reward_dict[k] = env_results.metrics[k]
 
+        
         # Process results
         processed_results = self.env.process_env_results_vllm(
             prompts=env_results.prompt,
