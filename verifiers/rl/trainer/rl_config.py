@@ -545,3 +545,13 @@ class RLConfig(TrainingArguments):
                 raise ValueError(
                     "The global eval batch size must be divisible by rollouts_per_example."
                 )
+        # print all device/batch size params with keys
+        print("micro_batch_size", self.micro_batch_size)
+        print("per_device_train_batch_size", self.per_device_train_batch_size)
+        print("gradient_accumulation_steps", self.gradient_accumulation_steps)
+        print("prompts_per_batch", self.prompts_per_batch)
+        print("batch_size", self.batch_size)
+        print("rollouts_per_example", self.rollouts_per_example)
+        print("generation_batch_size", self.generation_batch_size)
+        print("steps_per_generation", self.steps_per_generation)
+        print("world_size", self.world_size)
