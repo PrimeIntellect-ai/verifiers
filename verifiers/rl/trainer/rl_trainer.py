@@ -318,7 +318,6 @@ class RLTrainer(Trainer):
 
         # Training arguments
         self.micro_batch_size = args.micro_batch_size
-        self.per_device_train_batch_size = self.micro_batch_size
         self.max_prompt_length = args.max_prompt_length
         self.max_seq_len = args.max_seq_len  # max sequence length
         if self.max_seq_len is None:
@@ -635,10 +634,12 @@ class RLTrainer(Trainer):
                 data_collator, description="training"
             )
 
-        batch_size = self._train_batch_size * self.gradient_accumulation_steps  # type: ignore
-
+        batch_size_per_process = (
+            self.micro_batch_size * self.gradient_accumulation_steps
+        )
+        print("batch_size_per_process", batch_size_per_process)
         dataloader_params = {
-            "batch_size": batch_size,  # type: ignore (None case handled by config __post_init__)
+            "batch_size": batch_size_per_process,  # type: ignore (None case handled by config __post_init__)
             "collate_fn": data_collator,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
@@ -1260,7 +1261,7 @@ class RLTrainer(Trainer):
                     input_ids,
                     attention_mask,
                     logits_to_keep,
-                    batch_size=self.per_device_train_batch_size,
+                    batch_size=self.micro_batch_size,
                 )
 
                 # Align completion mask width for downstream masking/where

@@ -245,10 +245,6 @@ class RLConfig(TrainingArguments):
         default=1.0,
         metadata={"help": "Max gradient norm for clipping."},
     )
-    micro_batch_size: int = field(
-        default=16,
-        metadata={"help": "Rollouts per device per optimizer micro step."},
-    )
     gradient_accumulation_steps: int = field(
         default=1,
         init=False,
@@ -457,6 +453,7 @@ class RLConfig(TrainingArguments):
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
 
+        self.per_device_train_batch_size = self.micro_batch_size
         super().__post_init__()
 
         if self.lora_target_modules is None:

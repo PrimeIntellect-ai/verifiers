@@ -8,11 +8,11 @@ vf-install reverse-text (-p /path/to/environments)
 vf-eval reverse-text (-m model_name in endpoints.py)
 
 inference:
-CUDA_VISIBLE_DEVICES=0 uv run vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \
+CUDA_VISIBLE_DEVICES=0,1 uv run vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \
     --enforce-eager
 
 training:
-CUDA_VISIBLE_DEVICES=1 uv run accelerate launch --num-processes 1 \
+CUDA_VISIBLE_DEVICES=2,3 uv run accelerate launch --num-processes 2 \
     --config-file configs/zero3.yaml examples/rl/train_reverse_text.py
 """
 
