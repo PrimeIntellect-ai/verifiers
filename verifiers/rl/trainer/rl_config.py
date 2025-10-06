@@ -19,13 +19,13 @@ class RLConfig(TrainingArguments):
     command line.
     """
 
-    _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS + ["model_init_kwargs"]
+    _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS
 
     # LoRA parameters
     use_lora: bool = field(
         default=True,
         metadata={
-            "help": "Whether to use LoRA. Must remain `True` – the trainer only supports LoRA fine-tuning."
+            "help": "Whether to use LoRA. Must remain `True` - the trainer only supports LoRA fine-tuning."
         },
     )
     lora_rank: int = field(
@@ -177,40 +177,11 @@ class RLConfig(TrainingArguments):
     )
 
     # Parameters that control the model and reference model
-    model_init_kwargs: Optional[Union[dict, str]] = field(
-        default=None,
-        metadata={
-            "help": "Keyword arguments for `transformers.AutoModelForCausalLM.from_pretrained`, used when the `model` "
-            "argument of the `GRPOTrainer` is provided as a string."
-        },
-    )
     beta: float = field(
         default=0.0,
         metadata={
             "help": "KL coefficient. If `0.0`, the reference model is not loaded, reducing memory usage and improving "
             "training speed, but may be numerically unstable for long training runs."
-        },
-    )
-    sync_ref_model: bool = field(
-        default=False,
-        metadata={
-            "help": "Whether to synchronize the reference model with the active model every `ref_model_sync_steps` "
-            "steps, using the `ref_model_mixup_alpha` parameter."
-        },
-    )
-    ref_model_mixup_alpha: float = field(
-        default=0.6,
-        metadata={
-            "help": "α parameter from the TR-DPO paper, which controls the mix between the current policy and the "
-            "previous reference policy during updates. The reference policy is updated according to the equation: "
-            "`π_ref = α * π_θ + (1 - α) * π_ref_prev`. To use this parameter, you must set `sync_ref_model=True`."
-        },
-    )
-    ref_model_sync_steps: int = field(
-        default=100,
-        metadata={
-            "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
-            "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
         },
     )
 
@@ -420,7 +391,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Port of the vLLM server to connect to."},
     )
     vllm_server_timeout: float = field(
-        default=300.0,
+        default=600.0,
         metadata={
             "help": "Total timeout duration in seconds to wait for the vLLM server to be up. If the server is not up "
             "after the timeout, a `ConnectionError` is raised."

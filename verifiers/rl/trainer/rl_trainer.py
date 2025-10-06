@@ -14,12 +14,8 @@ from accelerate.utils import (
     gather_object,
     is_peft_model,
 )
-from peft import get_peft_model, get_peft_model_state_dict
+from peft import get_peft_model_state_dict
 from torch.utils.data import DataLoader, Sampler
-from transformers import AutoModelForCausalLM
-from transformers.integrations.deepspeed import (
-    is_deepspeed_zero3_enabled,
-)
 from transformers.modeling_utils import (
     PreTrainedModel,
 )
@@ -31,9 +27,7 @@ from transformers.trainer_callback import (
     TrainerCallback,
 )
 from transformers.trainer_utils import seed_worker
-from trl.models.modeling_base import create_reference_model
-from trl.models.utils import prepare_deepspeed
-from trl.trainer.callbacks import SyncRefModelCallback
+from trl.models.utils import prepare_deepspeed, prepare_peft_model
 from trl.trainer.utils import (
     disable_dropout_in_model,
     pad,
@@ -292,22 +286,11 @@ class RLTrainer(Trainer):
         if args.lora_config is None:
             raise ValueError("RLTrainer requires a LoRA configuration.")
 
-        model = cast(PreTrainedModel, get_peft_model(model, args.lora_config))
-
-        # Override sync_ref_model if PEFT is used since ref_model will be None
-        if args.sync_ref_model:
-            self.logger.warning(
-                "sync_ref_model=True is not compatible with PEFT. Setting sync_ref_model=False."
-            )
-            args.sync_ref_model = False
+        model = prepare_peft_model(model, args.lora_config, args)
 
         self.max_saved_adapters = args.max_saved_adapters
         self.adapter_save_dir: Path | None = None
         self._saved_adapters: deque[tuple[str, Path]] = deque()
-
-        # Enable gradient checkpointing if requested
-        if args.gradient_checkpointing:
-            model = self._enable_gradient_checkpointing(model, args)  # type: ignore
 
         # Suppress irrelevant warning
         model.warnings_issued["estimate_tokens"] = True
@@ -374,7 +357,6 @@ class RLTrainer(Trainer):
 
         # Reference model parameters
         self.beta = args.beta
-        self.sync_ref_model = args.sync_ref_model
 
         # Multi-step
         self.epsilon_low = args.epsilon
@@ -509,22 +491,7 @@ class RLTrainer(Trainer):
                 f"Rollouts per global batch: {global_rollouts}, gradient accumulation steps: {self.gradient_accumulation_steps}"
             )
         # Reference model
-        if self.beta == 0.0:
-            # If beta is 0.0, the reference model is not needed
-            self.ref_model = None
-        elif is_deepspeed_zero3_enabled():
-            model_id = model.config._name_or_path
-            model_init_kwargs = {"dtype": "auto"}
-            self.ref_model = AutoModelForCausalLM.from_pretrained(
-                model_id, **model_init_kwargs
-            )
-        elif is_peft_model(model):
-            # If PEFT is used, the reference model is not needed since the adapter can be disabled
-            # to revert to the initial model.
-            self.ref_model = None
-        else:
-            # If PEFT configuration is not provided, create a reference model based on the initial model.
-            self.ref_model = create_reference_model(model)  # type: ignore
+        self.ref_model = None
 
         # Disable dropout in the models
         if args.disable_dropout:
@@ -592,13 +559,6 @@ class RLTrainer(Trainer):
                 self.ref_model = self.accelerator.prepare_model(
                     self.ref_model, evaluation_mode=True
                 )
-        if self.sync_ref_model:
-            self.add_callback(
-                SyncRefModelCallback(
-                    ref_model=self.ref_model,  # type: ignore
-                    accelerator=self.accelerator,
-                )
-            )
 
         # Environment
         self.env = env
@@ -696,29 +656,6 @@ class RLTrainer(Trainer):
             shuffle=self.shuffle_dataset,
             seed=self.args.seed,
         )
-
-    def _enable_gradient_checkpointing(
-        self, model: PreTrainedModel, args: RLConfig
-    ) -> PreTrainedModel:
-        """Enables gradient checkpointing for the model."""
-        # Ensure use_cache is disabled
-        model.config.use_cache = False
-
-        # Enable gradient checkpointing on the base model for PEFT
-        if is_peft_model(model):
-            model.base_model.gradient_checkpointing_enable()  # type: ignore
-        # Enable gradient checkpointing for non-PEFT models
-        else:
-            model.gradient_checkpointing_enable()
-
-        gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
-        assert isinstance(gradient_checkpointing_kwargs, dict)
-        use_reentrant = gradient_checkpointing_kwargs.get("use_reentrant", True)
-
-        if use_reentrant:
-            model.enable_input_require_grads()
-
-        return model
 
     def _inner_training_loop(self, *args, **kwargs):
         """Override to ensure async generator is stopped when training ends"""
@@ -1041,7 +978,7 @@ class RLTrainer(Trainer):
                     self.logger.info(
                         f"Syncing weights to vLLM at step {self.state.global_step}"
                     )
-                self._move_model_to_vllm()
+                # self._move_model_to_vllm()
 
                 # Ensure every rank updates `_last_loaded_step` using the step
                 # value from the main process so future sync decisions stay

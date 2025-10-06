@@ -57,7 +57,7 @@ class AsyncBatchGenerator:
         sampling_args: dict[str, Any],
         num_batches_ahead: int = 1,
         max_queue_size: int | None = None,
-        generation_timeout: float = 300.0,  # 5 minutes default
+        generation_timeout: float = 600.0,  # 10 minutes default
     ):
         self.env = env
         self.client_config = client_config
@@ -82,7 +82,7 @@ class AsyncBatchGenerator:
         # Thread management
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.logger = logging.getLogger(f"AsyncBatchGenerator-{id(self)}")
+        self.logger = logging.getLogger(__name__)
         self.is_generating = False  # Track if currently generating
         self.worker_loop = None  # Will be set in worker thread
         self.started = False  # Track if generator is started
