@@ -55,13 +55,23 @@ class GenerateInputs(BaseModel):
     # For more details, see https://github.com/pydantic/pydantic/issues/9467#issuecomment-2442097291
     @field_validator("prompt", mode="after")
     def materialize_prompt_messages(cls, prompt) -> Iterable:
-        materialized_prompt = []
-        while True:
-            try:
-                materialized_prompt.append(next(prompt))
-            except StopIteration:
-                break
-        return materialized_prompt
+        def materialize_message_content(message):
+            if isinstance(message["content"], str):
+                return message
+            elif isinstance(message["content"], Iterable):
+                materialized_content = []
+                while True:
+                    try:
+                        materialized_content.append(next(message["content"]))
+                    except StopIteration:
+                        break
+                return {**message, "content": materialized_content}
+            else:
+                raise ValueError(
+                    f"Unsupported content type: {type(message['content'])}"
+                )
+
+        return [[materialize_message_content(m) for m in p] for p in prompt]
 
 
 class GenerateOutputs(BaseModel):
