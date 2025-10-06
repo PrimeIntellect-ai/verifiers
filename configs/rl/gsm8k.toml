@@ -1,16 +1,18 @@
 model = "willcb/Qwen3-0.6B"
 
+
 [inference]
 gpus = 1
 
-[inference.args]
+[inference.args] # vllm args
 enforce_eager = true
+tensor_parallel_size = 1
 
 [trainer]
 gpus = 1
 run_name = "gsm8k"
 
-[trainer.args]
+[trainer.args] # rl args
 micro_batch_size = 12
 rollouts_per_example = 12
 batch_size = 96
