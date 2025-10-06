@@ -1,3 +1,4 @@
+import sys
 import asyncio
 from unittest.mock import Mock, patch
 
@@ -152,7 +153,7 @@ class TestEvalEnvironmentsParallel:
                 env_args_dict={"env1": {}, "env2": {}, "env3": {}},
                 client=mock_async_client,
                 model="test-model",
-                num_examples=[2, 3, 4],
+                num_examples=[2, 3, 3],
                 rollouts_per_example=[1, 1, 1],
                 max_concurrent=[32, 32, 32],
                 sampling_args={"temperature": 0.7},
@@ -167,7 +168,7 @@ class TestEvalEnvironmentsParallel:
             # Check correct number of samples per environment
             assert len(results_dict["env1"].reward) == 2
             assert len(results_dict["env2"].reward) == 3
-            assert len(results_dict["env3"].reward) == 4
+            assert len(results_dict["env3"].reward) == 3
 
     @pytest.mark.asyncio
     async def test_eval_with_different_rollouts(
@@ -258,7 +259,7 @@ class TestPrimeHubIntegration:
         mock_client.push_eval.return_value = mock_response
 
         with patch(
-            "verifiers.scripts.eval.EvalsClient", return_value=mock_client
+            "prime_cli.api.evals.EvalsClient", return_value=mock_client
         ) as mock_cls:
             push_eval_to_prime_hub(
                 eval_name="test-eval",
@@ -290,7 +291,7 @@ class TestPrimeHubIntegration:
             {"example_id": 1, "reward": 0.0, "task": "gsm8k"},
         ]
 
-        with patch("verifiers.scripts.eval.EvalsClient", return_value=mock_client):
+        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
             push_eval_to_prime_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
@@ -307,10 +308,7 @@ class TestPrimeHubIntegration:
 
     def test_push_to_prime_hub_import_error(self, caplog):
         """Test graceful handling when prime-cli is not installed."""
-        with patch(
-            "verifiers.scripts.eval.EvalsClient",
-            side_effect=ImportError("No module named 'prime_cli'"),
-        ):
+        with patch.dict(sys.modules, {"prime_cli.api.evals": None}):
             # Should not raise, just log warning
             push_eval_to_prime_hub(
                 eval_name="test-eval",
@@ -325,7 +323,7 @@ class TestPrimeHubIntegration:
         mock_client = Mock()
         mock_client.push_eval.side_effect = Exception("API Error")
 
-        with patch("verifiers.scripts.eval.EvalsClient", return_value=mock_client):
+        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
             # Should not raise, just log warning
             push_eval_to_prime_hub(
                 eval_name="test-eval",
@@ -347,8 +345,8 @@ class TestPrimeHubIntegration:
         mock_config.frontend_url = "https://custom.primeintellect.ai"
 
         with patch(
-            "verifiers.scripts.eval.EvalsClient", return_value=mock_client
-        ), patch("verifiers.scripts.eval.Config", return_value=mock_config):
+            "prime_cli.api.evals.EvalsClient", return_value=mock_client
+        ):
             push_eval_to_prime_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",

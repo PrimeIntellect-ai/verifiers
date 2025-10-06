@@ -49,20 +49,29 @@ async def example_multi_env_eval():
 
 
 async def example_with_prime_hub():
-    """Example: Evaluate and save to Prime Hub."""
+    """
+    Example: Evaluate and save to Prime Hub.
+    
+    NOTE: Before pushing evaluations, you must first push the environments to Prime Hub:
+        1. Using verifiers: env.push_to_hub(hub_name='owner/gsm8k')
+        2. Using prime CLI: prime env push gsm8k
+        3. Via web: https://app.primeintellect.ai/environments
+    
+    The system will check if the environment exists before pushing eval results.
+    """
     
     client = AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
         base_url="https://api.openai.com/v1"
     )
     
-    envs = ["gsm8k", "math500"]
+    envs = ["primeintellect/gsm8k", "primeintellect/math500"]
     model = "gpt-4o-mini"
     
     # Run evaluation
     results = await eval_environments_parallel(
         envs=envs,
-        env_args_dict={"gsm8k": {}, "math500": {}},
+        env_args_dict={"primeintellect/gsm8k": {}, "primeintellect/math500": {}},
         client=client,
         model=model,
         num_examples=[10, 10],
@@ -71,7 +80,6 @@ async def example_with_prime_hub():
         sampling_args={"temperature": 0.7, "max_tokens": 2048},
     )
     
-    # Push each environment's results to Prime Hub
     for env_name, output in results.items():
         # Calculate metrics
         avg_reward = sum(output.reward) / len(output.reward)
@@ -94,7 +102,7 @@ async def example_with_prime_hub():
             "sampling_args": {"temperature": 0.7, "max_tokens": 2048},
         }
         
-        # Save to hub
+        # Save to hub (will check if environment exists first)
         push_eval_to_prime_hub(
             eval_name=f"{model.replace('/', '-')}-{env_name}",
             model_name=model,
@@ -171,6 +179,68 @@ async def example_from_prime_rl_style():
         )
 
 
+async def example_per_env_sampling_args():
+    """
+    Example: Per-environment sampling arguments.
+    
+    This shows how to configure different sampling parameters for each environment.
+    Useful when different tasks require different generation strategies.
+    """
+    
+    client = AsyncOpenAI(
+        api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
+        base_url="https://api.openai.com/v1"
+    )
+    
+    envs = ["gsm8k", "wordle", "reverse_text"]
+    
+    # Global sampling args (fallback)
+    global_sampling = {
+        "temperature": 0.7,
+        "max_tokens": 2048,
+    }
+    
+    # Per-environment sampling args
+    # - gsm8k: Higher temperature for exploration
+    # - wordle: Lower temperature for focused guessing
+    # - reverse_text: Uses global settings
+    sampling_args_dict = {
+        "gsm8k": {
+            "temperature": 0.9,
+            "max_tokens": 4096,
+            "top_p": 0.95,
+        },
+        "wordle": {
+            "temperature": 0.3,
+            "max_tokens": 512,
+        },
+        # reverse_text not specified, will use global_sampling
+    }
+    
+    results = await eval_environments_parallel(
+        envs=envs,
+        env_args_dict={env: {} for env in envs},
+        client=client,
+        model="gpt-4o-mini",
+        num_examples=[10, 10, 10],
+        rollouts_per_example=[3, 3, 3],
+        max_concurrent=[32, 32, 32],
+        sampling_args=global_sampling,  # Fallback
+        sampling_args_dict=sampling_args_dict,  # Per-env overrides
+    )
+    
+    # Display results
+    for env_name, output in results.items():
+        print(f"\n=== {env_name} ===")
+        print(f"Average reward: {sum(output.reward) / len(output.reward):.3f}")
+        
+        # Show which sampling args were used
+        if env_name in sampling_args_dict:
+            print(f"Used sampling args: {sampling_args_dict[env_name]}")
+        else:
+            print(f"Used global sampling args: {global_sampling}")
+
+
 if __name__ == "__main__":
     print("Example 1: Basic multi-environment evaluation")
     asyncio.run(example_multi_env_eval())
@@ -182,4 +252,8 @@ if __name__ == "__main__":
     print("\n" + "="*80 + "\n")
     print("Example 3: prime-rl style checkpoint evaluation")
     asyncio.run(example_from_prime_rl_style())
+    
+    print("\n" + "="*80 + "\n")
+    print("Example 4: Per-environment sampling arguments")
+    asyncio.run(example_per_env_sampling_args())
 

@@ -123,13 +123,13 @@ vf-eval gsm8k math500 \
 # Save results to Prime Hub for tracking (single or multiple environments)
 vf-eval gsm8k \
   -m gpt-4o-mini -n 100 -r 3 \
-  --save-to-prime-hub \
+  --save-to-hub \
   --eval-name "gsm8k-benchmark"
 
 # Or multiple environments
 vf-eval gsm8k math500 \
   -m gpt-4o-mini -n 100 -r 3 \
-  --save-to-prime-hub \
+  --save-to-hub \
   --eval-name "math-benchmark"
 ```
 

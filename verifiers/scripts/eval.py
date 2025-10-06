@@ -4,18 +4,21 @@ import importlib
 import importlib.util
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, cast
 
 import numpy as np
 from datasets import Dataset
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import GenerateOutputs
+from verifiers.types import Endpoints, GenerateOutputs
+from verifiers.utils.client_utils import setup_client
+from verifiers.utils.logging_utils import setup_logging
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
 # Setup logger for eval script using verifiers logging format
@@ -29,9 +32,37 @@ def push_eval_to_prime_hub(
     metrics: dict[str, float],
     metadata: dict[str, Any],
     results: list[dict[str, Any]] | None = None,
+    skip_env_check: bool = False,
 ) -> None:
     try:
         from prime_cli.api.evals import EvalsClient, EvalsAPIError
+        
+        client = EvalsClient()
+        
+        if not skip_env_check:
+            logger.debug(f"Checking if environment '{dataset}' exists on Environment Hub...")
+            try:
+                env_exists = client.check_environment_exists(dataset)
+                if not env_exists:
+                    if "/" in dataset:
+                        env_hint = f"owner/{dataset}"
+                    else:
+                        env_hint = f"<owner>/{dataset}"
+                    
+                    logger.error(
+                        f"✗ Cannot push eval: Environment '{dataset}' not found on Environment Hub.\n"
+                        f"  Please push the environment first using one of these methods:\n"
+                        f"  1. Using verifiers: env.push_to_hub(hub_name='{env_hint}')\n"
+                        f"  2. Using prime CLI: prime env push {dataset}\n"
+                        f"  3. Visit: https://app.primeintellect.ai/environments\n"
+                    )
+                    return
+                logger.debug(f"✓ Environment '{dataset}' found in Prime Hub")
+            except EvalsAPIError as e:
+                logger.warning(
+                    f"Could not verify environment existence: {e}\n"
+                    f"Proceeding with eval push anyway..."
+                )
         
         eval_data = {
             "eval_name": eval_name,
@@ -44,7 +75,6 @@ def push_eval_to_prime_hub(
         if results is not None:
             eval_data["results"] = results
         
-        client = EvalsClient()
         response = client.push_eval(eval_data)
         
         viewer_url = response.get("viewer_url")
@@ -110,21 +140,27 @@ async def eval_environments_parallel(
     num_examples: list[int],
     rollouts_per_example: list[int],
     max_concurrent: list[int],
-    sampling_args: dict | None,
+    sampling_args: dict | None = None,
+    sampling_args_dict: dict[str, dict] | None = None,
 ) -> dict[str, GenerateOutputs]:
-    tasks = [
-        eval_environment_async(
-            env=env,
-            env_args=env_args_dict.get(env, {}),
-            client=client,
-            model=model,
-            num_examples=n,
-            rollouts_per_example=r,
-            max_concurrent=c,
-            sampling_args=sampling_args,
+    tasks = []
+    for env, n, r, c in zip(envs, num_examples, rollouts_per_example, max_concurrent):
+        env_sampling_args = sampling_args
+        if sampling_args_dict and env in sampling_args_dict:
+            env_sampling_args = sampling_args_dict[env]
+        
+        tasks.append(
+            eval_environment_async(
+                env=env,
+                env_args=env_args_dict.get(env, {}),
+                client=client,
+                model=model,
+                num_examples=n,
+                rollouts_per_example=r,
+                max_concurrent=c,
+                sampling_args=env_sampling_args,
+            )
         )
-        for env, n, r, c in zip(envs, num_examples, rollouts_per_example, max_concurrent)
-    ]
     
     results = await asyncio.gather(*tasks)
     
@@ -384,7 +420,7 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
     for metric_name, metric_values in results.metrics.items():
         logger.info(f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}")
     
-    if args.save_to_prime_hub:
+    if args.save_to_hub:
         eval_name = args.eval_name or f"{model.replace('/', '-')}-{env}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         
         metrics = {
@@ -406,12 +442,34 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
         
+        sample_results = []
+        for i in range(len(results.reward)):
+            result_entry = {
+                "example_id": i,
+                "reward": float(results.reward[i]),
+                "prompt": results.prompt[i] if i < len(results.prompt) else [],
+                "completion": results.completion[i] if i < len(results.completion) else [],
+            }
+            if i < len(results.task):
+                result_entry["task"] = str(results.task[i])
+            if i < len(results.answer):
+                result_entry["answer"] = str(results.answer[i])
+            if i < len(results.info):
+                info = results.info[i]
+                if isinstance(info, dict):
+                    if "score" in info:
+                        result_entry["score"] = float(info["score"])
+                    if "correct" in info:
+                        result_entry["correct"] = bool(info["correct"])
+            sample_results.append(result_entry)
+        
         push_eval_to_prime_hub(
             eval_name=eval_name,
             model_name=model,
             dataset=env,
             metrics=metrics,
             metadata=metadata,
+            results=sample_results,
         )
 
 
@@ -436,7 +494,13 @@ def main():
         "--per-env-config",
         type=json.loads,
         default=None,
-        help='Per-environment configuration as JSON: \'{"env1": {"num_examples": 10, "rollouts_per_example": 3}, ...}\'',
+        help=(
+            'Per-environment configuration as JSON. Supports: num_examples, rollouts_per_example, '
+            'max_concurrent, env_args, and sampling_args. '
+            'Example: \'{"env1": {"num_examples": 10, "sampling_args": {"temperature": 0.8}}, '
+            '"env2": {"num_examples": 20, "sampling_args": {"temperature": 0.5}}}\'. '
+            'If a parameter is not specified for an environment, it falls back to the global value.'
+        ),
     )
     parser.add_argument(
         "--env-dir-path",
@@ -545,11 +609,15 @@ def main():
         help="Name of dataset to save to Hugging Face Hub",
     )
     parser.add_argument(
-        "--save-to-prime-hub",
+        "--save-to-hub",
         "-P",
         default=False,
         action="store_true",
-        help="Save evaluation results to Prime Hub (requires prime-cli)",
+        help=(
+            "Save evaluation results to Prime Hub (requires prime-cli). "
+            "NOTE: The environment must be pushed to Prime Hub first. "
+            "Use 'prime env push' or env.push_to_hub() before running evals."
+        ),
     )
     parser.add_argument(
         "--eval-name",
@@ -584,6 +652,7 @@ def main():
     num_examples_list = []
     rollouts_list = []
     max_concurrent_list = []
+    sampling_args_dict = {}
     
     for env in envs:
         if args.per_env_config and env in args.per_env_config:
@@ -591,6 +660,10 @@ def main():
             num_examples_list.append(cfg.get("num_examples", args.num_examples))
             rollouts_list.append(cfg.get("rollouts_per_example", args.rollouts_per_example))
             max_concurrent_list.append(cfg.get("max_concurrent", args.max_concurrent))
+            
+            # Per-environment sampling args
+            if "sampling_args" in cfg:
+                sampling_args_dict[env] = cfg["sampling_args"]
         else:
             num_examples_list.append(args.num_examples)
             rollouts_list.append(args.rollouts_per_example)
@@ -609,6 +682,7 @@ def main():
             rollouts_per_example=rollouts_list,
             max_concurrent=max_concurrent_list,
             sampling_args=sampling_args,
+            sampling_args_dict=sampling_args_dict if sampling_args_dict else None,
         )
     )
     
@@ -619,6 +693,8 @@ def main():
         logger.info("="*80)
     
     for idx, (env, results) in enumerate(results_dict.items()):
+        env_sampling_args = sampling_args_dict.get(env, sampling_args) if sampling_args_dict else sampling_args
+        
         display_and_push_results(
             env=env,
             results=results,
@@ -627,7 +703,7 @@ def main():
             num_examples=num_examples_list[idx],
             rollouts_per_example=rollouts_list[idx],
             max_concurrent=max_concurrent_list[idx],
-            sampling_args=sampling_args,
+            sampling_args=env_sampling_args,
         )
     
     if len(envs) > 1:
