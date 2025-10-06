@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import logging
+import sys
 import os
 import time
 import uuid
@@ -36,11 +37,13 @@ def push_eval_to_prime_hub(
 ) -> None:
     try:
         from prime_cli.api.evals import EvalsClient, EvalsAPIError
-        
+
         client = EvalsClient()
-        
+
         if not skip_env_check:
-            logger.debug(f"Checking if environment '{dataset}' exists on Environment Hub...")
+            logger.debug(
+                f"Checking if environment '{dataset}' exists on Environment Hub..."
+            )
             try:
                 env_exists = client.check_environment_exists(dataset)
                 if not env_exists:
@@ -48,7 +51,7 @@ def push_eval_to_prime_hub(
                         env_hint = f"owner/{dataset}"
                     else:
                         env_hint = f"<owner>/{dataset}"
-                    
+
                     logger.error(
                         f"✗ Cannot push eval: Environment '{dataset}' not found on Environment Hub.\n"
                         f"  Please push the environment first using one of these methods:\n"
@@ -63,7 +66,7 @@ def push_eval_to_prime_hub(
                     f"Could not verify environment existence: {e}\n"
                     f"Proceeding with eval push anyway..."
                 )
-        
+
         eval_data = {
             "eval_name": eval_name,
             "model_name": model_name,
@@ -71,22 +74,21 @@ def push_eval_to_prime_hub(
             "metrics": metrics,
             "metadata": metadata,
         }
-        
+
         if results is not None:
             eval_data["results"] = results
-        
+
         response = client.push_eval(eval_data)
-        
+
         viewer_url = response.get("viewer_url")
-        
+
         if viewer_url:
             logger.info(
-                f"✓ Pushed eval '{eval_name}' to Prime Hub\n"
-                f"  View at: {viewer_url}"
+                f"✓ Pushed eval '{eval_name}' to Prime Hub\n  View at: {viewer_url}"
             )
         else:
             logger.info(f"✓ Pushed eval '{eval_name}' to Prime Hub")
-            
+
     except ImportError:
         logger.warning(
             "prime-cli not found. Install with: pip install prime-cli\n"
@@ -108,18 +110,18 @@ async def eval_environment_async(
 ) -> tuple[str, GenerateOutputs]:
     logger.info(f"Loading environment: {env}")
     vf_env = vf.load_environment(env_id=env, **env_args)
-    
+
     if vf_env.eval_dataset is None:
         logger.debug(f"No eval dataset for {env}, using train dataset")
         dataset = vf_env.get_dataset(n=num_examples)
     else:
         dataset = vf_env.get_eval_dataset(n=num_examples)
-    
+
     if rollouts_per_example > 1:
         dataset = dataset.repeat(rollouts_per_example)
-    
+
     logger.info(f"Evaluating {env} with {len(dataset)} samples...")
-    
+
     results = await vf_env.a_generate(
         inputs=dataset,
         client=client,
@@ -128,7 +130,7 @@ async def eval_environment_async(
         score_rollouts=True,
         max_concurrent=max_concurrent,
     )
-    
+
     return env, results
 
 
@@ -148,7 +150,7 @@ async def eval_environments_parallel(
         env_sampling_args = sampling_args
         if sampling_args_dict and env in sampling_args_dict:
             env_sampling_args = sampling_args_dict[env]
-        
+
         tasks.append(
             eval_environment_async(
                 env=env,
@@ -161,9 +163,9 @@ async def eval_environments_parallel(
                 sampling_args=env_sampling_args,
             )
         )
-    
+
     results = await asyncio.gather(*tasks)
-    
+
     return dict(results)
 
 
@@ -383,20 +385,20 @@ def setup_client_from_args(args):
             raise ImportError(f"endpoints.py not found at {endpoints_file}")
     except (ImportError, AttributeError):
         ENDPOINTS = {}
-    
+
     # Resolve model/API config
     model = args.model
     api_key_var = args.api_key_var
     api_base_url = args.api_base_url
-    
+
     if model in ENDPOINTS:
         api_key_var = ENDPOINTS[model]["key"]
         api_base_url = ENDPOINTS[model]["url"]
         model = ENDPOINTS[model]["model"]
-    
+
     api_key_value = os.getenv(api_key_var, "EMPTY")
     client = AsyncOpenAI(api_key=api_key_value, base_url=api_base_url)
-    
+
     return client, model
 
 
@@ -412,17 +414,33 @@ def prepare_sampling_args_from_cli(args):
     return merged_sampling_args
 
 
-def display_and_push_results(env, results, model, args, num_examples, rollouts_per_example, max_concurrent, sampling_args):
+def display_and_push_results(
+    env,
+    results,
+    model,
+    args,
+    num_examples,
+    rollouts_per_example,
+    max_concurrent,
+    sampling_args,
+):
     """Display results and optionally push to Prime Hub."""
     logger.info(f"\n--- {env} ---")
-    logger.info(f"Rewards: avg={np.mean(results.reward):.3f}, std={np.std(results.reward):.3f}")
-    
+    logger.info(
+        f"Rewards: avg={np.mean(results.reward):.3f}, std={np.std(results.reward):.3f}"
+    )
+
     for metric_name, metric_values in results.metrics.items():
-        logger.info(f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}")
-    
+        logger.info(
+            f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}"
+        )
+
     if args.save_to_hub:
-        eval_name = args.eval_name or f"{model.replace('/', '-')}-{env}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        
+        eval_name = (
+            args.eval_name
+            or f"{model.replace('/', '-')}-{env}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        )
+
         metrics = {
             "avg_reward": float(np.mean(results.reward)),
             "std_reward": float(np.std(results.reward)),
@@ -431,7 +449,7 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
         for metric_name, metric_values in results.metrics.items():
             metrics[f"avg_{metric_name}"] = float(np.mean(metric_values))
             metrics[f"std_{metric_name}"] = float(np.std(metric_values))
-        
+
         metadata = {
             "environment": env,
             "model": model,
@@ -441,14 +459,16 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
             "sampling_args": sampling_args,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
-        
+
         sample_results = []
         for i in range(len(results.reward)):
             result_entry = {
                 "example_id": i,
                 "reward": float(results.reward[i]),
                 "prompt": results.prompt[i] if i < len(results.prompt) else [],
-                "completion": results.completion[i] if i < len(results.completion) else [],
+                "completion": results.completion[i]
+                if i < len(results.completion)
+                else [],
             }
             if i < len(results.task):
                 result_entry["task"] = str(results.task[i])
@@ -462,7 +482,7 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
                     if "correct" in info:
                         result_entry["correct"] = bool(info["correct"])
             sample_results.append(result_entry)
-        
+
         push_eval_to_prime_hub(
             eval_name=eval_name,
             model_name=model,
@@ -473,15 +493,80 @@ def display_and_push_results(env, results, model, args, num_examples, rollouts_p
         )
 
 
+def parse_env_chained_args(argv):
+    """
+    Parse arguments with per-environment chaining pattern:
+    vf-eval gsm8k --num-examples 100 math500 --num-examples 50
+    """
+    env_flags = {
+        "--num-examples",
+        "-n",
+        "--rollouts-per-example",
+        "-r",
+        "--max-concurrent",
+        "-c",
+        "--sampling-args",
+        "-S",
+        "--env-args",
+        "-a",
+        "--model",
+        "-m",
+    }
+
+    envs = []
+    env_configs = {}
+    global_args = []
+
+    current_env = None
+    current_env_args = []
+    i = 0
+
+    while i < len(argv):
+        arg = argv[i]
+
+        if arg.startswith("-"):
+            if current_env is not None and arg in env_flags:
+                current_env_args.append(arg)
+                if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    current_env_args.append(argv[i + 1])
+                    i += 1
+            else:
+                global_args.append(arg)
+                if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    global_args.append(argv[i + 1])
+                    i += 1
+        else:
+            if current_env is not None:
+                env_configs[current_env] = current_env_args
+
+            current_env = arg
+            envs.append(arg)
+            current_env_args = []
+
+        i += 1
+
+    if current_env is not None:
+        env_configs[current_env] = current_env_args
+
+    return envs, env_configs, global_args
+
+
 def main():
+    envs, env_configs, global_args = parse_env_chained_args(sys.argv[1:])
+    modified_argv = envs + global_args
+
     parser = argparse.ArgumentParser(
-        description="Evaluate environment(s) using verifiers. Supports single or multiple environments."
+        description="Evaluate environment(s) using verifiers. Supports per-environment configuration."
     )
     parser.add_argument(
         "env",
         type=str,
-        nargs='+',
-        help="Environment module name(s). Pass multiple for parallel evaluation (e.g., 'gsm8k math500')"
+        nargs="+",
+        help=(
+            "Environment module name(s). "
+            "You can specify per-env args after each env: "
+            "'vf-eval gsm8k --num-examples 100 math500 --num-examples 50'"
+        ),
     )
     parser.add_argument(
         "--env-args",
@@ -495,11 +580,11 @@ def main():
         type=json.loads,
         default=None,
         help=(
-            'Per-environment configuration as JSON. Supports: num_examples, rollouts_per_example, '
-            'max_concurrent, env_args, and sampling_args. '
+            "Per-environment configuration as JSON. Supports: num_examples, rollouts_per_example, "
+            "max_concurrent, env_args, and sampling_args. "
             'Example: \'{"env1": {"num_examples": 10, "sampling_args": {"temperature": 0.8}}, '
             '"env2": {"num_examples": 20, "sampling_args": {"temperature": 0.5}}}\'. '
-            'If a parameter is not specified for an environment, it falls back to the global value.'
+            "If a parameter is not specified for an environment, it falls back to the global value."
         ),
     )
     parser.add_argument(
@@ -521,7 +606,10 @@ def main():
         "-m",
         type=str,
         default="gpt-4.1-mini",
-        help="Name of model to evaluate",
+        help=(
+            "Name of model to evaluate (global default). "
+            "Can be overridden per-env: 'gsm8k --model gpt-4o math500 --model claude-3-opus'"
+        ),
     )
     parser.add_argument(
         "--api-key-var",
@@ -548,21 +636,30 @@ def main():
         "-n",
         type=int,
         default=5,
-        help="Number of examples to evaluate",
+        help=(
+            "Number of examples to evaluate (global default). "
+            "Can be overridden per-env: 'gsm8k --num-examples 100 math500 --num-examples 50'"
+        ),
     )
     parser.add_argument(
         "--rollouts-per-example",
         "-r",
         type=int,
         default=3,
-        help="Number of rollouts per example",
+        help=(
+            "Number of rollouts per example (global default). "
+            "Can be overridden per-env: 'gsm8k --rollouts-per-example 5'"
+        ),
     )
     parser.add_argument(
         "--max-concurrent",
         "-c",
         type=int,
         default=32,
-        help="Maximum number of concurrent requests",
+        help=(
+            "Maximum number of concurrent requests (global default). "
+            "Can be overridden per-env: 'gsm8k --max-concurrent 64'"
+        ),
     )
     parser.add_argument(
         "--max-tokens",
@@ -572,7 +669,14 @@ def main():
         help="Maximum number of tokens to generate (unset to use model default)",
     )
     parser.add_argument(
-        "--temperature", "-T", type=float, default=None, help="Temperature for sampling"
+        "--temperature",
+        "-T",
+        type=float,
+        default=None,
+        help=(
+            "Temperature for sampling (global default). "
+            "For per-env temperature, use: 'gsm8k --sampling-args '{\"temperature\": 0.9}'"
+        ),
     )
     parser.add_argument(
         "--sampling-args",
@@ -625,18 +729,59 @@ def main():
         default=None,
         help="Name for the evaluation run (used when saving to Prime Hub)",
     )
-    args = parser.parse_args()
-    
-    # Normalize to list
-    envs = args.env if isinstance(args.env, list) else [args.env]
-    
-    # Setup client and model
-    client, model = setup_client_from_args(args)
-    
-    # Prepare sampling arguments
-    sampling_args = prepare_sampling_args_from_cli(args)
-    
-    # Prepare per-environment configuration
+    args = parser.parse_args(modified_argv)
+
+    def parse_env_config_from_args(env_name, env_arg_list):
+        config = {}
+        i = 0
+        while i < len(env_arg_list):
+            arg = env_arg_list[i]
+            if arg in ["--num-examples", "-n"]:
+                config["num_examples"] = int(env_arg_list[i + 1])
+                i += 2
+            elif arg in ["--rollouts-per-example", "-r"]:
+                config["rollouts_per_example"] = int(env_arg_list[i + 1])
+                i += 2
+            elif arg in ["--max-concurrent", "-c"]:
+                config["max_concurrent"] = int(env_arg_list[i + 1])
+                i += 2
+            elif arg in ["--model", "-m"]:
+                config["model"] = env_arg_list[i + 1]
+                i += 2
+            elif arg in ["--sampling-args", "-S"]:
+                config["sampling_args"] = json.loads(env_arg_list[i + 1])
+                i += 2
+            elif arg in ["--env-args", "-a"]:
+                config["env_args"] = json.loads(env_arg_list[i + 1])
+                i += 2
+            else:
+                i += 1
+        return config
+
+    per_env_config_from_chain = {}
+    for env_name in envs:
+        if env_name in env_configs and env_configs[env_name]:
+            per_env_config_from_chain[env_name] = parse_env_config_from_args(
+                env_name, env_configs[env_name]
+            )
+
+    if args.per_env_config:
+        for env_name in envs:
+            if env_name in args.per_env_config:
+                if env_name in per_env_config_from_chain:
+                    per_env_config_from_chain[env_name].update(
+                        args.per_env_config[env_name]
+                    )
+                else:
+                    per_env_config_from_chain[env_name] = args.per_env_config[env_name]
+
+    args.per_env_config = (
+        per_env_config_from_chain if per_env_config_from_chain else None
+    )
+
+    client, default_model = setup_client_from_args(args)
+    default_sampling_args = prepare_sampling_args_from_cli(args)
+
     env_args_dict = {}
     if args.per_env_config:
         for env in envs:
@@ -647,71 +792,94 @@ def main():
             env_args_dict = args.env_args
         else:
             env_args_dict = {env: args.env_args for env in envs}
-    
-    # Prepare per-environment parameters
+
     num_examples_list = []
     rollouts_list = []
     max_concurrent_list = []
+    model_list = []
     sampling_args_dict = {}
-    
+
     for env in envs:
         if args.per_env_config and env in args.per_env_config:
             cfg = args.per_env_config[env]
             num_examples_list.append(cfg.get("num_examples", args.num_examples))
-            rollouts_list.append(cfg.get("rollouts_per_example", args.rollouts_per_example))
+            rollouts_list.append(
+                cfg.get("rollouts_per_example", args.rollouts_per_example)
+            )
             max_concurrent_list.append(cfg.get("max_concurrent", args.max_concurrent))
-            
-            # Per-environment sampling args
+            model_list.append(cfg.get("model", default_model))
+
             if "sampling_args" in cfg:
-                sampling_args_dict[env] = cfg["sampling_args"]
+                env_sampling = (
+                    default_sampling_args.copy() if default_sampling_args else {}
+                )
+                env_sampling.update(cfg["sampling_args"])
+                sampling_args_dict[env] = env_sampling
         else:
             num_examples_list.append(args.num_examples)
             rollouts_list.append(args.rollouts_per_example)
             max_concurrent_list.append(args.max_concurrent)
-    
-    # Run evaluation (always use async path)
-    logger.info(f"Evaluating {len(envs)} environment{'s' if len(envs) > 1 else ''}: {', '.join(envs)}")
-    
-    results_dict = asyncio.run(
-        eval_environments_parallel(
-            envs=envs,
-            env_args_dict=env_args_dict,
-            client=client,
-            model=model,
-            num_examples=num_examples_list,
-            rollouts_per_example=rollouts_list,
-            max_concurrent=max_concurrent_list,
-            sampling_args=sampling_args,
-            sampling_args_dict=sampling_args_dict if sampling_args_dict else None,
-        )
+            model_list.append(default_model)
+
+    logger.info(
+        f"Evaluating {len(envs)} environment{'s' if len(envs) > 1 else ''}: {', '.join(envs)}"
     )
-    
-    # Display results
+
+    async def run_multi_model_eval():
+        all_results = {}
+        for idx, env in enumerate(envs):
+            env_model = model_list[idx]
+            env_sampling = (
+                sampling_args_dict.get(env, default_sampling_args)
+                if sampling_args_dict
+                else default_sampling_args
+            )
+
+            result = await eval_environment_async(
+                env=env,
+                env_args=env_args_dict.get(env, {}),
+                client=client,
+                model=env_model,
+                num_examples=num_examples_list[idx],
+                rollouts_per_example=rollouts_list[idx],
+                max_concurrent=max_concurrent_list[idx],
+                sampling_args=env_sampling,
+            )
+            all_results[result[0]] = result[1]
+        return all_results
+
+    results_dict = asyncio.run(run_multi_model_eval())
+
     if len(envs) > 1:
-        logger.info("\n" + "="*80)
+        logger.info("\n" + "=" * 80)
         logger.info("EVALUATION RESULTS")
-        logger.info("="*80)
-    
+        logger.info("=" * 80)
+
     for idx, (env, results) in enumerate(results_dict.items()):
-        env_sampling_args = sampling_args_dict.get(env, sampling_args) if sampling_args_dict else sampling_args
-        
+        env_model = model_list[idx]
+        env_sampling_args = (
+            sampling_args_dict.get(env, default_sampling_args)
+            if sampling_args_dict
+            else default_sampling_args
+        )
+
         display_and_push_results(
             env=env,
             results=results,
-            model=model,
+            model=env_model,
             args=args,
             num_examples=num_examples_list[idx],
             rollouts_per_example=rollouts_list[idx],
             max_concurrent=max_concurrent_list[idx],
             sampling_args=env_sampling_args,
         )
-    
+
     if len(envs) > 1:
-        logger.info("\n" + "="*80)
+        logger.info("\n" + "=" * 80)
         logger.info(f"✓ Completed evaluation of {len(envs)} environments")
-        logger.info("="*80)
+        logger.info("=" * 80)
     else:
-        logger.info(f"✓ Evaluation complete")
+        logger.info("✓ Evaluation complete")
 
 
 if __name__ == "__main__":
