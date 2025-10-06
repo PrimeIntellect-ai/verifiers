@@ -14,7 +14,7 @@ from accelerate.utils import (
     gather_object,
     is_peft_model,
 )
-from peft import get_peft_model
+from peft import get_peft_model, get_peft_model_state_dict
 from torch.utils.data import DataLoader, Sampler
 from transformers import AutoModelForCausalLM
 from transformers.integrations.deepspeed import (
@@ -800,7 +800,8 @@ class RLTrainer(Trainer):
         is_generating = False
         if self.accelerator.is_main_process:
             is_generating = self.async_generator.is_generating
-
+        # wait for all
+        self.accelerator.wait_for_everyone()
         # Broadcast generation state from main process to all processes
         is_generating_list = [is_generating]
         broadcast_object_list(is_generating_list, from_process=0)
@@ -834,34 +835,41 @@ class RLTrainer(Trainer):
         adapter_name = self._format_adapter_name(base_model_name, step)
         adapter_dirname = self._format_adapter_path_name(step)
 
-        # Gather only trainable (adapter) parameters under ZeRO-3 before saving
+        # Gather all parameters under ZeRO-3 while building the adapter state, since
+        # PEFT may include non-trainable adapter tensors that still need materialization.
         peft_model = self.accelerator.unwrap_model(self.model)
-        trainable_params = [p for p in peft_model.parameters() if p.requires_grad]
-        with gather_if_zero3(trainable_params):  # type: ignore[arg-type]
+        all_params = list(peft_model.parameters())
+        adapter_state_dict = None
+        with gather_if_zero3(all_params):  # type: ignore[arg-type]
             if self.accelerator.is_main_process:
-                if self.adapter_save_dir is None:
-                    raise RuntimeError(
-                        "Adapter save directory has not been initialized."
-                    )
-                adapter_path = self.adapter_save_dir / adapter_dirname
-                if adapter_path.exists():
-                    shutil.rmtree(adapter_path)
                 if not is_peft_model(peft_model):
                     raise RuntimeError("Expected a PEFT LoRA model to save adapter.")
-                peft_model.save_pretrained(adapter_path, safe_serialization=True)  # type: ignore[attr-defined]
-                assert isinstance(self.processing_class, PreTrainedTokenizerBase)
-                if hasattr(self.processing_class, "save_pretrained"):
-                    self.processing_class.save_pretrained(adapter_path)
-                self.logger.info(
-                    "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
-                )
-                self.vllm_client.load_lora_adapter(
-                    adapter_name, str(adapter_path.resolve())
-                )
-                self._register_saved_adapter(adapter_name, adapter_path)
-                self.vllm_client.reset_prefix_cache()
-                # Point async generation to the freshly loaded adapter by name
-                self.async_generator.model_name = adapter_name
+                adapter_state_dict = get_peft_model_state_dict(peft_model)
+
+        # Perform filesystem and vLLM operations outside gather to avoid rank blocking
+        if self.accelerator.is_main_process:
+            if self.adapter_save_dir is None:
+                raise RuntimeError("Adapter save directory has not been initialized.")
+            adapter_path = self.adapter_save_dir / adapter_dirname
+            if adapter_path.exists():
+                shutil.rmtree(adapter_path)
+            assert adapter_state_dict is not None
+            peft_model.save_pretrained(  # type: ignore[attr-defined]
+                adapter_path, state_dict=adapter_state_dict, safe_serialization=True
+            )
+            assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+            if hasattr(self.processing_class, "save_pretrained"):
+                self.processing_class.save_pretrained(adapter_path)
+            self.logger.info(
+                "Saved LoRA adapter '%s' to %s", adapter_name, adapter_path
+            )
+            self.vllm_client.load_lora_adapter(
+                adapter_name, str(adapter_path.resolve())
+            )
+            self._register_saved_adapter(adapter_name, adapter_path)
+            self.vllm_client.reset_prefix_cache()
+            # Point async generation to the freshly loaded adapter by name
+            self.async_generator.model_name = adapter_name
 
         # Ensure all processes wait for the main process to finish updating weights
         self.accelerator.wait_for_everyone()
@@ -884,8 +892,6 @@ class RLTrainer(Trainer):
         if run_dir.name.startswith("checkpoint-"):
             run_dir = run_dir.parent
         return run_dir / "adapters"
-
-    # helper removed; inlined into _move_model_to_vllm for clarity
 
     def _register_saved_adapter(self, adapter_name: str, adapter_path: Path) -> None:
         self._saved_adapters.append((adapter_name, adapter_path))
