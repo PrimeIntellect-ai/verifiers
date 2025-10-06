@@ -36,9 +36,6 @@ def setup_logging(
     logger.setLevel(level.upper())
     logger.addHandler(handler)
 
-    # Prevent the logger from propagating messages to the root logger
-    logger.propagate = False
-
 
 def print_prompt_completions_sample(
     prompts: list[Messages],
