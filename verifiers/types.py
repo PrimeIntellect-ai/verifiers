@@ -1,4 +1,5 @@
 from typing import (
+    Annotated,
     Any,
     Awaitable,
     Callable,
@@ -22,7 +23,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SkipValidation
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
@@ -57,7 +58,7 @@ class GenerateOutputs(BaseModel):
     prompt: list[Messages]
     completion: list[Messages]
     answer: list[str]
-    state: list[State]
+    state: Annotated[list[State], SkipValidation]
     info: list[Info]
     task: list[str]
     reward: list[float]
