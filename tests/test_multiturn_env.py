@@ -182,6 +182,43 @@ class TestMultiTurnEnv:
         assert isinstance(state["responses"], list)
 
     @pytest.mark.asyncio
+    async def test_state_initialization_allows_prompt_rewrite(self, mock_multiturn_env):
+        """Test that state is properly initialized with all required fields."""
+        mock_multiturn_env.client.add_chat_response(
+            messages=[{"role": "user", "content": "Test state"}], response="Quick DONE"
+        )
+
+        prompt = [{"role": "user", "content": "Test state"}]
+
+        mutated_prompt = [{"role": "user", "content": "Mutated test state"}]
+
+        def mutate_prompt(state):
+            state["prompt"][0]["content"] = "Mutated test state"
+            return state
+
+        mock_multiturn_env.setup_state = mutate_prompt
+
+        completion, state = await mock_multiturn_env.rollout(
+            client=mock_multiturn_env.client,
+            model="test-model",
+            prompt=prompt,
+            answer="test_answer",
+            task="test_task",
+            info={"extra": "data"},
+        )
+
+        # Check prompt was mutated
+        assert state["prompt"] == mutated_prompt
+        # Check rest of state fields are initialized
+        # state["completion"] is initialized to [] but not updated during rollout
+        assert state["completion"] == []
+        assert state["answer"] == "test_answer"
+        assert state["task"] == "test_task"
+        assert state["info"] == {"extra": "data"}
+        assert "responses" in state
+        assert isinstance(state["responses"], list)
+
+    @pytest.mark.asyncio
     async def test_immediate_completion(self, mock_multiturn_env):
         """Test completion detection on first turn."""
         mock_multiturn_env.client.add_chat_response(
