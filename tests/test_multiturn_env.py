@@ -183,13 +183,12 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_state_initialization_allows_prompt_rewrite(self, mock_multiturn_env):
-        """Test that state is properly initialized with all required fields."""
+        """Test that `set_state` allows for prompt rewriting"""
         mock_multiturn_env.client.add_chat_response(
             messages=[{"role": "user", "content": "Test state"}], response="Quick DONE"
         )
 
         prompt = [{"role": "user", "content": "Test state"}]
-
         mutated_prompt = [{"role": "user", "content": "Mutated test state"}]
 
         def mutate_prompt(state):
@@ -209,6 +208,7 @@ class TestMultiTurnEnv:
 
         # Check prompt was mutated
         assert state["prompt"] == mutated_prompt
+
         # Check rest of state fields are initialized
         # state["completion"] is initialized to [] but not updated during rollout
         assert state["completion"] == []
