@@ -94,6 +94,10 @@ __all__ = [
     "get_model_and_tokenizer",
     "RLTrainer",
     "RLConfig",
+    "GRPOTrainer",
+    "GRPOConfig",
+    "grpo_defaults",
+    "lora_defaults",
 ]
 
 _LAZY_IMPORTS = {
@@ -102,7 +106,9 @@ _LAZY_IMPORTS = {
     "get_tokenizer": "verifiers.rl.utils.model_utils:get_tokenizer",
     "RLConfig": "verifiers.rl.trainer:RLConfig",
     "RLTrainer": "verifiers.rl.trainer:RLTrainer",
-    "rl_defaults": "verifiers.rl.trainer:rl_defaults",
+    "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
+    "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
+    "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
     "lora_defaults": "verifiers.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
@@ -129,8 +135,12 @@ if TYPE_CHECKING:
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
     from .rl.trainer import (  # noqa: F401
+        GRPOConfig,
+        GRPOTrainer,
         RLConfig,
         RLTrainer,
+        grpo_defaults,
+        lora_defaults,
     )
     from .rl.utils.model_utils import (  # noqa: F401
         get_model,

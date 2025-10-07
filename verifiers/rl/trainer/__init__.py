@@ -1,5 +1,6 @@
+import logging
+
 import torch._dynamo
-from peft import LoraConfig
 
 from .rl_config import RLConfig
 from .rl_trainer import RLTrainer
@@ -7,4 +8,30 @@ from .rl_trainer import RLTrainer
 torch._dynamo.config.suppress_errors = True
 
 
-__all__ = ["RLConfig", "RLTrainer"]
+def GRPOTrainer(**kwargs):
+    logging.warning("GRPOTrainer is deprecated and renamed to RLTrainer.")
+    return RLTrainer(**kwargs)
+
+
+def GRPOConfig(**kwargs):
+    logging.warning("GRPOConfig is deprecated and renamed to RLConfig.")
+    return RLConfig(**kwargs)
+
+
+def grpo_defaults(**kwargs):
+    logging.warning("grpo_defaults is deprecated and replaced with RLConfig.")
+    return RLConfig(**kwargs)
+
+
+def lora_defaults(**kwargs):
+    raise ValueError("lora_defaults is deprecated and replaced with RLConfig.")
+
+
+__all__ = [
+    "RLConfig",
+    "RLTrainer",
+    "GRPOTrainer",
+    "GRPOConfig",
+    "grpo_defaults",
+    "lora_defaults",
+]
