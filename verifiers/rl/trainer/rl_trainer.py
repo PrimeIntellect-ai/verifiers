@@ -8,47 +8,26 @@ from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 
 import datasets
 import numpy as np
-import torch  # type: ignore[unresolved-import]
-import wandb  # type: ignore[unresolved-import]
-from accelerate.utils import (  # type: ignore[unresolved-import]
+import torch
+from accelerate.utils import (
     broadcast_object_list,
     gather_object,
     is_peft_model,
 )
-from peft import PeftConfig, get_peft_model  # type: ignore[unresolved-import]
-from torch.utils.data import DataLoader, Sampler  # type: ignore[unresolved-import]
-from transformers import AutoModelForCausalLM  # type: ignore[unresolved-import]
-from transformers.integrations.deepspeed import (  # type: ignore[unresolved-import]
-    is_deepspeed_zero3_enabled,
-)
-from transformers.modeling_utils import (  # type: ignore[unresolved-import]
-    PreTrainedModel,
-)
-from transformers.tokenization_utils_base import (  # type: ignore[unresolved-import]
-    PreTrainedTokenizerBase,
-)
-from transformers.trainer import Trainer  # type: ignore[unresolved-import]
-from transformers.trainer_callback import (  # type: ignore[unresolved-import]
-    TrainerCallback,
-)
-from transformers.trainer_utils import seed_worker  # type: ignore[unresolved-import]
-from trl.models import (  # type: ignore[unresolved-import]
-    create_reference_model,
-    prepare_deepspeed,
-)
-from trl.trainer.callbacks import (  # type: ignore[unresolved-import]
-    SyncRefModelCallback,
-)
-from trl.trainer.utils import (  # type: ignore[unresolved-import]
-    disable_dropout_in_model,
-    pad,
-    selective_log_softmax,
-)
+from torch.utils.data import DataLoader, Sampler
+from transformers.modeling_utils import PreTrainedModel
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers.trainer import Trainer
+from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_utils import seed_worker
+from trl.models.utils import prepare_peft_model
+from trl.trainer.utils import pad, selective_log_softmax
 
-from verifiers import Environment
-from verifiers.trainers.async_batch_generator import AsyncBatchGenerator, BatchRequest
-from verifiers.trainers.async_dataloader_wrapper import AsyncDataLoaderWrapper
-from verifiers.trainers.grpo_config import GRPOConfig
+import verifiers as vf
+import wandb
+from verifiers.rl.trainer.async_batch_generator import AsyncBatchGenerator, BatchRequest
+from verifiers.rl.trainer.async_dataloader_wrapper import AsyncDataLoaderWrapper
+from verifiers.rl.trainer.rl_config import RLConfig
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 
 
@@ -267,82 +246,44 @@ def nanmax(tensor: torch.Tensor) -> torch.Tensor:
     return torch.max(tensor[~torch.isnan(tensor)])
 
 
-class GRPOTrainer(Trainer):
+class RLTrainer(Trainer):
     def __init__(
         self,
-        model: PreTrainedModel,
-        env: Environment,
-        args: GRPOConfig,
-        processing_class: PreTrainedTokenizerBase,
+        model: PreTrainedModel | str,
+        env: vf.Environment,
+        args: RLConfig,
+        processing_class: Optional[PreTrainedTokenizerBase] = None,
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[
             Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]
         ] = (None, None),
-        peft_config: Optional[PeftConfig] = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(__name__)
 
         # Models
-        if peft_config is not None:
-            model = get_peft_model(model, peft_config)  # type: ignore
-            # Override sync_ref_model if PEFT is used since ref_model will be None
-            if args.sync_ref_model:
-                self.logger.warning(
-                    "sync_ref_model=True is not compatible with PEFT. Setting sync_ref_model=False."
-                )
-                args.sync_ref_model = False
-
-        # Enable gradient checkpointing if requested
-        if args.gradient_checkpointing:
-            model = self._enable_gradient_checkpointing(model, args)  # type: ignore
-
-        # Suppress irrelevant warning
-        model.warnings_issued["estimate_tokens"] = True
+        if isinstance(model, str):
+            model, processing_class = vf.get_model_and_tokenizer(model)
+        assert isinstance(model, PreTrainedModel)
+        assert isinstance(processing_class, PreTrainedTokenizerBase)
+        model = prepare_peft_model(model, args.lora_config, args)
+        model.warnings_issued["estimate_tokens"] = True  # suppress warning
 
         # Tokenizer pad token
         if processing_class.pad_token is None:  # type: ignore
             processing_class.pad_token = processing_class.eos_token  # type: ignore
 
-        # Training arguments
-        self.per_device_train_batch_size = args.per_device_train_batch_size
-        self.max_prompt_length = args.max_prompt_length
-        self.max_seq_len = args.max_seq_len  # max sequence length
-        self.max_completion_length = (
-            args.max_completion_length
-        )  # = |o_i| in the GRPO paper
-        if self.max_completion_length is not None:
-            self.logger.warning(
-                "max_completion_length is deprecated. Use max_seq_len instead."
-            )
-            if self.max_seq_len is None and self.max_prompt_length is not None:
-                self.max_seq_len = self.max_prompt_length + self.max_completion_length
-                self.logger.info(
-                    f"max_seq_len is set to {self.max_seq_len} (max_prompt_length={self.max_prompt_length} + max_completion_length={self.max_completion_length})"
-                )
-            else:
-                self.max_seq_len = self.max_completion_length
-                self.logger.info(
-                    f"max_seq_len is set to {self.max_seq_len} (max_completion_length={self.max_completion_length})"
-                )
-        if self.max_seq_len is None:
-            raise ValueError(
-                "max_seq_len is required when max_completion_length is not provided"
-            )
-        if self.max_prompt_length is None:
-            self.max_prompt_length = self.max_seq_len
-            self.logger.info(
-                f"max_prompt_length is set to {self.max_prompt_length} (max_seq_len={self.max_seq_len})"
-            )
-        self.max_tokens = args.max_tokens  # max tokens per generation
-        if self.max_tokens is None:
-            self.max_tokens = self.max_seq_len
-            self.logger.info(
-                f"max_tokens is set to {self.max_tokens} (max_seq_len={self.max_seq_len})"
-            )
-        self.num_generations = args.num_generations  # = G in the GRPO paper
+        # batch args
+        self.rollouts_per_example = args.rollouts_per_example
+        self.batch_size = args.batch_size
+        self.micro_batch_size = args.micro_batch_size
+        self.gradient_accumulation_steps = args.gradient_accumulation_steps
+        self.max_seq_len = args.max_seq_len
+        self.max_prompt_length = args.max_prompt_len or self.max_seq_len
         self.max_concurrent = args.max_concurrent
-        self.max_data_workers = args.max_data_workers
+
+        # sampling args
+        self.max_tokens = args.max_tokens or self.max_seq_len
         self.temperature = args.temperature
         self.top_p = args.top_p
         self.min_p = args.min_p
@@ -350,24 +291,16 @@ class GRPOTrainer(Trainer):
         self.presence_penalty = args.presence_penalty
         self.frequency_penalty = args.frequency_penalty
         self.top_k = args.top_k
+
+        # loss args
+        self.epsilon = args.epsilon
         self.loss_type = args.loss_type
         self.scale_rewards = args.scale_rewards
         self.mask_truncated_completions = args.mask_truncated_completions
         self.zero_truncated_completions = args.zero_truncated_completions
-        self.delta = args.delta
+        self.importance_sampling_level = args.importance_sampling_level
+        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
-        # Reference model parameters
-        self.beta = args.beta
-        self.sync_ref_model = args.sync_ref_model
-        self.generation_batch_size: int = args.generation_batch_size  # type: ignore
-
-        # Multi-step
-        self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
-        self.epsilon_low = args.epsilon
-        self.epsilon_high = (
-            args.epsilon_high if args.epsilon_high is not None else args.epsilon
-        )
-        self.gradient_accumulation_steps = args.gradient_accumulation_steps
         self._step = 0
         self._buffered_inputs: Optional[List[Dict[str, Optional[torch.Tensor]]]] = None
 
@@ -377,40 +310,6 @@ class GRPOTrainer(Trainer):
         assert train_dataset is not None
 
         eval_dataset = env.get_eval_dataset()
-
-        if "prompt" not in train_dataset.column_names:
-            raise ValueError("Train dataset must contain a 'prompt' column")
-        if "answer" not in train_dataset.column_names:
-            train_dataset = train_dataset.map(
-                lambda x: {"answer": ""},
-                num_proc=self.max_data_workers,
-            )
-        if eval_dataset is not None and "answer" not in eval_dataset.column_names:
-            eval_dataset = eval_dataset.map(
-                lambda x: {"answer": ""},
-                num_proc=self.max_data_workers,
-            )
-        if "info" not in train_dataset.column_names:
-            train_dataset = train_dataset.map(
-                lambda x: {"info": {}},
-                num_proc=self.max_data_workers,
-            )
-        if eval_dataset is not None and "info" not in eval_dataset.column_names:
-            eval_dataset = eval_dataset.map(
-                lambda x: {"info": {}},
-                num_proc=self.max_data_workers,
-            )
-
-        if "task" not in train_dataset.column_names:
-            train_dataset = train_dataset.map(
-                lambda x: {"task": "default"},
-                num_proc=self.max_data_workers,
-            )
-        if eval_dataset is not None and "task" not in eval_dataset.column_names:
-            eval_dataset = eval_dataset.map(
-                lambda x: {"task": "default"},
-                num_proc=self.max_data_workers,
-            )
 
         # Filter out prompts that are too long if max_prompt_length is set
         if self.max_prompt_length is not None:
@@ -436,7 +335,6 @@ class GRPOTrainer(Trainer):
             original_size = len(train_dataset)
             train_dataset = train_dataset.filter(
                 filter_by_prompt_length,
-                num_proc=self.max_data_workers,
                 fn_kwargs={"processing_class": processing_class},
             )
             filtered_size = len(train_dataset)
@@ -462,7 +360,7 @@ class GRPOTrainer(Trainer):
 
         if self.train_dataset is not None:
             unique_prompts_per_device_batch = (
-                self.per_device_train_batch_size / self.num_generations
+                self.micro_batch_size / self.rollouts_per_example
             )
             unique_prompts_per_gradient_step = (
                 unique_prompts_per_device_batch * self.gradient_accumulation_steps
@@ -491,39 +389,13 @@ class GRPOTrainer(Trainer):
                 f"Batches per epoch: {truncated_dataset_size / global_batch_size}"
             )
             self.logger.info(
-                f"Steps per epoch: {truncated_dataset_size / global_batch_size * self.num_iterations} (num_iterations={self.num_iterations})"
+                f"Steps per epoch: {truncated_dataset_size / global_batch_size}"
             )
             self.logger.info("Number of epochs:")
-        # Reference model
-        if self.beta == 0.0:
-            # If beta is 0.0, the reference model is not needed
-            self.ref_model = None
-        elif is_deepspeed_zero3_enabled():
-            model_id = model.config._name_or_path
-            model_init_kwargs = {"torch_dtype": "auto"}
-            self.ref_model = AutoModelForCausalLM.from_pretrained(
-                model_id, **model_init_kwargs
-            )
-        elif is_peft_model(model):
-            # If PEFT is used, the reference model is not needed since the adapter can be disabled
-            # to revert to the initial model.
-            self.ref_model = None
-        else:
-            # If PEFT configuration is not provided, create a reference model based on the initial model.
-            self.ref_model = create_reference_model(model)  # type: ignore
-
-        # Disable dropout in the models
-        if args.disable_dropout:
-            disable_dropout_in_model(model)
-            if self.ref_model is not None:
-                disable_dropout_in_model(self.ref_model)
 
         # Initialize the metrics
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self._total_train_tokens = 0
-        self.log_completions = args.log_completions
-        self.wandb_log_unique_prompts = args.wandb_log_unique_prompts
-        self.num_completions_to_print = args.num_completions_to_print
 
         # Environment integration parameters
         self.mask_env_responses = args.mask_env_responses
@@ -556,7 +428,7 @@ class GRPOTrainer(Trainer):
         }
 
         # vLLM client for weight syncing only; only import if used
-        from verifiers.inference.vllm_client import VLLMClient
+        from verifiers.rl.inference.vllm_client import VLLMClient
 
         self.vllm_client = VLLMClient(
             host=host, port=port, connection_timeout=args.vllm_server_timeout
@@ -569,29 +441,12 @@ class GRPOTrainer(Trainer):
         self._last_loaded_step = (
             0  # Initialize to 0 since vLLM already has initial weights
         )
-        self.model_accepts_loss_kwargs = False
         # Weight updates to vLLM happen only when generating new completions
-        # Frequency: every (gradient_accumulation_steps * num_iterations) training steps
+        # Frequency: every (gradient_accumulation_steps) training steps
         # When using vLLM, the main process is responsible for loading the model weights. This can cause process
         # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
         # synchronize all processes after vLLM has been fully initialized.
         self.accelerator.wait_for_everyone()
-
-        # Reference model
-        if self.ref_model is not None:
-            if self.is_deepspeed_enabled:
-                self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
-            else:
-                self.ref_model = self.accelerator.prepare_model(
-                    self.ref_model, evaluation_mode=True
-                )
-        if self.sync_ref_model:
-            self.add_callback(
-                SyncRefModelCallback(
-                    ref_model=self.ref_model,  # type: ignore
-                    accelerator=self.accelerator,
-                )
-            )
 
         # Environment
         self.env = env
@@ -667,7 +522,7 @@ class GRPOTrainer(Trainer):
         #                                      |    Accum step 0     |
         #                                      |   GPU 0  |   GPU 1  |
         #
-        #                 global_step   step    <-───>  num_generations=2
+        #                 global_step   step    <-───>  rollouts_per_example=2
         #                                       <-───────> per_device_train_batch_size=3
         #  grad_accum    ▲  ▲  0          0     0   0   1   1   2   2   <- Generate for the first gradient_accumulation_steps (prompts 0 to 11); store the completions; use the first slice to compute the loss
         #     =2         ▼  |  0          1     3   3   4   4   5   5   <- Take the stored generations and use the second slice to compute the loss
@@ -681,35 +536,12 @@ class GRPOTrainer(Trainer):
 
         return RepeatSampler(
             data_source=self.train_dataset,  # type: ignore
-            mini_repeat_count=self.num_generations,
-            batch_size=self.generation_batch_size // self.num_generations,
-            repeat_count=self.num_iterations * self.gradient_accumulation_steps,
+            mini_repeat_count=self.rollouts_per_example,
+            batch_size=self.batch_size // self.rollouts_per_example,
+            repeat_count=self.gradient_accumulation_steps,
             shuffle=self.shuffle_dataset,
             seed=self.args.seed,
         )
-
-    def _enable_gradient_checkpointing(
-        self, model: PreTrainedModel, args: GRPOConfig
-    ) -> PreTrainedModel:
-        """Enables gradient checkpointing for the model."""
-        # Ensure use_cache is disabled
-        model.config.use_cache = False
-
-        # Enable gradient checkpointing on the base model for PEFT
-        if is_peft_model(model):
-            model.base_model.gradient_checkpointing_enable()  # type: ignore
-        # Enable gradient checkpointing for non-PEFT models
-        else:
-            model.gradient_checkpointing_enable()
-
-        gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
-        assert isinstance(gradient_checkpointing_kwargs, dict)
-        use_reentrant = gradient_checkpointing_kwargs.get("use_reentrant", True)
-
-        if use_reentrant:
-            model.enable_input_require_grads()
-
-        return model
 
     def _inner_training_loop(self, *args, **kwargs):
         """Override to ensure async generator is stopped when training ends"""
@@ -958,6 +790,36 @@ class GRPOTrainer(Trainer):
         all_infos = gather_object(infos)
         return all_prompts, all_answers, all_tasks, all_infos
 
+    def _compute_advantages(
+        self,
+        rewards: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute advantages from rewards with normalization using full batch statistics."""
+        # Always use full batch statistics
+        mean_grouped = rewards.view(-1, self.rollouts_per_example).mean(dim=1)
+        std_grouped = rewards.view(-1, self.rollouts_per_example).std(dim=1)
+
+        # Normalize the rewards to compute advantages
+        mean_grouped = mean_grouped.repeat_interleave(self.rollouts_per_example, dim=0)
+        std_grouped = std_grouped.repeat_interleave(self.rollouts_per_example, dim=0)
+        advantages = rewards - mean_grouped
+
+        if self.scale_rewards in ["group", "none"]:
+            # If self.scale_rewards = "none", we'll still log group level std
+            std_rewards = rewards.view(-1, self.rollouts_per_example).std(dim=1)
+            std_rewards = std_rewards.repeat_interleave(
+                self.rollouts_per_example, dim=0
+            )
+        elif self.scale_rewards == "batch":
+            # Compute global std
+            std_rewards = rewards.std().expand_as(rewards)
+        else:
+            raise ValueError(
+                f"Invalid value for scale_rewards: {self.scale_rewards}. Must be one of 'batch', 'group', or 'none'."
+            )
+
+        return advantages
+
     def _prepare_inputs(  # type: ignore
         self, inputs: list[dict[str, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -972,7 +834,7 @@ class GRPOTrainer(Trainer):
         # Ensure all processes are synchronized at the start
         self.accelerator.wait_for_everyone()
         # inputs = list of dicts for all gradient accumulation steps
-        generate_every = self.gradient_accumulation_steps * self.num_iterations
+        generate_every = self.gradient_accumulation_steps
 
         # Check if we need to generate new completions
         if self._step % generate_every == 0 or self._buffered_inputs is None:
@@ -1074,6 +936,7 @@ class GRPOTrainer(Trainer):
                     "prompt_mask": processed_results.prompt_mask,
                     "completion_ids": processed_results.completion_ids,
                     "completion_mask": processed_results.completion_mask,
+                    "completion_logprobs": processed_results.completion_logprobs,
                     "rewards": processed_results.rewards,
                     "all_reward_dict": batch_result.all_reward_dict,
                     "completions": batch_result.completions,
@@ -1107,6 +970,7 @@ class GRPOTrainer(Trainer):
             # Now create tensors only for this process's slice
             input_ids_list = []
             attention_mask_list = []
+            sampling_logprobs_list = []
 
             for i in range(process_slice.start, process_slice.stop):
                 input_ids_list.append(
@@ -1123,13 +987,25 @@ class GRPOTrainer(Trainer):
                         device=self.accelerator.device,
                     )
                 )
+                sampling_logprobs_list.append(
+                    torch.tensor(
+                        [0] * len(broadcast_data["prompt_mask"][i])
+                        + broadcast_data["completion_logprobs"][i],
+                        device=self.accelerator.device,
+                    )
+                )
 
             input_ids = pad(
                 input_ids_list,
                 padding_value=self.processing_class.pad_token_id,  # type: ignore
                 padding_side="right",
-            )  # type: ignore
-            attention_mask = pad(attention_mask_list, padding_side="right")  # type: ignore
+            )
+            attention_mask = pad(attention_mask_list, padding_side="right")
+            sampling_per_token_logps = pad(
+                sampling_logprobs_list,
+                padding_value=0,
+                padding_side="right",
+            )
 
             # Truncate if needed
             if self.max_seq_len is not None and input_ids.size(1) > self.max_seq_len:
@@ -1145,7 +1021,7 @@ class GRPOTrainer(Trainer):
                     mode="train",
                     all_reward_dict=broadcast_data["all_reward_dict"],
                     all_rewards=all_rewards,
-                    generation_batch_size=len(all_rewards),
+                    batch_size=len(all_rewards),
                 )
 
                 self._log_textual_data_primary(
@@ -1161,23 +1037,44 @@ class GRPOTrainer(Trainer):
                     all_completion_ids=broadcast_data["completion_ids"],
                     all_prompt_mask=broadcast_data["prompt_mask"],
                 )
+
+            importance_sampling_ratio: Optional[torch.Tensor] = None
+
             with torch.no_grad():
                 completion_mask = attention_mask[:, 1:]
                 logits_to_keep = completion_mask.size(1)
+                logits_to_keep = min(logits_to_keep, sampling_per_token_logps.size(1))
+                sampling_per_token_logps = sampling_per_token_logps[:, :logits_to_keep]
+
+                # Compute model per-token
                 old_per_token_logps = self._get_per_token_logps(
                     self.model,
                     input_ids,
                     attention_mask,
                     logits_to_keep,
-                    batch_size=self.per_device_train_batch_size,
+                    batch_size=self.micro_batch_size,
+                )
+                completion_mask = completion_mask[:, -logits_to_keep:]
+
+                importance_sampling_ratio = torch.exp(
+                    old_per_token_logps - sampling_per_token_logps
+                )
+                importance_sampling_ratio = torch.clamp(
+                    importance_sampling_ratio, max=self.vllm_importance_sampling_cap
+                )
+                importance_sampling_ratio = torch.where(
+                    completion_mask.bool(),
+                    importance_sampling_ratio,
+                    torch.ones_like(importance_sampling_ratio),
                 )
 
             # Concatenate all data for shuffling
-            full_batch = {
+            full_batch: dict[str, torch.Tensor | None] = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "old_per_token_logps": old_per_token_logps,
                 "advantages": advantages,
+                "importance_sampling_ratio": importance_sampling_ratio,
             }
 
             # Shuffle and split for gradient accumulation
@@ -1192,25 +1089,6 @@ class GRPOTrainer(Trainer):
         self.accelerator.wait_for_everyone()
         return result
 
-    def _compute_advantages(
-        self,
-        rewards: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute advantages from rewards with normalization using full batch statistics."""
-        # Always use full batch statistics
-        mean_grouped = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped = rewards.view(-1, self.num_generations).std(dim=1)
-
-        # Normalize the rewards to compute advantages
-        mean_grouped = mean_grouped.repeat_interleave(self.num_generations, dim=0)
-        std_grouped = std_grouped.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards - mean_grouped
-
-        if self.scale_rewards:
-            advantages = advantages / (std_grouped + 1e-4)
-
-        return advantages
-
     def compute_loss(  # type: ignore
         self,  # type: ignore
         model: PreTrainedModel,
@@ -1219,61 +1097,45 @@ class GRPOTrainer(Trainer):
         num_items_in_batch: int | None = None,
     ) -> torch.Tensor:  # type: ignore
         mode = "train"
+
         # Compute the per-token log probabilities for the model
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
 
         # prompt is at least 1 token
         completion_mask = attention_mask[:, 1:]
         logits_to_keep = completion_mask.size(1)
+        ratio = inputs["importance_sampling_ratio"]
+        logits_to_keep = min(logits_to_keep, ratio.size(1))
+        completion_mask = completion_mask[:, -logits_to_keep:]
         per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
+
         # Compute the loss
         advantages = inputs["advantages"]
-        # When using num_iterations == 1, old_per_token_logps == per_token_logps,
-        # so we can skip it's computation (see _generate_and_score_completions) and use per_token_logps.detach() instead.
-        old_per_token_logps = (
-            per_token_logps.detach()
-            if inputs["old_per_token_logps"] is None
-            else inputs["old_per_token_logps"]
-        )
-        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
-
-        if self.delta is not None:
-            # Use clamp instead of min to handle tensor-float comparison
-            per_token_loss1 = torch.clamp(
-                coef_1, max=self.delta
-            ) * advantages.unsqueeze(1)
+        log_ratio = per_token_logps - inputs["old_per_token_logps"]
+        if self.importance_sampling_level == "token":
+            log_importance_weights = log_ratio
+        elif self.importance_sampling_level == "sequence":
+            log_importance_weights = (
+                (log_ratio * completion_mask).sum(-1)
+                / completion_mask.sum(-1).clamp(min=1.0)
+            ).unsqueeze(-1)
         else:
-            # Original GRPO clipping (only lower bound implicitly applied by the final min)
-            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+            raise ValueError(
+                f"Unknown importance sampling level: {self.importance_sampling_level}"
+            )
 
+        coef_1 = torch.exp(log_importance_weights)
+        coef_2 = torch.clamp(
+            coef_1,
+            min=1 - self.epsilon,
+            max=1 + self.epsilon,
+        )
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2) * ratio
 
-        # Compute the KL divergence between the model and the reference model
-        if self.beta != 0.0:
-            with torch.no_grad():
-                if self.ref_model is not None:
-                    ref_per_token_logps = self._get_per_token_logps(
-                        self.ref_model, input_ids, attention_mask, logits_to_keep
-                    )
-                else:
-                    with self.accelerator.unwrap_model(self.model).disable_adapter():  # type: ignore
-                        ref_per_token_logps = self._get_per_token_logps(
-                            self.model, input_ids, attention_mask, logits_to_keep
-                        )
-            per_token_kl = (
-                torch.exp(ref_per_token_logps - per_token_logps)
-                - (ref_per_token_logps - per_token_logps)
-                - 1
-            )
-            per_token_loss = per_token_loss + self.beta * per_token_kl
-            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
-            self._metrics[mode]["kl"].append(
-                self.accelerator.gather_for_metrics(mean_kl).nanmean().item()  # type: ignore
-            )
         if self.loss_type == "grpo":
             loss = (
                 (per_token_loss * completion_mask).sum(-1)
@@ -1289,36 +1151,6 @@ class GRPOTrainer(Trainer):
             )  # type: ignore
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
-
-        # Compute the clipped probability ratios
-        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
-        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (
-            advantages.unsqueeze(1) > 0
-        )
-        is_region_clipped = is_low_clipped | is_high_clipped
-
-        low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
-        high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
-        clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
-
-        gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
-        self._metrics[mode]["clip_ratio/low_mean"].append(
-            gathered_low_clip.nanmean().item()  # type: ignore
-        )
-        self._metrics[mode]["clip_ratio/low_min"].append(
-            nanmin(gathered_low_clip).item()  # type: ignore
-        )
-        gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
-        self._metrics[mode]["clip_ratio/high_mean"].append(
-            gathered_high_clip.nanmean().item()  # type: ignore
-        )
-        self._metrics[mode]["clip_ratio/high_max"].append(
-            nanmax(gathered_high_clip).item()  # type: ignore
-        )
-        gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
-        self._metrics[mode]["clip_ratio/region_mean"].append(
-            gathered_clip_ratio.nanmean().item()  # type: ignore
-        )
         return loss
 
     def _sanitize_tool_calls(
@@ -1425,24 +1257,21 @@ class GRPOTrainer(Trainer):
         metrics["eval_completions/min_length"] = int(np.min(completion_lengths))
         metrics["eval_completions/max_length"] = int(np.max(completion_lengths))
 
-        # Log sample completions if requested
-        if self.accelerator.is_main_process and self.log_completions:
+        if self.accelerator.is_main_process:
             # Prepare textual logs
-            prompts = eval_results.prompt[: self.num_completions_to_print]
-            completions = eval_results.completion[: self.num_completions_to_print]
+            prompts = eval_results.prompt
+            completions = eval_results.completion
 
             # Extract rewards for logging
             reward_dict = {}
-            reward_dict["reward"] = eval_results.reward[: self.num_completions_to_print]
+            reward_dict["reward"] = eval_results.reward
             for key in eval_results.metrics:
-                reward_dict[key] = eval_results.metrics[key][
-                    : self.num_completions_to_print
-                ]
+                reward_dict[key] = eval_results.metrics[key]
 
             # Print sample
             print_prompt_completions_sample(
-                prompts,
-                completions,
+                eval_results.prompt,
+                eval_results.completion,
                 reward_dict["reward"],
                 self.state.global_step,
             )
@@ -1493,7 +1322,7 @@ class GRPOTrainer(Trainer):
             super().log(logs)
         self._metrics[mode].clear()
 
-        if self.accelerator.is_main_process and self.log_completions:
+        if self.accelerator.is_main_process:
             if len(self._textual_logs["prompt"]) > 0:
                 print_prompt_completions_sample(
                     self._textual_logs["prompt"],
@@ -1521,8 +1350,6 @@ class GRPOTrainer(Trainer):
                 }
                 if len(table["prompt"]) > 0:
                     df = pd.DataFrame(table)
-                    if self.wandb_log_unique_prompts:
-                        df = df.drop_duplicates(subset=["prompt"])
                     wandb.log({"completions": wandb.Table(dataframe=df)})
 
             # Clear the textual logs after logging
@@ -1536,15 +1363,15 @@ class GRPOTrainer(Trainer):
         mode: str,
         all_reward_dict: Dict[str, Any],
         all_rewards: torch.Tensor,
-        generation_batch_size: int,
+        batch_size: int,
     ) -> None:
         """
         Log generation metrics (PRIMARY PROCESS ONLY).
         This handles reward statistics and per-reward-function metrics using the full batch data.
         """
         # Log reward statistics using full batch
-        mean_rewards = all_rewards.view(-1, self.num_generations).mean(dim=1)
-        std_rewards = all_rewards.view(-1, self.num_generations).std(dim=1)
+        mean_rewards = all_rewards.view(-1, self.rollouts_per_example).mean(dim=1)
+        std_rewards = all_rewards.view(-1, self.rollouts_per_example).std(dim=1)
         self._metrics[mode]["reward"].append(mean_rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_rewards.mean().item())
 

@@ -22,9 +22,9 @@ model, tokenizer = vf.get_model_and_tokenizer(model_name)
 vf_env = vf.load_environment(env_id="sentence-repeater")
 
 run_name = "sentence-repeater-grpo-qwen1.5b"
-training_args = vf.grpo_defaults(run_name=run_name)
+training_args = vf.rl_defaults(run_name=run_name)
 training_args.per_device_train_batch_size = 8
-training_args.num_generations = 16
+training_args.rollouts_per_example = 16
 training_args.gradient_accumulation_steps = 8
 training_args.max_tokens = 1024  # per turn
 training_args.max_seq_len = 4096

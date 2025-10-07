@@ -82,7 +82,7 @@ class AsyncBatchGenerator:
         # Thread management
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.logger = logging.getLogger(f"AsyncBatchGenerator-{id(self)}")
+        self.logger = logging.getLogger(__name__)
         self.is_generating = False  # Track if currently generating
         self.worker_loop = None  # Will be set in worker thread
         self.started = False  # Track if generator is started

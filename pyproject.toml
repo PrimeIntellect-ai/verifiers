@@ -101,7 +101,7 @@ vf-eval = "verifiers.scripts.eval:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.inference.vllm_server:main"
+vf-vllm = "verifiers.rl.inference.vllm_server:main"
 
 # hatchling configuration
 [tool.hatch.version]

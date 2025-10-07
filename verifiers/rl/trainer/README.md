@@ -2,7 +2,7 @@
 
 This directory contains the built-in GRPO trainer and configuration utilities for training with Verifiers environments.
 
-- **Modules**: `GRPOTrainer`, `GRPOConfig`, `grpo_defaults`, `lora_defaults`
+- **Modules**: `RLTrainer`, `RLConfig`, `rl_defaults`, `lora_defaults`
 - **Exports**: available directly from `verifiers` (lazy-imported)
 
 ### Installation
