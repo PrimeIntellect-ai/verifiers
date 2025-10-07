@@ -26,7 +26,7 @@ from openai.types.shared_params import (  # noqa: F401
 from pydantic import BaseModel, Field, SkipValidation
 
 # typing aliases
-ChatMessage = ChatCompletionMessageParam
+ChatMessage = Annotated[ChatCompletionMessageParam, SkipValidation]
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
 
@@ -58,7 +58,7 @@ class GenerateOutputs(BaseModel):
     prompt: list[Messages]
     completion: list[Messages]
     answer: list[str]
-    state: Annotated[list[State], SkipValidation]
+    state: list[State]
     info: list[Info]
     task: list[str]
     reward: list[float]
