@@ -49,6 +49,7 @@ from verifiers import Environment
 from verifiers.trainers.async_batch_generator import AsyncBatchGenerator, BatchRequest
 from verifiers.trainers.async_dataloader_wrapper import AsyncDataLoaderWrapper
 from verifiers.trainers.grpo_config import GRPOConfig
+from verifiers.utils.sampling_utils import SamplingArgs, merge_sampling_args
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 
 
@@ -355,6 +356,17 @@ class GRPOTrainer(Trainer):
         self.mask_truncated_completions = args.mask_truncated_completions
         self.zero_truncated_completions = args.zero_truncated_completions
         self.delta = args.delta
+
+        self.fixed_sampling_args = {
+            "n": 1,
+            "logprobs": True,
+            "extra_body": {
+                "skip_special_tokens": False,
+                "spaces_between_special_tokens": False,
+                "include_stop_str_in_output": False,
+                "return_tokens_as_token_ids": True,
+            },
+        }
 
         # Reference model parameters
         self.beta = args.beta
@@ -863,25 +875,18 @@ class GRPOTrainer(Trainer):
 
     def _get_sampling_args(self) -> Dict[str, Any]:
         """Get sampling arguments for Environment generation."""
-        args = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "n": 1,
-            "presence_penalty": self.presence_penalty,
-            "frequency_penalty": self.frequency_penalty,
-            "logprobs": True,
-            "extra_body": {
-                "top_k": self.top_k,
-                "min_p": self.min_p,
-                "repetition_penalty": self.repetition_penalty,
-                "skip_special_tokens": False,
-                "spaces_between_special_tokens": False,
-                "include_stop_str_in_output": False,
-                "return_tokens_as_token_ids": True,
-            },
-        }
-        return args
+        args = SamplingArgs(
+            temperature=self.temperature,
+            top_p=self.top_p,
+            max_tokens=self.max_tokens,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=self.frequency_penalty,
+            top_k=self.top_k,
+            min_p=self.min_p,
+            repetition_penalty=self.repetition_penalty,
+        )
+        merged_args = merge_sampling_args(args, self.fixed_sampling_args)
+        return merged_args
 
     def _get_model_name(self) -> str:
         """Get model name for Environment generation."""
