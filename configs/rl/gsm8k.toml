@@ -1,10 +1,15 @@
 model = "willcb/Qwen3-0.6B"
 
+[env]
+id = "gsm8k"
+
+[env.args]
+use_think = true
 
 [inference]
 gpus = 1
 
-[inference.args] # vllm args
+[inference.args]
 enforce_eager = true
 tensor_parallel_size = 1
 
@@ -19,5 +24,4 @@ batch_size = 96
 max_steps = 100
 eval_strategy = "steps"
 eval_steps = 10
-max_tokens = 1024
 max_seq_len = 2048

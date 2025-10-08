@@ -1,5 +1,3 @@
-# adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py
-
 import logging
 import time
 from collections import defaultdict, deque
@@ -266,7 +264,8 @@ class RLTrainer(Trainer):
             model, processing_class = vf.get_model_and_tokenizer(model)
         assert isinstance(model, PreTrainedModel)
         assert isinstance(processing_class, PreTrainedTokenizerBase)
-        model = prepare_peft_model(model, args.lora_config, args)
+        if args.use_lora:
+            model = prepare_peft_model(model, args.lora_config, args)
         model.warnings_issued["estimate_tokens"] = True  # suppress warning
 
         # Tokenizer pad token
@@ -1259,19 +1258,21 @@ class RLTrainer(Trainer):
 
         if self.accelerator.is_main_process:
             # Prepare textual logs
-            prompts = eval_results.prompt
-            completions = eval_results.completion
+            prompts = eval_results.prompt[: self.rollouts_per_example]
+            completions = eval_results.completion[: self.rollouts_per_example]
 
             # Extract rewards for logging
             reward_dict = {}
-            reward_dict["reward"] = eval_results.reward
+            reward_dict["reward"] = eval_results.reward[: self.rollouts_per_example]
             for key in eval_results.metrics:
-                reward_dict[key] = eval_results.metrics[key]
+                reward_dict[key] = eval_results.metrics[key][
+                    : self.rollouts_per_example
+                ]
 
             # Print sample
             print_prompt_completions_sample(
-                eval_results.prompt,
-                eval_results.completion,
+                prompts,
+                completions,
                 reward_dict["reward"],
                 self.state.global_step,
             )

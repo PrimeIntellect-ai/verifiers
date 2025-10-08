@@ -1,5 +1,3 @@
-# adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py
-
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -26,9 +24,7 @@ class RLConfig(TrainingArguments):
     # LoRA parameters
     use_lora: bool = field(
         default=True,
-        metadata={
-            "help": "Whether to use LoRA. Must remain `True` - the trainer only supports LoRA fine-tuning."
-        },
+        metadata={"help": "Whether to use LoRA."},
     )
     lora_rank: int = field(
         default=8,
@@ -291,7 +287,7 @@ class RLConfig(TrainingArguments):
         },
     )
     eval_strategy: str = field(
-        default="steps",
+        default="no",
         metadata={"help": "When to evaluate (no, steps, epoch)."},
     )
     eval_steps: float | None = field(

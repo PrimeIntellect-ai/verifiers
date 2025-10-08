@@ -537,9 +537,7 @@ class Environment(ABC):
             tasks = [run_one(i) for i in range(n)]
             from tqdm.asyncio import tqdm_asyncio
 
-            await tqdm_asyncio.gather(
-                *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
-            )
+            await tqdm_asyncio.gather(*tasks, total=n, desc=f"Running {n} rollouts")
 
             results.completion = results_completion  # type: ignore[assignment]
             results.state = results_state  # type: ignore[assignment]
@@ -605,7 +603,6 @@ class Environment(ABC):
             interleave_scoring,
             **kwargs,
         )
-
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()

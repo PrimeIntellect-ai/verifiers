@@ -37,6 +37,7 @@ dependencies = [
     "rich",
     "textual",
     "pydantic>=2.11.9",
+    "tomli; python_version < '3.11'",
 ]
 
 [dependency-groups]
@@ -100,6 +101,9 @@ docs = [
 vf-eval = "verifiers.scripts.eval:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
+vf-setup = "verifiers.scripts.setup:main"
+vf-rl = "verifiers.scripts.rl:main"
+vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.rl.inference.vllm_server:main"
 

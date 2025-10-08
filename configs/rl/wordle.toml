@@ -1,0 +1,25 @@
+model = "willcb/Qwen3-1.7B-Wordle"
+
+[env]
+id = "will/wordle"
+
+[env.args]
+use_think = true
+
+[inference]
+gpus = 6
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 2
+
+[trainer.args] # rl args
+run_name = "wordle"
+micro_batch_size = 8
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 500
+max_tokens = 1024
+max_seq_len = 4096
