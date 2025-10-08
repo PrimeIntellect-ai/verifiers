@@ -7,15 +7,15 @@ from verifiers.scripts.eval import eval_environments_parallel, push_eval_to_prim
 
 async def example_multi_env_eval():
     """Example: Evaluate multiple environments in parallel."""
-    
+
     client = AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
-        base_url="https://api.openai.com/v1"
+        base_url="https://api.openai.com/v1",
     )
-    
+
     # Define environments to evaluate
     envs = ["gsm8k", "math500"]
-    
+
     # Run parallel evaluation
     results = await eval_environments_parallel(
         envs=envs,
@@ -33,14 +33,14 @@ async def example_multi_env_eval():
             "max_tokens": 2048,
         },
     )
-    
+
     # Process results
     for env_name, output in results.items():
         print(f"\n=== {env_name} ===")
         print(f"Number of samples: {len(output.reward)}")
         print(f"Average reward: {sum(output.reward) / len(output.reward):.3f}")
         print(f"Rewards: {output.reward[:5]}...")  # Show first 5
-        
+
         # Show metrics if available
         if output.metrics:
             for metric_name, metric_values in output.metrics.items():
@@ -51,23 +51,23 @@ async def example_multi_env_eval():
 async def example_with_prime_hub():
     """
     Example: Evaluate and save to Prime Hub.
-    
+
     NOTE: Before pushing evaluations, you must first push the environments to Prime Hub:
-        1. Using verifiers: env.push_to_hub(hub_name='owner/gsm8k')
+        1. Using verifiers: env.push_to_env_hub(hub_name='owner/gsm8k')
         2. Using prime CLI: prime env push gsm8k
         3. Via web: https://app.primeintellect.ai/environments
-    
+
     The system will check if the environment exists before pushing eval results.
     """
-    
+
     client = AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
-        base_url="https://api.openai.com/v1"
+        base_url="https://api.openai.com/v1",
     )
-    
+
     envs = ["primeintellect/gsm8k", "primeintellect/math500"]
     model = "gpt-4o-mini"
-    
+
     # Run evaluation
     results = await eval_environments_parallel(
         envs=envs,
@@ -79,20 +79,22 @@ async def example_with_prime_hub():
         max_concurrent=[32, 32],
         sampling_args={"temperature": 0.7, "max_tokens": 2048},
     )
-    
+
     for env_name, output in results.items():
         # Calculate metrics
         avg_reward = sum(output.reward) / len(output.reward)
-        
+
         metrics = {
             "avg_reward": float(avg_reward),
             "num_samples": len(output.reward),
         }
-        
+
         # Add any additional metrics from the output
         for metric_name, metric_values in output.metrics.items():
-            metrics[f"avg_{metric_name}"] = float(sum(metric_values) / len(metric_values))
-        
+            metrics[f"avg_{metric_name}"] = float(
+                sum(metric_values) / len(metric_values)
+            )
+
         # Prepare metadata
         metadata = {
             "environment": env_name,
@@ -101,7 +103,7 @@ async def example_with_prime_hub():
             "rollouts_per_example": 3,
             "sampling_args": {"temperature": 0.7, "max_tokens": 2048},
         }
-        
+
         # Save to hub (will check if environment exists first)
         push_eval_to_prime_hub(
             eval_name=f"{model.replace('/', '-')}-{env_name}",
@@ -115,16 +117,16 @@ async def example_with_prime_hub():
 async def example_from_prime_rl_style():
     """
     Example: How prime-rl would use this for checkpoint evaluation.
-    
+
     This shows how prime-rl can replace its current eval logic with the
     verifiers multi-env evaluation.
     """
-    
+
     client = AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
-        base_url="http://localhost:8000/v1"  # Local vLLM server
+        base_url="http://localhost:8000/v1",  # Local vLLM server
     )
-    
+
     # prime-rl style config
     eval_config = {
         "environment_ids": ["gsm8k", "math500", "aime2025"],
@@ -137,10 +139,10 @@ async def example_from_prime_rl_style():
         "rollouts_per_example": [3, 5, 10],
         "max_concurrent": [32, 16, 8],
     }
-    
+
     model_name = "meta-llama/llama-3.1-70b-instruct"
     checkpoint_step = 1000
-    
+
     # Run evaluation
     results = await eval_environments_parallel(
         envs=eval_config["environment_ids"],
@@ -156,12 +158,12 @@ async def example_from_prime_rl_style():
             "top_p": 0.95,
         },
     )
-    
+
     # Log to wandb (prime-rl style)
     for env_name, output in results.items():
         avg_reward = sum(output.reward) / len(output.reward)
         print(f"eval/{env_name}/avg_reward: {avg_reward:.4f} (step={checkpoint_step})")
-        
+
         # Save to Prime Hub with checkpoint info
         push_eval_to_prime_hub(
             eval_name=f"{model_name.replace('/', '-')}-{env_name}-step{checkpoint_step}",
@@ -174,7 +176,9 @@ async def example_from_prime_rl_style():
             metadata={
                 "environment": env_name,
                 "checkpoint_step": checkpoint_step,
-                "num_examples": eval_config["num_examples"][eval_config["environment_ids"].index(env_name)],
+                "num_examples": eval_config["num_examples"][
+                    eval_config["environment_ids"].index(env_name)
+                ],
             },
         )
 
@@ -182,24 +186,24 @@ async def example_from_prime_rl_style():
 async def example_per_env_sampling_args():
     """
     Example: Per-environment sampling arguments.
-    
+
     This shows how to configure different sampling parameters for each environment.
     Useful when different tasks require different generation strategies.
     """
-    
+
     client = AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY", "your-api-key"),
-        base_url="https://api.openai.com/v1"
+        base_url="https://api.openai.com/v1",
     )
-    
+
     envs = ["gsm8k", "wordle", "reverse_text"]
-    
+
     # Global sampling args (fallback)
     global_sampling = {
         "temperature": 0.7,
         "max_tokens": 2048,
     }
-    
+
     # Per-environment sampling args
     # - gsm8k: Higher temperature for exploration
     # - wordle: Lower temperature for focused guessing
@@ -216,7 +220,7 @@ async def example_per_env_sampling_args():
         },
         # reverse_text not specified, will use global_sampling
     }
-    
+
     results = await eval_environments_parallel(
         envs=envs,
         env_args_dict={env: {} for env in envs},
@@ -228,12 +232,12 @@ async def example_per_env_sampling_args():
         sampling_args=global_sampling,  # Fallback
         sampling_args_dict=sampling_args_dict,  # Per-env overrides
     )
-    
+
     # Display results
     for env_name, output in results.items():
         print(f"\n=== {env_name} ===")
         print(f"Average reward: {sum(output.reward) / len(output.reward):.3f}")
-        
+
         # Show which sampling args were used
         if env_name in sampling_args_dict:
             print(f"Used sampling args: {sampling_args_dict[env_name]}")
@@ -244,16 +248,15 @@ async def example_per_env_sampling_args():
 if __name__ == "__main__":
     print("Example 1: Basic multi-environment evaluation")
     asyncio.run(example_multi_env_eval())
-    
-    print("\n" + "="*80 + "\n")
+
+    print("\n" + "=" * 80 + "\n")
     print("Example 2: With Prime Hub integration")
     asyncio.run(example_with_prime_hub())
-    
-    print("\n" + "="*80 + "\n")
+
+    print("\n" + "=" * 80 + "\n")
     print("Example 3: prime-rl style checkpoint evaluation")
     asyncio.run(example_from_prime_rl_style())
-    
-    print("\n" + "="*80 + "\n")
+
+    print("\n" + "=" * 80 + "\n")
     print("Example 4: Per-environment sampling arguments")
     asyncio.run(example_per_env_sampling_args())
-

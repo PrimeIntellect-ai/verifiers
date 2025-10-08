@@ -107,40 +107,96 @@ uv run vf-eval environment-name -s # run and save eval results locally
 
 ### Multi-Environment Evaluation
 
-`vf-eval` supports evaluating multiple environments in parallel, which is useful for benchmarking models across multiple tasks:
+`vf-eval` supports evaluating multiple environments in parallel, which is useful for benchmarking models across multiple tasks.
+
+#### Simple CLI Usage
+
+For quick evaluations with global settings applied to all environments:
 
 ```bash
-# Evaluate multiple environments in parallel
-vf-eval gsm8k math500 aime2025 -m gpt-4o-mini -n 100 -r 3
+# Single environment
+vf-eval gsm8k --num-examples 10 --model gpt-4o
 
-# Per-environment configuration
-vf-eval gsm8k math500 \
-  --per-env-config '{
-    "gsm8k": {"num_examples": 100, "rollouts_per_example": 5},
-    "math500": {"num_examples": 50, "rollouts_per_example": 3}
-  }'
-
-# Save results to Prime Hub for tracking (single or multiple environments)
-vf-eval gsm8k \
-  -m gpt-4o-mini -n 100 -r 3 \
-  --save-to-hub \
-  --eval-name "gsm8k-benchmark"
-
-# Or multiple environments
-vf-eval gsm8k math500 \
-  -m gpt-4o-mini -n 100 -r 3 \
-  --save-to-hub \
-  --eval-name "math-benchmark"
+# Multiple environments with shared settings
+vf-eval gsm8k math500 --num-examples 100 --model gpt-4o-mini --temperature 0.7
 ```
 
-To use Prime Hub integration, install `prime` separately:
+#### Per-Environment CLI Configuration
+
+For different settings per environment without a config file:
+
 ```bash
-# Install verifiers
-uv add verifiers
+# Different num_examples and rollouts per environment
+vf-eval --env id=gsm8k,num_examples=100 \
+        --env id=math500,num_examples=50,rollouts_per_example=5 \
+        --model gpt-4o
 
-# Install prime (from local or when published)
-pip install -e ../prime-cli  # or: pip install prime-cli (when published)
+# Different temperatures per environment
+vf-eval --env id=gsm8k,temperature=0.9 \
+        --env id=aime2024,temperature=0.7,rollouts_per_example=10 \
+        --model gpt-4o --save-to-hub
 ```
+
+The `--env` flag supports: `id`, `num_examples`, `rollouts_per_example`, `max_concurrent`, `temperature`, and other JSON-compatible values.
+
+#### Config File Approach (Recommended)
+
+For per-environment customization, use a TOML or JSON config file:
+
+```toml
+# eval_config.toml
+environment_ids = ["gsm8k", "math500"]
+
+# Global defaults
+num_examples = 10
+rollouts_per_example = 3
+max_concurrent = 32
+
+[model]
+name = "gpt-4o-mini"
+
+[sampling]
+temperature = 0.7
+max_tokens = 2048
+
+# Per-environment overrides
+# Per-environment: group all settings together
+[env.gsm8k]
+num_examples = 100
+rollouts_per_example = 5
+model = "gpt-4o"
+temperature = 0.9
+max_tokens = 512
+difficulty = "hard"  # env-specific init arg
+
+[env.math500]
+num_examples = 50
+rollouts_per_example = 3
+model = "claude-3-opus"
+temperature = 0.5
+level = "competition"  # env-specific init arg
+```
+
+Run with:
+```bash
+# Use config file
+vf-eval --config eval_config.toml
+
+# Config file with CLI overrides (CLI takes precedence)
+vf-eval --config eval_config.toml --num-examples 20 --model gpt-4o
+```
+
+See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for a complete example with all available options.
+
+#### Prime Hub Integration
+
+**[CLOSED BETA]** Push evaluation results to Prime Hub for tracking (requires prime eval permissions):
+
+```bash
+vf-eval --config eval_config.toml --save-to-hub
+```
+
+Requires `prime-cli` installed and authenticated. See [Environments Hub docs](https://docs.primeintellect.ai/tutorials-environments/environments).
 
 You can also use multi-environment evaluation programmatically:
 

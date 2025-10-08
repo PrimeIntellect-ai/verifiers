@@ -1,0 +1,43 @@
+# This config demonstrates per-environment parameter customization
+
+# List of environments to evaluate
+environment_ids = ["gsm8k", "math500"]
+
+# Global defaults (applied to all environments unless overridden)
+num_examples = 10
+rollouts_per_example = 3
+max_concurrent = 32
+
+# Model configuration
+[model]
+name = "gpt-4o-mini"
+
+# Global sampling parameters
+[sampling]
+temperature = 0.7
+max_tokens = 2048
+
+# Per-environment configuration
+[env.gsm8k]
+num_examples = 100
+rollouts_per_example = 5
+max_concurrent = 64
+model = "gpt-4o"
+temperature = 0.9
+max_tokens = 512
+# Environment-specific init args
+difficulty = "hard"
+
+[env.math500]
+num_examples = 50
+rollouts_per_example = 3
+max_concurrent = 32
+model = "claude-3-opus"
+temperature = 0.5
+max_tokens = 1024
+level = "competition"
+
+# API configuration (optional)
+api_key_var = "OPENAI_API_KEY"
+api_base_url = "https://api.openai.com/v1"
+
