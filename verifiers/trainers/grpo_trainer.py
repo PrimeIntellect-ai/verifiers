@@ -464,11 +464,11 @@ class GRPOTrainer(Trainer):
                 return len(prompt_ids) <= max_length
 
             original_size = len(train_dataset)
-            train_dataset = train_dataset.filter(
-                filter_by_prompt_length,
-                num_proc=self.max_data_workers,
-                fn_kwargs={"processing_class": processing_class},
-            )
+            #train_dataset = train_dataset.filter(
+            #    filter_by_prompt_length,
+            #    num_proc=self.max_data_workers,
+            #    fn_kwargs={"processing_class": processing_class},
+            #)
             filtered_size = len(train_dataset)
             if filtered_size < original_size:
                 self.logger.info(
