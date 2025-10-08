@@ -134,7 +134,7 @@ vf-eval --env id=gsm8k,num_examples=100 \
 # Different temperatures per environment
 vf-eval --env id=gsm8k,temperature=0.9 \
         --env id=aime2024,temperature=0.7,rollouts_per_example=10 \
-        --model gpt-4o --save-to-hub
+        --model gpt-4o --save-to-env-hub
 ```
 
 The `--env` flag supports: `id`, `num_examples`, `rollouts_per_example`, `max_concurrent`, `temperature`, and other JSON-compatible values.
@@ -193,7 +193,7 @@ See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for
 **[CLOSED BETA]** Push evaluation results to Prime Hub for tracking (requires prime eval permissions):
 
 ```bash
-vf-eval --config eval_config.toml --save-to-hub
+vf-eval --config eval_config.toml --save-to-env-hub
 ```
 
 Requires `prime-cli` installed and authenticated. See [Environments Hub docs](https://docs.primeintellect.ai/tutorials-environments/environments).

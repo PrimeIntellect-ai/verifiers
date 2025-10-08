@@ -48,7 +48,33 @@ def push_eval_to_env_hub(
 
         client = EvalsClient()
 
-        if not skip_env_check:
+        # Try to load environment metadata from local .prime-cli.json file
+        env_id_to_use = None
+        version_id_to_use = version_id
+
+        # Look for .prime-cli.json in the environment directory
+        env_dir = (
+            Path(__file__).parent.parent.parent
+            / "environments"
+            / dataset.replace("-", "_")
+        )
+        hub_metadata_file = env_dir / ".prime-cli.json"
+
+        if hub_metadata_file.exists():
+            try:
+                with open(hub_metadata_file) as f:
+                    hub_metadata = json.load(f)
+                    env_id_to_use = hub_metadata.get("environment_id")
+                    if not version_id_to_use:
+                        version_id_to_use = hub_metadata.get("version_id")
+                    logger.debug(
+                        f"✓ Loaded environment metadata from {hub_metadata_file.name}: "
+                        f"env_id={env_id_to_use[:8] if env_id_to_use else 'None'}..."
+                    )
+            except Exception as e:
+                logger.debug(f"Could not load {hub_metadata_file}: {e}")
+
+        if not skip_env_check and not env_id_to_use:
             logger.debug(
                 f"Checking if environment '{dataset}' exists on Environment Hub..."
             )
@@ -77,9 +103,8 @@ def push_eval_to_env_hub(
 
         create_response = client.create_evaluation(
             name=eval_name,
-            environment_ids=[dataset],
+            environment_ids=[env_id_to_use] if env_id_to_use else [dataset],
             run_id=run_id,
-            version_id=version_id,
             model_name=model_name,
             dataset=dataset,
             framework=framework,
@@ -444,7 +469,7 @@ def display_and_push_results(
             f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}"
         )
 
-    if args.save_to_hub:
+    if args.save_to_env_hub:
         eval_name = (
             args.eval_name
             or f"{model.replace('/', '-')}-{env}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -714,7 +739,7 @@ Examples:
         help="Name of dataset to save to Hugging Face Hub",
     )
     parser.add_argument(
-        "--save-to-hub",
+        "--save-to-env-hub",
         "-P",
         default=False,
         action="store_true",
