@@ -105,6 +105,123 @@ uv run vf-eval environment-name -s # run and save eval results locally
 # vf-eval -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts for each
 ```
 
+### Multi-Environment Evaluation
+
+`vf-eval` supports evaluating multiple environments in parallel, which is useful for benchmarking models across multiple tasks.
+
+#### Simple CLI Usage
+
+For quick evaluations with global settings applied to all environments:
+
+```bash
+# Single environment
+vf-eval gsm8k --num-examples 10 --model gpt-4o
+
+# Multiple environments with shared settings
+vf-eval gsm8k math500 --num-examples 100 --model gpt-4o-mini --temperature 0.7
+```
+
+#### Per-Environment CLI Configuration
+
+For different settings per environment without a config file:
+
+```bash
+# Different num_examples and rollouts per environment
+vf-eval --env id=gsm8k,num_examples=100 \
+        --env id=math500,num_examples=50,rollouts_per_example=5 \
+        --model gpt-4o
+
+# Different temperatures per environment
+vf-eval --env id=gsm8k,temperature=0.9 \
+        --env id=aime2024,temperature=0.7,rollouts_per_example=10 \
+        --model gpt-4o --save-to-env-hub
+```
+
+The `--env` flag supports: `id`, `num_examples`, `rollouts_per_example`, `max_concurrent`, `temperature`, and other JSON-compatible values.
+
+#### Config File Approach (Recommended)
+
+For per-environment customization, use a TOML or JSON config file:
+
+```toml
+# eval_config.toml
+environment_ids = ["gsm8k", "math500"]
+
+# Global defaults
+num_examples = 10
+rollouts_per_example = 3
+max_concurrent = 32
+
+[model]
+name = "gpt-4o-mini"
+
+[sampling]
+temperature = 0.7
+max_tokens = 2048
+
+# Per-environment overrides
+# Per-environment: group all settings together
+[env.gsm8k]
+num_examples = 100
+rollouts_per_example = 5
+model = "gpt-4o"
+temperature = 0.9
+max_tokens = 512
+difficulty = "hard"  # env-specific init arg
+
+[env.math500]
+num_examples = 50
+rollouts_per_example = 3
+model = "claude-3-opus"
+temperature = 0.5
+level = "competition"  # env-specific init arg
+```
+
+Run with:
+```bash
+# Use config file
+vf-eval --config eval_config.toml
+
+# Config file with CLI overrides (CLI takes precedence)
+vf-eval --config eval_config.toml --num-examples 20 --model gpt-4o
+```
+
+See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for a complete example with all available options.
+
+#### Prime Hub Integration
+
+**[CLOSED BETA]** Push evaluation results to Prime Hub for tracking (requires prime eval permissions):
+
+```bash
+vf-eval --config eval_config.toml --save-to-env-hub
+```
+
+Requires `prime-cli` installed and authenticated. See [Environments Hub docs](https://docs.primeintellect.ai/tutorials-environments/environments).
+
+You can also use multi-environment evaluation programmatically:
+
+```python
+import asyncio
+from openai import AsyncOpenAI
+from verifiers.scripts.eval import eval_environments_parallel
+
+client = AsyncOpenAI(api_key="...", base_url="http://localhost:8000/v1")
+
+results = await eval_environments_parallel(
+    envs=["gsm8k", "math500"],
+    env_args_dict={"gsm8k": {}, "math500": {}},
+    client=client,
+    model="gpt-4o-mini",
+    num_examples=[100, 50],
+    rollouts_per_example=[3, 3],
+    max_concurrent=[32, 32],
+    sampling_args={"temperature": 0.7, "max_tokens": 2048},
+)
+
+for env, output in results.items():
+    print(f"{env}: avg_reward={sum(output.reward)/len(output.reward):.3f}")
+```
+
 If you're using Prime Intellect infrastructure, the [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) provides first-class commands for working with Verifiers environments through the [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments). Install it with `uv tool install prime`, authenticate via `prime login`, then use `prime env push` to publish your package and `prime env install owner/name` (optionally pinning a version) to consume it from pods or local machines.
 
 The core elements of Environments are:
