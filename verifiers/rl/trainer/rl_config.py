@@ -348,6 +348,25 @@ class RLConfig(TrainingArguments):
         if self.eval_strategy != "no":
             self.per_device_eval_batch_size = self.micro_batch_size
 
+        self.sampling_args = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens or self.max_seq_len,
+            "n": 1,
+            "presence_penalty": self.presence_penalty,
+            "frequency_penalty": self.frequency_penalty,
+            "logprobs": True,
+            "extra_body": {
+                "top_k": self.top_k,
+                "min_p": self.min_p,
+                "repetition_penalty": self.repetition_penalty,
+                "skip_special_tokens": False,
+                "spaces_between_special_tokens": False,
+                "include_stop_str_in_output": False,
+                "return_tokens_as_token_ids": True,
+            },
+        }
+
         super().__post_init__()
 
         num_processes = self.world_size

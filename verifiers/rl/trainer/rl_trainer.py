@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 
 import datasets
 import deepspeed
-import numpy as np
 import torch
 from accelerate.utils import (
     broadcast_object_list,
@@ -172,6 +171,8 @@ class RLTrainer(Trainer):
         # Tokenizer pad token
         if processing_class.pad_token is None:
             processing_class.pad_token = processing_class.eos_token
+        if processing_class.pad_token_id is None:
+            processing_class.pad_token_id = processing_class.eos_token_id
 
         # batch args
         self.rollouts_per_example = args.rollouts_per_example
@@ -181,16 +182,8 @@ class RLTrainer(Trainer):
         self.max_seq_len = args.max_seq_len
         self.max_prompt_length = args.max_prompt_len or self.max_seq_len
         self.max_concurrent = args.max_concurrent
-
-        # sampling args
-        self.max_tokens = args.max_tokens or self.max_seq_len
+        self.sampling_args = args.sampling_args
         self.temperature = args.temperature
-        self.top_p = args.top_p
-        self.min_p = args.min_p
-        self.repetition_penalty = args.repetition_penalty
-        self.presence_penalty = args.presence_penalty
-        self.frequency_penalty = args.frequency_penalty
-        self.top_k = args.top_k
 
         # loss args
         self.epsilon = args.epsilon
@@ -360,7 +353,7 @@ class RLTrainer(Trainer):
             env=self.env,
             client_config=self.client_config,
             model_name=self.model_name,
-            sampling_args=self._get_sampling_args(),
+            sampling_args=dict(self.sampling_args),
             num_batches_ahead=self.num_batches_ahead,
             max_queue_size=args.async_max_queue_size,
             generation_timeout=args.async_generation_timeout,
@@ -488,7 +481,6 @@ class RLTrainer(Trainer):
         return torch.cat(all_logps, dim=0)
 
     def _move_model_to_vllm(self):
-        # For DeepSpeed ZeRO-3 we need to gather all parameters before operations
         deepspeed_plugin = self.accelerator.state.deepspeed_plugin
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         if zero_stage_3:
@@ -496,18 +488,13 @@ class RLTrainer(Trainer):
         else:
             gather_if_zero3 = nullcontext
 
-        # Check if background batch generation is complete on main process
-        # and broadcast the state to all processes
         is_generating = False
         if self.accelerator.is_main_process:
             is_generating = self.async_generator.is_generating
-
-        # Broadcast generation state from main process to all processes
         is_generating_list = [is_generating]
         broadcast_object_list(is_generating_list, from_process=0)
         is_generating = is_generating_list[0]
 
-        # All processes wait if generation is happening
         waits = 0
         while is_generating:
             time.sleep(0.5)
@@ -517,84 +504,54 @@ class RLTrainer(Trainer):
                     "Waiting for background batch generation to complete before weight syncing."
                 )
 
-            # Check again and broadcast
+            # check again + broadcast
             if self.accelerator.is_main_process:
                 is_generating = self.async_generator.is_generating
             is_generating_list = [is_generating]
             broadcast_object_list(is_generating_list, from_process=0)
             is_generating = is_generating_list[0]
 
-        # Ensure all processes are synchronized before weight update
+        # wait for all processes to synchronize before weight update
         self.accelerator.wait_for_everyone()
         self.logger.info(
             f"Process {self.accelerator.process_index}: Starting weight sync to vLLM"
         )
 
-        # ALL processes must participate in model operations for DeepSpeed ZeRO-3
         if is_peft_model(self.model):
-            # With PEFT and DeepSpeed ZeRO Stage 3, we must gather the full model at once before merging
+            # PEFT: gather + merge, then update each parameter
             with gather_if_zero3(list(self.model.parameters())):  # type: ignore
                 self.model.merge_adapter()  # type: ignore[attr-defined]
-
-                # Update vLLM weights while parameters are gathered
                 for name, param in self.model.named_parameters():  # type: ignore
-                    # When using PEFT, we need to recover the original parameter name and discard some parameters
+                    # recover original parameter names
                     name = name.removeprefix("base_model.model.").replace(
                         ".base_layer", ""
                     )
                     if self.model.prefix in name:  # type: ignore
-                        continue
-                    # When module to save, remove its prefix and discard the original module
-                    if "original_module" in name:
+                        continue  # discard some parameters
+                    if "original_module" in name:  # from modules_to_save
                         continue
                     name = name.replace("modules_to_save.default.", "")
-
                     if self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(name, param.data)
                 self.model.unmerge_adapter()  # type: ignore
         else:
-            # For non-PEFT models, gather and update each parameter individually
+            # non-PEFT models: gather + update each parameter individually
             for name, param in self.model.named_parameters():  # type: ignore
                 with gather_if_zero3([param]):
                     if self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(name, param.data)
 
-        # Reset cache on vLLM (main process only)
+        # reset cache + wait for background tasks to complete
         if self.accelerator.is_main_process:
             self.vllm_client.reset_prefix_cache()
-
-        # Wait for all background tasks to complete
-        if self.accelerator.is_main_process:
             while self.vllm_client.get_num_background_tasks() > 0:
                 time.sleep(0.5)
                 self.logger.info(
                     "Waiting for weight syncing background tasks to complete before submitting new batches."
                 )
 
-        # Ensure all processes wait for the main process to finish updating weights
+        # wait for main process to finish updating weights
         self.accelerator.wait_for_everyone()
-
-    def _get_sampling_args(self) -> Dict[str, Any]:
-        """Get sampling arguments for Environment generation."""
-        args = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "n": 1,
-            "presence_penalty": self.presence_penalty,
-            "frequency_penalty": self.frequency_penalty,
-            "logprobs": True,
-            "extra_body": {
-                "top_k": self.top_k,
-                "min_p": self.min_p,
-                "repetition_penalty": self.repetition_penalty,
-                "skip_special_tokens": False,
-                "spaces_between_special_tokens": False,
-                "include_stop_str_in_output": False,
-                "return_tokens_as_token_ids": True,
-            },
-        }
-        return args
 
     def _ids_to_tensors(
         self,
@@ -1045,136 +1002,6 @@ class RLTrainer(Trainer):
             if "tool_call_id" in msg:
                 msg.pop("tool_call_id")
         return completion
-
-    def evaluate(
-        self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval", **kwargs
-    ):
-        """
-        Override the evaluate method to use env.evaluate() directly.
-        This bypasses the standard batch-by-batch evaluation and uses the environment's
-        built-in evaluation logic instead.
-        """
-        # Skip evaluation if no eval dataset is available
-        if self.env.eval_dataset is None:
-            self.logger.info("Skipping evaluation - no eval dataset available")
-            return {}
-
-        self.logger.info("Running evaluation using environment's evaluate method")
-
-        # Only the main process computes evaluation to avoid duplicate work
-        if self.accelerator.is_main_process:
-            eval_results = self.async_generator.evaluate(num_samples=-1)
-        else:
-            eval_results = None
-
-        # Broadcast the results from rank 0 to all other ranks
-        broadcast_list = [eval_results]
-        broadcast_object_list(broadcast_list, from_process=0)
-        eval_results = broadcast_list[0]
-        assert eval_results is not None
-        # Process results to compute metrics
-        metrics = {}
-
-        # Compute reward statistics
-        rewards = torch.tensor(eval_results.reward)
-        metrics["eval_reward"] = rewards.mean().item()
-        metrics["eval_reward_std"] = rewards.std().item()
-
-        # Log individual reward function scores
-        non_reward_metric_keys = [
-            "reward",
-            "prompt",
-            "completion",
-            "info",
-            "answer",
-            "state",
-            "task",
-        ]
-        for key in eval_results.metrics:
-            if key not in non_reward_metric_keys:
-                reward_values = eval_results.metrics[key]
-                if isinstance(reward_values, list):
-                    metrics[f"eval_rewards/{key}"] = float(np.mean(reward_values))
-                else:
-                    try:
-                        metrics[f"eval_rewards/{key}"] = reward_values.mean().item()
-                    except Exception:
-                        continue
-
-        # Compute completion length statistics
-        assert isinstance(self.processing_class, PreTrainedTokenizerBase)
-        completions = eval_results.completion
-        if isinstance(completions[0], str):
-            # Completion format - directly tokenize strings
-            completion_lengths = [
-                len(self.processing_class.encode(c))  # type: ignore
-                for c in completions
-            ]
-        else:
-            # Chat format - use apply_chat_template
-            completion_lengths = []
-            for completion in completions:
-                # Apply chat template to get the full text
-                tokens = self.processing_class.apply_chat_template(
-                    completion,  # type: ignore
-                    tokenize=True,
-                    add_generation_prompt=False,
-                )
-                # Tokenize and count
-                completion_lengths.append(len(tokens))
-
-        metrics["eval_completions/mean_length"] = float(np.mean(completion_lengths))
-        metrics["eval_completions/min_length"] = int(np.min(completion_lengths))
-        metrics["eval_completions/max_length"] = int(np.max(completion_lengths))
-
-        if self.accelerator.is_main_process:
-            # Prepare textual logs
-            prompts = eval_results.prompt[: self.rollouts_per_example]
-            completions = eval_results.completion[: self.rollouts_per_example]
-
-            # Extract rewards for logging
-            reward_dict = {}
-            reward_dict["reward"] = eval_results.reward[: self.rollouts_per_example]
-            for key in eval_results.metrics:
-                reward_dict[key] = eval_results.metrics[key][
-                    : self.rollouts_per_example
-                ]
-
-            # Print sample
-            print_prompt_completions_sample(
-                prompts,
-                completions,
-                reward_dict["reward"],
-                self.state.global_step,
-            )
-
-            # Log to wandb if available
-            if (
-                self.args.report_to
-                and "wandb" in self.args.report_to
-                and wandb.run is not None
-            ):
-                import pandas as pd
-
-                table_data = {
-                    "step": [str(self.state.global_step)] * len(prompts),
-                    "prompt": prompts,
-                    "completion": [
-                        self._sanitize_tool_calls(c)  # type: ignore
-                        for c in completions
-                    ],
-                }
-                for k, v in reward_dict.items():
-                    table_data[k] = v
-
-                df = pd.DataFrame(table_data)
-                wandb.log({"eval_completions": wandb.Table(dataframe=df)})
-
-        # Log all metrics
-        self.log(metrics)
-
-        # Return metrics dict to match base class signature
-        return metrics
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
         mode = "train" if self.model is not None and self.model.training else "eval"
