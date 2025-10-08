@@ -4,13 +4,18 @@ import importlib
 import importlib.util
 import json
 import logging
-import tomllib
 import os
+import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, cast
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 import numpy as np
 from datasets import Dataset
@@ -26,7 +31,7 @@ from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_c
 logger = logging.getLogger("verifiers.scripts.eval")
 
 
-def push_eval_to_prime_hub(
+def push_eval_to_env_hub(
     eval_name: str,
     model_name: str,
     dataset: str,
@@ -168,6 +173,7 @@ async def eval_environment_async(
     else:
         dataset = vf_env.get_eval_dataset(n=num_examples)
 
+    assert dataset is not None
     if rollouts_per_example > 1:
         dataset = dataset.repeat(rollouts_per_example)
 
@@ -413,7 +419,7 @@ def eval_environment(
                 )
             else:
                 dataset_name = hf_hub_dataset_name
-            dataset.push_to_env_hub(dataset_name)
+            dataset.push_to_hub(dataset_name)
             logger.info(f"Saved dataset to Hugging Face Hub: {dataset_name}")
 
 
@@ -460,7 +466,7 @@ def display_and_push_results(
             "rollouts_per_example": rollouts_per_example,
             "max_concurrent": max_concurrent,
             "sampling_args": sampling_args,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
         sample_results = []
@@ -487,7 +493,7 @@ def display_and_push_results(
                         result_entry["correct"] = bool(info["correct"])
             sample_results.append(result_entry)
 
-        push_eval_to_prime_hub(
+        push_eval_to_env_hub(
             eval_name=eval_name,
             model_name=model,
             dataset=env,

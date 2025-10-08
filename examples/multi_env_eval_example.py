@@ -2,7 +2,7 @@ import asyncio
 from openai import AsyncOpenAI
 import os
 
-from verifiers.scripts.eval import eval_environments_parallel, push_eval_to_prime_hub
+from verifiers.scripts.eval import eval_environments_parallel, push_eval_to_env_hub
 
 
 async def example_multi_env_eval():
@@ -48,7 +48,7 @@ async def example_multi_env_eval():
                 print(f"Average {metric_name}: {avg:.3f}")
 
 
-async def example_with_prime_hub():
+async def example_with_env_hub():
     """
     Example: Evaluate and save to Prime Hub.
 
@@ -105,7 +105,7 @@ async def example_with_prime_hub():
         }
 
         # Save to hub (will check if environment exists first)
-        push_eval_to_prime_hub(
+        push_eval_to_env_hub(
             eval_name=f"{model.replace('/', '-')}-{env_name}",
             model_name=model,
             dataset=env_name,
@@ -165,7 +165,7 @@ async def example_from_prime_rl_style():
         print(f"eval/{env_name}/avg_reward: {avg_reward:.4f} (step={checkpoint_step})")
 
         # Save to Prime Hub with checkpoint info
-        push_eval_to_prime_hub(
+        push_eval_to_env_hub(
             eval_name=f"{model_name.replace('/', '-')}-{env_name}-step{checkpoint_step}",
             model_name=model_name,
             dataset=env_name,
@@ -251,7 +251,7 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 80 + "\n")
     print("Example 2: With Prime Hub integration")
-    asyncio.run(example_with_prime_hub())
+    asyncio.run(example_with_env_hub())
 
     print("\n" + "=" * 80 + "\n")
     print("Example 3: prime-rl style checkpoint evaluation")

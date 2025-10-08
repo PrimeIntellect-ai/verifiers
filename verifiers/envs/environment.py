@@ -742,7 +742,7 @@ class Environment(ABC):
         dataset = Dataset.from_dict({col: results_dict[col] for col in cols})
         if push_to_hf_hub:
             assert hub_name is not None
-            dataset.push_to_env_hub(hub_name)
+            dataset.push_to_hub(hub_name)
         return dataset
 
     #########################################################

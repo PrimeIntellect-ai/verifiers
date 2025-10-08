@@ -8,7 +8,7 @@ from datasets import Dataset
 from verifiers.scripts.eval import (
     eval_environment_async,
     eval_environments_parallel,
-    push_eval_to_prime_hub,
+    push_eval_to_env_hub,
 )
 from verifiers.types import GenerateOutputs
 
@@ -247,7 +247,7 @@ class TestEvalEnvironmentsParallel:
 class TestPrimeHubIntegration:
     """Test cases for Prime Hub integration."""
 
-    def test_push_to_prime_hub_success(self):
+    def test_push_to_env_hub_success(self):
         """Test successful push to Prime Hub."""
         mock_client = Mock()
         mock_response = {
@@ -259,7 +259,7 @@ class TestPrimeHubIntegration:
         with patch(
             "prime_cli.api.evals.EvalsClient", return_value=mock_client
         ) as mock_cls:
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
                 dataset="gsm8k",
@@ -278,7 +278,7 @@ class TestPrimeHubIntegration:
             assert call_args["dataset"] == "gsm8k"
             assert call_args["metrics"]["avg_reward"] == 0.85
 
-    def test_push_to_prime_hub_with_results(self):
+    def test_push_to_env_hub_with_results(self):
         """Test push to Prime Hub with sample-level results."""
         mock_client = Mock()
         mock_response = {"eval_id": "test-eval-123"}
@@ -290,7 +290,7 @@ class TestPrimeHubIntegration:
         ]
 
         with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
                 dataset="gsm8k",
@@ -304,11 +304,11 @@ class TestPrimeHubIntegration:
             assert "results" in call_args
             assert len(call_args["results"]) == 2
 
-    def test_push_to_prime_hub_import_error(self, caplog):
+    def test_push_to_env_hub_import_error(self, caplog):
         """Test graceful handling when prime-cli is not installed."""
         with patch.dict(sys.modules, {"prime_cli.api.evals": None}):
             # Should not raise, just log warning
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
                 dataset="gsm8k",
@@ -316,14 +316,14 @@ class TestPrimeHubIntegration:
                 metadata={},
             )
 
-    def test_push_to_prime_hub_api_error(self, caplog):
+    def test_push_to_prime_env_api_error(self, caplog):
         """Test graceful handling of API errors."""
         mock_client = Mock()
         mock_client.push_eval.side_effect = Exception("API Error")
 
         with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
             # Should not raise, just log warning
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
                 dataset="gsm8k",
@@ -333,7 +333,7 @@ class TestPrimeHubIntegration:
 
             # Function should complete without raising
 
-    def test_push_to_prime_hub_constructs_url(self):
+    def test_push_to_env_hub_constructs_url(self):
         """Test URL construction when viewer_url not provided by backend."""
         mock_client = Mock()
         mock_response = {"eval_id": "test-eval-123"}  # No viewer_url
@@ -343,7 +343,7 @@ class TestPrimeHubIntegration:
         mock_config.frontend_url = "https://custom.primeintellect.ai"
 
         with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
-            push_eval_to_prime_hub(
+            push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
                 dataset="gsm8k",
