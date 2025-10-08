@@ -81,11 +81,11 @@ def to_kebab_case(name: str) -> str:
     return name.replace("_", "-")
 
 
-def build_vllm_command(model: str, inference_cfg: dict) -> str:
+def build_vllm_command(model: str, inference_cfg: dict, inference_gpu_str: str) -> str:
     gpus = inference_cfg.get("gpus")
     args = inference_cfg.get("args", {}) or {}
 
-    parts: list[str] = ["uv run", "vf-vllm", "--model", str(model)]
+    parts: list[str] = [inference_gpu_str, "uv run", "vf-vllm", "--model", str(model)]
 
     for key, value in args.items():
         flag = "--" + to_kebab_case(str(key))
@@ -105,14 +105,14 @@ def build_vllm_command(model: str, inference_cfg: dict) -> str:
     return " ".join(parts)
 
 
-def build_train_command(env_id: str, env_args: dict, config_path_str: str) -> str:
+def build_train_command(env_id: str, config_path_str: str, trainer_gpu_str: str) -> str:
     parts: list[str] = []
     if "/" in env_id:
         parts.extend(["prime env install", env_id, "&&"])
     else:
         parts.extend(["uv run", "vf-install", env_id, "&&"])
 
-    parts.extend(["uv run", "vf-train", "@", str(config_path_str)])
+    parts.extend([trainer_gpu_str, "uv run", "vf-train", "@", str(config_path_str)])
 
     return " ".join(parts)
 
@@ -155,9 +155,22 @@ def main() -> None:
         raise SystemExit("Missing required 'model' at top level in TOML.")
     env_id = data.get("env", {}).get("id")
     env_args = data.get("env", {}).get("args", {}) or {}
+
+    num_inference_gpus: int = data.get("inference", {}).get("gpus")
+    if not isinstance(num_inference_gpus, int) or num_inference_gpus <= 0:
+        raise SystemExit("Missing required 'inference.gpus' at top level in TOML.")
+    num_trainer_gpus: int = data.get("trainer", {}).get("gpus")
+    if not isinstance(num_trainer_gpus, int) or num_trainer_gpus <= 0:
+        raise SystemExit("Missing required 'trainer.gpus' at top level in TOML.")
+    inference_gpu_str = "CUDA_VISIBLE_DEVICES=" + ",".join(
+        str(i) for i in range(num_inference_gpus)
+    )
+    trainer_gpu_str = "CUDA_VISIBLE_DEVICES=" + ",".join(
+        str(i) for i in range(num_inference_gpus, num_inference_gpus + num_trainer_gpus)
+    )
     inference_cfg = data.get("inference", {}) or {}
-    cmd_top = build_vllm_command(model, inference_cfg)
-    cmd_bottom = build_train_command(env_id, env_args, config_path_str)
+    cmd_top = build_vllm_command(model, inference_cfg, inference_gpu_str)
+    cmd_bottom = build_train_command(env_id, config_path_str, trainer_gpu_str)
     cwd = Path(args.cwd).resolve() if args.cwd else None
     ensure_no_session(session)
     create_tmux_with_commands(session, cmd_top, cmd_bottom, cwd)
