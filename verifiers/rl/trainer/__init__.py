@@ -8,9 +8,9 @@ from .rl_trainer import RLTrainer
 torch._dynamo.config.suppress_errors = True
 
 
-def GRPOTrainer(**kwargs):
+def GRPOTrainer(model, processing_class, env, args):
     logging.warning("GRPOTrainer is deprecated and renamed to RLTrainer.")
-    return RLTrainer(**kwargs)
+    return RLTrainer(model, processing_class, env, args)
 
 
 def GRPOConfig(**kwargs):

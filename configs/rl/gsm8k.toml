@@ -5,6 +5,7 @@ id = "gsm8k"
 
 [env.args]
 use_think = true
+num_eval_examples = 100
 
 [inference]
 gpus = 1
@@ -20,9 +21,8 @@ run_name = "gsm8k"
 [trainer.args]
 micro_batch_size = 12
 rollouts_per_example = 12
-batch_size = 96
+batch_size = 144
 max_steps = 100
 eval_strategy = "steps"
 eval_steps = 10
 max_seq_len = 2048
-

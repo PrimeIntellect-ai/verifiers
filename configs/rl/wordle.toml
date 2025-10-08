@@ -23,5 +23,3 @@ batch_size = 512
 max_steps = 500
 max_tokens = 1024
 max_seq_len = 4096
-
-

@@ -1,0 +1,22 @@
+model = "willcb/Qwen3-14B-Arc-1D-SFT"
+
+[env]
+id = "reasoning-gym"
+
+[env.args]
+gym = "arc_1d"
+num_samples = 4000
+seed = 1
+
+[inference]
+gpus = 4
+tensor_parallel_size = 2
+data_parallel_size = 2
+enforce_eager = true
+
+[trainer]
+gpus = 4
+batch_size = 512
+micro_batch_size = 2
+max_seq_len = 4096
+run_name = "RG-arc1d"

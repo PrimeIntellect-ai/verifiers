@@ -1,0 +1,21 @@
+model = "willcb/Qwen2.5-0.5B-Reverse-SFT"
+
+[env]
+id = "reverse-text"
+
+[inference]
+gpus = 7
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "reverse-text"
+micro_batch_size = 8
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 200
+max_seq_len = 4096

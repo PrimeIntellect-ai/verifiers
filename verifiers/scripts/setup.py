@@ -35,7 +35,7 @@ ENDPOINTS = {
 }
 """
 
-ZERO3_CONTENT = """
+ZERO3_CONTENT = """\
 compute_environment: LOCAL_MACHINE
 debug: false
 deepspeed_config:
@@ -60,9 +60,69 @@ tpu_use_sudo: false
 use_cpu: false
 """
 
+WORDLE_CONFIG_CONTENT = """\
+model = "willcb/Qwen3-1.7B-Wordle"
+
+[env]
+id = "will/wordle"
+
+[env.args]
+use_think = true
+
+[inference]
+gpus = 6
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 2
+
+[trainer.args]
+run_name = "wordle"
+micro_batch_size = 8
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 500
+max_tokens = 1024
+max_seq_len = 4096
+"""
+
+GSM8K_CONFIG_CONTENT = """\
+model = "willcb/Qwen3-0.6B"
+
+[env]
+id = "will/gsm8k"
+
+[env.args]
+use_think = true
+num_eval_examples = 100
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+tensor_parallel_size = 1
+
+[trainer]
+gpus = 1
+run_name = "gsm8k"
+
+[trainer.args]
+micro_batch_size = 12
+rollouts_per_example = 12
+batch_size = 144
+max_steps = 100
+eval_strategy = "steps"
+eval_steps = 10
+max_seq_len = 2048
+"""
+
 
 def main():
     os.makedirs("configs", exist_ok=True)
+    os.makedirs("configs/rl", exist_ok=True)
     # create configs/endpoints.py if it doesn't exist
     if not os.path.exists("configs/endpoints.py"):
         with open("configs/endpoints.py", "w") as f:
@@ -77,6 +137,13 @@ def main():
             f.write(ZERO3_CONTENT)
     else:
         print("configs/zero3.yaml already exists")
+
+    # create configs/rl/wordle.toml if it doesn't exist
+    if not os.path.exists("configs/rl/wordle.toml"):
+        with open("configs/rl/wordle.toml", "w") as f:
+            f.write(WORDLE_CONFIG_CONTENT)
+    else:
+        print("configs/rl/wordle.toml already exists")
 
 
 if __name__ == "__main__":

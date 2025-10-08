@@ -2,9 +2,9 @@ import argparse
 from pathlib import Path
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[unresolved-import]
 except ImportError:
-    import tomli as tomllib  # type: ignore
+    import tomli as tomllib  # type: ignore[unresolved-import]
 
 import verifiers as vf
 
@@ -16,7 +16,7 @@ def main():
     args = parser.parse_args()
 
     if args.at != "@":
-        raise SystemExit("Usage: vf-rl @ path/to/file.toml")
+        raise SystemExit("Usage: vf-train @ path/to/file.toml")
 
     config_path_str = args.config_path
 
@@ -28,8 +28,10 @@ def main():
         config = tomllib.load(f)
 
     model = config["model"]
-    env = vf.load_environment(env_id=config["env"]["id"], **config["env"]["args"])
-    rl_config = vf.RLConfig(**config["trainer"]["args"])
+    env_id = config["env"]["id"]
+    env_args = config["env"].get("args", {})
+    env = vf.load_environment(env_id=env_id, **env_args)
+    rl_config = vf.RLConfig(**config["trainer"].get("args", {}))
     trainer = vf.RLTrainer(model=model, env=env, args=rl_config)
     trainer.train()
 

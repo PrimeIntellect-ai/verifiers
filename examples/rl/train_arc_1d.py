@@ -21,23 +21,19 @@ size = "14B"
 model_name = f"willcb/Qwen3-{size}-Arc-1D-SFT"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
-vf_env = vf.load_environment(
-    env_id="reasoning-gym", gym="arc_1d", num_samples=4000, seed=1
-)
+env_id = "reasoning-gym"
+env_args = {
+    "gym": "arc_1d",
+    "num_samples": 4000,
+    "seed": 1,
+}
+vf_env = vf.load_environment(env_id=env_id, **env_args)
 
-run_name = f"arc_1d-grpo-{size}"
-training_args = vf.grpo_defaults(run_name=run_name)
-training_args.num_iterations = 1
-training_args.per_device_train_batch_size = 4
-training_args.num_generations = 16
-training_args.gradient_accumulation_steps = 8
-training_args.max_seq_len = 4096
-training_args.max_steps = 500
 
-trainer = vf.GRPOTrainer(
+trainer = vf.RLTrainer(
     model=model,
     processing_class=tokenizer,
     env=vf_env,
-    args=training_args,
+    args=vf.RLConfig(run_name="RG-arc1d", max_seq_len=4096),
 )
 trainer.train()

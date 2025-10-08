@@ -6,7 +6,7 @@ from trl import SFTConfig, SFTTrainer  # type: ignore
 import verifiers as vf
 
 """
-accelerate launch --config-file configs/zero3.yaml --num-processes 8 examples/sft.py
+accelerate launch --config-file configs/zero3.yaml --num-processes 8 scripts/sft.py
 """
 
 

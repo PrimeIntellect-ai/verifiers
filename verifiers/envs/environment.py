@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
@@ -833,9 +833,12 @@ class Environment(ABC):
                 zipped.append((turn, None))
         assert len(responses) == responses_idx, "Responses not fully consumed"
         assert len(zipped) == len(completion), "Length mismatch"
-        prompt_ids: list[int] = processing_class.apply_chat_template(
-            conversation=prompt,  # type: ignore
-            add_generation_prompt=True,
+        prompt_ids = cast(
+            list[int],
+            processing_class.apply_chat_template(
+                conversation=prompt,  # type: ignore
+                add_generation_prompt=True,
+            ),
         )
         messages_consumed = [m for m in prompt]
         prompt_mask: list[int] = [0] * len(prompt_ids)
@@ -886,24 +889,28 @@ class Environment(ABC):
                 completion_ids.extend(completion_turn_ids)
                 completion_mask.extend(completion_turn_mask)
                 completion_logprobs.extend(completion_turn_logprobs)
-                messages_consumed.append(message)
+                messages_consumed.append(cast(ChatMessage, message))
                 i += 1
             # user/tool case -- use message
             else:
                 assert message["role"] == "user" or message["role"] == "tool"
                 # Collect all consecutive non-assistant messages
-                consecutive_messages = [message]
+                consecutive_messages: list[ChatMessage] = [cast(ChatMessage, message)]
                 j = i + 1
                 while j < len(zipped) and zipped[j][0]["role"] != "assistant":
-                    consecutive_messages.append(zipped[j][0])
+                    consecutive_messages.append(cast(ChatMessage, zipped[j][0]))
                     j += 1
-                token_prefix: list[int] = processing_class.apply_chat_template(
-                    conversation=messages_consumed  # type: ignore
+                token_prefix = cast(
+                    list[int],
+                    processing_class.apply_chat_template(
+                        conversation=messages_consumed  # type: ignore
+                    ),
                 )
-                token_prefix_with_turn: list[int] = (
+                token_prefix_with_turn = cast(
+                    list[int],
                     processing_class.apply_chat_template(
                         conversation=messages_consumed + consecutive_messages,  # type: ignore
-                    )
+                    ),
                 )
                 assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
                     f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
@@ -955,7 +962,7 @@ class Environment(ABC):
             idx = response_start_idx + len(response_text)
         assert idx == len(completion), "Completion not fully consumed"
 
-        prompt_ids: list[int] = processing_class.encode(prompt)
+        prompt_ids = cast(list[int], processing_class.encode(prompt))
         rollout_consumed = prompt
         prompt_mask: list[int] = [0] * len(prompt_ids)
         completion_ids: list[int] = []
@@ -976,9 +983,11 @@ class Environment(ABC):
                 i += 1
             # non-model-generated (user/tool case) -- use text
             else:
-                token_prefix: list[int] = processing_class.encode(rollout_consumed)
-                token_prefix_with_turn: list[int] = processing_class.encode(
-                    rollout_consumed + text
+                token_prefix = cast(
+                    list[int], processing_class.encode(rollout_consumed)
+                )
+                token_prefix_with_turn: list[int] = cast(
+                    list[int], processing_class.encode(rollout_consumed + text)
                 )
                 assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
                     f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"

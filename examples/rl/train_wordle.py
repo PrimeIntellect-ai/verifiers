@@ -8,7 +8,7 @@ vf-install wordle (-p /path/to/environments)
 vf-eval wordle -m (model_name in endpoints.py)
 
 inference:
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 uv run vf-vllm --model willcb/Qwen3-1.7B-Wordle \
+VLLM_LOG_LEVEL=WARNING CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 uv run vf-vllm --model willcb/Qwen3-1.7B-Wordle \
     --data-parallel-size 6 --enforce-eager
 
 training:

@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[unresolved-import]
 except ImportError:
-    import tomli as tomllib  # type: ignore
+    import tomli as tomllib  # type: ignore[unresolved-import]
 
 
 def run(cmd: list[str]) -> None:
@@ -154,7 +154,6 @@ def main() -> None:
     if not isinstance(model, str) or not model:
         raise SystemExit("Missing required 'model' at top level in TOML.")
     env_id = data.get("env", {}).get("id")
-    env_args = data.get("env", {}).get("args", {}) or {}
 
     num_inference_gpus: int = data.get("inference", {}).get("gpus")
     if not isinstance(num_inference_gpus, int) or num_inference_gpus <= 0:

@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 
 import datasets
+import deepspeed
 import numpy as np
 import torch
 from accelerate.utils import (
@@ -12,20 +13,27 @@ from accelerate.utils import (
     gather_object,
     is_peft_model,
 )
+from peft import PeftConfig
 from torch.utils.data import DataLoader, Sampler
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import seed_worker
-from trl.models.utils import prepare_peft_model
-from trl.trainer.utils import pad, selective_log_softmax
 
 import verifiers as vf
 import wandb
+from verifiers.rl.inference.vllm_client import VLLMClient
 from verifiers.rl.trainer.async_batch_generator import AsyncBatchGenerator, BatchRequest
 from verifiers.rl.trainer.async_dataloader_wrapper import AsyncDataLoaderWrapper
 from verifiers.rl.trainer.rl_config import RLConfig
+from verifiers.rl.utils.trainer_utils import (
+    pad,
+    prepare_peft_model,
+    selective_log_softmax,
+    shuffle_tensor_dict,
+    split_tensor_dict,
+)
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 
 
@@ -136,114 +144,6 @@ class RepeatSampler(Sampler):
         )
 
 
-# torch.nanstd doesn't exist, so we define it here
-def nanstd(tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Compute the standard deviation of a tensor, ignoring NaNs. This function only supports 1D tensors.
-
-    Args:
-        tensor (`torch.Tensor`):
-            Input tensor of shape `(N,)`.
-
-    Returns:
-        `torch.Tensor`:
-            Standard deviation of the tensor, ignoring NaNs.
-    """
-    variance = torch.nanmean(
-        (tensor - torch.nanmean(tensor, keepdim=True)) ** 2
-    )  # Compute variance ignoring NaNs
-    count = torch.sum(~torch.isnan(tensor))  # Count of non-NaN values
-    variance *= count / (count - 1)  # Bessel's correction
-    return torch.sqrt(variance)
-
-
-def split_tensor_dict(
-    tensor_dict: dict[str, Optional[torch.Tensor]], num_chunks: int
-) -> list[dict[str, Optional[torch.Tensor]]]:
-    """
-    Splits a dictionary of tensors along the first dimension into `num_chunks` equal parts.
-
-    Example:
-        >>> x = torch.arange(12).reshape(6, 2)
-        >>> y = torch.arange(6).reshape(6, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> split_tensor_dict(tensor_dict, 3)
-        [
-            {"x": tensor([[0, 1], [2, 3]]), "y": tensor([[0], [1]])},
-            {"x": tensor([[4, 5], [6, 7]]), "y": tensor([[2], [3]])},
-            {"x": tensor([[ 8,  9], [10, 11]]), "y": tensor([[4], [5]])}
-        ]
-    """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    chunk_size = first_tensor.shape[0] // num_chunks
-    return [
-        {
-            key: tensor[i * chunk_size : (i + 1) * chunk_size]
-            if tensor is not None
-            else None
-            for key, tensor in tensor_dict.items()
-        }
-        for i in range(num_chunks)
-    ]
-
-
-def shuffle_tensor_dict(
-    tensor_dict: dict[str, Optional[torch.Tensor]],
-) -> dict[str, Optional[torch.Tensor]]:
-    """
-    Shuffles a dictionary of tensors along the first dimension in unison.
-
-    Example:
-        >>> x = torch.arange(6).reshape(3, 2)
-        >>> y = torch.arange(3).reshape(3, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> shuffle_tensor_dict(tensor_dict)
-        {'x': tensor([[2, 3],
-                      [0, 1],
-                      [4, 5]]),
-         'y': tensor([[1],
-                      [0],
-                      [2]])}
-    """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    batch_size = first_tensor.shape[0]
-    permutation = torch.randperm(batch_size)
-    return {
-        key: tensor[permutation] if tensor is not None else None
-        for key, tensor in tensor_dict.items()
-    }
-
-
-def nanmin(tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Compute the minimum value of a tensor, ignoring NaNs. This function only supports 1D tensors.
-
-    Args:
-        tensor (`torch.Tensor`): Input tensor of shape `(N,)`.
-
-    Returns:
-        `torch.Tensor`: Minimum value of the tensor, ignoring NaNs. Returns NaN if all values are NaN.
-    """
-    if torch.isnan(tensor).all():
-        return torch.tensor(float("nan"), dtype=tensor.dtype, device=tensor.device)
-    return torch.min(tensor[~torch.isnan(tensor)])
-
-
-def nanmax(tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Compute the maximum value of a tensor, ignoring NaNs. This function only supports 1D tensors.
-
-    Args:
-        tensor (`torch.Tensor`): Input tensor of shape `(N,)`.
-
-    Returns:
-        `torch.Tensor`: Maximum value of the tensor, ignoring NaNs. Returns NaN if all values are NaN.
-    """
-    if torch.isnan(tensor).all():
-        return torch.tensor(float("nan"), dtype=tensor.dtype, device=tensor.device)
-    return torch.max(tensor[~torch.isnan(tensor)])
-
-
 class RLTrainer(Trainer):
     def __init__(
         self,
@@ -264,13 +164,14 @@ class RLTrainer(Trainer):
             model, processing_class = vf.get_model_and_tokenizer(model)
         assert isinstance(model, PreTrainedModel)
         assert isinstance(processing_class, PreTrainedTokenizerBase)
-        if args.use_lora:
+        if args.use_lora and isinstance(args.lora_config, PeftConfig):
             model = prepare_peft_model(model, args.lora_config, args)
         model.warnings_issued["estimate_tokens"] = True  # suppress warning
+        self.model_name = model.config._name_or_path
 
         # Tokenizer pad token
-        if processing_class.pad_token is None:  # type: ignore
-            processing_class.pad_token = processing_class.eos_token  # type: ignore
+        if processing_class.pad_token is None:
+            processing_class.pad_token = processing_class.eos_token
 
         # batch args
         self.rollouts_per_example = args.rollouts_per_example
@@ -328,7 +229,7 @@ class RLTrainer(Trainer):
                 else:
                     # Completion format
                     prompt_text = prompt
-                prompt_ids = processing_class.encode(prompt_text)  # type: ignore
+                prompt_ids = processing_class.encode(prompt_text)
                 return len(prompt_ids) <= max_length
 
             original_size = len(train_dataset)
@@ -367,7 +268,7 @@ class RLTrainer(Trainer):
             global_batch_size = (
                 unique_prompts_per_gradient_step * self.accelerator.num_processes
             )
-            dataset_size = len(self.train_dataset)  # type: ignore
+            dataset_size = len(self.train_dataset)
             self.logger.info(
                 f"Dataset size: {dataset_size}, global batch size: {global_batch_size}"
             )
@@ -427,7 +328,6 @@ class RLTrainer(Trainer):
         }
 
         # vLLM client for weight syncing only; only import if used
-        from verifiers.rl.inference.vllm_client import VLLMClient
 
         self.vllm_client = VLLMClient(
             host=host, port=port, connection_timeout=args.vllm_server_timeout
@@ -459,7 +359,7 @@ class RLTrainer(Trainer):
         self.async_generator = AsyncBatchGenerator(
             env=self.env,
             client_config=self.client_config,
-            model_name=self._get_model_name(),
+            model_name=self.model_name,
             sampling_args=self._get_sampling_args(),
             num_batches_ahead=self.num_batches_ahead,
             max_queue_size=args.async_max_queue_size,
@@ -484,7 +384,7 @@ class RLTrainer(Trainer):
         batch_size = self._train_batch_size * self.gradient_accumulation_steps  # type: ignore
 
         dataloader_params = {
-            "batch_size": batch_size,  # type: ignore (None case handled by config __post_init__)
+            "batch_size": batch_size,
             "collate_fn": data_collator,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
@@ -534,7 +434,7 @@ class RLTrainer(Trainer):
         #                                          ...
 
         return RepeatSampler(
-            data_source=self.train_dataset,  # type: ignore
+            data_source=self.train_dataset,
             mini_repeat_count=self.rollouts_per_example,
             batch_size=self.batch_size // self.rollouts_per_example,
             repeat_count=self.gradient_accumulation_steps,
@@ -556,22 +456,6 @@ class RLTrainer(Trainer):
                 self.async_generator.stop()
             self._async_started = False
 
-    def _get_last_hidden_state(
-        self, unwrapped_model, input_ids, attention_mask, logits_to_keep=None
-    ):
-        if is_peft_model(unwrapped_model):
-            unwrapped_model = unwrapped_model.base_model.model
-        last_hidden_state = unwrapped_model.model(
-            input_ids=input_ids, attention_mask=attention_mask
-        ).last_hidden_state
-        last_hidden_state = last_hidden_state[:, :-1, :]  # (B, L-1, H)
-        if logits_to_keep is not None:
-            last_hidden_state = last_hidden_state[
-                :, -logits_to_keep:, :
-            ]  # (B, logits_to_keep, H)
-        return last_hidden_state
-
-    # Get the per-token log probabilities for the completions for the model and the reference model
     def _get_per_token_logps(
         self, model, input_ids, attention_mask, logits_to_keep, batch_size=None
     ) -> torch.Tensor:
@@ -608,8 +492,6 @@ class RLTrainer(Trainer):
         deepspeed_plugin = self.accelerator.state.deepspeed_plugin
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         if zero_stage_3:
-            import deepspeed  # type: ignore[unresolved-import]
-
             gather_if_zero3 = deepspeed.zero.GatheredParameters
         else:
             gather_if_zero3 = nullcontext
@@ -652,7 +534,7 @@ class RLTrainer(Trainer):
         if is_peft_model(self.model):
             # With PEFT and DeepSpeed ZeRO Stage 3, we must gather the full model at once before merging
             with gather_if_zero3(list(self.model.parameters())):  # type: ignore
-                self.model.merge_adapter()  # type: ignore
+                self.model.merge_adapter()  # type: ignore[attr-defined]
 
                 # Update vLLM weights while parameters are gathered
                 for name, param in self.model.named_parameters():  # type: ignore
@@ -713,10 +595,6 @@ class RLTrainer(Trainer):
             },
         }
         return args
-
-    def _get_model_name(self) -> str:
-        """Get model name for Environment generation."""
-        return self.model.config._name_or_path  # type: ignore
 
     def _ids_to_tensors(
         self,
@@ -1089,19 +967,14 @@ class RLTrainer(Trainer):
         return result
 
     def compute_loss(  # type: ignore
-        self,  # type: ignore
+        self,
         model: PreTrainedModel,
-        inputs: Dict[str, torch.Tensor],
+        inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,
         num_items_in_batch: int | None = None,
-    ) -> torch.Tensor:  # type: ignore
-        mode = "train"
-
-        # Compute the per-token log probabilities for the model
+    ) -> torch.Tensor:
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
-
-        # prompt is at least 1 token
-        completion_mask = attention_mask[:, 1:]
+        completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
         ratio = inputs["importance_sampling_ratio"]
         logits_to_keep = min(logits_to_keep, ratio.size(1))
@@ -1109,8 +982,6 @@ class RLTrainer(Trainer):
         per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
-
-        # Compute the loss
         advantages = inputs["advantages"]
         log_ratio = per_token_logps - inputs["old_per_token_logps"]
         if self.importance_sampling_level == "token":
@@ -1147,7 +1018,7 @@ class RLTrainer(Trainer):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * completion_mask).sum() / (
                 per_token_loss.size(0) * self.max_seq_len
-            )  # type: ignore
+            )
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         return loss
@@ -1242,10 +1113,10 @@ class RLTrainer(Trainer):
         else:
             # Chat format - use apply_chat_template
             completion_lengths = []
-            for comp in completions:
+            for completion in completions:
                 # Apply chat template to get the full text
                 tokens = self.processing_class.apply_chat_template(
-                    comp,  # type: ignore
+                    completion,  # type: ignore
                     tokenize=True,
                     add_generation_prompt=False,
                 )
@@ -1306,7 +1177,7 @@ class RLTrainer(Trainer):
         return metrics
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
-        mode = "train" if self.model is not None and self.model.training else "eval"  # type: ignore
+        mode = "train" if self.model is not None and self.model.training else "eval"
         metrics = {
             key: sum(val) / len(val) for key, val in self._metrics[mode].items()
         }  # average the metrics
