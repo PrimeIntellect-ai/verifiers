@@ -8,15 +8,8 @@ from transformers.trainer_utils import SchedulerType
 
 @dataclass
 class RLConfig(TrainingArguments):
-    r"""
-    Configuration class for the [`GRPOTrainer`].
-
-    Only the parameters specific to GRPO training are listed here. For details on other parameters, refer to the
-    [`~transformers.TrainingArguments`] documentation.
-
-    Using [`~transformers.HfArgumentParser`] we can turn this class into
-    [argparse](https://docs.python.org/3/library/argparse#module-argparse) arguments that can be specified on the
-    command line.
+    """
+    Configuration class for RLTrainer.
     """
 
     _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS

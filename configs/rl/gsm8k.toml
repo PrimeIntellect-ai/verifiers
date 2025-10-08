@@ -17,7 +17,7 @@ tensor_parallel_size = 1
 gpus = 1
 run_name = "gsm8k"
 
-[trainer.args] # rl args
+[trainer.args]
 micro_batch_size = 12
 rollouts_per_example = 12
 batch_size = 96
@@ -25,3 +25,4 @@ max_steps = 100
 eval_strategy = "steps"
 eval_steps = 10
 max_seq_len = 2048
+

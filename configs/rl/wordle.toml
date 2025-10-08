@@ -15,7 +15,7 @@ enforce_eager = true
 [trainer]
 gpus = 2
 
-[trainer.args] # rl args
+[trainer.args]
 run_name = "wordle"
 micro_batch_size = 8
 rollouts_per_example = 16
@@ -23,3 +23,5 @@ batch_size = 512
 max_steps = 500
 max_tokens = 1024
 max_seq_len = 4096
+
+
