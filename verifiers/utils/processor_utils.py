@@ -1,7 +1,6 @@
 from verifiers.utils.image_utils import _base64_to_pil
 from typing import Union, List, Dict, Any, TYPE_CHECKING
 from inspect import signature
-import json
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase, ProcessorMixin
