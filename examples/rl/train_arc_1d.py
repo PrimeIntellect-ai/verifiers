@@ -17,10 +17,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch --num-processes 4 \
     --config-file configs/zero3.yaml examples/grpo/train_arc_1d.py
 """
 
-size = "14B"
-model_name = f"willcb/Qwen3-{size}-Arc-1D-SFT"
-model, tokenizer = vf.get_model_and_tokenizer(model_name)
-
+model = "willcb/Qwen3-14B-Arc-1D-SFT"
 env_id = "reasoning-gym"
 env_args = {
     "gym": "arc_1d",
@@ -29,10 +26,8 @@ env_args = {
 }
 vf_env = vf.load_environment(env_id=env_id, **env_args)
 
-
 trainer = vf.RLTrainer(
     model=model,
-    processing_class=tokenizer,
     env=vf_env,
     args=vf.RLConfig(run_name="RG-arc1d", max_seq_len=4096),
 )
