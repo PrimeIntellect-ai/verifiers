@@ -46,9 +46,7 @@ class FakeEnvironment:
         n = len(inputs)
         return GenerateOutputs(
             prompt=[[{"role": "user", "content": f"Q{i}"}] for i in range(n)],
-            completion=[
-                [{"role": "assistant", "content": f"A{i}"}] for i in range(n)
-            ],
+            completion=[[{"role": "assistant", "content": f"A{i}"}] for i in range(n)],
             reward=[0.8 + (i * 0.05) for i in range(n)],  # Varying rewards
             answer=[f"A{i}" for i in range(n)],
             task=[self.env_id] * n,
@@ -344,9 +342,7 @@ class TestPrimeHubIntegration:
         mock_config = Mock()
         mock_config.frontend_url = "https://custom.primeintellect.ai"
 
-        with patch(
-            "prime_cli.api.evals.EvalsClient", return_value=mock_client
-        ):
+        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
             push_eval_to_prime_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
@@ -398,4 +394,3 @@ class TestCLIIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
