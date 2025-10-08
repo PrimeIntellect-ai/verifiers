@@ -301,9 +301,6 @@ class GRPOTrainer(Trainer):
 
         # Suppress irrelevant warning
         model.warnings_issued["estimate_tokens"] = True
-
-        self.processor = processing_class
-        self._debug_batch_counter = 0
         
         # Handle pad token for processors or tokenizers
         if isinstance(processing_class, ProcessorMixin):
@@ -803,7 +800,6 @@ class GRPOTrainer(Trainer):
             0
         )  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
-        raw_batch_data = {"input_ids":input_ids,"attention_mask":attention_mask,"pixel_values":pixel_values,"image_grid_thw":image_grid_thw}
         
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
