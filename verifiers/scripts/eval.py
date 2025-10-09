@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,12 @@ else:
     import tomli as tomllib
 
 import numpy as np
+from datasets import Dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import GenerateOutputs
+from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
 # Setup logger for eval script using verifiers logging format
 logger = logging.getLogger("verifiers.scripts.eval")
@@ -245,6 +248,92 @@ async def eval_environments_parallel(
     return dict(results)
 
 
+def save_results_to_disk(
+    env: str,
+    results: GenerateOutputs,
+    model: str,
+    num_examples: int,
+    rollouts_per_example: int,
+    sampling_args: dict | None = None,
+    env_dir_path: str = "./environments",
+) -> Path:
+    # Generate run ID (8-character UUID like the old implementation)
+    uuid_str = str(uuid.uuid4())[:8]
+
+    # Create directory structure
+    env_name = env.replace("-", "_")
+    model_name = model.replace("/", "--")
+    env_model_str = f"{env}--{model_name}"
+
+    local_env_dir = Path(env_dir_path) / env_name
+    if local_env_dir.exists():
+        results_path = local_env_dir / "outputs" / "evals" / env_model_str / uuid_str
+    else:
+        results_path = Path("./outputs") / "evals" / env_model_str / uuid_str
+
+    results_path.mkdir(parents=True, exist_ok=True)
+
+    # Prepare metadata
+    now = datetime.now()
+    metadata = {
+        "env": env,
+        "model": model,
+        "num_examples": num_examples,
+        "rollouts_per_example": rollouts_per_example,
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+    }
+
+    # Add sampling args to metadata if provided
+    if sampling_args:
+        for key, value in sampling_args.items():
+            if key not in metadata:
+                metadata[key] = value
+
+    # Calculate and add average metrics to metadata
+    metadata["avg_reward"] = float(np.mean(results.reward))
+    for metric_name, metric_values in results.metrics.items():
+        metadata[f"avg_{metric_name}"] = float(np.mean(metric_values))
+
+    # Save metadata.json
+    with open(results_path / "metadata.json", "w") as f:
+        json.dump(metadata, f)
+
+    # Prepare dataset for saving
+    n_samples = len(results.reward)
+    ids = [i // rollouts_per_example for i in range(n_samples)]
+    printable_prompts = [messages_to_printable(p) for p in results.prompt]
+    printable_completions = [messages_to_printable(c) for c in results.completion]
+
+    data_dict = {
+        "id": ids,
+        "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
+        "completion": [sanitize_tool_calls(c) for c in printable_completions],
+        "task": results.task,
+        "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
+        "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
+        "total_ms": [s["timing"]["total_ms"] for s in results.state],
+    }
+
+    # Add optional fields
+    if results.info and results.info[0] != {}:
+        data_dict["info"] = results.info
+    if results.answer and results.answer[0] != "":
+        data_dict["answer"] = results.answer
+    data_dict["reward"] = results.reward
+
+    # Add metrics
+    for metric_name, metric_values in results.metrics.items():
+        data_dict[metric_name] = metric_values
+
+    # Save results.jsonl using Dataset.to_json() (matches old implementation)
+    dataset = Dataset.from_dict(data_dict)
+    dataset.to_json(results_path / "results.jsonl")
+
+    logger.info(f"✓ Saved evaluation results to {results_path}")
+    return results_path
+
+
 def display_and_push_results(
     env,
     results,
@@ -264,6 +353,17 @@ def display_and_push_results(
     for metric_name, metric_values in results.metrics.items():
         logger.info(
             f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}"
+        )
+
+    if args.save_dataset:
+        save_results_to_disk(
+            env=env,
+            results=results,
+            model=model,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=sampling_args,
+            env_dir_path=getattr(args, "env_dir_path", "./environments"),
         )
 
     if args.save_to_env_hub:
