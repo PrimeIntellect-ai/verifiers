@@ -87,7 +87,9 @@ def push_eval_to_env_hub(
                         f"  3. Visit: https://app.primeintellect.ai/environments\n"
                     )
                     return None
-                logger.debug(f"✓ Environment '{environment_id}' found in Prime Hub")
+                logger.debug(
+                    f"✓ Environment '{environment_id}' found in Environment Hub"
+                )
             except EvalsAPIError as e:
                 logger.warning(
                     f"Could not verify environment existence: {e}\n"
@@ -153,20 +155,20 @@ def push_eval_to_env_hub(
         viewer_url = finalize_response.get("viewer_url")
         if viewer_url:
             logger.info(
-                f"✓ Pushed eval '{eval_name}' to Prime Hub\n  View at: {viewer_url}"
+                f"✓ Pushed eval '{eval_name}' to Environment Hub\n  View at: {viewer_url}"
             )
         else:
-            logger.info(f"✓ Pushed eval '{eval_name}' to Prime Hub")
+            logger.info(f"✓ Pushed eval '{eval_name}' to Environment Hub")
 
         return finalize_response
 
     except ImportError:
         logger.warning(
             "prime-evals not found. Install with: pip install prime-evals\n"
-            "Skipping push to Prime Hub."
+            "Skipping push to Environment Hub."
         )
     except Exception as e:
-        logger.warning(f"Failed to push eval to Prime Hub: {e}")
+        logger.warning(f"Failed to push eval to Environment Hub: {e}")
 
     return None
 
@@ -253,7 +255,7 @@ def display_and_push_results(
     max_concurrent,
     sampling_args,
 ):
-    """Display results and optionally push to Prime Hub."""
+    """Display results and optionally push to Environment Hub."""
     logger.info(f"\n--- {env} ---")
     logger.info(
         f"Rewards: avg={np.mean(results.reward):.3f}, std={np.std(results.reward):.3f}"
@@ -658,15 +660,15 @@ Examples:
         default=None,
         action="store_true",
         help=(
-            "Save evaluation results to Prime Hub (requires prime-evals). "
-            "NOTE: The environment must be pushed to Prime Hub first."
+            "Save evaluation results to Environment Hub (requires prime-evals). "
+            "NOTE: The environment must be pushed to Environment Hub first."
         ),
     )
     parser.add_argument(
         "--eval-name",
         type=str,
         default=None,
-        help="Name for the evaluation run (used when saving to Prime Hub)",
+        help="Name for the evaluation run (used when saving to Environment Hub)",
     )
     args = parser.parse_args()
 

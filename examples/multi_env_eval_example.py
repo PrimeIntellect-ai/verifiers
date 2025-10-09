@@ -107,9 +107,9 @@ async def example_per_env_sampling_args():
 
 async def example_with_env_hub():
     """
-    Example: Evaluate and save to Prime Hub.
+    Example: Evaluate and save to Environment Hub.
 
-    NOTE: Before pushing evaluations, you must first push the environments to Prime Hub:
+    NOTE: Before pushing evaluations, you must first push the environments to Environment Hub:
         1. Using verifiers: env.push_to_env_hub(hub_name='owner/gsm8k')
         2. Using prime CLI: prime env push gsm8k
         3. Via web: https://app.primeintellect.ai/environments
@@ -180,5 +180,5 @@ if __name__ == "__main__":
     asyncio.run(example_per_env_sampling_args())
 
     print("\n" + "=" * 80 + "\n")
-    print("Example 3: With Prime Hub integration")
+    print("Example 3: With Environment Hub integration")
     asyncio.run(example_with_env_hub())

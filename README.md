@@ -178,9 +178,9 @@ vf-eval --config eval_config.toml --num-examples 20 --model gpt-4o
 
 See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for a complete example with all available options.
 
-#### Prime Hub Integration
+#### Environment Hub Integration
 
-**[CLOSED BETA]** Push evaluation results to Prime Hub for tracking (requires prime eval permissions):
+**[CLOSED BETA]** Push evaluation results to Environment Hub for tracking (requires prime eval permissions):
 
 ```bash
 vf-eval --config eval_config.toml --save-to-env-hub

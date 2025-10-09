@@ -245,10 +245,10 @@ class TestEvalEnvironmentsParallel:
 
 
 class TestPrimeHubIntegration:
-    """Test cases for Prime Hub integration."""
+    """Test cases for Environment Hub integration."""
 
     def test_push_to_env_hub_success(self):
-        """Test successful push to Prime Hub."""
+        """Test successful push to Environment Hub."""
         mock_evals_client = Mock()
         mock_response = {
             "evaluation_id": "test-eval-123",
@@ -280,7 +280,7 @@ class TestPrimeHubIntegration:
             mock_evals_client.finalize_evaluation.assert_called_once()
 
     def test_push_to_env_hub_with_results(self):
-        """Test push to Prime Hub with sample-level results."""
+        """Test push to Environment Hub with sample-level results."""
         mock_evals_client = Mock()
         mock_response = {"evaluation_id": "test-eval-123"}
         mock_evals_client.create_evaluation.return_value = {
