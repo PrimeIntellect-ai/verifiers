@@ -274,24 +274,17 @@ def save_results_to_disk(
     results_path.mkdir(parents=True, exist_ok=True)
 
     # Prepare metadata
-    now = datetime.now()
     metadata = {
         "env": env,
         "model": model,
         "num_examples": num_examples,
         "rollouts_per_example": rollouts_per_example,
-        "date": now.strftime("%Y-%m-%d"),
-        "time": now.strftime("%H:%M:%S"),
+        "sampling_args": sampling_args if sampling_args else {},
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "avg_reward": float(np.mean(results.reward)),
     }
 
-    # Add sampling args to metadata if provided
-    if sampling_args:
-        for key, value in sampling_args.items():
-            if key not in metadata:
-                metadata[key] = value
-
-    # Calculate and add average metrics to metadata
-    metadata["avg_reward"] = float(np.mean(results.reward))
+    # Add average metrics
     for metric_name, metric_values in results.metrics.items():
         metadata[f"avg_{metric_name}"] = float(np.mean(metric_values))
 
@@ -310,9 +303,6 @@ def save_results_to_disk(
         "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
         "completion": [sanitize_tool_calls(c) for c in printable_completions],
         "task": results.task,
-        "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
-        "total_ms": [s["timing"]["total_ms"] for s in results.state],
     }
 
     # Add optional fields
@@ -365,6 +355,41 @@ def display_and_push_results(
             sampling_args=sampling_args,
             env_dir_path=getattr(args, "env_dir_path", "./environments"),
         )
+
+    if args.save_to_hf_hub:
+        # Prepare dataset for Hugging Face Hub
+        n_samples = len(results.reward)
+        ids = [i // rollouts_per_example for i in range(n_samples)]
+        printable_prompts = [messages_to_printable(p) for p in results.prompt]
+        printable_completions = [messages_to_printable(c) for c in results.completion]
+
+        data_dict = {
+            "id": ids,
+            "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
+            "completion": [sanitize_tool_calls(c) for c in printable_completions],
+            "task": results.task,
+        }
+
+        if results.info and results.info[0] != {}:
+            data_dict["info"] = results.info
+        if results.answer and results.answer[0] != "":
+            data_dict["answer"] = results.answer
+        data_dict["reward"] = results.reward
+
+        for metric_name, metric_values in results.metrics.items():
+            data_dict[metric_name] = metric_values
+
+        dataset = Dataset.from_dict(data_dict)
+
+        # Generate dataset name
+        hf_hub_dataset_name = getattr(args, "hf_hub_dataset_name", "")
+        if hf_hub_dataset_name == "":
+            dataset_name = f"{env}_{model.replace('/', '-')}_n={num_examples}_r={rollouts_per_example}"
+        else:
+            dataset_name = hf_hub_dataset_name
+
+        dataset.push_to_hub(dataset_name)
+        logger.info(f"✓ Saved dataset to Hugging Face Hub: {dataset_name}")
 
     if args.save_to_env_hub:
         eval_name = (
