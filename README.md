@@ -156,14 +156,12 @@ max_concurrent = 32
 name = "gpt-5"
 
 [sampling]
-temperature = 0.7
 max_tokens = 2048
 
 # Per-environment overrides
 [env.wordle]
 num_examples = 50
 rollouts_per_example = 3
-temperature = 0.5
 use_think = true  # env-specific init arg
 ```
 
