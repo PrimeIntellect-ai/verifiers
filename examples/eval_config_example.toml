@@ -1,7 +1,7 @@
 # This config demonstrates per-environment parameter customization
 
 # List of environments to evaluate
-environment_ids = ["gsm8k", "math500"]
+environment_ids = ["gsm8k"]
 
 # Global defaults (applied to all environments unless overridden)
 num_examples = 10
@@ -19,23 +19,13 @@ max_tokens = 2048
 
 # Per-environment configuration
 [env.gsm8k]
-num_examples = 100
-rollouts_per_example = 5
-max_concurrent = 64
-model = "gpt-4o"
-temperature = 0.9
-max_tokens = 512
-# Environment-specific init args
-difficulty = "hard"
+num_examples = 20
+rollouts_per_example = 2
+max_concurrent = 16
 
-[env.math500]
-num_examples = 50
-rollouts_per_example = 3
-max_concurrent = 32
-model = "claude-3-opus"
-temperature = 0.5
-max_tokens = 1024
-level = "competition"
+max_tokens = 512
+use_think = true
+num_eval_examples = 20
 
 # API configuration (optional)
 api_key_var = "OPENAI_API_KEY"

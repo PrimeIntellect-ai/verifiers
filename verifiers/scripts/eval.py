@@ -903,6 +903,8 @@ Examples:
                 "save_to_hf_hub",
                 "verbose",
                 "eval_name",
+                "api_key_var",
+                "api_base_url",
             } | sampling_keys
             env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
             if env_args:

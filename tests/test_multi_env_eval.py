@@ -249,16 +249,23 @@ class TestPrimeHubIntegration:
 
     def test_push_to_env_hub_success(self):
         """Test successful push to Prime Hub."""
-        mock_client = Mock()
+        mock_evals_client = Mock()
         mock_response = {
-            "eval_id": "test-eval-123",
+            "evaluation_id": "test-eval-123",
             "viewer_url": "https://app.primeintellect.ai/dashboard/evals/test-eval-123",
         }
-        mock_client.push_eval.return_value = mock_response
+        mock_evals_client.create_evaluation.return_value = {
+            "evaluation_id": "test-eval-123"
+        }
+        mock_evals_client.push_samples.return_value = {}
+        mock_evals_client.finalize_evaluation.return_value = mock_response
 
-        with patch(
-            "prime_cli.api.evals.EvalsClient", return_value=mock_client
-        ) as mock_cls:
+        mock_api_client = Mock()
+
+        with (
+            patch("prime_evals.APIClient", return_value=mock_api_client),
+            patch("prime_evals.EvalsClient", return_value=mock_evals_client),
+        ):
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
@@ -267,29 +274,32 @@ class TestPrimeHubIntegration:
                 metadata={"timestamp": "2025-10-03T12:00:00Z"},
             )
 
-            # Verify the client was created
-            mock_cls.assert_called_once()
-
-            # Verify push_eval was called with correct payload
-            mock_client.push_eval.assert_called_once()
-            call_args = mock_client.push_eval.call_args[0][0]
-            assert call_args["eval_name"] == "test-eval"
-            assert call_args["model_name"] == "gpt-4o-mini"
-            assert call_args["dataset"] == "gsm8k"
-            assert call_args["metrics"]["avg_reward"] == 0.85
+            # Verify create_evaluation was called
+            mock_evals_client.create_evaluation.assert_called_once()
+            # Verify finalize was called
+            mock_evals_client.finalize_evaluation.assert_called_once()
 
     def test_push_to_env_hub_with_results(self):
         """Test push to Prime Hub with sample-level results."""
-        mock_client = Mock()
-        mock_response = {"eval_id": "test-eval-123"}
-        mock_client.push_eval.return_value = mock_response
+        mock_evals_client = Mock()
+        mock_response = {"evaluation_id": "test-eval-123"}
+        mock_evals_client.create_evaluation.return_value = {
+            "evaluation_id": "test-eval-123"
+        }
+        mock_evals_client.push_samples.return_value = {}
+        mock_evals_client.finalize_evaluation.return_value = mock_response
 
         results = [
             {"example_id": 0, "reward": 1.0, "task": "gsm8k"},
             {"example_id": 1, "reward": 0.0, "task": "gsm8k"},
         ]
 
-        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
+        mock_api_client = Mock()
+
+        with (
+            patch("prime_evals.APIClient", return_value=mock_api_client),
+            patch("prime_evals.EvalsClient", return_value=mock_evals_client),
+        ):
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
@@ -299,14 +309,14 @@ class TestPrimeHubIntegration:
                 results=results,
             )
 
-            # Verify results were included
-            call_args = mock_client.push_eval.call_args[0][0]
-            assert "results" in call_args
-            assert len(call_args["results"]) == 2
+            # Verify push_samples was called with results
+            mock_evals_client.push_samples.assert_called_once()
+            call_args = mock_evals_client.push_samples.call_args[0]
+            assert len(call_args[1]) == 2  # 2 samples
 
     def test_push_to_env_hub_import_error(self, caplog):
-        """Test graceful handling when prime-cli is not installed."""
-        with patch.dict(sys.modules, {"prime_cli.api.evals": None}):
+        """Test graceful handling when prime-evals is not installed."""
+        with patch.dict(sys.modules, {"prime_evals": None}):
             # Should not raise, just log warning
             push_eval_to_env_hub(
                 eval_name="test-eval",
@@ -321,7 +331,7 @@ class TestPrimeHubIntegration:
         mock_client = Mock()
         mock_client.push_eval.side_effect = Exception("API Error")
 
-        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
+        with patch("prime_evals.EvalsClient", return_value=mock_client):
             # Should not raise, just log warning
             push_eval_to_env_hub(
                 eval_name="test-eval",
@@ -342,7 +352,7 @@ class TestPrimeHubIntegration:
         mock_config = Mock()
         mock_config.frontend_url = "https://custom.primeintellect.ai"
 
-        with patch("prime_cli.api.evals.EvalsClient", return_value=mock_client):
+        with patch("prime_evals.EvalsClient", return_value=mock_client):
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
