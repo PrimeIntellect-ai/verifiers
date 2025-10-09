@@ -1,16 +1,12 @@
 import argparse
 import asyncio
-import importlib
-import importlib.util
 import json
 import logging
 import os
 import sys
-import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, cast
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -18,14 +14,10 @@ else:
     import tomli as tomllib
 
 import numpy as np
-from datasets import Dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import Endpoints, GenerateOutputs
-from verifiers.utils.client_utils import setup_client
-from verifiers.utils.logging_utils import setup_logging
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.types import GenerateOutputs
 
 # Setup logger for eval script using verifiers logging format
 logger = logging.getLogger("verifiers.scripts.eval")
@@ -34,7 +26,7 @@ logger = logging.getLogger("verifiers.scripts.eval")
 def push_eval_to_env_hub(
     eval_name: str,
     model_name: str,
-    dataset: str,
+    environment_id: str,
     metrics: dict[str, float],
     metadata: dict[str, Any],
     results: list[dict[str, Any]] | None = None,
@@ -50,14 +42,14 @@ def push_eval_to_env_hub(
         client = EvalsClient(api_client)
 
         # Try to load environment metadata from local .env-metadata.json file
-        env_id_to_use = None
+        env_hub_id = None
         version_id_to_use = version_id
 
         # Look for .env-metadata.json in the environment directory
         env_dir = (
             Path(__file__).parent.parent.parent
             / "environments"
-            / dataset.replace("-", "_")
+            / environment_id.replace("-", "_")
         )
         hub_metadata_file = env_dir / ".env-metadata.json"
 
@@ -65,37 +57,37 @@ def push_eval_to_env_hub(
             try:
                 with open(hub_metadata_file) as f:
                     hub_metadata = json.load(f)
-                    env_id_to_use = hub_metadata.get("environment_id")
+                    env_hub_id = hub_metadata.get("environment_id")
                     if not version_id_to_use:
                         version_id_to_use = hub_metadata.get("version_id")
                     logger.debug(
                         f"✓ Loaded environment metadata from {hub_metadata_file.name}: "
-                        f"env_id={env_id_to_use[:8] if env_id_to_use else 'None'}..."
+                        f"env_id={env_hub_id[:8] if env_hub_id else 'None'}..."
                     )
             except Exception as e:
                 logger.debug(f"Could not load {hub_metadata_file}: {e}")
 
-        if not skip_env_check and not env_id_to_use:
+        if not skip_env_check and not env_hub_id:
             logger.debug(
-                f"Checking if environment '{dataset}' exists on Environment Hub..."
+                f"Checking if environment '{environment_id}' exists on Environment Hub..."
             )
             try:
-                env_exists = client.check_environment_exists(dataset)
+                env_exists = client.check_environment_exists(environment_id)
                 if not env_exists:
-                    if "/" in dataset:
-                        env_hint = f"owner/{dataset}"
+                    if "/" in environment_id:
+                        env_hint = f"owner/{environment_id}"
                     else:
-                        env_hint = f"<owner>/{dataset}"
+                        env_hint = f"<owner>/{environment_id}"
 
                     logger.error(
-                        f"✗ Cannot push eval: Environment '{dataset}' not found on Environment Hub.\n"
+                        f"✗ Cannot push eval: Environment '{environment_id}' not found on Environment Hub.\n"
                         f"  Please push the environment first using one of these methods:\n"
                         f"  1. Using verifiers: env.push_to_env_hub(hub_name='{env_hint}')\n"
-                        f"  2. Using prime CLI: prime env push {dataset}\n"
+                        f"  2. Using prime CLI: prime env push {environment_id}\n"
                         f"  3. Visit: https://app.primeintellect.ai/environments\n"
                     )
                     return None
-                logger.debug(f"✓ Environment '{dataset}' found in Prime Hub")
+                logger.debug(f"✓ Environment '{environment_id}' found in Prime Hub")
             except EvalsAPIError as e:
                 logger.warning(
                     f"Could not verify environment existence: {e}\n"
@@ -104,10 +96,9 @@ def push_eval_to_env_hub(
 
         create_response = client.create_evaluation(
             name=eval_name,
-            environment_ids=[env_id_to_use] if env_id_to_use else [dataset],
+            environment_ids=[env_hub_id] if env_hub_id else [environment_id],
             run_id=run_id,
             model_name=model_name,
-            dataset=dataset,
             framework=framework,
             metadata=metadata,
             metrics=metrics,
@@ -252,203 +243,6 @@ async def eval_environments_parallel(
     return dict(results)
 
 
-def eval_environment(
-    env: str,
-    env_args: dict,
-    env_dir_path: str,
-    endpoints_path: str,
-    model: str,
-    api_key_var: str,
-    api_base_url: str,
-    num_examples: int,
-    rollouts_per_example: int,
-    max_concurrent: int,
-    max_tokens: int | None,
-    temperature: float | None,
-    sampling_args: dict | None,
-    verbose: bool,
-    save_dataset: bool,
-    save_to_hf_hub: bool,
-    hf_hub_dataset_name: str,
-    extra_headers: Dict[str, str],
-):
-    setup_logging("DEBUG" if verbose else "INFO")
-    try:
-        endpoints_path_obj = Path(endpoints_path)
-        if endpoints_path_obj.is_dir():
-            endpoints_file = endpoints_path_obj / "endpoints.py"
-        else:
-            endpoints_file = endpoints_path_obj
-
-        if endpoints_file.exists():
-            logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            spec = importlib.util.spec_from_file_location("endpoints", endpoints_file)
-            assert spec and spec.loader
-            endpoints_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(endpoints_module)
-            # check that module exposes ENDPOINTS
-            if not hasattr(endpoints_module, "ENDPOINTS"):
-                raise AttributeError(
-                    f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
-                )
-            ENDPOINTS = cast(Endpoints, endpoints_module.ENDPOINTS)
-            logger.debug(
-                f"Successfully loaded {len(ENDPOINTS)} endpoints from registry"
-            )
-        else:
-            raise ImportError(f"endpoints.py not found at {endpoints_file}")
-    except (ImportError, AttributeError) as e:
-        logger.warning(
-            f"No local endpoint registry found at {endpoints_path}. "
-            f"Please specify the model name (-m), API host base URL (-b), and API key variable name (-k). "
-            f"Error details: {str(e)}"
-        )
-        logger.debug("Using default empty endpoints registry")
-        ENDPOINTS: Endpoints = {}
-
-    if model in ENDPOINTS:
-        api_key_var = ENDPOINTS[model]["key"]
-        api_base_url = ENDPOINTS[model]["url"]
-        model = ENDPOINTS[model]["model"]
-        logger.debug(f"Using endpoint configuration for model '{model}' from registry")
-    else:
-        logger.debug(
-            f"Model '{model}' not found in endpoint registry, using command-line arguments"
-        )
-
-    # Setup eval client with high limits to prevent API timeout errors
-    client = setup_client(
-        api_base_url,
-        api_key_var,
-        timeout=3600.0,  # 1h
-        max_connections=28000,  # Number of available ports
-        max_keepalive_connections=28000,  # Number of available ports
-        max_retries=10,  # 10 retries (w/ exponential backoffs)
-        extra_headers=extra_headers,
-    )
-    logger.debug(f"Initialized OpenAI client with base_url: {api_base_url}")
-    vf_env = vf.load_environment(env_id=env, **env_args)
-    # Merge sampling args with precedence to JSON payload over explicit flags
-    merged_sampling_args: dict = {}
-    if sampling_args is not None:
-        merged_sampling_args.update(sampling_args)
-    if "max_tokens" not in merged_sampling_args:
-        merged_sampling_args["max_tokens"] = max_tokens
-    if temperature is not None and "temperature" not in merged_sampling_args:
-        merged_sampling_args["temperature"] = temperature
-
-    logger.info(f"Starting evaluation with model: {model}")
-    logger.info(
-        f"Configuration: num_examples={num_examples}, rollouts_per_example={rollouts_per_example}, max_concurrent={max_concurrent}"
-    )
-    start_time = time.time()
-    results = vf_env.evaluate(
-        client=client,
-        model=model,
-        sampling_args=merged_sampling_args,
-        num_examples=num_examples,
-        rollouts_per_example=rollouts_per_example,
-        max_concurrent=max_concurrent,
-    )
-    end_time = time.time()
-    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
-    print("--- Evaluation ---")
-    print(f"Environment: {env}")
-    print(f"Model: {model}")
-    print(f"Provider: {api_base_url}")
-    print(f"Examples: {num_examples}")
-    print(f"Rollouts per example: {rollouts_per_example}")
-    print("--- Example ---")
-    printable_prompts = [messages_to_printable(p) for p in results.prompt]
-    printable_completions = [messages_to_printable(c) for c in results.completion]
-    vf.print_prompt_completions_sample(
-        printable_prompts, printable_completions, results.reward, step=0
-    )
-    print("--- All ---")
-    print("Rewards:")
-    print(
-        f"reward: avg - {sum(results.reward) / len(results.reward):.3f}, std - {np.std(results.reward):.3f}"
-    )
-    r = rollouts_per_example
-    n = len(results.reward) // r
-    for i in range(r):
-        # rounded to 3 decimal places
-        trials = [round(results.reward[(i * n) + j], 3) for j in range(n)]
-        out = f"r{i + 1}: {trials}"
-        print(out)
-    for k in results.metrics:
-        v = results.metrics[k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
-        for i in range(r):
-            # rounded to 3 decimal places
-            trials = [round(v[(i * n) + j], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
-            print(out)
-
-    if save_dataset or save_to_hf_hub:
-        ids = [i // rollouts_per_example for i in range(n * rollouts_per_example)]
-        rewards = results.reward
-        tasks = results.task
-        data_dict = {
-            "id": ids,
-            "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
-            "completion": [sanitize_tool_calls(c) for c in printable_completions],
-            "task": tasks,
-            "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
-            "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
-            "total_ms": [s["timing"]["total_ms"] for s in results.state],
-        }
-        if results.info[0] != {}:
-            data_dict["info"] = results.info
-        if results.answer[0] != "":
-            data_dict["answer"] = results.answer
-        data_dict["reward"] = rewards
-        for k in results.metrics:
-            v = results.metrics[k]
-            data_dict[k] = v
-
-        dataset = Dataset.from_dict(data_dict)
-        metadata = {
-            "env": env,
-            "model": model,
-            "num_examples": n,
-            "rollouts_per_example": rollouts_per_example,
-            "sampling_args": merged_sampling_args,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "time_ms": (end_time - start_time) * 1000,
-            "avg_reward": sum(results.reward) / len(results.reward),
-        }
-        for k in results.metrics:
-            metadata[f"avg_{k}"] = sum(results.metrics[k]) / len(results.metrics[k])
-
-        uuid_str = str(uuid.uuid4())[:8]
-        env_model_str = f"{env}--{model.replace('/', '--')}"
-        if save_dataset:
-            module_name = env.replace("-", "_")
-            local_env_dir = Path(env_dir_path) / module_name
-            if local_env_dir.exists():
-                results_path = (
-                    local_env_dir / "outputs" / "evals" / env_model_str / uuid_str
-                )
-            else:
-                results_path = Path("./outputs") / "evals" / env_model_str / uuid_str
-            results_path.parent.mkdir(parents=True, exist_ok=True)
-            dataset.to_json(results_path / "results.jsonl")
-            with open(results_path / "metadata.json", "w") as f:
-                json.dump(metadata, f)
-
-            logger.info(f"Saved dataset to {results_path}")
-        if save_to_hf_hub:
-            if hf_hub_dataset_name == "":
-                dataset_name = (
-                    f"{env}_{model.replace('/', '-')}_n{n}_r{rollouts_per_example}"
-                )
-            else:
-                dataset_name = hf_hub_dataset_name
-            dataset.push_to_hub(dataset_name)
-            logger.info(f"Saved dataset to Hugging Face Hub: {dataset_name}")
-
-
 def display_and_push_results(
     env,
     results,
@@ -495,34 +289,38 @@ def display_and_push_results(
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
+        n_samples = len(results.reward)
+        assert len(results.prompt) == n_samples, "Prompt length mismatch"
+        assert len(results.completion) == n_samples, "Completion length mismatch"
+        assert len(results.task) == n_samples, "Task length mismatch"
+        assert len(results.answer) == n_samples, "Answer length mismatch"
+        assert len(results.info) == n_samples, "Info length mismatch"
+
         sample_results = []
-        for i in range(len(results.reward)):
+        for i in range(n_samples):
             result_entry = {
                 "example_id": i // rollouts_per_example,
                 "rollout_number": i % rollouts_per_example,
                 "reward": float(results.reward[i]),
-                "prompt": results.prompt[i] if i < len(results.prompt) else [],
-                "completion": results.completion[i]
-                if i < len(results.completion)
-                else [],
+                "prompt": results.prompt[i],
+                "completion": results.completion[i],
+                "task": str(results.task[i]),
+                "answer": str(results.answer[i]),
             }
-            if i < len(results.task):
-                result_entry["task"] = str(results.task[i])
-            if i < len(results.answer):
-                result_entry["answer"] = str(results.answer[i])
-            if i < len(results.info):
-                info = results.info[i]
-                if isinstance(info, dict):
-                    if "score" in info:
-                        result_entry["score"] = float(info["score"])
-                    if "correct" in info:
-                        result_entry["correct"] = bool(info["correct"])
+
+            info = results.info[i]
+            if isinstance(info, dict):
+                if "score" in info:
+                    result_entry["score"] = float(info["score"])
+                if "correct" in info:
+                    result_entry["correct"] = bool(info["correct"])
+
             sample_results.append(result_entry)
 
         push_eval_to_env_hub(
             eval_name=eval_name,
             model_name=model,
-            dataset=env,
+            environment_id=env,
             metrics=metrics,
             metadata=metadata,
             results=sample_results,
@@ -582,6 +380,121 @@ def parse_env_spec(spec: str) -> tuple[str, dict]:
         raise ValueError(f"Environment spec must include 'id': {spec}")
 
     return env_id, config
+
+
+def extract_env_config_new_format(
+    env_configs: dict[str, dict],
+) -> tuple[
+    dict[str, int],
+    dict[str, int],
+    dict[str, int],
+    dict[str, str],
+    dict[str, dict],
+    dict[str, dict],
+]:
+    """Extract per-environment configuration from new [env.X] format."""
+    num_examples_per_env = {}
+    rollouts_per_env = {}
+    max_concurrent_per_env = {}
+    models_per_env = {}
+    sampling_args_per_env = {}
+    env_args_dict = {}
+
+    sampling_keys = {
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+    }
+
+    for env_id, env_config in env_configs.items():
+        if not isinstance(env_config, dict):
+            continue
+
+        if "num_examples" in env_config:
+            num_examples_per_env[env_id] = env_config["num_examples"]
+        if "rollouts_per_example" in env_config:
+            rollouts_per_env[env_id] = env_config["rollouts_per_example"]
+        if "max_concurrent" in env_config:
+            max_concurrent_per_env[env_id] = env_config["max_concurrent"]
+        if "model" in env_config:
+            models_per_env[env_id] = env_config["model"]
+
+        # Extract sampling args
+        env_sampling = {k: v for k, v in env_config.items() if k in sampling_keys}
+        if env_sampling:
+            sampling_args_per_env[env_id] = env_sampling
+
+        # Filter out script-level args from environment init args
+        reserved_keys = {
+            "num_examples",
+            "rollouts_per_example",
+            "max_concurrent",
+            "model",
+            "save_to_env_hub",
+            "save_dataset",
+            "save_to_hf_hub",
+            "verbose",
+            "eval_name",
+            "api_key_var",
+            "api_base_url",
+        } | sampling_keys
+        env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
+        if env_args:
+            env_args_dict[env_id] = env_args
+
+    return (
+        num_examples_per_env,
+        rollouts_per_env,
+        max_concurrent_per_env,
+        models_per_env,
+        sampling_args_per_env,
+        env_args_dict,
+    )
+
+
+def extract_env_config_legacy_format(
+    config: dict,
+) -> tuple[
+    dict[str, int],
+    dict[str, int],
+    dict[str, int],
+    dict[str, str],
+    dict[str, dict],
+    dict[str, dict],
+]:
+    """Extract per-environment configuration from legacy format."""
+    return (
+        config.get("num_examples_per_env", {}),
+        config.get("rollouts_per_example_per_env", {}),
+        config.get("max_concurrent_per_env", {}),
+        config.get("models_per_env", {}),
+        config.get("sampling_args_per_env", {}),
+        config.get("environment_args", config.get("env_args_per_env", {})),
+    )
+
+
+def merge_env_spec_configs(
+    env_spec_configs: dict[str, dict],
+    num_examples_per_env: dict[str, int],
+    rollouts_per_env: dict[str, int],
+    max_concurrent_per_env: dict[str, int],
+    sampling_args_per_env: dict[str, dict],
+) -> None:
+    """Merge CLI --env spec configs into per-environment dicts (in-place)."""
+    for env_id, env_config in env_spec_configs.items():
+        if "num_examples" in env_config:
+            num_examples_per_env[env_id] = env_config["num_examples"]
+        if "rollouts_per_example" in env_config:
+            rollouts_per_env[env_id] = env_config["rollouts_per_example"]
+        if "max_concurrent" in env_config:
+            max_concurrent_per_env[env_id] = env_config["max_concurrent"]
+        if "temperature" in env_config:
+            if env_id not in sampling_args_per_env:
+                sampling_args_per_env[env_id] = {}
+            sampling_args_per_env[env_id]["temperature"] = env_config["temperature"]
 
 
 def main():
@@ -860,78 +773,41 @@ Examples:
     # Extract per-environment overrides from config (supports new [env.X] and legacy *_per_env formats)
     env_configs = config.get("env", {})
 
-    num_examples_per_env = {}
-    rollouts_per_env = {}
-    max_concurrent_per_env = {}
-    models_per_env = {}
-    sampling_args_per_env = {}
-    env_args_dict_from_config = {}
-
     # Parse new [env.X] format
-    for env_id, env_config in env_configs.items():
-        if isinstance(env_config, dict):
-            if "num_examples" in env_config:
-                num_examples_per_env[env_id] = env_config["num_examples"]
-            if "rollouts_per_example" in env_config:
-                rollouts_per_env[env_id] = env_config["rollouts_per_example"]
-            if "max_concurrent" in env_config:
-                max_concurrent_per_env[env_id] = env_config["max_concurrent"]
-            if "model" in env_config:
-                models_per_env[env_id] = env_config["model"]
-
-            # Sampling args
-            sampling_keys = {
-                "temperature",
-                "max_tokens",
-                "top_p",
-                "top_k",
-                "min_p",
-                "repetition_penalty",
-            }
-            env_sampling = {k: v for k, v in env_config.items() if k in sampling_keys}
-            if env_sampling:
-                sampling_args_per_env[env_id] = env_sampling
-
-            # Filter out script-level args from environment init args
-            reserved_keys = {
-                "num_examples",
-                "rollouts_per_example",
-                "max_concurrent",
-                "model",
-                "save_to_env_hub",
-                "save_dataset",
-                "save_to_hf_hub",
-                "verbose",
-                "eval_name",
-                "api_key_var",
-                "api_base_url",
-            } | sampling_keys
-            env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
-            if env_args:
-                env_args_dict_from_config[env_id] = env_args
+    (
+        num_examples_per_env,
+        rollouts_per_env,
+        max_concurrent_per_env,
+        models_per_env,
+        sampling_args_per_env,
+        env_args_dict_from_config,
+    ) = extract_env_config_new_format(env_configs)
 
     # Merge with legacy format (legacy takes precedence if both exist)
-    num_examples_per_env.update(config.get("num_examples_per_env", {}))
-    rollouts_per_env.update(config.get("rollouts_per_example_per_env", {}))
-    max_concurrent_per_env.update(config.get("max_concurrent_per_env", {}))
-    models_per_env.update(config.get("models_per_env", {}))
-    sampling_args_per_env.update(config.get("sampling_args_per_env", {}))
-    env_args_dict_from_config.update(
-        config.get("environment_args", config.get("env_args_per_env", {}))
-    )
+    (
+        legacy_num_examples,
+        legacy_rollouts,
+        legacy_concurrent,
+        legacy_models,
+        legacy_sampling,
+        legacy_env_args,
+    ) = extract_env_config_legacy_format(config)
+
+    num_examples_per_env.update(legacy_num_examples)
+    rollouts_per_env.update(legacy_rollouts)
+    max_concurrent_per_env.update(legacy_concurrent)
+    models_per_env.update(legacy_models)
+    sampling_args_per_env.update(legacy_sampling)
+    env_args_dict_from_config.update(legacy_env_args)
 
     # Merge CLI --env spec configs (they override config file)
-    for env_id, env_config in env_spec_configs.items():
-        if "num_examples" in env_config:
-            num_examples_per_env[env_id] = env_config["num_examples"]
-        if "rollouts_per_example" in env_config:
-            rollouts_per_env[env_id] = env_config["rollouts_per_example"]
-        if "max_concurrent" in env_config:
-            max_concurrent_per_env[env_id] = env_config["max_concurrent"]
-        if "temperature" in env_config:
-            if env_id not in sampling_args_per_env:
-                sampling_args_per_env[env_id] = {}
-            sampling_args_per_env[env_id]["temperature"] = env_config["temperature"]
+    merge_env_spec_configs(
+        env_spec_configs,
+        num_examples_per_env,
+        rollouts_per_env,
+        max_concurrent_per_env,
+        sampling_args_per_env,
+    )
 
     # Handle env_args from CLI
     if args.env_args:

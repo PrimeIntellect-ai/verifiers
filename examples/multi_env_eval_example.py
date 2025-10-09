@@ -165,7 +165,7 @@ async def example_with_env_hub():
         push_eval_to_env_hub(
             eval_name=f"{model.replace('/', '-')}-{env_name}",
             model_name=model,
-            dataset=env_name,
+            environment_id=env_name,
             metrics=metrics,
             metadata=metadata,
         )

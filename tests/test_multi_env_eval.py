@@ -269,7 +269,7 @@ class TestPrimeHubIntegration:
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
-                dataset="gsm8k",
+                environment_id="gsm8k",
                 metrics={"avg_reward": 0.85, "num_samples": 100},
                 metadata={"timestamp": "2025-10-03T12:00:00Z"},
             )
@@ -303,7 +303,7 @@ class TestPrimeHubIntegration:
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
-                dataset="gsm8k",
+                environment_id="gsm8k",
                 metrics={"avg_reward": 0.5},
                 metadata={},
                 results=results,
@@ -321,7 +321,7 @@ class TestPrimeHubIntegration:
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
-                dataset="gsm8k",
+                environment_id="gsm8k",
                 metrics={"avg_reward": 0.85},
                 metadata={},
             )
@@ -336,7 +336,7 @@ class TestPrimeHubIntegration:
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
-                dataset="gsm8k",
+                environment_id="gsm8k",
                 metrics={"avg_reward": 0.85},
                 metadata={},
             )
@@ -356,7 +356,7 @@ class TestPrimeHubIntegration:
             push_eval_to_env_hub(
                 eval_name="test-eval",
                 model_name="gpt-4o-mini",
-                dataset="gsm8k",
+                environment_id="gsm8k",
                 metrics={"avg_reward": 0.85},
                 metadata={},
             )
