@@ -44,21 +44,22 @@ def push_eval_to_env_hub(
     framework: str = "verifiers",
 ) -> dict[str, Any] | None:
     try:
-        from prime_cli.api.evals import EvalsClient, EvalsAPIError
+        from prime_evals import APIClient, EvalsClient, EvalsAPIError
 
-        client = EvalsClient()
+        api_client = APIClient()
+        client = EvalsClient(api_client)
 
-        # Try to load environment metadata from local .prime-cli.json file
+        # Try to load environment metadata from local .env-metadata.json file
         env_id_to_use = None
         version_id_to_use = version_id
 
-        # Look for .prime-cli.json in the environment directory
+        # Look for .env-metadata.json in the environment directory
         env_dir = (
             Path(__file__).parent.parent.parent
             / "environments"
             / dataset.replace("-", "_")
         )
-        hub_metadata_file = env_dir / ".prime-cli.json"
+        hub_metadata_file = env_dir / ".env-metadata.json"
 
         if hub_metadata_file.exists():
             try:
@@ -170,7 +171,7 @@ def push_eval_to_env_hub(
 
     except ImportError:
         logger.warning(
-            "prime-cli not found. Install with: pip install prime-cli\n"
+            "prime-evals not found. Install with: pip install prime-evals\n"
             "Skipping push to Prime Hub."
         )
     except Exception as e:
@@ -715,19 +716,19 @@ Examples:
         help="Sampling arguments as JSON object. Example: '{\"enable_thinking\": false}'",
     )
     parser.add_argument(
-        "--verbose", "-v", default=False, action="store_true", help="Verbose output"
+        "--verbose", "-v", default=None, action="store_true", help="Verbose output"
     )
     parser.add_argument(
         "--save-dataset",
         "-s",
-        default=False,
+        default=None,
         action="store_true",
         help="Save dataset to disk",
     )
     parser.add_argument(
         "--save-to-hf-hub",
         "-H",
-        default=False,
+        default=None,
         action="store_true",
         help="Save dataset to Hugging Face Hub",
     )
@@ -741,10 +742,10 @@ Examples:
     parser.add_argument(
         "--save-to-env-hub",
         "-P",
-        default=False,
+        default=None,
         action="store_true",
         help=(
-            "Save evaluation results to Prime Hub (requires prime-cli). "
+            "Save evaluation results to Prime Hub (requires prime-evals). "
             "NOTE: The environment must be pushed to Prime Hub first."
         ),
     )
@@ -759,6 +760,35 @@ Examples:
     config = {}
     if args.config:
         config = load_config_file(args.config)
+
+        # Merge config values with CLI args (CLI takes precedence)
+        args.save_to_env_hub = (
+            args.save_to_env_hub
+            if args.save_to_env_hub is not None
+            else config.get("save_to_env_hub", False)
+        )
+        args.save_dataset = (
+            args.save_dataset
+            if args.save_dataset is not None
+            else config.get("save_dataset", False)
+        )
+        args.save_to_hf_hub = (
+            args.save_to_hf_hub
+            if args.save_to_hf_hub is not None
+            else config.get("save_to_hf_hub", False)
+        )
+        args.verbose = (
+            args.verbose if args.verbose is not None else config.get("verbose", False)
+        )
+        args.eval_name = args.eval_name or config.get("eval_name")
+        args.hf_hub_dataset_name = args.hf_hub_dataset_name or config.get(
+            "hf_hub_dataset_name", ""
+        )
+    else:
+        args.save_to_env_hub = args.save_to_env_hub or False
+        args.save_dataset = args.save_dataset or False
+        args.save_to_hf_hub = args.save_to_hf_hub or False
+        args.verbose = args.verbose or False
 
     envs = []
     env_spec_configs = {}
@@ -862,12 +892,17 @@ Examples:
             if env_sampling:
                 sampling_args_per_env[env_id] = env_sampling
 
-            # Environment-specific init args (everything else)
+            # Filter out script-level args from environment init args
             reserved_keys = {
                 "num_examples",
                 "rollouts_per_example",
                 "max_concurrent",
                 "model",
+                "save_to_env_hub",
+                "save_dataset",
+                "save_to_hf_hub",
+                "verbose",
+                "eval_name",
             } | sampling_keys
             env_args = {k: v for k, v in env_config.items() if k not in reserved_keys}
             if env_args:
@@ -950,9 +985,11 @@ Examples:
     logger.info(
         f"Evaluating {len(envs)} environment{'s' if len(envs) > 1 else ''}: {', '.join(envs)}"
     )
+    if len(envs) > 1:
+        logger.info("Running evaluations in parallel...")
 
     async def run_multi_model_eval():
-        all_results = {}
+        tasks = []
         for idx, env in enumerate(envs):
             env_model = model_list[idx]
             env_sampling = (
@@ -961,7 +998,7 @@ Examples:
                 else default_sampling_args
             )
 
-            result = await eval_environment_async(
+            task = eval_environment_async(
                 env=env,
                 env_args=env_args_dict.get(env, {}),
                 client=client,
@@ -971,7 +1008,14 @@ Examples:
                 max_concurrent=max_concurrent_list[idx],
                 sampling_args=env_sampling,
             )
-            all_results[result[0]] = result[1]
+            tasks.append(task)
+
+        results = await asyncio.gather(*tasks)
+
+        all_results = {}
+        for env_name, env_result in results:
+            all_results[env_name] = env_result
+
         return all_results
 
     results_dict = asyncio.run(run_multi_model_eval())

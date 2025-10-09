@@ -46,7 +46,7 @@ def main(args):
         logging_steps=1,
         save_only_model=True,
         log_on_each_node=True,
-        push_to_env_hub=True,
+        push_to_hub=True,
         hub_model_id=args.name_to_save,
     )
 

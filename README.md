@@ -196,7 +196,7 @@ See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for
 vf-eval --config eval_config.toml --save-to-env-hub
 ```
 
-Requires `prime-cli` installed and authenticated. See [Environments Hub docs](https://docs.primeintellect.ai/tutorials-environments/environments).
+Requires `prime-evals` installed and authenticated. Install with `pip install prime-evals` or `uv pip install prime-evals`.
 
 You can also use multi-environment evaluation programmatically:
 

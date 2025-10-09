@@ -71,7 +71,7 @@ envs = [
     "brave-search",
     "nltk",
     "textarena",
-    #"prime"
+    "prime-evals>=0.1.0",
 ]
 all = [
     "torch>=2.7.0",
@@ -89,6 +89,7 @@ all = [
     "brave-search",
     "nltk",
     "textarena",
+    "prime-evals>=0.1.0",
 ]
 docs = [
     "sphinx",
