@@ -90,7 +90,7 @@ uv run vf-install environment-name # -p /path/to/environments (defaults to "./en
 
 To install an Environment module from this repo's `environments` folder, do:
 ```bash
-uv run vf-install math-python --from-repo # -b branch_or_commit (defaults to "main")
+uv run vf-install wordle --from-repo # -b branch_or_commit (defaults to "main")
 ```
 
 Once an Environment module is installed, you can create an instance of the Environment using `load_environment`, passing any necessary args:
@@ -115,10 +115,10 @@ For quick evaluations with global settings applied to all environments:
 
 ```bash
 # Single environment
-vf-eval gsm8k --num-examples 10 --model gpt-4o
+uv run vf-eval gsm8k --num-examples 10 --model gpt-4o
 
-# Multiple environments with shared settings
-vf-eval gsm8k math500 --num-examples 100 --model gpt-4o-mini --temperature 0.7
+# Multiple environments with shared settings  
+uv run vf-eval gsm8k wordle --num-examples 100 --model gpt-4o-mini --temperature 0.7
 ```
 
 #### Per-Environment CLI Configuration
@@ -127,14 +127,14 @@ For different settings per environment without a config file:
 
 ```bash
 # Different num_examples and rollouts per environment
-vf-eval --env id=gsm8k,num_examples=100 \
-        --env id=math500,num_examples=50,rollouts_per_example=5 \
-        --model gpt-4o
+uv run vf-eval --env id=gsm8k,num_examples=100 \
+               --env id=wordle,num_examples=50,rollouts_per_example=5 \
+               --model gpt-4o
 
 # Different temperatures per environment
-vf-eval --env id=gsm8k,temperature=0.9 \
-        --env id=aime2024,temperature=0.7,rollouts_per_example=10 \
-        --model gpt-4o --save-to-env-hub
+uv run vf-eval --env id=gsm8k,temperature=0.9 \
+               --env id=gpqa,temperature=0.7,rollouts_per_example=10 \
+               --model gpt-4o --save-to-env-hub
 ```
 
 The `--env` flag supports: `id`, `num_examples`, `rollouts_per_example`, `max_concurrent`, `temperature`, and other JSON-compatible values.
@@ -145,7 +145,7 @@ For per-environment customization, use a TOML or JSON config file:
 
 ```toml
 # eval_config.toml
-environment_ids = ["gsm8k", "math500"]
+environment_ids = ["gsm8k", "wordle"]
 
 # Global defaults
 num_examples = 10
@@ -153,28 +153,18 @@ rollouts_per_example = 3
 max_concurrent = 32
 
 [model]
-name = "gpt-4o-mini"
+name = "gpt-5"
 
 [sampling]
 temperature = 0.7
 max_tokens = 2048
 
 # Per-environment overrides
-# Per-environment: group all settings together
-[env.gsm8k]
-num_examples = 100
-rollouts_per_example = 5
-model = "gpt-4o"
-temperature = 0.9
-max_tokens = 512
-difficulty = "hard"  # env-specific init arg
-
-[env.math500]
+[env.wordle]
 num_examples = 50
 rollouts_per_example = 3
-model = "claude-3-opus"
 temperature = 0.5
-level = "competition"  # env-specific init arg
+use_think = true  # env-specific init arg
 ```
 
 Run with:
@@ -208,8 +198,8 @@ from verifiers.scripts.eval import eval_environments_parallel
 client = AsyncOpenAI(api_key="...", base_url="http://localhost:8000/v1")
 
 results = await eval_environments_parallel(
-    envs=["gsm8k", "math500"],
-    env_args_dict={"gsm8k": {}, "math500": {}},
+    envs=["gsm8k", "wordle"],
+    env_args_dict={"gsm8k": {}, "wordle": {}},
     client=client,
     model="gpt-4o-mini",
     num_examples=[100, 50],

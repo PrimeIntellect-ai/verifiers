@@ -563,21 +563,21 @@ Examples:
         "--model",
         "-m",
         type=str,
-        default="gpt-4.1-mini",
+        default=None,
         help="Name of model to evaluate (global default)",
     )
     parser.add_argument(
         "--api-key-var",
         "-k",
         type=str,
-        default="OPENAI_API_KEY",
+        default=None,
         help="Environment variable name for API key",
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
-        default="https://api.openai.com/v1",
+        default=None,
         help="Base URL for API",
     )
     parser.add_argument(
