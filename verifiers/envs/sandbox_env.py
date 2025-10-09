@@ -6,16 +6,16 @@ from typing import Any
 import verifiers as vf
 
 try:
-    from prime_cli.api.client import APIClient
-    from prime_cli.api.sandbox import (  # type: ignore[import-untyped]
+    from prime_sandboxes import (
         AdvancedConfigs,
+        APIClient,
         AsyncSandboxClient,
         CreateSandboxRequest,
         SandboxClient,
     )
 except ImportError:
     raise ImportError(
-        "prime-cli is not installed. Please install it with `uv pip install prime`."
+        "prime-sandboxes is not installed. Please install it with `uv pip install prime-sandboxes`."
     )
 
 

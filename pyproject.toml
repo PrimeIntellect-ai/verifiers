@@ -11,7 +11,7 @@ dynamic = ["version"]  # load from verifiers/__init__.py
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -37,6 +37,7 @@ dependencies = [
     "rich",
     "textual",
     "pydantic>=2.11.9",
+    "prime-sandboxes>=0.1.0",
 ]
 
 [dependency-groups]
@@ -71,7 +72,6 @@ envs = [
     "brave-search",
     "nltk",
     "textarena",
-    "prime"
 ]
 all = [
     "torch>=2.7.0",

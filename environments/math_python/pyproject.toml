@@ -1,13 +1,12 @@
 [project]
 name = "math-python"
 description = "Solve math problems using Python in a sandbox environment"
-tags = ["tool-use", "math", "sandbox", "train"]
-version = "0.1.3"
+tags = ["tool-use", "math", "sandbox", "train", "prime-sandboxes", "python", "coding"]
+version = "0.1.5"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.5",
+    "verifiers>=0.1.5.post0",
     "math-verify>=0.8.0",
-    "prime>=0.3.34",
 ]
 
 [build-system]
