@@ -40,7 +40,7 @@ git clone https://github.com/PrimeIntellect-ai/verifiers.git
 cd verifiers
 
 # CPU-only development:
-uv sync --extra dev
+uv sync
 
 # GPU-based trainer development:
 uv sync --all-extras && uv pip install flash-attn --no-build-isolation

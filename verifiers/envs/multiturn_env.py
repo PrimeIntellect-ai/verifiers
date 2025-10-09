@@ -1,7 +1,8 @@
+import logging
 import time
 from abc import abstractmethod
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 from verifiers.envs.environment import Environment
 from verifiers.types import (
@@ -14,6 +15,8 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_await
+
+logger = logging.getLogger("verifiers.envs.multiturn_env")
 
 
 class MultiTurnEnv(Environment):
@@ -91,27 +94,20 @@ class MultiTurnEnv(Environment):
             if await maybe_await(self.is_completed, rollout, state, **kwargs):
                 is_completed = True
                 break
-            try:
-                response = await self.get_model_response(
-                    client=client,
-                    model=model,
-                    prompt=rollout,
-                    oai_tools=info.get("oai_tools", None),
-                    sampling_args=sampling_args,
-                    message_type=self.message_type,
-                )
-                state["responses"].append(response)
-            # In case of requesting a too-long completion, e.g from a too-long
-            # environment response, we set the prompt_too_long flag to True, which
-            # will trigger the is_completed check to exit.
-            except BadRequestError as e:
-                if len(state["responses"]) != 0 and e.response.text.startswith(
-                    '{"error":{"message":"This model\'s maximum context length is'
-                ):
-                    state["prompt_too_long"] = True
-                    break
-                else:
-                    raise e
+            response = await self.get_model_response(
+                client,
+                model,
+                rollout,
+                oai_tools=info.get("oai_tools", None),
+                sampling_args=sampling_args,
+                message_type=self.message_type,
+                initial_prompt=len(state["responses"]) == 0,
+                **kwargs,
+            )
+            if response is not None and response.id == "overlong-prompt":
+                state["prompt_too_long"] = True
+                break
+            state["responses"].append(response)
             if self.message_type == "chat":
                 assert isinstance(rollout, list)
                 assert isinstance(completion, list)

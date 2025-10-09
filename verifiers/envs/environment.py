@@ -6,7 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import TYPE_CHECKING, Literal, Union
 from datasets import Dataset
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI, BadRequestError, OpenAI
+
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -25,8 +26,12 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-from verifiers.utils.message_utils import cleanup_messages, sanitize_tool_calls
 from verifiers.utils.processor_utils import encode_text_with_processor, encode_chat_with_processor
+from verifiers.utils.message_utils import (
+    cleanup_messages,
+    get_overlong_prompt_dummy_response,
+    sanitize_tool_calls,
+)
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
@@ -272,6 +277,15 @@ class Environment(ABC):
                 )
                 return response
         except Exception as e:
+            # In case of making a request with an overlong prompt, e.g from a too-long
+            # environment response, we return a dummy response to with finish_reason "length"
+            if isinstance(e, BadRequestError) and e.response.text.startswith(
+                '{"error":{"message":"This model\'s maximum context length is'
+            ):
+                self.logger.debug("Caught overlong prompt.")
+                return get_overlong_prompt_dummy_response(
+                    message_type or self.message_type
+                )
             self.logger.error(f"Error getting model response: {e} \n\nExiting...")
             raise e
 
@@ -694,7 +708,7 @@ class Environment(ABC):
         if rollouts_per_example > 1:
             average_reward = []
             for i in range(0, len(results.reward), rollouts_per_example):
-                chunk = results.reward[i:i + rollouts_per_example]
+                chunk = results.reward[i : i + rollouts_per_example]
                 avg = sum(chunk) / len(chunk)
                 average_reward.extend([avg] * rollouts_per_example)
         else:

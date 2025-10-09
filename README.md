@@ -57,24 +57,19 @@ uv add 'verifiers[train]' && uv pip install flash-attn --no-build-isolation
 
 To use the latest `main` branch, do:
 ```bash
-uv add verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git
+uv add verifiers@git+https://github.com/PrimeIntellect-ai/verifiers.git
 ```
 
 To use with `prime-rl`, see [here](https://github.com/PrimeIntellect-ai/prime-rl).
 
-To install `verifiers` from source for core library development, do:
+To install `verifiers` from source for core library development, install with:
 ```bash
-git clone https://github.com/PrimeIntellect-ai/verifiers.git
-cd verifiers
+curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash
+```
 
-# for CPU-only dev:
-uv sync --extra dev
-
-# or, for trainer dev:
+If you want to dev with the trainer, do:
+```bash
 uv sync --all-extras && uv pip install flash-attn --no-build-isolation
-
-# install pre-commit hooks
-uv run pre-commit install
 ```
 
 In general, we recommend that you build and train Environments *with* `verifiers`, not *in* `verifiers`. If you find yourself needing to clone and modify the core library in order to implement key functionality for your project, we'd love for you to open an issue so that we can try and streamline the development experience. Our aim is for `verifiers` to be a reliable toolkit to build on top of, and to minimize the "fork proliferation" which often pervades the RL infrastructure ecosystem.

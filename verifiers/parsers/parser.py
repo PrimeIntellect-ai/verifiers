@@ -10,7 +10,7 @@ class Parser:
 
     Default behavior:
     - `parse` returns text as-is
-    - `get_final_answer` returns the last message's content (or text if string)
+    - `parse_answer` returns the last message's content (or text if string)
     """
 
     def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):

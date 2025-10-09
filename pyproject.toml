@@ -72,7 +72,7 @@ envs = [
     "brave-search",
     "nltk",
     "textarena",
-    #"prime"
+    "prime"
 ]
 all = [
     "torch>=2.7.0",
