@@ -92,28 +92,27 @@ class Generator:
         self.is_generating = False
         self.worker_loop = None
 
-        if self.max_prompt_len is not None:
-            max_length = self.max_prompt_len
-            assert env.dataset is not None
+        max_length = self.max_prompt_len
+        assert env.dataset is not None
 
-            def filter_by_prompt_length(example, processing_class):
-                prompt = example["prompt"]
-                if isinstance(prompt, list):
-                    prompt_text = processing_class.apply_chat_template(
-                        prompt, tokenize=False, add_generation_prompt=True
-                    )
-                else:
-                    prompt_text = prompt
-                prompt_ids = processing_class.encode(prompt_text)
-                return len(prompt_ids) <= max_length
+        def filter_by_prompt_length(example, processing_class):
+            prompt = example["prompt"]
+            if isinstance(prompt, list):
+                prompt_text = processing_class.apply_chat_template(
+                    prompt, tokenize=False, add_generation_prompt=True
+                )
+            else:
+                prompt_text = prompt
+            prompt_ids = processing_class.encode(prompt_text)
+            return len(prompt_ids) <= max_length
 
-            env.dataset = env.dataset.filter(
-                filter_by_prompt_length,
-                fn_kwargs={"processing_class": processing_class},
-            )
+        env.dataset = env.dataset.filter(
+            filter_by_prompt_length,
+            fn_kwargs={"processing_class": processing_class},
+        )
 
     def get_dataset_slice(self, batch_id: int) -> Dataset:
-        """Get dataset slice for a given batch id, wrapping around if necessary"""
+        """Get dataset slice for a given batch id"""
         num_rows = self.prompts_per_batch
         offset = batch_id * num_rows % len(self.env.get_dataset())
         return self.env.get_dataset().select(range(offset, offset + num_rows))
@@ -141,14 +140,14 @@ class Generator:
 
         Args:
             batch_id: The batch ID to retrieve
-            timeout: Maximum time to wait (uses generation_timeout if None)
+            timeout: Maximum time to wait
 
         Returns:
             BatchResult: The completed batch result
 
         Raises:
-            TimeoutError: If batch doesn't complete within timeout
-            RuntimeError: If generation failed
+            TimeoutError: batch doesn't complete within timeout
+            RuntimeError: generation failed
         """
         timeout = self.generation_timeout
         start_time = time.time()
@@ -183,7 +182,7 @@ class Generator:
             while not self.stop_event.is_set():
                 try:
                     batch_id = self.request_queue.get(timeout=0.1)
-                    if batch_id is None:  # Poison pill
+                    if batch_id is None:  # poison pill
                         break
                     result = loop.run_until_complete(self.generate_batch(batch_id))
                     self.result_queue.put(result)
@@ -193,8 +192,7 @@ class Generator:
                     self.logger.error(f"Error in generation worker: {e}")
                     raise e
         finally:
-            if self.client:
-                loop.run_until_complete(self.client.close())
+            loop.run_until_complete(self.client.close())
             loop.close()
             asyncio.set_event_loop(None)
 
@@ -237,12 +235,10 @@ class Generator:
         prompts_seq = env_results.prompt
         advantages: list[float] = [0.0] * len(rewards)
         if self.scale_rewards == "batch":
-            if rewards:
-                mean_r = sum(rewards) / float(len(rewards))
-                for i, r in enumerate(rewards):
-                    advantages[i] = r - mean_r
+            mean_r = sum(rewards) / float(len(rewards))
+            for i, r in enumerate(rewards):
+                advantages[i] = r - mean_r
         else:
-            #
             start = 0
             for i in range(1, len(rewards) + 1):
                 end_group = False

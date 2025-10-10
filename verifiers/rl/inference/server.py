@@ -4,55 +4,29 @@ import signal
 from argparse import Namespace
 from typing import Sequence
 
-try:
-    import torch  # type: ignore
-except ImportError:
-    print("torch is not installed. Please install it with `uv pip install torch`.")
-    exit(1)
-
-try:
-    import uvloop  # type: ignore
-except ImportError:
-    print("uvloop is not installed. Please install it with `uv pip install uvloop`.")
-    exit(1)
-
-try:
-    from fastapi import Request  # type: ignore
-except ImportError:
-    print("fastapi is not installed. Please install it with `uv pip install fastapi`.")
-    exit(1)
-
-try:
-    from vllm.distributed.device_communicators.pynccl import (  # type: ignore
-        PyNcclCommunicator,
-    )
-    from vllm.distributed.parallel_state import get_world_group  # type: ignore
-    from vllm.distributed.utils import StatelessProcessGroup  # type: ignore
-    from vllm.engine.arg_utils import AsyncEngineArgs  # type: ignore
-    from vllm.engine.async_llm_engine import AsyncLLMEngine  # type: ignore
-    from vllm.entrypoints.launcher import serve_http  # type: ignore
-    from vllm.entrypoints.openai.api_server import (  # type: ignore
-        build_app,
-        create_server_socket,
-        init_app_state,
-    )
-    from vllm.entrypoints.openai.cli_args import (  # type: ignore
-        make_arg_parser,
-        validate_parsed_serve_args,
-    )
-    from vllm.usage.usage_lib import UsageContext  # type: ignore
-    from vllm.utils import FlexibleArgumentParser, set_ulimit  # type: ignore
-except ImportError:
-    print("vLLM is not installed. Please install it with `pip install vllm`.")
-    exit(1)
+import torch
+import uvloop
+from fastapi import Request
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+from vllm.distributed.parallel_state import get_world_group
+from vllm.distributed.utils import StatelessProcessGroup
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.entrypoints.launcher import serve_http
+from vllm.entrypoints.openai.api_server import (
+    build_app,
+    create_server_socket,
+    init_app_state,
+)
+from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.usage.usage_lib import UsageContext
+from vllm.utils import FlexibleArgumentParser, set_ulimit
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-# Weight update throttling
+
 MAX_CONCURRENT_WEIGHT_UPDATES = 10
 weight_update_semaphore = asyncio.Semaphore(MAX_CONCURRENT_WEIGHT_UPDATES)
-
-# Track background tasks for cleanup
 background_tasks = set()
 
 
@@ -65,25 +39,11 @@ class WeightSyncWorkerExtension:
     from a client process and distribute them to all worker processes participating in model inference.
     """
 
-    pynccl_comm = None  # Communicator for weight updates
-    client_rank = None  # Source rank for broadcasting updated weights
-    device = None  # Device to use for weight updates
+    pynccl_comm = None  # communicator for weight updates
+    client_rank = None  # source rank for broadcasting updated weights
+    device = None  # device to use for weight updates
 
     def init_communicator(self, host: str, port: int, world_size: int) -> None:
-        """
-        Initializes the weight update communicator using a stateless process group.
-
-        This method creates a `StatelessProcessGroup` that allows external training processes to
-        communicate with vLLM workers without interfering with the global torch distributed group.
-
-        Args:
-            host (`str`):
-                Hostname or IP address of the master node.
-            port (`int`):
-                Port number to be used for communication.
-            world_size (`int`):
-                Total number of participating processes in the update group.
-        """
         if self.pynccl_comm is not None:
             raise RuntimeError(
                 "Weight update group already initialized. Call close_communicator first."
@@ -98,17 +58,6 @@ class WeightSyncWorkerExtension:
         self.client_rank = world_size - 1
 
     def update_named_param(self, name: str, dtype: str, shape: Sequence[int]) -> None:
-        """
-        Receives updated weights from the client process and updates the named parameter in the model.
-
-        Args:
-            name (`str`):
-                Name of the weight tensor being updated.
-            torch_dtype (`str`):
-                Data type of the weight tensor (e.g., `torch.float32`).
-            shape (`Sequence[int]`):
-                Shape of the weight tensor.
-        """
         if self.pynccl_comm is None:
             raise RuntimeError(
                 "Communicator not initialized. Call `init_communicator` first."
@@ -121,16 +70,10 @@ class WeightSyncWorkerExtension:
         self.model_runner.model.load_weights(weights=[(name, weight)])  # type: ignore
 
     def close_communicator(self) -> None:
-        """
-        Closes the communicator when weight synchronization is no longer needed.
-
-        This method deletes the NCCL communicator to release associated resources.
-        """
-
         if self.pynccl_comm is not None:
             del self.pynccl_comm
-            self.pynccl_comm = None  # Ensure attribute is reset to None
-            self.client_rank = None  # Ensure attribute is reset to None
+            self.pynccl_comm = None
+            self.client_rank = None
 
 
 async def run_server(args: Namespace):
@@ -153,7 +96,7 @@ async def run_server(args: Namespace):
 
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine_args.worker_extension_cls = (
-        "verifiers.rl.inference.vllm_server.WeightSyncWorkerExtension"
+        "verifiers.rl.inference.server.WeightSyncWorkerExtension"
     )
     engine = AsyncLLMEngine.from_engine_args(
         engine_args, usage_context=UsageContext.OPENAI_API_SERVER
@@ -162,16 +105,10 @@ async def run_server(args: Namespace):
 
     @app.get("/health")
     async def health():
-        """
-        Health check endpoint to verify that the server is running.
-        """
         return {"status": "ok"}
 
     @app.get("/get_world_size")
     async def get_world_size():
-        """
-        Retrieves the world size of the LLM engine, which is `tensor_parallel_size * data_parallel_size`.
-        """
         return {"world_size": args.tensor_parallel_size * args.data_parallel_size}
 
     @app.post("/init_communicator")
@@ -187,18 +124,6 @@ async def run_server(args: Namespace):
 
     @app.post("/update_named_param")
     async def update_named_param(request: Request):
-        """
-        Updates the model weights with the provided tensor.
-
-        Once this endpoint is called, the client process should broadcast the updated weights to all server workers.
-
-        Args:
-            request (`UpdateWeightsRequest`):
-                - `name` (`str`): Name of the weight tensor being updated.
-                - `dtype` (`str`): Data type of the weight tensor (e.g., `"torch.float32"`).
-                - `shape` (list of `int`): Shape of the weight
-
-        """
         data = await request.json()
         name = data.get("name")
         dtype = data.get("dtype")
@@ -227,7 +152,6 @@ async def run_server(args: Namespace):
 
     @app.post("/close_communicator")
     async def close_communicator(request: Request):
-        # fire and forget
         await engine.collective_rpc("close_communicator")
         return {"status": "ok"}
 
@@ -246,7 +170,6 @@ async def run_server(args: Namespace):
     )
     await shutdown_task
 
-    # Cancel and wait for background tasks
     for task in background_tasks:
         task.cancel()
     if background_tasks:

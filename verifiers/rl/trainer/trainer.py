@@ -21,7 +21,7 @@ from transformers.trainer_callback import TrainerCallback
 
 import verifiers as vf
 import wandb
-from verifiers.rl.inference.vllm_client import VLLMClient
+from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.generator import Generator
 from verifiers.rl.trainer.utils import pad, prepare_peft_model, selective_log_softmax
@@ -421,10 +421,7 @@ class RLTrainer(Trainer):
         }  # average the metrics
 
         logs = {**logs, **metrics}
-        if start_time is not None:
-            super().log(logs, start_time)
-        else:
-            super().log(logs)
+        super().log(logs, start_time)
         self._metrics[mode].clear()
 
         if self.accelerator.is_main_process:
