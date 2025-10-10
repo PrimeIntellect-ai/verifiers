@@ -595,7 +595,189 @@ def load_math_suite(**kwargs):
     )
 ```
 
+## Tracking
+
+The tracking module provides a unified interface for experiment tracking across different backends. This allows you to switch between tracking systems or use multiple simultaneously without changing your training code.
+
+### Available Trackers
+
+#### WandbTracker
+
+Track experiments using Weights & Biases:
+
+```python
+from verifiers.tracking import WandbTracker
+
+tracker = WandbTracker(
+    project="my-project",
+    name="experiment-1",
+    entity="my-team",
+    tags=["baseline", "grpo"]
+)
+tracker.init()
+tracker.log_metrics({"accuracy": 0.95, "loss": 0.05}, step=1)
+tracker.finish()
+```
+
+#### CSVTracker
+
+Track experiments locally using CSV files:
+
+```python
+from verifiers.tracking import CSVTracker
+
+tracker = CSVTracker(
+    log_dir="./experiment_logs",
+    project="my-project",
+    name="experiment-1"
+)
+tracker.init()  # Creates log directory and config.json
+tracker.log_metrics({"accuracy": 0.95}, step=1)
+tracker.log_table("completions", {
+    "prompt": ["p1", "p2"],
+    "completion": ["c1", "c2"],
+    "reward": [0.9, 0.8]
+})
+```
+
+#### CompositeTracker
+
+Use multiple trackers simultaneously:
+
+```python
+from verifiers.tracking import CompositeTracker, WandbTracker, CSVTracker
+
+tracker = CompositeTracker([
+    WandbTracker(project="my-project"),
+    CSVTracker(log_dir="./logs")
+])
+# All operations are forwarded to both trackers
+tracker.init()
+tracker.log_metrics({"loss": 0.05}, step=1)
+```
+
+#### NullTracker
+
+No-op tracker for testing or when tracking is disabled:
+
+```python
+from verifiers.tracking import NullTracker
+
+tracker = NullTracker()  # Does nothing
+tracker.log_metrics({"loss": 0.05}, step=1)  # No-op
+```
+
+#### MLFlowTracker
+
+Track experiments using MLFlow:
+
+```python
+from verifiers.tracking import MLFlowTracker
+
+tracker = MLFlowTracker(
+    experiment_name="my-experiment",
+    run_name="run-1",
+    tracking_uri="http://localhost:5000",  # Optional
+    tags={"env": "production"}
+)
+tracker.init()
+tracker.log_metrics({"accuracy": 0.95, "loss": 0.05}, step=1)
+tracker.log_config({"learning_rate": 0.001, "batch_size": 32})
+tracker.finish()
+```
+
+#### TensorBoardTracker
+
+Track experiments using TensorBoard:
+
+```python
+from verifiers.tracking import TensorBoardTracker
+
+tracker = TensorBoardTracker(
+    log_dir="./runs",
+    comment="grpo-experiment"
+)
+tracker.init()
+tracker.log_metrics({"accuracy": 0.95, "loss": 0.05}, step=1)
+tracker.log_config({"learning_rate": 0.001})
+tracker.finish()
+```
+
+### Custom Trackers
+
+Create your own tracker by extending the base `Tracker` class:
+
+```python
+from verifiers.tracking import Tracker
+from typing import Any, Optional
+
+class MyCustomTracker(Tracker):
+    def __init__(self, endpoint: str, **kwargs):
+        super().__init__(**kwargs)
+        self.endpoint = endpoint
+
+    def init(self, **kwargs) -> None:
+        # Initialize your tracking backend
+        self._initialized = True
+
+    def log_metrics(self, metrics: dict[str, float],
+                   step: Optional[int] = None, **kwargs) -> None:
+        # Send metrics to your backend
+        requests.post(f"{self.endpoint}/metrics", json=metrics)
+
+    def log_table(self, table_name: str, data: dict[str, list[Any]],
+                 step: Optional[int] = None, **kwargs) -> None:
+        # Send table data to your backend
+        requests.post(f"{self.endpoint}/tables/{table_name}", json=data)
+
+    def log_completions(self, prompts: list[str], completions: list[str],
+                       rewards: list[float], step: Optional[int] = None,
+                       **kwargs) -> None:
+        # Log completion samples
+        data = {"prompts": prompts, "completions": completions, "rewards": rewards}
+        self.log_table("completions", data, step=step)
+
+    def log_config(self, config: dict[str, Any], **kwargs) -> None:
+        super().log_config(config)
+        requests.post(f"{self.endpoint}/config", json=config)
+
+    def finish(self, **kwargs) -> None:
+        # Clean up resources
+        pass
+```
+
+### Integration with GRPOTrainer
+
+The `GRPOTrainer` accepts a `trackers` parameter:
+
+```python
+import verifiers as vf
+
+# Option 1: Explicit trackers
+tracker = vf.CSVTracker(log_dir="./logs")
+trainer = vf.GRPOTrainer(
+    model=model,
+    env=env,
+    args=args,
+    processing_class=tokenizer,
+    trackers=[tracker]
+)
+
+# Option 2: Auto-detection from args.report_to
+args.report_to = "wandb"  # Automatically uses WandbTracker
+trainer = vf.GRPOTrainer(model=model, env=env, args=args,
+                        processing_class=tokenizer)
+```
+
 ## Best Practices
+
+### For Tracking
+- Use `CSVTracker` for local development and debugging
+- Use `WandbTracker` for team collaboration and cloud storage
+- Use `MLFlowTracker` when using MLFlow for experiment management
+- Use `TensorBoardTracker` for real-time metric visualization
+- Use `CompositeTracker` to log to multiple backends simultaneously
+- Create custom trackers for integration with internal tooling
 
 ### For Rubrics
 - Start simple with basic reward functions

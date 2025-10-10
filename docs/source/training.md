@@ -276,13 +276,60 @@ args.ds3_gather_for_generation = False  # For very large models
 args.generation_batch_size = 16  # Control generation batch size
 ```
 
+### Experiment Tracking
+
+Verifiers supports multiple experiment tracking backends through a unified abstraction layer:
+
+```python
+from verifiers.tracking import WandbTracker, CSVTracker, CompositeTracker
+
+# Option 1: Use WandbTracker explicitly
+tracker = WandbTracker(project="my-project", name="run-1")
+trainer = vf.GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    env=env,
+    args=args,
+    trackers=[tracker]
+)
+
+# Option 2: Use CSVTracker for local development
+tracker = CSVTracker(log_dir="./logs", project="my-project")
+trainer = vf.GRPOTrainer(..., trackers=[tracker])
+
+# Option 3: Use multiple trackers simultaneously
+trackers = [
+    WandbTracker(project="my-project"),
+    CSVTracker(log_dir="./logs")
+]
+trainer = vf.GRPOTrainer(..., trackers=trackers)
+
+# Option 4: Let trainer auto-detect from args.report_to
+# When trackers=None, trainer uses WandbTracker if "wandb" in args.report_to
+args.report_to = "wandb"
+trainer = vf.GRPOTrainer(...)  # Automatically uses WandbTracker
+```
+
+**Available Trackers:**
+- `WandbTracker`: Logs to Weights & Biases (requires `wandb` login)
+- `CSVTracker`: Logs metrics and tables to local CSV files
+- `MLFlowTracker`: Logs to MLFlow tracking server
+- `TensorBoardTracker`: Logs to TensorBoard event files
+- `CompositeTracker`: Combines multiple trackers
+- `NullTracker`: No-op tracker for testing
+
+**CSVTracker Output:**
+- `logs/metrics.csv`: Training metrics over time
+- `logs/completions.csv`: Sample completions and rewards
+- `logs/eval_completions.csv`: Evaluation samples
+- `logs/config.json`: Training configuration
+
 ### Monitoring
 
 ```python
 # Logging configuration
 args.logging_steps = 1
 args.log_completions = True
-args.report_to = "wandb"  # or "none" to disable
 args.num_completions_to_print = 5  # Sample size to log
 ```
 
