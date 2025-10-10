@@ -416,3 +416,91 @@ class TestRubricGroup:
 
         assert score.reward == 1.0
         assert recorded_parsers == [xml_parser]
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_mean_aggregation_score_rollout(self):
+        """Test that mean aggregation averages rewards in score_rollout."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2], aggregation="mean")
+
+        prompt = [{"role": "user", "content": "Test prompt"}]
+        completion = [{"role": "assistant", "content": "Test completion"}]
+        state = {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}
+
+        score = await group.score_rollout(prompt, completion, "answer", state)
+
+        # Reward should be (1.0 + 0.5) / 2 = 0.75
+        assert score.reward == 0.75
+        # Metrics should also be averaged
+        assert score.metrics["func1"] == 0.5  # 1.0 / 2
+        assert score.metrics["func2"] == 0.25  # 0.5 / 2
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_mean_aggregation_score_rollouts(self):
+        """Test that mean aggregation averages rewards in score_rollouts."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2], aggregation="mean")
+
+        prompts = [
+            [{"role": "user", "content": "Test 1"}],
+            [{"role": "user", "content": "Test 2"}],
+        ]
+        completions = [
+            [{"role": "assistant", "content": "Response 1"}],
+            [{"role": "assistant", "content": "Response 2"}],
+        ]
+        answers = ["answer1", "answer2"]
+        tasks = ["default", "default"]
+        infos = [{}, {}]
+        states = [
+            {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}},
+            {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}},
+        ]
+
+        scores = await group.score_rollouts(
+            prompts=prompts,
+            completions=completions,
+            answers=answers,
+            states=states,
+            tasks=tasks,
+            infos=infos,
+        )
+
+        # All rewards should be (1.0 + 0.5) / 2 = 0.75
+        assert len(scores.reward) == 2
+        assert scores.reward[0] == 0.75
+        assert scores.reward[1] == 0.75
+        # All metrics should be averaged
+        assert scores.metrics["func1"][0] == 0.5  # 1.0 / 2
+        assert scores.metrics["func1"][1] == 0.5
+        assert scores.metrics["func2"][0] == 0.25  # 0.5 / 2
+        assert scores.metrics["func2"][1] == 0.25
+
+    def test_rubric_group_invalid_aggregation_fails(self):
+        """Test that invalid aggregation method raises ValueError."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+
+        with pytest.raises(ValueError, match="aggregation must be 'sum' or 'mean'"):
+            RubricGroup(rubrics=[rubric1], aggregation="invalid")

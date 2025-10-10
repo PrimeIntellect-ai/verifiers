@@ -14,12 +14,14 @@ class RubricGroup(Rubric):
     Class for aggregating multiple rubrics.
     """
 
-    def __init__(self, rubrics: list[Rubric], **kwargs):
+    def __init__(self, rubrics: list[Rubric], aggregation: str = "sum", **kwargs):
         if not rubrics:
             raise ValueError("RubricGroup must have at least one rubric")
+        if aggregation not in ("sum", "mean"):
+            raise ValueError(f"aggregation must be 'sum' or 'mean', got '{aggregation}'")
         super().__init__(**kwargs)
         self.rubrics = rubrics
-        self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
+        self.aggregation = aggregation
 
     def get_reward_func_names(self) -> list[str]:
         names = []
@@ -69,6 +71,13 @@ class RubricGroup(Rubric):
             total_reward += score.reward
             for key, value in score.metrics.items():
                 aggregated_metrics[key] = aggregated_metrics.get(key, 0.0) + value
+
+        # Apply aggregation
+        if self.aggregation == "mean":
+            num_rubrics = len(self.rubrics)
+            total_reward = total_reward / num_rubrics
+            aggregated_metrics = {k: v / num_rubrics for k, v in aggregated_metrics.items()}
+
         return RolloutScore(reward=total_reward, metrics=aggregated_metrics)
 
     async def score_rollouts(
@@ -117,4 +126,13 @@ class RubricGroup(Rubric):
                     ]
                 else:
                     all_scores.metrics[key] = value
+
+        # Apply aggregation
+        if self.aggregation == "mean":
+            num_rubrics = len(self.rubrics)
+            all_scores.reward = [r / num_rubrics for r in all_scores.reward]
+            all_scores.metrics = {
+                k: [m / num_rubrics for m in v] for k, v in all_scores.metrics.items()
+            }
+
         return all_scores
