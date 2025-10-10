@@ -22,7 +22,17 @@ import verifiers as vf
 from verifiers.types import GenerateOutputs
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
-# Setup logger for eval script using verifiers logging format
+try:
+    from prime_evals import (
+        APIClient,
+        EvalsClient,
+        InvalidEvaluationError,
+    )
+
+    PRIME_EVALS_AVAILABLE = True
+except ImportError:
+    PRIME_EVALS_AVAILABLE = False
+
 logger = logging.getLogger("verifiers.scripts.eval")
 
 
@@ -33,14 +43,18 @@ def push_eval_to_env_hub(
     metrics: dict[str, float],
     metadata: dict[str, Any],
     results: list[dict[str, Any]] | None = None,
-    skip_env_check: bool = False,
     run_id: str | None = None,
     version_id: str | None = None,
     framework: str = "verifiers",
 ) -> dict[str, Any] | None:
-    try:
-        from prime_evals import APIClient, EvalsClient, EvalsAPIError
+    if not PRIME_EVALS_AVAILABLE:
+        logger.warning(
+            "prime-evals package not installed. "
+            "Install it with: pip install prime-evals"
+        )
+        return None
 
+    try:
         api_client = APIClient()
         client = EvalsClient(api_client)
 
@@ -70,47 +84,33 @@ def push_eval_to_env_hub(
             except Exception as e:
                 logger.debug(f"Could not load {hub_metadata_file}: {e}")
 
-        if not skip_env_check and not env_hub_id:
-            logger.debug(
-                f"Checking if environment '{environment_id}' exists on Environment Hub..."
+        try:
+            create_response = client.create_evaluation(
+                name=eval_name,
+                environment_ids=[env_hub_id] if env_hub_id else [environment_id],
+                run_id=run_id,
+                model_name=model_name,
+                framework=framework,
+                metadata=metadata,
+                metrics=metrics,
             )
-            try:
-                env_exists = client.check_environment_exists(environment_id)
-                if not env_exists:
-                    if "/" in environment_id:
-                        env_hint = f"owner/{environment_id}"
-                    else:
-                        env_hint = f"<owner>/{environment_id}"
 
-                    logger.error(
-                        f"✗ Cannot push eval: Environment '{environment_id}' not found on Environment Hub.\n"
-                        f"  Please push the environment first using one of these methods:\n"
-                        f"  1. Using verifiers: env.push_to_env_hub(hub_name='{env_hint}')\n"
-                        f"  2. Using prime CLI: prime env push {environment_id}\n"
-                        f"  3. Visit: https://app.primeintellect.ai/environments\n"
-                    )
-                    return None
-                logger.debug(
-                    f"✓ Environment '{environment_id}' found in Environment Hub"
-                )
-            except EvalsAPIError as e:
-                logger.warning(
-                    f"Could not verify environment existence: {e}\n"
-                    f"Proceeding with eval push anyway..."
-                )
-
-        create_response = client.create_evaluation(
-            name=eval_name,
-            environment_ids=[env_hub_id] if env_hub_id else [environment_id],
-            run_id=run_id,
-            model_name=model_name,
-            framework=framework,
-            metadata=metadata,
-            metrics=metrics,
-        )
-
-        evaluation_id = create_response["evaluation_id"]
-        logger.debug(f"✓ Created evaluation {evaluation_id}")
+            evaluation_id = create_response["evaluation_id"]
+            logger.debug(f"✓ Created evaluation {evaluation_id}")
+        except InvalidEvaluationError:
+            # Handle case where neither run_id nor env_hub_id is available
+            if "/" in environment_id:
+                env_hint = f"owner/{environment_id}"
+            else:
+                env_hint = f"<owner>/{environment_id}"
+            logger.error(
+                f"✗ Cannot push eval: Environment '{environment_id}' not found on Environment Hub.\n"
+                f"  Please push the environment first using one of these methods:\n"
+                f"  1. Using verifiers: env.push_to_env_hub(hub_name='{env_hint}')\n"
+                f"  2. Using prime CLI: prime env push {environment_id}\n"
+                f"  3. Visit: https://app.primeintellect.ai/environments\n"
+            )
+            return None
 
         if results:
             samples = []
