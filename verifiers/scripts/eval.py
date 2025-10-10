@@ -58,11 +58,9 @@ def push_eval_to_env_hub(
         api_client = APIClient()
         client = EvalsClient(api_client)
 
-        # Try to load environment metadata from local .env-metadata.json file
         env_hub_id = None
         version_id_to_use = version_id
 
-        # Look for .env-metadata.json in the environment directory
         env_dir = (
             Path(__file__).parent.parent.parent
             / "environments"
@@ -84,10 +82,22 @@ def push_eval_to_env_hub(
             except Exception as e:
                 logger.debug(f"Could not load {hub_metadata_file}: {e}")
 
+        environments = []
+        if env_hub_id:
+            env_dict = {"id": env_hub_id}
+            if version_id_to_use:
+                env_dict["version_id"] = version_id_to_use
+            environments.append(env_dict)
+        else:
+            env_dict = {"id": environment_id}
+            if version_id_to_use:
+                env_dict["version_id"] = version_id_to_use
+            environments.append(env_dict)
+
         try:
             create_response = client.create_evaluation(
                 name=eval_name,
-                environment_ids=[env_hub_id] if env_hub_id else [environment_id],
+                environments=environments,
                 run_id=run_id,
                 model_name=model_name,
                 framework=framework,
@@ -98,14 +108,13 @@ def push_eval_to_env_hub(
             evaluation_id = create_response["evaluation_id"]
             logger.debug(f"✓ Created evaluation {evaluation_id}")
         except InvalidEvaluationError:
-            # Handle case where neither run_id nor env_hub_id is available
             if "/" in environment_id:
                 env_hint = f"owner/{environment_id}"
             else:
                 env_hint = f"<owner>/{environment_id}"
             logger.error(
                 f"✗ Cannot push eval: Environment '{environment_id}' not found on Environment Hub.\n"
-                f"  Please push the environment first using one of these methods:\n"
+                f"  Please push the environment first:\n"
                 f"  1. Using verifiers: env.push_to_env_hub(hub_name='{env_hint}')\n"
                 f"  2. Using prime CLI: prime env push {environment_id}\n"
                 f"  3. Visit: https://app.primeintellect.ai/environments\n"
