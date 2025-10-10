@@ -32,9 +32,15 @@ def message_to_printable(message: ChatMessage) -> ChatMessage:
                 if c_dict["type"] == "text":
                     new_message["content"].append(c_dict["text"])
                 elif c_dict["type"] == "image_url":
-                    new_message["content"].append("[image]")
+                    new_message["content"].append("Image")
+                elif c_dict["type"] == "video" or c_dict["type"] == "video_url":
+                    new_message["content"].append("Video")
                 elif str(c_dict.get("type", "")).startswith("input_audio"):
-                    new_message["content"].append("[audio]")
+                    new_message["content"].append("Audio")
+                elif c_dict.get("type") == "file":
+                    new_message["content"].append("File")
+                else:
+                    new_message["content"].append("Media")
     new_message["content"] = "\n\n".join(new_message["content"])
     return cast(ChatMessage, new_message)
 

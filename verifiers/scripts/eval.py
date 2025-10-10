@@ -40,38 +40,28 @@ def serialize_messages_for_hub(messages):
     if not isinstance(messages, list):
         return messages
 
-    serialized = []
+    # Convert ValidatorIterators to lists first
+    intermediate = []
     for msg in messages:
-        new_msg = {"role": msg["role"]}
+        new_msg = dict(msg)
         content = msg.get("content", "")
 
-        # Convert ValidatorIterator to list
         if hasattr(content, "__iter__") and not isinstance(content, (str, bytes, dict)):
             try:
-                content = list(content)
+                new_msg["content"] = list(content)
             except (TypeError, AttributeError):
                 pass
 
-        # Serialize multimodal content
-        if isinstance(content, list):
-            serialized_content = []
-            for part in content:
-                if isinstance(part, str):
-                    serialized_content.append({"type": "text", "text": part})
-                elif isinstance(part, dict):
-                    serialized_content.append(part)
-                elif hasattr(part, "model_dump"):
-                    serialized_content.append(part.model_dump())
-                else:
-                    try:
-                        serialized_content.append(dict(part))
-                    except (TypeError, ValueError):
-                        serialized_content.append({"type": "text", "text": str(part)})
-            new_msg["content"] = serialized_content
-        else:
-            new_msg["content"] = str(content) if content else ""
+        intermediate.append(new_msg)
 
-        # Serialize tool_calls
+    # Convert to printable format (multimodal → text with placeholders)
+    printable = messages_to_printable(intermediate)
+
+    # Ensure proper serialization with strings only
+    serialized = []
+    for msg in printable:
+        new_msg = {"role": msg["role"], "content": str(msg.get("content", ""))}
+
         if "tool_calls" in msg:
             new_msg["tool_calls"] = [
                 tc.model_dump() if hasattr(tc, "model_dump") else tc
