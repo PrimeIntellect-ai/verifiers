@@ -44,7 +44,10 @@ class Generator:
     def __init__(
         self,
         env: Environment,
-        client_config: dict[str, Any],
+        client_base_url: str,
+        client_api_key: str,
+        client_limit: int,
+        client_timeout: float,
         model_name: str,
         sampling_args: dict[str, Any],
         rollouts_per_example: int,
@@ -62,7 +65,10 @@ class Generator:
         scale_rewards: str,
     ):
         self.env = env
-        self.client_config = client_config
+        self.client_base_url = client_base_url
+        self.client_api_key = client_api_key
+        self.client_limit = client_limit
+        self.client_timeout = client_timeout
         self.client = None  # Will be created in worker thread
         self.model_name = model_name
         self.sampling_args = sampling_args
@@ -171,11 +177,11 @@ class Generator:
         asyncio.set_event_loop(loop)
         self.worker_loop = loop
         self.client = AsyncOpenAI(
-            base_url=self.client_config["base_url"],
-            api_key=self.client_config["api_key"],
+            base_url=self.client_base_url,
+            api_key=self.client_api_key,
             http_client=httpx.AsyncClient(
-                limits=httpx.Limits(max_connections=self.client_config["limit"]),
-                timeout=self.client_config["timeout"],
+                limits=httpx.Limits(max_connections=self.client_limit),
+                timeout=self.client_timeout,
             ),
         )
         try:

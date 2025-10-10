@@ -17,7 +17,6 @@ from torch.utils.data import DataLoader, Dataset
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
-from transformers.trainer_callback import TrainerCallback
 
 import verifiers as vf
 import wandb
@@ -36,98 +35,75 @@ class RLTrainer(Trainer):
         env: vf.Environment,
         args: RLConfig,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
-        callbacks: Optional[list[TrainerCallback]] = None,
-        optimizers: tuple[
-            Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]
-        ] = (None, None),
         **kwargs,
     ):
         self.logger = logging.getLogger(__name__)
 
         # model + tokenizer
         if isinstance(model, str):
+            model_name = model
             model, processing_class = vf.get_model_and_tokenizer(model)
+        else:
+            model_name = model.config._name_or_path
         assert isinstance(model, PreTrainedModel)
         if args.use_lora and isinstance(args.lora_config, PeftConfig):
             model = prepare_peft_model(model, args.lora_config, args)
         model.warnings_issued["estimate_tokens"] = True  # suppress warning
-        self.model_name = model.config._name_or_path
-        assert isinstance(processing_class, PreTrainedTokenizerBase)
-        if processing_class.pad_token is None:
-            processing_class.pad_token = processing_class.eos_token
-        if processing_class.pad_token_id is None:
-            processing_class.pad_token_id = processing_class.eos_token_id
-
-        # batch args
-        self.max_steps = args.max_steps
-        self.rollouts_per_example = args.rollouts_per_example
-        self.batch_size = args.batch_size
-        self.micro_batch_size = args.micro_batch_size
-        self.inner_steps = args.inner_steps
-        self.max_seq_len = args.max_seq_len
-        self.max_prompt_length = args.max_prompt_len or self.max_seq_len
-        self.max_concurrent = args.max_concurrent
-        self.sampling_args = args.sampling_args
-        self.temperature = args.temperature
-
-        # loss args
-        self.epsilon = args.epsilon
-        self.loss_type = args.loss_type
-        self.scale_rewards = args.scale_rewards
-        self.mask_truncated_completions = args.mask_truncated_completions
-        self.zero_truncated_completions = args.zero_truncated_completions
-        self.importance_sampling_level = args.importance_sampling_level
-        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         super().__init__(
             model=model,
             args=args,
             processing_class=processing_class,
-            callbacks=callbacks,
-            optimizers=optimizers,
+            *kwargs,
         )
+        assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+        if self.processing_class.pad_token is None:
+            self.processing_class.pad_token = self.processing_class.eos_token
+        if self.processing_class.pad_token_id is None:
+            self.processing_class.pad_token_id = self.processing_class.eos_token_id
+        assert self.processing_class.pad_token_id is not None
 
-        # OpenAI client for Environment generation (using vLLM server)
-        host = args.vllm_server_host
-        port = args.vllm_server_port
-        vllm_base_url = f"http://{host}:{port}/v1"
-        self.client_config = {
-            "base_url": vllm_base_url,
-            "api_key": "EMPTY",
-            "limit": args.max_concurrent,
-            "timeout": args.async_generation_timeout,
-        }
+        # batch args
+        self.max_steps = args.max_steps
+        self.max_seq_len = args.max_seq_len
+        self.temperature = args.temperature
 
-        # environment
-        self.env = env
-        self.mask_env_responses = args.mask_env_responses
-        self.max_concurrent = args.max_concurrent
+        # loss args
+        self.epsilon = args.epsilon
+        self.loss_type = args.loss_type
+        self.importance_sampling_level = args.importance_sampling_level
+        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         # generator (main process only)
         if self.accelerator.is_main_process:
+            host = args.vllm_server_host
+            port = args.vllm_server_port
             self.client = VLLMClient(
                 host=host, port=port, connection_timeout=args.vllm_server_timeout
             )
             self.client.init_communicator()
-            assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+            vllm_base_url = f"http://{host}:{port}/v1"
             self.generator = Generator(
-                env=self.env,
-                client_config=self.client_config,
-                model_name=self.model_name,
-                sampling_args=dict(self.sampling_args),
-                rollouts_per_example=self.rollouts_per_example,
-                batch_size=self.batch_size,
-                micro_batch_size=self.micro_batch_size,
+                env=env,
+                client_base_url=vllm_base_url,
+                client_api_key="EMPTY",
+                client_limit=args.max_concurrent,
+                client_timeout=args.async_generation_timeout,
+                model_name=model_name,
+                sampling_args=dict(args.sampling_args),
+                rollouts_per_example=args.rollouts_per_example,
+                batch_size=args.batch_size,
+                micro_batch_size=args.micro_batch_size,
                 num_processes=self.accelerator.num_processes,
                 generation_timeout=args.async_generation_timeout,
                 processing_class=self.processing_class,
-                mask_env_responses=self.mask_env_responses,
-                max_seq_len=self.max_seq_len or -1,
+                mask_env_responses=args.mask_env_responses,
+                max_seq_len=self.max_seq_len,
                 max_prompt_len=args.max_prompt_len or self.max_seq_len,
-                mask_truncated_completions=self.mask_truncated_completions,
-                zero_truncated_completions=self.zero_truncated_completions,
-                max_concurrent=self.max_concurrent,
-                scale_rewards=self.scale_rewards,
+                mask_truncated_completions=args.mask_truncated_completions,
+                zero_truncated_completions=args.zero_truncated_completions,
+                max_concurrent=args.max_concurrent,
+                scale_rewards=args.scale_rewards,
             )
             self.generator.start()
             self.generator.submit_batch(0)
@@ -171,7 +147,7 @@ class RLTrainer(Trainer):
 
             input_ids = pad(
                 [torch.tensor(x, device=self.accelerator.device) for x in mb_input_ids],
-                padding_value=self.processing_class.pad_token_id,  # type: ignore
+                padding_value=self.processing_class.pad_token_id,  # type: ignore :(
                 padding_side="right",
             )
             attention_mask = pad(
@@ -204,7 +180,6 @@ class RLTrainer(Trainer):
                     input_ids,
                     attention_mask,
                     logits_to_keep,
-                    batch_size=self.micro_batch_size,
                 )
                 completion_mask = completion_mask[:, -logits_to_keep:]
                 ratio = torch.exp(model_logprobs - sampling_logprobs)
@@ -231,7 +206,6 @@ class RLTrainer(Trainer):
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
 
-        # Logging on main process using full-batch CPU metadata
         if self.accelerator.is_main_process:
             self.log_metrics(
                 mode="train",
@@ -305,23 +279,23 @@ class RLTrainer(Trainer):
             if is_peft_model(self.model):
                 # PEFT: gather + merge, then update each parameter
                 with gather_if_zero3(list(self.model.parameters())):
-                    self.model.merge_adapter()  # type: ignore
+                    self.model.merge_adapter()  # type: ignore :(
                     for name, param in self.model.named_parameters():
                         # recover original parameter names
                         name = name.removeprefix("base_model.model.").replace(
                             ".base_layer", ""
                         )
-                        if self.model.prefix in name:  # type: ignore
+                        if self.model.prefix in name:  # type: ignore :(
                             continue  # discard some parameters
                         if "original_module" in name:  # from modules_to_save
                             continue
                         name = name.replace("modules_to_save.default.", "")
                         if self.client:
                             self.client.update_named_param(name, param.data)
-                    self.model.unmerge_adapter()  # type: ignore
+                    self.model.unmerge_adapter()  # type: ignore :(
             else:
                 # non-PEFT models: gather + update each parameter individually
-                for name, param in self.model.named_parameters():  # type: ignore
+                for name, param in self.model.named_parameters():  # type: ignore :(
                     with gather_if_zero3([param]):
                         if self.client:
                             self.client.update_named_param(name, param.data)

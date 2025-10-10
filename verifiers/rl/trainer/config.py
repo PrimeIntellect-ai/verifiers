@@ -373,9 +373,6 @@ class RLConfig(TrainingArguments):
         assert self.batch_size % (self.micro_batch_size * num_processes) == 0, (
             "batch_size must be divisible by (micro_batch_size * num_processes)."
         )
-        self.inner_steps = self.batch_size // (
-            self.per_device_train_batch_size * num_processes
-        )
 
         assert self.rollouts_per_example > 1, (
             "2 or more rollouts per example are required."
