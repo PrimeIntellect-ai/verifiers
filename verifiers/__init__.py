@@ -90,7 +90,6 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "get_model",
-    "get_tokenizer",
     "get_model_and_tokenizer",
     "RLTrainer",
     "RLConfig",
@@ -101,9 +100,9 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
-    "get_model": "verifiers.rl.utils.model_utils:get_model",
-    "get_model_and_tokenizer": "verifiers.rl.utils.model_utils:get_model_and_tokenizer",
-    "get_tokenizer": "verifiers.rl.utils.model_utils:get_tokenizer",
+    "get_model": "verifiers.rl.trainer.utils:get_model",
+    "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
+    "get_tokenizer": "verifiers.rl.trainer.utils:get_tokenizer",
     "RLConfig": "verifiers.rl.trainer:RLConfig",
     "RLTrainer": "verifiers.rl.trainer:RLTrainer",
     "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
@@ -142,9 +141,8 @@ if TYPE_CHECKING:
         grpo_defaults,
         lora_defaults,
     )
-    from .rl.utils.model_utils import (  # noqa: F401
+    from .rl.trainer.utils import (  # noqa: F401
         get_model,
         get_model_and_tokenizer,
-        get_tokenizer,
     )
     from .rubrics.math_rubric import MathRubric  # noqa: F401

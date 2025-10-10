@@ -9,8 +9,39 @@ from typing import Any, Optional, cast
 import numpy as np
 import torch
 import torch.nn.functional as F
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 from peft import PeftConfig, PeftModel, get_peft_model
-from transformers import PreTrainedModel, TrainingArguments
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    TrainingArguments,
+)
+
+
+def get_model(
+    model_name: str,
+    use_liger: bool = True,
+    model_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    if model_kwargs is None:
+        model_kwargs = dict(
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            use_cache=False,
+        )
+    if use_liger:
+        return AutoLigerKernelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    else:
+        return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
+
+def get_model_and_tokenizer(
+    model_name: str, use_liger: bool = True, model_kwargs: dict[str, Any] | None = None
+) -> tuple[Any, Any]:
+    model = get_model(model_name, use_liger, model_kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    return model, tokenizer
 
 
 def selective_log_softmax(logits, index) -> torch.Tensor:

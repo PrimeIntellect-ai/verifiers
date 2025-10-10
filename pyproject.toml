@@ -54,7 +54,7 @@ dev = [
 ]
 
 [project.optional-dependencies]
-train = [
+rl = [
     "torch>=2.7.0",
     "transformers",
     "accelerate>=1.4.0",

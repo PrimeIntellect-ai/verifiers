@@ -2,8 +2,8 @@ import logging
 
 import torch._dynamo
 
-from .rl_config import RLConfig
-from .rl_trainer import RLTrainer
+from .config import RLConfig
+from .trainer import RLTrainer
 
 torch._dynamo.config.suppress_errors = True
 

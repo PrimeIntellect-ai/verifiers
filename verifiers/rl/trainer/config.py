@@ -366,16 +366,17 @@ class RLConfig(TrainingArguments):
                 "return_tokens_as_token_ids": True,
             },
         }
-
+        self.gradient_accumulation_steps = 1
         super().__post_init__()
 
         num_processes = self.world_size
         assert self.batch_size % (self.micro_batch_size * num_processes) == 0, (
             "batch_size must be divisible by (micro_batch_size * num_processes)."
         )
-        self.gradient_accumulation_steps = self.batch_size // (
+        self.inner_steps = self.batch_size // (
             self.per_device_train_batch_size * num_processes
         )
+
         assert self.rollouts_per_example > 1, (
             "2 or more rollouts per example are required."
         )
