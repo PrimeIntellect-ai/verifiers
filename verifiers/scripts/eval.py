@@ -36,6 +36,53 @@ except ImportError:
 logger = logging.getLogger("verifiers.scripts.eval")
 
 
+def serialize_messages_for_hub(messages):
+    if not isinstance(messages, list):
+        return messages
+
+    serialized = []
+    for msg in messages:
+        new_msg = {"role": msg["role"]}
+        content = msg.get("content", "")
+
+        # Convert ValidatorIterator to list
+        if hasattr(content, "__iter__") and not isinstance(content, (str, bytes, dict)):
+            try:
+                content = list(content)
+            except (TypeError, AttributeError):
+                pass
+
+        # Serialize multimodal content
+        if isinstance(content, list):
+            serialized_content = []
+            for part in content:
+                if isinstance(part, str):
+                    serialized_content.append({"type": "text", "text": part})
+                elif isinstance(part, dict):
+                    serialized_content.append(part)
+                elif hasattr(part, "model_dump"):
+                    serialized_content.append(part.model_dump())
+                else:
+                    try:
+                        serialized_content.append(dict(part))
+                    except (TypeError, ValueError):
+                        serialized_content.append({"type": "text", "text": str(part)})
+            new_msg["content"] = serialized_content
+        else:
+            new_msg["content"] = str(content) if content else ""
+
+        # Serialize tool_calls
+        if "tool_calls" in msg:
+            new_msg["tool_calls"] = [
+                tc.model_dump() if hasattr(tc, "model_dump") else tc
+                for tc in msg.get("tool_calls", [])
+            ]
+
+        serialized.append(new_msg)
+
+    return serialized
+
+
 def push_eval_to_env_hub(
     eval_name: str,
     model_name: str,
@@ -75,12 +122,8 @@ def push_eval_to_env_hub(
                     env_hub_id = hub_metadata.get("environment_id")
                     if not version_id_to_use:
                         version_id_to_use = hub_metadata.get("version_id")
-                    logger.debug(
-                        f"✓ Loaded environment metadata from {hub_metadata_file.name}: "
-                        f"env_id={env_hub_id[:8] if env_hub_id else 'None'}..."
-                    )
-            except Exception as e:
-                logger.debug(f"Could not load {hub_metadata_file}: {e}")
+            except Exception:
+                pass
 
         environments = []
         if env_hub_id:
@@ -106,7 +149,6 @@ def push_eval_to_env_hub(
             )
 
             evaluation_id = create_response["evaluation_id"]
-            logger.debug(f"✓ Created evaluation {evaluation_id}")
         except InvalidEvaluationError:
             if "/" in environment_id:
                 env_hint = f"owner/{environment_id}"
@@ -137,30 +179,16 @@ def push_eval_to_env_hub(
                     "total_time": result.get("total_time"),
                     "latency_ms": result.get("latency_ms"),
                     "rollout_number": result.get("rollout_number"),
-                    "metadata": {
-                        k: v
-                        for k, v in result.items()
-                        if k
-                        not in [
-                            "example_id",
-                            "reward",
-                            "task",
-                            "answer",
-                            "prompt",
-                            "completion",
-                            "score",
-                            "correct",
-                            "num_steps",
-                            "total_time",
-                            "latency_ms",
-                            "rollout_number",
-                        ]
-                    },
                 }
+
+                # Add additional metric fields
+                for k, v in result.items():
+                    if k not in sample:
+                        sample[k] = v
+
                 samples.append(sample)
 
             client.push_samples(evaluation_id, samples)
-            logger.debug(f"✓ Pushed {len(samples)} samples")
 
         finalize_response = client.finalize_evaluation(evaluation_id, metrics=metrics)
 
@@ -434,14 +462,27 @@ def display_and_push_results(
 
         sample_results = []
         for i in range(n_samples):
+            task_val = results.task[i]
+            answer_val = results.answer[i]
+
+            if hasattr(task_val, "model_dump"):
+                task_str = json.dumps(task_val.model_dump())
+            else:
+                task_str = str(task_val) if task_val is not None else ""
+
+            if hasattr(answer_val, "model_dump"):
+                answer_str = json.dumps(answer_val.model_dump())
+            else:
+                answer_str = str(answer_val) if answer_val is not None else ""
+
             result_entry = {
                 "example_id": i // rollouts_per_example,
                 "rollout_number": i % rollouts_per_example,
                 "reward": float(results.reward[i]),
-                "prompt": results.prompt[i],
-                "completion": results.completion[i],
-                "task": str(results.task[i]),
-                "answer": str(results.answer[i]),
+                "prompt": serialize_messages_for_hub(results.prompt[i]),
+                "completion": serialize_messages_for_hub(results.completion[i]),
+                "task": task_str,
+                "answer": answer_str,
             }
 
             info = results.info[i]
@@ -450,6 +491,9 @@ def display_and_push_results(
                     result_entry["score"] = float(info["score"])
                 if "correct" in info:
                     result_entry["correct"] = bool(info["correct"])
+
+            for metric_name, metric_values in results.metrics.items():
+                result_entry[metric_name] = float(metric_values[i])
 
             sample_results.append(result_entry)
 
