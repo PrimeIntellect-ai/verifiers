@@ -1,15 +1,24 @@
 import os
+from typing import cast
 
-import chromadb  # type: ignore
-from chromadb.utils import embedding_functions  # type: ignore
+import chromadb
+from chromadb.api.types import Embeddable, EmbeddingFunction
+from chromadb.utils import embedding_functions
 from datasets import load_dataset
 from openai import OpenAI
 
 import verifiers as vf
 from verifiers.rubrics.judge_rubric import JudgeRubric
 
-WIKI_DIR = "data/wiki"
 CHROMA_DB_DIR = ".chroma_db"
+
+
+def normalize_id(text: str) -> str:
+    """Normalize free text into an id: lowercased with spaces as underscores.
+
+    Mirrors the section id normalization used elsewhere in this module.
+    """
+    return text.strip().lower().replace(" ", "_")
 
 
 def load_environment(
@@ -20,38 +29,84 @@ def load_environment(
     embed_model: str = "text-embedding-3-small",
     embed_base_url: str = "https://api.openai.com/v1",
     embed_api_key_var: str = "OPENAI_API_KEY",
-    wiki_dir: str = WIKI_DIR,
+    corpus_dataset: str = "willcb/rare-wiki-pages",
+    corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
 ) -> vf.Environment:
+    # load corpus into memory and build page_id -> row index
+    corpus = load_dataset(corpus_dataset, split=corpus_split)
+    page_id_to_title: dict[str, str] = {}
+    page_id_to_content: dict[str, str] = {}
+    for row in corpus:
+        row = cast(dict, row)
+        pid = row["id"]
+        title = row["title"]
+        content = row["content"]
+        page_id_to_title[pid] = title
+        page_id_to_content[pid] = content
+
+    # initialize persistent chroma collection with title embeddings
     openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        api_key=os.getenv(embed_api_key_var, "EMPTY"),
         model_name=embed_model,
-        base_url=embed_base_url,
+        api_base=embed_base_url,
+        api_key=os.getenv(embed_api_key_var, "EMPTY"),
     )
     db_client = chromadb.PersistentClient(path=chroma_db_dir)
-    collection = db_client.get_collection("wiki_titles", embedding_function=openai_ef)  # type: ignore
+    collection = db_client.get_or_create_collection(
+        name="wiki_titles",
+        embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
+    )
 
+    # upsert missing pages
+    all_ids = list(page_id_to_title.keys())
+    existing: set[str] = set()
+    for i in range(0, len(all_ids), 500):
+        batch = all_ids[i : i + 500]
+        got = collection.get(ids=batch)
+        existing.update(got.get("ids", []))
+    missing = [pid for pid in all_ids if pid not in existing]
+    if missing:
+        documents = []
+        metadatas = []
+        for pid in missing:
+            title = str(page_id_to_title[pid]).strip()
+            if not title:
+                raise ValueError(f"Empty title for page_id {pid}")
+            documents.append(title)
+            metadatas.append({"title": title})
+        bs = 100
+        for i in range(0, len(missing), bs):
+            print(f"Upserting {len(missing[i : i + bs])} pages")
+            collection.upsert(
+                ids=missing[i : i + bs],
+                documents=documents[i : i + bs],
+                metadatas=metadatas[i : i + bs],
+            )
+
+    # define tools
     def search_pages(query: str) -> list[dict]:
         """Search for top 10 relevant articles using title embedding similarity.
 
-        Args:
+        args:
             query (str): The query to search for.
 
-        Returns:
+        returns:
             list[dict]: A list of dicts with page_id and title.
 
-        Examples:
+        example:
             "basketball" -> [{"page_id": "basketball", "title": "Basketball"}, {"page_id": "basketball_rules", "title": "Basketball Rules"}, ...]
         """
         results = collection.query(query_texts=[query], n_results=10)
-
-        # Format results
+        if not results:
+            raise ValueError(f"No results found for query: {query}")
+        if not results["metadatas"]:
+            raise ValueError(f"No results metadata found for query: {query}")
         output = []
         for i in range(len(results["ids"][0])):
             output.append(
                 {
                     "page_id": results["ids"][0][i],
-                    "title": results["metadatas"][0][i]["title"],  # type: ignore
+                    "title": results["metadatas"][0][i]["title"],
                 }
             )
 
@@ -60,35 +115,22 @@ def load_environment(
     def view_sections(page_id: str) -> list[dict]:
         """View the sections of a page.
 
-        Args:
+        args:
             page_id (str): The ID of the page to view.
 
-        Returns:
+        returns:
             list[dict]: A list of dicts with section_id and section_name.
 
-        Examples:
+        example:
             "basketball" -> [{"section_id": "basketball:history", "section_name": "History"}, ...]
         """
-        # Find the file for this page_id
-        results = collection.get(ids=[page_id])
-        if not results["ids"]:
-            raise ValueError(f"Page not found: {page_id}")
-
-        filename = results["metadatas"][0]["title"] + ".md"  # type: ignore
-        filepath = os.path.join(wiki_dir, filename)  # type: ignore
-
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-
+        content = page_id_to_content[page_id]
         sections = []
-
         lines = content.split("\n")
         for i, line in enumerate(lines):
             if line.startswith("#"):
-                # Extract section name (remove # and whitespace)
                 section_name = line.lstrip("#").strip()
-                # Create section ID
-                section_id = f"{page_id}:{section_name.lower().replace(' ', '_')}"
+                section_id = f"{page_id}:{normalize_id(section_name)}"
                 sections.append(
                     {
                         "section_id": section_id,
@@ -97,7 +139,7 @@ def load_environment(
                     }
                 )
 
-        # If no sections found, return the whole page as one section
+        # if no sections found, return the whole page as one section
         if not sections:
             sections.append(
                 {
@@ -115,16 +157,15 @@ def load_environment(
     def read_section(section_id: str) -> str:
         """Read a section of a page.
 
-        Args:
+        args:
             section_id (str): The ID of the section to read.
 
-        Returns:
+        returns:
             str: The content of the section.
 
-        Examples:
+        example:
             "baseball:finnish_baseball" -> "Finnish baseball is a sport that is played in Finland..."
         """
-        # Parse section_id
         if ":" not in section_id:
             raise ValueError(
                 "Invalid section_id format. Expected: page_id:section_name"
@@ -132,37 +173,27 @@ def load_environment(
 
         page_id, section_name_id = section_id.split(":", 1)
 
-        # Get the file
-        results = collection.get(ids=[page_id])
-        if not results["ids"]:
-            raise ValueError(f"Page not found: {page_id}")
-
-        filename = results["metadatas"][0]["title"] + ".md"  # type: ignore
-        filepath = os.path.join(wiki_dir, filename)
-
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-
+        # get Markdown content
+        content = page_id_to_content[page_id]
         lines = content.split("\n")
 
-        # Special case for "full" section
+        # special case for "full" section
         if section_name_id == "full":
             return content
 
-        # Find the section
+        # find section
         section_start = None
         section_end = None
 
         for i, line in enumerate(lines):
             if line.startswith("#"):
-                current_section = line.lstrip("#").strip().lower().replace(" ", "_")
+                current_section = normalize_id(line.lstrip("#").strip())
                 if current_section == section_name_id and section_start is None:
                     section_start = i
                 elif section_start is not None and section_end is None:
                     section_end = i
                     break
 
-        # If section found
         if section_start is not None:
             if section_end is None:
                 section_end = len(lines)
@@ -178,11 +209,10 @@ def load_environment(
 
     dataset = load_dataset("willcb/wiki-trivia-questions", split="train")
 
-    parser = vf.ThinkParser()
     vf_env = vf.ToolEnv(
         dataset=dataset,
-        parser=parser,
         tools=tools,
+        parser=vf.Parser(),
         max_turns=max_turns,
     )
 
