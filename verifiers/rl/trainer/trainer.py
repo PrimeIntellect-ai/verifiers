@@ -82,6 +82,33 @@ def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
     }
 
 
+def gather_logprobs_and_entropy(
+    logits: torch.Tensor, target_token_ids: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Streamed variant of TRL's ``selective_log_softmax`` helper.
+
+    Materializing ``torch.log_softmax`` for the full ``(batch, seq_len, vocab)``
+    tensor increases peak memory versus the original TRL utility.  By
+    processing one batch row at a time we match that footprint while also
+    collecting entropy statistics for logging.
+    """
+
+    per_row_logprobs: list[torch.Tensor] = []
+    per_row_entropies: list[torch.Tensor] = []
+
+    for row_logits, row_token_ids in zip(logits, target_token_ids):
+        row_log_probs = torch.log_softmax(row_logits, dim=-1)
+        per_row_logprobs.append(
+            row_log_probs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
+        )
+        row_log_probs_detached = row_log_probs.detach()
+        per_row_entropies.append(
+            -(row_log_probs_detached.exp() * row_log_probs_detached).sum(dim=-1)
+        )
+
+    return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)
+
+
 class RLTrainer(Trainer):
     def __init__(
         self,
@@ -311,16 +338,9 @@ class RLTrainer(Trainer):
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
-            log_probs = torch.log_softmax(logits, dim=-1)
-            # Reuse the full log-softmax tensor for both entropy logging and the
-            # gathered per-token log probabilities to avoid redundant work.
-            all_entropies.append(
-                -(log_probs.exp() * log_probs).sum(dim=-1)
-            )
-            logps = log_probs.gather(
-                dim=-1, index=input_ids_batch.unsqueeze(-1)
-            ).squeeze(-1)
+            logps, entropies = gather_logprobs_and_entropy(logits, input_ids_batch)
             all_logps.append(logps)
+            all_entropies.append(entropies)
         log_probs = torch.cat(all_logps, dim=0)
         entropies = torch.cat(all_entropies, dim=0)
         return log_probs, entropies
