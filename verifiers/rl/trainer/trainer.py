@@ -97,13 +97,13 @@ def gather_logprobs_and_entropy(
     per_row_entropies: list[torch.Tensor] = []
 
     for row_logits, row_token_ids in zip(logits, target_token_ids):
-        row_log_probs = torch.log_softmax(row_logits, dim=-1)
+        row_logprobs = torch.log_softmax(row_logits, dim=-1)
         per_row_logprobs.append(
-            row_log_probs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
+            row_logprobs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
         )
-        row_log_probs_detached = row_log_probs.detach()
+        row_logprobs_detached = row_logprobs.detach()
         per_row_entropies.append(
-            -(row_log_probs_detached.exp() * row_log_probs_detached).sum(dim=-1)
+            -(row_logprobs_detached.exp() * row_logprobs_detached).sum(dim=-1)
         )
 
     return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)
@@ -322,7 +322,7 @@ class RLTrainer(Trainer):
         batch_size=None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size = batch_size or input_ids.size(0)  # chunking for memory peak
-        all_logps = []
+        all_logprobs = []
         all_entropies = []
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
@@ -338,12 +338,12 @@ class RLTrainer(Trainer):
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
-            logps, entropies = gather_logprobs_and_entropy(logits, input_ids_batch)
-            all_logps.append(logps)
+            logprobs, entropies = gather_logprobs_and_entropy(logits, input_ids_batch)
+            all_logprobs.append(logprobs)
             all_entropies.append(entropies)
-        log_probs = torch.cat(all_logps, dim=0)
+        logprobs = torch.cat(all_logprobs, dim=0)
         entropies = torch.cat(all_entropies, dim=0)
-        return log_probs, entropies
+        return logprobs, entropies
 
     def update_vllm(self):
         assert self.model is not None
