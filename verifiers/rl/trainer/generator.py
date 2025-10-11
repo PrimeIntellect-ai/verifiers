@@ -278,15 +278,11 @@ class Generator:
 
         completion_lengths = [len(ids) for ids in processed_results.completion_ids]
         if completion_lengths:
-            completion_lengths_arr = np.asarray(
-                completion_lengths, dtype=np.float32
-            )
+            completion_lengths_arr = np.asarray(completion_lengths, dtype=np.float32)
             metrics_dict["tokens/completion_mean"] = float(
                 completion_lengths_arr.mean()
             )
-            metrics_dict["tokens/completion_max"] = float(
-                completion_lengths_arr.max()
-            )
+            metrics_dict["tokens/completion_max"] = float(completion_lengths_arr.max())
 
             completion_mask_lengths = np.asarray(
                 [sum(mask) for mask in processed_results.completion_mask],

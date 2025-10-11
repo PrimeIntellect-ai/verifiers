@@ -1034,10 +1034,11 @@ class Environment(ABC):
         all_completion_masks = []
         all_completion_logprobs = []
         all_rewards = []
+        all_is_truncated = []
         for i, (prompt, completion, state, reward) in enumerate(
             zip(prompts, completions, states, rewards)
         ):
-            # Format-specific processing
+            # format-specific processing
             if is_chat_format:
                 assert isinstance(prompt, list) and isinstance(completion, list)
                 (
@@ -1091,8 +1092,10 @@ class Environment(ABC):
             all_completion_logprobs.append(completion_logprobs)
             if zero_truncated_completions and is_truncated:
                 all_rewards.append(0)
+                all_is_truncated.append(True)
             else:
                 all_rewards.append(reward)
+                all_is_truncated.append(False)
         return ProcessedOutputs(
             prompt_ids=all_prompt_ids,
             prompt_mask=all_prompt_masks,
@@ -1100,6 +1103,7 @@ class Environment(ABC):
             completion_mask=all_completion_masks,
             completion_logprobs=all_completion_logprobs,
             rewards=all_rewards,
+            is_truncated=all_is_truncated,
         )
 
     # alias for process_env_results_vllm
