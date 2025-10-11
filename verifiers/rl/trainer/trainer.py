@@ -322,11 +322,11 @@ class RLTrainer(Trainer):
         ratio = inputs["importance_sampling_ratio"]
         logits_to_keep = min(logits_to_keep, ratio.size(1))
         completion_mask = completion_mask[:, -logits_to_keep:]
-        per_token_logps = self.get_logprobs(
+        token_logprobs = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
         advantages = inputs["advantages"]
-        log_ratio = per_token_logps - inputs["old_per_token_logps"]
+        log_ratio = token_logprobs - inputs["model_logprobs"]
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
