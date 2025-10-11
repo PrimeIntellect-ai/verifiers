@@ -54,7 +54,7 @@ class RLTrainer(Trainer):
             model=model,
             args=args,
             processing_class=processing_class,
-            *kwargs,
+            **kwargs,
         )
         assert isinstance(self.processing_class, PreTrainedTokenizerBase)
         if self.processing_class.pad_token is None:
@@ -169,6 +169,7 @@ class RLTrainer(Trainer):
             if self.max_seq_len is not None and input_ids.size(1) > self.max_seq_len:
                 input_ids = input_ids[:, -self.max_seq_len :]
                 attention_mask = attention_mask[:, -self.max_seq_len :]
+                sampling_logprobs = sampling_logprobs[:, -self.max_seq_len :]
 
             with torch.no_grad():
                 completion_mask = attention_mask[:, 1:]
@@ -176,11 +177,12 @@ class RLTrainer(Trainer):
                 logits_to_keep = min(logits_to_keep, sampling_logprobs.size(1))
                 sampling_logprobs = sampling_logprobs[:, :logits_to_keep]
                 model_logprobs = self.get_logprobs(
-                    self.model,
+                    model,
                     input_ids,
                     attention_mask,
                     logits_to_keep,
                 )
+                model_logprobs = model_logprobs[:, -logits_to_keep:]
                 completion_mask = completion_mask[:, -logits_to_keep:]
                 ratio = torch.exp(model_logprobs - sampling_logprobs)
                 ratio = torch.clamp(ratio, max=self.vllm_importance_sampling_cap)
@@ -193,7 +195,7 @@ class RLTrainer(Trainer):
             mb_inputs = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
-                "model_logprobs": model_logprobs,
+                "sampling_logprobs": sampling_logprobs.detach(),
                 "advantages": torch.tensor(
                     mb_advantages, device=self.accelerator.device
                 ),
@@ -319,14 +321,16 @@ class RLTrainer(Trainer):
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
-        ratio = inputs["importance_sampling_ratio"]
-        logits_to_keep = min(logits_to_keep, ratio.size(1))
+        sampling_logprobs = inputs["sampling_logprobs"]
+        logits_to_keep = min(logits_to_keep, sampling_logprobs.size(1))
         completion_mask = completion_mask[:, -logits_to_keep:]
+        sampling_logprobs = sampling_logprobs[:, -logits_to_keep:]
         token_logprobs = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
+        token_logprobs = token_logprobs[:, -logits_to_keep:]
         advantages = inputs["advantages"]
-        log_ratio = token_logprobs - inputs["model_logprobs"]
+        log_ratio = token_logprobs - sampling_logprobs
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
@@ -347,7 +351,11 @@ class RLTrainer(Trainer):
         )
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2) * ratio
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        ratio = inputs["importance_sampling_ratio"]
+        ratio = ratio[:, -logits_to_keep:]
+        per_token_loss = per_token_loss * ratio
 
         if self.loss_type == "grpo":
             loss = (
