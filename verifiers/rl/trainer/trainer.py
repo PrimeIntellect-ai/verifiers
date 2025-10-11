@@ -403,13 +403,7 @@ class RLTrainer(Trainer):
         model_logprobs, entropies = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
-        reference_logprobs = inputs.get("model_logprobs")
-        if reference_logprobs is not None:
-            reference_logprobs = reference_logprobs.to(model_logprobs.device)
-            reference_logprobs = reference_logprobs[:, -logits_to_keep:]
-            reference_logprobs = reference_logprobs.detach()
-        else:
-            reference_logprobs = model_logprobs.detach()
+        reference_logprobs = model_logprobs.detach()
         advantages = inputs["advantages"]
         log_ratio = model_logprobs - reference_logprobs
         if self.importance_sampling_level == "token":
