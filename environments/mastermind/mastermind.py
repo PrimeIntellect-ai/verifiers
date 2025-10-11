@@ -304,6 +304,38 @@ class MastermindEnv(MultiTurnEnv):
         self.config = config
 
     async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:  # type: ignore[override]
+        """Advance game state and decide termination.
+
+        Updates game state here because env_response is not invoked on the
+        model's final turn. This ensures history/flags/feedback are correct
+        even when the rollout terminates right after the assistant message.
+        """
+        current_turn = state["turn"]  # assistant turns so far
+        last_proc = state["last_turn_processed"]
+        if current_turn != last_proc:
+            # Parse and score latest assistant guess
+            guess = self.parser.parse_answer(messages)
+            attempts_left = max(self.config.max_turns - current_turn, 0)
+            if not isinstance(guess, str) or not _validate_guess_format(
+                guess, self.config.code_length, self.config.num_symbols
+            ):
+                feedback = (
+                    f"Invalid guess. Use exactly {self.config.code_length} digits, each in 0..{self.config.num_symbols - 1}.  "
+                    f"Attempts left: {attempts_left}"
+                )
+                state["next_turn_response"] = [{"role": "user", "content": feedback}]
+                state["last_turn_processed"] = current_turn
+            else:
+                answer = str(state["answer"])  # dataset-provided
+                black, white = _score_guess(answer, guess)
+                state["history"].append(
+                    {"guess": guess, "black": black, "white": white}
+                )
+                state["is_solved"] = black == self.config.code_length
+                feedback = f"Feedback: B={black}, W={white}. Attempts left: {attempts_left}"
+                state["next_turn_response"] = [{"role": "user", "content": feedback}]
+                state["last_turn_processed"] = current_turn
+
         if state["is_solved"]:
             return True
         return await super().is_completed(messages, state, **kwargs)
@@ -312,6 +344,7 @@ class MastermindEnv(MultiTurnEnv):
         # Initialize game-specific state
         state["history"] = []
         state["is_solved"] = False
+        state["last_turn_processed"] = 0
         # Store config for scoring functions that rely on it
         state["code_length"] = self.config.code_length
         state["num_symbols"] = self.config.num_symbols
@@ -319,26 +352,9 @@ class MastermindEnv(MultiTurnEnv):
         return state
 
     async def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:  # type: ignore[override]
-        assert isinstance(messages, list)
-        # The last assistant message should contain the guess
-        guess = self.parser.parse_answer(messages)
-        attempts_left = max(self.config.max_turns - state["turn"], 0)
-
-        if not _validate_guess_format(guess, self.config.code_length, self.config.num_symbols):
-            feedback = (
-                f"Invalid guess. Use exactly {self.config.code_length} digits, each in 0..{self.config.num_symbols - 1}.  "
-                f"Attempts left: {attempts_left}"
-                
-            )
-            return [{"role": "user", "content": feedback}], state
-
-        answer = str(state["answer"])
-        black, white = _score_guess(answer, guess)
-        state["history"].append({"guess": guess, "black": black, "white": white})
-        state["is_solved"] = black == self.config.code_length
-
-        feedback = f"Feedback: B={black}, W={white}. Attempts left: {attempts_left}"
-        return [{"role": "user", "content": feedback}], state
+        # Feedback for this turn is prepared during is_completed
+        reply = state["next_turn_response"]
+        return reply, state
 
 
 # ---------------------------
