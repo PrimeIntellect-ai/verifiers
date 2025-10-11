@@ -394,17 +394,17 @@ class RLTrainer(Trainer):
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
-        completion_mask = attention_mask[:, 1:]
+        completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
         sampling_logprobs = inputs["sampling_logprobs"]
         logits_to_keep = min(logits_to_keep, sampling_logprobs.size(1))
         completion_mask = completion_mask[:, -logits_to_keep:]
         sampling_logprobs = sampling_logprobs[:, -logits_to_keep:]
-        token_logprobs, entropies = self.get_logprobs(
+        model_logprobs, entropies = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
         advantages = inputs["advantages"]
-        log_ratio = token_logprobs - sampling_logprobs
+        log_ratio = model_logprobs - sampling_logprobs
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
