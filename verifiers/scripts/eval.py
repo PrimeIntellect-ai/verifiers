@@ -156,11 +156,13 @@ def eval_environment(
             print(out)
 
     if save_dataset or save_to_hf_hub:
-        ids = [i // rollouts_per_example for i in range(n * rollouts_per_example)]
+        rollout_ids = [i // n for i in range(n * rollouts_per_example)]
+        example_ids = [i % n for i in range(n * rollouts_per_example)]
         rewards = results.reward
         tasks = results.task
         data_dict = {
-            "id": ids,
+            "rollout_id": rollout_ids,
+            "example_id": example_ids,
             "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
             "completion": [sanitize_tool_calls(c) for c in printable_completions],
             "task": tasks,
