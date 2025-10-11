@@ -144,15 +144,11 @@ def _feedback_upper_bound(n: int) -> int:
 
 
 def _space_size(n: int, c: int, repeats: bool) -> int:
-    """Size of the hypothesis space.
-
-    - With repeats: c^n
-    - Without repeats: falling permutation P(c, n) if c >= n, else 0
-    """
+    """Size of the hypothesis space."""
     if repeats:
         return c ** n
     if c < n:
-        return 0
+        return 0 # shouldn't be possible to get here, but there are no valid options.
     return math.perm(c, n)
 
 
@@ -265,6 +261,8 @@ class MastermindEnv(MultiTurnEnv):
             )
         if (not config.allow_duplicates) and (config.num_symbols < config.code_length):
             raise ValueError("allow_duplicates=False requires num_symbols >= code_length")
+        if config.code_length == 0:
+            raise ValueError("code length may not be 0")
 
         parser = parser or (
             XMLParser(fields=["think", "guess"], answer_field="guess")
@@ -381,7 +379,7 @@ def speed_reward(parser: XMLParser, completion: Messages, answer: str, **kwargs)
 
 def partial_feedback_reward(parser: XMLParser, completion: Messages, state: State, **kwargs) -> float:
     """Reward based on the latest turn's feedback from state["history"]."""
-    history = state.get("history", [])
+    history = state["history"]
     if not history:
         return 0.0
     last = history[-1]
@@ -392,28 +390,34 @@ def partial_feedback_reward(parser: XMLParser, completion: Messages, state: Stat
 
 
 def candidate_reduction_reward(state: State, **kwargs) -> float:
-    """0-1 based on the fraction of incorrect candidate solutions eliminated by guesses."""
-    # Compute initial size from state config
+    """Normalized log reduction of the consistent candidate set.
+
+    0 when no reduction (final == initial); 1 when reduced to a single
+    candidate (final == 1). For solved episodes, treats final as 1 without
+    enumeration. This can be expensive for larger configurations.
+    """
     n = state["code_length"]
     c = state["num_symbols"]
     repeats = state["allow_duplicates"]
     initial = _space_size(n, c, repeats)
 
-    # Final size: shortcut when solved; otherwise compute and cache
+    # Degenerate case: no uncertainty to reduce
+    if initial == 1:
+        return 1.0 if state["is_solved"] else 0.0
+
     if state["is_solved"]:
-        final = 1.0
+        final = 1
     else:
-        # avoid recalculating if called more than once.
-        final_count = state.get("candidate_count_final")
-        if final_count is None:
-            history = state.get("history", [])
+        cached = state.get("candidate_count_final")
+        if isinstance(cached, int) and cached > 0:
+            final = cached
+        else:
+            history = state["history"]
             final = _candidate_count(n, c, repeats, history)
             state["candidate_count_final"] = final
 
-    final = max(final, 1.0)
-    # Normalized information gain on log scale, in [0, 1]
-    gain = (math.log(initial) - math.log(final)) / max(math.log(initial), 1e-9)
-    return max(0.0, min(gain, 1.0))
+    gain = (math.log(initial) - math.log(final)) / math.log(initial)
+    return float(gain)
 
 
 # ---------------------------
@@ -507,11 +511,11 @@ def load_environment(
     rubric = Rubric(parser=parser)
     # Primary success signal
     rubric.add_reward_func(solved_reward, weight=1.0)
-    # Finish sooner → higher reward
+    # Finish sooner for higher reward
     rubric.add_reward_func(speed_reward, weight=0.5)
     # Partial credit from last feedback
     rubric.add_reward_func(partial_feedback_reward, weight=0.3)
-    # Optional shaping via candidate space reduction (small weight)
+    # Optional shaping via candidate space reduction
     if use_candidate_reduction_reward:
         rubric.add_reward_func(candidate_reduction_reward, weight=0.1)
     # Output formatting

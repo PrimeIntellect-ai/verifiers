@@ -1,8 +1,8 @@
 Mastermind (Multi-Turn)
 
-Mastermind is a classic deductive reasoning game, first analyzed algorithmically by Donald Knuth, who showed that the standard 4×6 version can always be solved in at most five guesses using a minimax search strategy. For slightly larger boards, exact worst-case bounds are known only in a few cases, and the general problem is NP-hard to solve optimally. As the number of positions or colors increases, the combinatorial search space grows exponentially, making exhaustive reasoning infeasible. Larger puzzles therefore require adaptive, information-efficient strategies that can infer structure and make effective guesses under uncertainty.
+Mastermind is a classic deductive reasoning game, first analyzed algorithmically by Donald Knuth, who showed that the standard 4×6 version can always be solved in at most five guesses using a minimax search strategy. For slightly larger boards, exact worst-case bounds are known only in a few cases, and the general problem is NP-hard to solve optimally. Solving the puzzle in the allowed number of turns requires making guesses 
 
-The model plays the codebreaker and receives peg feedback after each guess until it either solves the code or runs out of attempts.
+The model plays the codebreaker and receives feedback after each guess until it either solves the code or runs out of attempts.
 
 - Code length: configurable (default 4)
 - Symbols: digits 0..S-1 (default 0..5)
