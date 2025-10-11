@@ -24,10 +24,8 @@ from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.generator import Generator
 from verifiers.rl.trainer.utils import (
-    entropy_from_logits,
     pad,
     prepare_peft_model,
-    selective_log_softmax,
 )
 from verifiers.types import Messages
 from verifiers.utils.logging_utils import print_prompt_completions_sample
@@ -313,8 +311,15 @@ class RLTrainer(Trainer):
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
-            all_entropies.append(entropy_from_logits(logits))
-            logps = selective_log_softmax(logits, input_ids_batch)
+            log_probs = torch.log_softmax(logits, dim=-1)
+            # Reuse the full log-softmax tensor for both entropy logging and the
+            # gathered per-token log probabilities to avoid redundant work.
+            all_entropies.append(
+                -(log_probs.exp() * log_probs).sum(dim=-1)
+            )
+            logps = log_probs.gather(
+                dim=-1, index=input_ids_batch.unsqueeze(-1)
+            ).squeeze(-1)
             all_logps.append(logps)
         log_probs = torch.cat(all_logps, dim=0)
         entropies = torch.cat(all_entropies, dim=0)
