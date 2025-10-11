@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import httpx
+import numpy as np
 from datasets import Dataset
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -209,6 +210,7 @@ class Generator:
         # Call environment generation
         self.is_generating = True
         assert self.client is not None
+        start_time = time.time()
         batch_ds = self.get_dataset_slice(batch_id)
         repeated_ds = batch_ds.repeat(self.rollouts_per_example)
         env_results = await self.env.a_generate(
@@ -220,6 +222,7 @@ class Generator:
             max_concurrent=self.max_concurrent,
         )
         self.is_generating = False
+        wall_clock_s = time.time() - start_time
 
         processed_results = self.env.process_env_results_vllm(
             prompts=env_results.prompt,
@@ -261,6 +264,60 @@ class Generator:
                     start = i
 
         metrics_dict = {}
+        if rewards:
+            rewards_arr = np.asarray(rewards, dtype=np.float32)
+            metrics_dict["reward/mean"] = float(rewards_arr.mean())
+            metrics_dict["reward/std"] = float(rewards_arr.std())
+            metrics_dict["reward/min"] = float(rewards_arr.min())
+            metrics_dict["reward/max"] = float(rewards_arr.max())
+
+        if advantages:
+            adv_arr = np.asarray(advantages, dtype=np.float32)
+            metrics_dict["advantage/std"] = float(adv_arr.std())
+            metrics_dict["advantage/max"] = float(adv_arr.max())
+
+        completion_lengths = [len(ids) for ids in processed_results.completion_ids]
+        if completion_lengths:
+            completion_lengths_arr = np.asarray(
+                completion_lengths, dtype=np.float32
+            )
+            metrics_dict["tokens/completion_mean"] = float(
+                completion_lengths_arr.mean()
+            )
+            metrics_dict["tokens/completion_max"] = float(
+                completion_lengths_arr.max()
+            )
+
+            completion_mask_lengths = np.asarray(
+                [sum(mask) for mask in processed_results.completion_mask],
+                dtype=np.float32,
+            )
+            valid_tokens = completion_mask_lengths.sum()
+            total_tokens = completion_lengths_arr.sum()
+            if total_tokens > 0:
+                masked_fraction = 1.0 - (valid_tokens / total_tokens)
+                metrics_dict["tokens/masked_fraction"] = float(masked_fraction)
+
+        generation_ms: list[float] = []
+        scoring_ms: list[float] = []
+        total_ms: list[float] = []
+        for state in env_results.state:
+            timing = state.get("timing", {})
+            if "generation_ms" in timing:
+                generation_ms.append(float(timing["generation_ms"]))
+            if "scoring_ms" in timing:
+                scoring_ms.append(float(timing["scoring_ms"]))
+            if "total_ms" in timing:
+                total_ms.append(float(timing["total_ms"]))
+
+        if generation_ms:
+            metrics_dict["timing/generation_ms"] = float(np.mean(generation_ms))
+        if scoring_ms:
+            metrics_dict["timing/scoring_ms"] = float(np.mean(scoring_ms))
+        if total_ms:
+            metrics_dict["timing/total_ms"] = float(np.mean(total_ms))
+
+        metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
 
         # build per-process microbatches
         N = len(processed_results.rewards)
@@ -301,6 +358,7 @@ class Generator:
         return Batch(
             batch_id=batch_id,
             microbatches=microbatches,
+            generation_time=wall_clock_s,
             rewards_dict=rewards_dict,
             completions=env_results.completion,
             prompts=env_results.prompt,
