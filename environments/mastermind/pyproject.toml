@@ -1,0 +1,16 @@
+[project]
+name = "mastermind"
+description = "Mastermind multi-turn game environment for Verifiers"
+tags = ["game", "multi-turn", "reasoning", "train", "eval"]
+version = "0.1.0"
+dependencies = [
+    "verifiers>=0.1.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mastermind.py", "README.md"]
+
