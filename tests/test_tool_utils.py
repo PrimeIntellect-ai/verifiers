@@ -1,7 +1,10 @@
 """Tests for the tool_utils module."""
 
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from typing import Optional
+
+from verifiers.types import Message
+from verifiers.envs.stateful_tool_env import StatefulToolEnv
+from verifiers.utils.tool_utils import build_schema_only_tool, convert_func_to_oai_tool
 
 
 class TestToolUtils:
@@ -177,3 +180,57 @@ class TestToolUtils:
                 "strict": True,
             },
         }
+
+    def test_build_schema_only_tool_skips_complex_args(self):
+        """Schema-only tools should drop skipped non-pydantic params from the generated schema."""
+
+        def complex_tool(
+            user_id: str,
+            msg: Message,
+            payload: list[dict[str, str]],
+            env: StatefulToolEnv,
+        ) -> str:
+            return "ok"
+
+        schema_stub = build_schema_only_tool(
+            complex_tool,
+            args_to_skip=["msg", "env"],
+        )
+        stub_schema = convert_func_to_oai_tool(schema_stub)
+        parameters = stub_schema["function"]["parameters"]
+        properties = parameters["properties"]
+        required = parameters.get("required", [])
+
+        assert set(properties) == {"user_id", "payload"}
+        assert "msg" not in properties
+        assert "env" not in properties
+        assert "msg" not in required
+        assert "env" not in required
+
+    def test_add_tool_to_stateful_tool_env(
+        self, mock_stateful_tool_env: StatefulToolEnv
+    ):
+        def complex_tool(
+            user_id: str,
+            msg: Message,
+            payload: list[dict[str, str]],
+            env: StatefulToolEnv,
+        ) -> str:
+            return "ok"
+
+        env = mock_stateful_tool_env
+        original_tool_count = len(env.tools)
+        env.add_tool(complex_tool, args_to_skip=["msg", "env"])
+
+        assert len(env.tools) == original_tool_count + 1
+        assert len(env.oai_tools) == original_tool_count + 1
+
+        oai_tool = env.oai_tools[-1]
+        props = oai_tool["function"]["parameters"]["properties"]
+        required = oai_tool["function"]["parameters"].get("required", [])
+        assert set(props) == {"user_id", "payload"}
+        assert "msg" not in props
+        assert "env" not in props
+        assert "msg" not in required
+        assert "env" not in required
+        assert env.skipped_args["complex_tool"] == ["msg", "env"]

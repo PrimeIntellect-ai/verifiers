@@ -7,7 +7,7 @@ from openai.types.chat import ChatCompletionFunctionToolParam
 from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import ChatCompletionMessageToolCall, Message, Messages, State
 from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
+from verifiers.utils.tool_utils import build_schema_only_tool, convert_func_to_oai_tool
 
 
 class StatefulToolEnv(ToolEnv):
@@ -38,22 +38,10 @@ class StatefulToolEnv(ToolEnv):
 
     def add_tool(self, tool: Callable, args_to_skip: list[str] = []):
         self.tools.append(tool)
-        oai_tool = convert_func_to_oai_tool(tool)
-        for arg in args_to_skip:
-            assert "function" in oai_tool
-            assert "parameters" in oai_tool["function"]
-            if (
-                "properties" in oai_tool["function"]["parameters"]
-                and isinstance(oai_tool["function"]["parameters"]["properties"], dict)
-                and arg in oai_tool["function"]["parameters"]["properties"]
-            ):
-                oai_tool["function"]["parameters"]["properties"].pop(arg)
-            if (
-                "required" in oai_tool["function"]["parameters"]
-                and isinstance(oai_tool["function"]["parameters"]["required"], list)
-                and arg in oai_tool["function"]["parameters"]["required"]
-            ):
-                oai_tool["function"]["parameters"]["required"].remove(arg)
+        schema_only_tool = build_schema_only_tool(tool, args_to_skip)
+        oai_tool = convert_func_to_oai_tool(schema_only_tool)
+        assert "function" in oai_tool
+        assert "parameters" in oai_tool["function"]
         if self.oai_tools is None:
             self.oai_tools = []
         self.oai_tools.append(oai_tool)
@@ -107,18 +95,22 @@ class StatefulToolEnv(ToolEnv):
         self, messages: Messages, state: State, **kwargs
     ) -> tuple[Messages, State]:
         assert isinstance(messages, list)
-        assert "tool_calls" in messages[-1]
-        tool_messages = []
-        for tool_call in messages[-1]["tool_calls"]:
-            assert isinstance(tool_call, ChatCompletionMessageToolCall)
-            tool_name: str = tool_call.function.name
-            tool_args: dict = json.loads(tool_call.function.arguments)
-            tool_call_id: str = tool_call.id or ""
-            tool_args = self.update_tool_args(
-                tool_name, tool_args, messages, state, **kwargs
-            )
-            tool_message: Message = await self.call_tool(
-                tool_name, tool_args, tool_call_id
-            )
-            tool_messages.append(tool_message)
-        return tool_messages, state
+        if self.disallow_non_tool_responses:
+            assert "tool_calls" in messages[-1]
+        if "tool_calls" in messages[-1]:
+            tool_messages = []
+            for tool_call in messages[-1]["tool_calls"]:
+                assert isinstance(tool_call, ChatCompletionMessageToolCall)
+                tool_name: str = tool_call.function.name
+                tool_args: dict = json.loads(tool_call.function.arguments)
+                tool_call_id: str = tool_call.id or ""
+                tool_args = self.update_tool_args(
+                    tool_name, tool_args, messages, state, **kwargs
+                )
+                tool_message: Message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id
+                )
+                tool_messages.append(tool_message)
+            return tool_messages, state
+        else:
+            return await self.response_to_non_tool_call(messages, state, **kwargs)
