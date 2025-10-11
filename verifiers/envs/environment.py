@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
         PreTrainedTokenizerBase,
     )
+    from verifiers.inference.policy import InferencePolicy
 
 
 class Environment(ABC):

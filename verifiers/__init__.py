@@ -24,6 +24,7 @@ from .utils.data_utils import (
     extract_hash_answer,
     load_example_dataset,
 )
+from .inference.policy import APIPolicy, InferencePolicy
 from .utils.env_utils import load_environment
 from .utils.logging_utils import print_prompt_completions_sample
 
@@ -83,6 +84,9 @@ __all__ = [
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    "InferencePolicy",
+    "APIPolicy",
+    "VLLMPolicy",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -110,6 +114,7 @@ _LAZY_IMPORTS = {
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
+    "VLLMPolicy": "verifiers.inference.backends.vllm_policy:VLLMPolicy",
 }
 
 
@@ -130,6 +135,7 @@ if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
+    from .inference.backends.vllm_policy import VLLMPolicy  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .trainers import (  # noqa: F401
         GRPOConfig,
