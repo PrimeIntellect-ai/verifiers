@@ -255,6 +255,8 @@ class TestEnvironmentBase:
         (
             prompt_ids,
             prompt_mask,
+            prompt_image_grid, 
+            prompt_pixel_value,
             completion_ids,
             completion_mask,
             completion_logprobs,
@@ -300,6 +302,8 @@ class TestEnvironmentBase:
         (
             prompt_ids,
             prompt_mask,
+            prompt_image_grid, 
+            prompt_pixel_value,
             completion_ids,
             completion_mask,
             completion_logprobs,
