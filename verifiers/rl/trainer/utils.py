@@ -17,6 +17,7 @@ from transformers import (
     TrainingArguments,
 )
 
+
 def get_model(
     model_name: str,
     use_liger: bool = True,
@@ -40,6 +41,7 @@ def get_model_and_tokenizer(
     model = get_model(model_name, use_liger, model_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
+
 
 def pad(
     tensors: list[torch.Tensor],
@@ -166,58 +168,79 @@ def prepare_peft_model(
     return model
 
 
-def split_tensor_dict(
-    tensor_dict: dict[str, Optional[torch.Tensor]], num_chunks: int
-) -> list[dict[str, Optional[torch.Tensor]]]:
-    """
-    Splits a dictionary of tensors along the first dimension into `num_chunks` equal parts.
-
-    Example:
-        >>> x = torch.arange(12).reshape(6, 2)
-        >>> y = torch.arange(6).reshape(6, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> split_tensor_dict(tensor_dict, 3)
-        [
-            {"x": tensor([[0, 1], [2, 3]]), "y": tensor([[0], [1]])},
-            {"x": tensor([[4, 5], [6, 7]]), "y": tensor([[2], [3]])},
-            {"x": tensor([[ 8,  9], [10, 11]]), "y": tensor([[4], [5]])}
-        ]
-    """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    chunk_size = first_tensor.shape[0] // num_chunks
-    return [
-        {
-            key: tensor[i * chunk_size : (i + 1) * chunk_size]
-            if tensor is not None
-            else None
-            for key, tensor in tensor_dict.items()
-        }
-        for i in range(num_chunks)
-    ]
-
-
-def shuffle_tensor_dict(
-    tensor_dict: dict[str, Optional[torch.Tensor]],
-) -> dict[str, Optional[torch.Tensor]]:
-    """
-    Shuffles a dictionary of tensors along the first dimension in unison.
-
-    Example:
-        >>> x = torch.arange(6).reshape(3, 2)
-        >>> y = torch.arange(3).reshape(3, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> shuffle_tensor_dict(tensor_dict)
-        {'x': tensor([[2, 3],
-                      [0, 1],
-                      [4, 5]]),
-         'y': tensor([[1],
-                      [0],
-                      [2]])}
-    """
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
-    batch_size = first_tensor.shape[0]
-    permutation = torch.randperm(batch_size)
+def init_stat_tracker(device: torch.device) -> dict[str, torch.Tensor]:
+    zero = torch.zeros((), device=device, dtype=torch.float32)
     return {
-        key: tensor[permutation] if tensor is not None else None
-        for key, tensor in tensor_dict.items()
+        "sum": zero.clone(),
+        "count": zero.clone(),
+        "min": torch.full((), float("inf"), device=device, dtype=torch.float32),
+        "max": torch.full((), float("-inf"), device=device, dtype=torch.float32),
     }
+
+
+def update_stat_tracker(
+    tracker: dict[str, torch.Tensor], summary: dict[str, torch.Tensor]
+) -> None:
+    tracker["sum"] = tracker["sum"] + summary["sum"]
+    tracker["count"] = tracker["count"] + summary["count"]
+    tracker["min"] = torch.minimum(tracker["min"], summary["min"])
+    tracker["max"] = torch.maximum(tracker["max"], summary["max"])
+
+
+def finalize_stat_tracker(
+    tracker: dict[str, torch.Tensor], accelerator
+) -> dict[str, float] | None:
+    total_count = accelerator.gather(tracker["count"]).sum()
+    if total_count.item() == 0:
+        return None
+
+    total_sum = accelerator.gather(tracker["sum"]).sum()
+    global_min = accelerator.gather(tracker["min"]).min()
+    global_max = accelerator.gather(tracker["max"]).max()
+
+    mean = (total_sum / total_count).float().item()
+    min_value = global_min.float().item()
+    max_value = global_max.float().item()
+
+    return {"mean": mean, "min": min_value, "max": max_value}
+
+
+def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
+    if values.numel() == 0:
+        return init_stat_tracker(values.device)
+    values = values.to(torch.float32)
+    return {
+        "sum": values.sum(),
+        "count": torch.tensor(
+            values.numel(), device=values.device, dtype=torch.float32
+        ),
+        "min": values.min(),
+        "max": values.max(),
+    }
+
+
+def gather_logprobs_and_entropy(
+    logits: torch.Tensor, target_token_ids: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Streamed variant of TRL's ``selective_log_softmax`` helper.
+
+    Materializing ``torch.log_softmax`` for the full ``(batch, seq_len, vocab)``
+    tensor increases peak memory versus the original TRL utility.  By
+    processing one batch row at a time we match that footprint while also
+    collecting entropy statistics for logging.
+    """
+
+    per_row_logprobs: list[torch.Tensor] = []
+    per_row_entropies: list[torch.Tensor] = []
+
+    for row_logits, row_token_ids in zip(logits, target_token_ids):
+        row_logprobs = torch.log_softmax(row_logits, dim=-1)
+        per_row_logprobs.append(
+            row_logprobs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
+        )
+        row_logprobs_detached = row_logprobs.detach()
+        per_row_entropies.append(
+            -(row_logprobs_detached.exp() * row_logprobs_detached).sum(dim=-1)
+        )
+
+    return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)

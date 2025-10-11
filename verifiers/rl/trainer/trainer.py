@@ -24,89 +24,16 @@ from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.generator import Generator
 from verifiers.rl.trainer.utils import (
+    finalize_stat_tracker,
+    gather_logprobs_and_entropy,
+    init_stat_tracker,
     pad,
     prepare_peft_model,
+    summarize_values,
+    update_stat_tracker,
 )
 from verifiers.types import Messages
 from verifiers.utils.logging_utils import print_prompt_completions_sample
-
-
-def init_stat_tracker(device: torch.device) -> dict[str, torch.Tensor]:
-    zero = torch.zeros((), device=device, dtype=torch.float32)
-    return {
-        "sum": zero.clone(),
-        "count": zero.clone(),
-        "min": torch.full((), float("inf"), device=device, dtype=torch.float32),
-        "max": torch.full((), float("-inf"), device=device, dtype=torch.float32),
-    }
-
-
-def update_stat_tracker(
-    tracker: dict[str, torch.Tensor], summary: dict[str, torch.Tensor]
-) -> None:
-    tracker["sum"] = tracker["sum"] + summary["sum"]
-    tracker["count"] = tracker["count"] + summary["count"]
-    tracker["min"] = torch.minimum(tracker["min"], summary["min"])
-    tracker["max"] = torch.maximum(tracker["max"], summary["max"])
-
-
-def finalize_stat_tracker(
-    tracker: dict[str, torch.Tensor], accelerator
-) -> dict[str, float] | None:
-    total_count = accelerator.gather(tracker["count"]).sum()
-    if total_count.item() == 0:
-        return None
-
-    total_sum = accelerator.gather(tracker["sum"]).sum()
-    global_min = accelerator.gather(tracker["min"]).min()
-    global_max = accelerator.gather(tracker["max"]).max()
-
-    mean = (total_sum / total_count).float().item()
-    min_value = global_min.float().item()
-    max_value = global_max.float().item()
-
-    return {"mean": mean, "min": min_value, "max": max_value}
-
-
-def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
-    if values.numel() == 0:
-        return init_stat_tracker(values.device)
-    values = values.to(torch.float32)
-    return {
-        "sum": values.sum(),
-        "count": torch.tensor(
-            values.numel(), device=values.device, dtype=torch.float32
-        ),
-        "min": values.min(),
-        "max": values.max(),
-    }
-
-
-def gather_logprobs_and_entropy(
-    logits: torch.Tensor, target_token_ids: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Streamed variant of TRL's ``selective_log_softmax`` helper.
-
-    Materializing ``torch.log_softmax`` for the full ``(batch, seq_len, vocab)``
-    tensor increases peak memory versus the original TRL utility.  By
-    processing one batch row at a time we match that footprint while also
-    collecting entropy statistics for logging.
-    """
-
-    per_row_logprobs: list[torch.Tensor] = []
-    per_row_entropies: list[torch.Tensor] = []
-
-    for row_logits, row_token_ids in zip(logits, target_token_ids):
-        row_logprobs = torch.log_softmax(row_logits, dim=-1)
-        per_row_logprobs.append(
-            row_logprobs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
-        )
-        row_logprobs_detached = row_logprobs.detach()
-        per_row_entropies.append(
-            -(row_logprobs_detached.exp() * row_logprobs_detached).sum(dim=-1)
-        )
-
-    return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)
 
 
 class RLTrainer(Trainer):
@@ -267,15 +194,13 @@ class RLTrainer(Trainer):
                 ),
             }
             with self.compute_loss_context_manager():
-                loss, summaries = self.compute_loss(
-                    model, mb_inputs, return_outputs=True
-                )
+                loss, summaries = self.compute_loss(model, mb_inputs)
             if self.args.n_gpu > 1:
                 loss = loss.mean()
             loss = loss / grad_accum_steps
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
-
+            assert isinstance(summaries, dict)
             update_stat_tracker(ratio_tracker, summaries["importance_sampling_ratio"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
 
@@ -287,12 +212,8 @@ class RLTrainer(Trainer):
             extra_metrics["sampling/importance_sampling_ratio/mean"] = ratio_stats[
                 "mean"
             ]
-            extra_metrics["sampling/importance_sampling_ratio/min"] = ratio_stats[
-                "min"
-            ]
-            extra_metrics["sampling/importance_sampling_ratio/max"] = ratio_stats[
-                "max"
-            ]
+            extra_metrics["sampling/importance_sampling_ratio/min"] = ratio_stats["min"]
+            extra_metrics["sampling/importance_sampling_ratio/max"] = ratio_stats["max"]
         if entropy_stats is not None:
             extra_metrics["entropy/mean"] = entropy_stats["mean"]
             extra_metrics["entropy/min"] = entropy_stats["min"]
@@ -415,9 +336,9 @@ class RLTrainer(Trainer):
         self,
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
-        return_outputs: bool = False,
+        return_outputs: bool = True,
         num_items_in_batch: torch.Tensor | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
@@ -482,19 +403,14 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            ratio_summary = summarize_values(
-                sampling_ratio[completion_mask.bool()]
-            )
-            entropy_summary = summarize_values(
-                entropies[completion_mask.bool()]
-            )
+            ratio_summary = summarize_values(sampling_ratio[completion_mask.bool()])
+            entropy_summary = summarize_values(entropies[completion_mask.bool()])
 
-        if return_outputs:
-            return loss, {
-                "importance_sampling_ratio": ratio_summary,
-                "entropy": entropy_summary,
-            }
-        return loss
+        summaries = {
+            "importance_sampling_ratio": ratio_summary,
+            "entropy": entropy_summary,
+        }
+        return loss, summaries
 
     def get_train_dataloader(self):
         class StepsDataset(Dataset):
@@ -585,4 +501,3 @@ class RLTrainer(Trainer):
             and self.state.global_step % self.args.torch_empty_cache_steps == 0
         ):
             clear_device_cache()
-

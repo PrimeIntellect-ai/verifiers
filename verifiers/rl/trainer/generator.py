@@ -70,7 +70,7 @@ class Generator:
         self.client_api_key = client_api_key
         self.client_limit = client_limit
         self.client_timeout = client_timeout
-        self.client = None  # Will be created in worker thread
+        self.client = None  # created in worker thread
         self.model_name = model_name
         self.sampling_args = sampling_args
         self.rollouts_per_example = rollouts_per_example
@@ -87,7 +87,7 @@ class Generator:
         self.max_concurrent = max_concurrent
         self.scale_rewards = scale_rewards
 
-        # Queues for communication
+        # queues for communication
         self.request_queue = queue.Queue()
         self.result_queue = queue.Queue()
         self.is_generating = False
@@ -126,10 +126,7 @@ class Generator:
         if total_rows == 0:
             raise ValueError("Environment dataset is empty")
         offset = (batch_id * num_rows) % total_rows
-        indices = [
-            (offset + i) % total_rows
-            for i in range(num_rows)
-        ]
+        indices = [(offset + i) % total_rows for i in range(num_rows)]
         return dataset.select(indices)
 
     def start(self):
@@ -215,7 +212,6 @@ class Generator:
         """
         Generate a single batch asynchronously.
         """
-        # Call environment generation
         self.is_generating = True
         assert self.client is not None
         start_time = time.time()
@@ -257,7 +253,9 @@ class Generator:
         else:
             prompts_in_batch = len(batch_ds)
             if prompts_in_batch == 0:
-                self.logger.warning("No prompts found in batch when computing advantages")
+                self.logger.warning(
+                    "No prompts found in batch when computing advantages"
+                )
             else:
                 for prompt_idx in range(prompts_in_batch):
                     group_indices = [
