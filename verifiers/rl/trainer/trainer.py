@@ -403,8 +403,15 @@ class RLTrainer(Trainer):
         model_logprobs, entropies = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
+        reference_logprobs = inputs.get("model_logprobs")
+        if reference_logprobs is not None:
+            reference_logprobs = reference_logprobs.to(model_logprobs.device)
+            reference_logprobs = reference_logprobs[:, -logits_to_keep:]
+            reference_logprobs = reference_logprobs.detach()
+        else:
+            reference_logprobs = model_logprobs.detach()
         advantages = inputs["advantages"]
-        log_ratio = model_logprobs - sampling_logprobs
+        log_ratio = model_logprobs - reference_logprobs
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
@@ -427,17 +434,18 @@ class RLTrainer(Trainer):
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
-        ratio_values = torch.exp(log_ratio.detach())
-        ratio_values = torch.clamp(
-            ratio_values,
-            max=self.vllm_importance_sampling_cap,
-        )
-        ratio_values = torch.where(
-            completion_mask.bool(),
-            ratio_values,
-            torch.ones_like(ratio_values),
-        )
-        per_token_loss = per_token_loss * ratio_values
+        with torch.no_grad():
+            sampling_ratio = torch.exp(reference_logprobs - sampling_logprobs)
+            sampling_ratio = torch.clamp(
+                sampling_ratio,
+                max=self.vllm_importance_sampling_cap,
+            )
+            sampling_ratio = torch.where(
+                completion_mask.bool(),
+                sampling_ratio,
+                torch.ones_like(sampling_ratio),
+            )
+        per_token_loss = per_token_loss * sampling_ratio
 
         if self.loss_type == "grpo":
             loss = (
@@ -455,7 +463,9 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            ratio_summary = summarize_values(ratio_values[completion_mask.bool()])
+            ratio_summary = summarize_values(
+                sampling_ratio[completion_mask.bool()]
+            )
             entropy_summary = summarize_values(
                 entropies[completion_mask.bool()]
             )
