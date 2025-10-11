@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, cast
+from typing import Any, Dict, cast
 
 import numpy as np
 from datasets import Dataset
@@ -17,6 +17,7 @@ from verifiers import setup_logging
 from verifiers.types import Endpoints
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.sampling_utils import SamplingArgs, merge_sampling_args
 
 # Setup logger for eval script using verifiers logging format
 logger = logging.getLogger("verifiers.scripts.eval")
@@ -33,9 +34,7 @@ def eval_environment(
     num_examples: int,
     rollouts_per_example: int,
     max_concurrent: int,
-    max_tokens: int | None,
-    temperature: float | None,
-    sampling_args: dict | None,
+    sampling_args: dict[str, Any],
     verbose: bool,
     save_dataset: bool,
     save_to_hf_hub: bool,
@@ -98,14 +97,6 @@ def eval_environment(
     )
     logger.debug(f"Initialized OpenAI client with base_url: {api_base_url}")
     vf_env = vf.load_environment(env_id=env, **env_args)
-    # Merge sampling args with precedence to JSON payload over explicit flags
-    merged_sampling_args: dict = {}
-    if sampling_args is not None:
-        merged_sampling_args.update(sampling_args)
-    if "max_tokens" not in merged_sampling_args:
-        merged_sampling_args["max_tokens"] = max_tokens
-    if temperature is not None and "temperature" not in merged_sampling_args:
-        merged_sampling_args["temperature"] = temperature
 
     logger.info(f"Starting evaluation with model: {model}")
     logger.info(
@@ -115,7 +106,7 @@ def eval_environment(
     results = vf_env.evaluate(
         client=client,
         model=model,
-        sampling_args=merged_sampling_args,
+        sampling_args=sampling_args,
         num_examples=num_examples,
         rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
@@ -183,7 +174,7 @@ def eval_environment(
             "model": model,
             "num_examples": n,
             "rollouts_per_example": rollouts_per_example,
-            "sampling_args": merged_sampling_args,
+            "sampling_args": sampling_args,
             "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "time_ms": (end_time - start_time) * 1000,
             "avg_reward": sum(results.reward) / len(results.reward),
@@ -294,14 +285,54 @@ def main():
         help="Maximum number of concurrent requests",
     )
     parser.add_argument(
+        "--temperature",
+        "-T",
+        type=float,
+        default=None,
+        help="Temperature for sampling. Higher values make output more random.",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Nucleus sampling cumulative probability cutoff (0, 1].",
+    )
+    parser.add_argument(
         "--max-tokens",
         "-t",
         type=int,
         default=None,
-        help="Maximum number of tokens to generate (unset to use model default)",
+        help="Maximum number of tokens to generate (uses model default when unset).",
     )
     parser.add_argument(
-        "--temperature", "-T", type=float, default=None, help="Temperature for sampling"
+        "--presence-penalty",
+        type=float,
+        default=None,
+        help="Presence penalty discourages repeating previously seen tokens.",
+    )
+    parser.add_argument(
+        "--frequency-penalty",
+        type=float,
+        default=None,
+        help="Frequency penalty scales by how often tokens have appeared.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Top-k filtering keeps the highest probability tokens only.",
+    )
+    parser.add_argument(
+        "--min-p",
+        type=float,
+        default=None,
+        help="Minimum token probability threshold scaled by the most likely token.",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        help="Values >1 discourage repetition, <1 encourage it.",
     )
     parser.add_argument(
         "--sampling-args",
@@ -309,8 +340,9 @@ def main():
         type=json.loads,
         default=None,
         help=(
-            "Sampling arguments as JSON object. Keys here override --max-tokens/--temperature. "
-            'Example: \'{"enable_thinking": false, "max_tokens": 256}\''
+            "Advanced: Sampling arguments as JSON object. Keys here override explicit flags. "
+            "Useful for provider-specific options. "
+            'Example: \'{"enable_thinking": false, "guided_decoding_regex": "..."}\''
         ),
     )
     parser.add_argument(
@@ -350,6 +382,18 @@ def main():
             raise ValueError("--header name cannot be empty")
         merged_headers[k] = v
 
+    base_sampling_args = SamplingArgs(
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_tokens=args.max_tokens,
+        presence_penalty=args.presence_penalty,
+        frequency_penalty=args.frequency_penalty,
+        top_k=args.top_k,
+        min_p=args.min_p,
+        repetition_penalty=args.repetition_penalty,
+    )
+    merged_sampling_args = merge_sampling_args(base_sampling_args, args.sampling_args)
+
     eval_environment(
         env=args.env,
         env_args=args.env_args,
@@ -361,9 +405,7 @@ def main():
         num_examples=args.num_examples,
         rollouts_per_example=args.rollouts_per_example,
         max_concurrent=args.max_concurrent,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        sampling_args=args.sampling_args,
+        sampling_args=merged_sampling_args,
         verbose=args.verbose,
         save_dataset=args.save_dataset,
         save_to_hf_hub=args.save_to_hf_hub,
