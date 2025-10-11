@@ -19,6 +19,14 @@ from transformers import (
 )
 
 
+def entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Compute the per-token entropy from logits."""
+
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    probs = log_probs.exp()
+    return -(probs * log_probs).sum(dim=-1)
+
+
 def get_model(
     model_name: str,
     use_liger: bool = True,
