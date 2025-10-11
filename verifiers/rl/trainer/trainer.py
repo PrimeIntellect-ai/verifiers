@@ -454,10 +454,11 @@ class RLTrainer(Trainer):
             )
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
-        ratio_summary = summarize_values(ratio_values[completion_mask.bool()])
-        entropy_summary = summarize_values(
-            entropies.detach()[completion_mask.bool()]
-        )
+        with torch.no_grad():
+            ratio_summary = summarize_values(ratio_values[completion_mask.bool()])
+            entropy_summary = summarize_values(
+                entropies[completion_mask.bool()]
+            )
 
         if return_outputs:
             return loss, {
