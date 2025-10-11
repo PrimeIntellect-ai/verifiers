@@ -121,8 +121,16 @@ class Generator:
     def get_dataset_slice(self, batch_id: int) -> Dataset:
         """Get dataset slice for a given batch id"""
         num_rows = self.prompts_per_batch
-        offset = batch_id * num_rows % len(self.env.get_dataset())
-        return self.env.get_dataset().select(range(offset, offset + num_rows))
+        dataset = self.env.get_dataset()
+        total_rows = len(dataset)
+        if total_rows == 0:
+            raise ValueError("Environment dataset is empty")
+        offset = (batch_id * num_rows) % total_rows
+        indices = [
+            (offset + i) % total_rows
+            for i in range(num_rows)
+        ]
+        return dataset.select(indices)
 
     def start(self):
         """Start the async generation worker thread"""
@@ -241,27 +249,28 @@ class Generator:
             rewards_dict[k] = env_results.metrics[k]
 
         rewards: list[float] = processed_results.rewards
-        prompts_seq = env_results.prompt
         advantages: list[float] = [0.0] * len(rewards)
         if self.scale_rewards == "batch":
             mean_r = sum(rewards) / float(len(rewards))
             for i, r in enumerate(rewards):
                 advantages[i] = r - mean_r
         else:
-            start = 0
-            for i in range(1, len(rewards) + 1):
-                end_group = False
-                if i == len(rewards):
-                    end_group = True
-                else:
-                    end_group = prompts_seq[i] != prompts_seq[i - 1]
-                if end_group:
-                    group = rewards[start:i]
-                    if group:
-                        gmean = sum(group) / float(len(group))
-                        for j, r in enumerate(group):
-                            advantages[start + j] = r - gmean
-                    start = i
+            prompts_in_batch = len(batch_ds)
+            if prompts_in_batch == 0:
+                self.logger.warning("No prompts found in batch when computing advantages")
+            else:
+                for prompt_idx in range(prompts_in_batch):
+                    group_indices = [
+                        prompt_idx + k * prompts_in_batch
+                        for k in range(self.rollouts_per_example)
+                        if (prompt_idx + k * prompts_in_batch) < len(rewards)
+                    ]
+                    if not group_indices:
+                        continue
+                    group = [rewards[i] for i in group_indices]
+                    gmean = sum(group) / float(len(group))
+                    for idx, r in zip(group_indices, group):
+                        advantages[idx] = r - gmean
 
         metrics_dict = {}
         if rewards:
