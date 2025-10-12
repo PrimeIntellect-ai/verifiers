@@ -50,6 +50,10 @@ $$
                        c_{\text{vllm}}\right),
 $$
 
+where $c_{\text{vllm}} = \texttt{RLConfig.vllm\_importance\_sampling\_cap}$ clamps
+the ratios derived from vLLM's cached log probabilities (default $2.0$, compared
+to Prime RL's $8.0$ cap).
+
 and the per-token gradient contribution becomes
 
 $$

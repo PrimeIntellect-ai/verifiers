@@ -92,6 +92,13 @@ class RLConfig(TrainingArguments):
         default=0.2,
         metadata={"help": "Epsilon value for clipping."},
     )
+    vllm_importance_sampling_cap: float = field(
+        default=2.0,
+        metadata={
+            "help": "Upper bound applied to the importance sampling ratios derived from vLLM log "
+            "probabilities. Mirrors the ratio clipping used in prime-rl (default 8.0 there).",
+        },
+    )
     importance_sampling_level: str = field(
         default="token",
         metadata={
@@ -308,6 +315,11 @@ class RLConfig(TrainingArguments):
         # configure output dir
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
+
+        if self.vllm_importance_sampling_cap <= 0:
+            raise ValueError(
+                "`vllm_importance_sampling_cap` must be a positive value."
+            )
 
         # configure lora
         if not self.use_lora:
