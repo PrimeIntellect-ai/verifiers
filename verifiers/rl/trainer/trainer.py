@@ -152,6 +152,7 @@ class RLTrainer(Trainer):
             return total_loss
 
         world_size = max(self.accelerator.num_processes, 1)
+        # ddp/zero3 average gradients across ranks, so scale by per-rank items
         loss_denominator = torch.tensor(
             float(batch.global_item_count) / float(world_size),
             device=self.accelerator.device,
@@ -208,12 +209,13 @@ class RLTrainer(Trainer):
 
         ratio_mean = finalize_stat_tracker(ratio_tracker, self.accelerator)
         entropy_mean = finalize_stat_tracker(entropy_tracker, self.accelerator)
+        assert ratio_mean is not None
+        assert entropy_mean is not None
 
-        extra_metrics: dict[str, float] = {}
-        if ratio_mean is not None:
-            extra_metrics["sampling/importance_sampling_ratio"] = ratio_mean
-        if entropy_mean is not None:
-            extra_metrics["entropy"] = entropy_mean
+        extra_metrics: dict[str, float] = {
+            "sampling/importance_sampling_ratio": ratio_mean,
+            "entropy": entropy_mean,
+        }
 
         if self.accelerator.is_main_process:
             metrics_to_log = {**batch.metrics_dict, **extra_metrics}
@@ -333,8 +335,10 @@ class RLTrainer(Trainer):
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,
+        num_items_in_batch: int | None = None,
         loss_denominator: torch.Tensor | float | int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+        del num_items_in_batch  # trainer passes this for gradient accumulation; scaling stays here
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
@@ -388,7 +392,7 @@ class RLTrainer(Trainer):
             device=per_token_loss.device,
             dtype=per_token_loss.dtype,
         )
-        tiny = torch.finfo(denominator.dtype).tiny
+        tiny = torch.finfo(denominator.dtype).tiny  # tiny avoids divide-by-zero drift
         denominator = torch.clamp_min(denominator, tiny)
 
         masked_loss = per_token_loss * completion_mask
