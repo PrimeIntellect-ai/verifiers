@@ -18,7 +18,7 @@ from verifiers.envs.multiturn_env import MultiTurnEnv
 
 class MultiTurnMixin:
     """
-    Mixin that adds multi-turn rollout support to TRL's GRPOTrainer.
+    Mixin that adds multi-turn rollout support to TRL's Trainers.
 
     This mixin overrides the generation process to:
     1. Generate full multi-turn conversations using the environment
@@ -63,7 +63,9 @@ class MultiTurnMixin:
         self, inputs: List[Dict[str, Union[torch.Tensor, Any]]]
     ) -> Dict[str, Union[torch.Tensor, Any]]:
         """
-        Override TRL's generation to provide multi-turn rollouts.
+        Override TRL's unified generation interface to provide multi-turn rollouts.
+
+        Used by GRPO, RLOO, and OnlineDPO trainers (via unified interface).
 
         For multi-turn environments, this generates full conversations.
         For single-turn environments, it falls back to standard generation.

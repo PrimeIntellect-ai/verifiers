@@ -11,6 +11,7 @@ from .grpo_config import GRPOConfig
 from .grpo_trainer import GRPOTrainer
 from .verifiers_grpo_trainer import VerifiersGRPOTrainer, VerifiersGRPOConfig
 from .verifiers_rloo_trainer import VerifiersRLOOTrainer, VerifiersRLOOConfig
+from .verifiers_online_dpo_trainer import VerifiersOnlineDPOTrainer, VerifiersOnlineDPOConfig
 from .environment_reward_adapter import EnvironmentRewardAdapter
 from .multi_turn_mixin import MultiTurnMixin
 
@@ -57,6 +58,8 @@ __all__ = [
     "VerifiersGRPOConfig",
     "VerifiersRLOOTrainer",
     "VerifiersRLOOConfig",
+    "VerifiersOnlineDPOTrainer",
+    "VerifiersOnlineDPOConfig",
     "EnvironmentRewardAdapter",
     "MultiTurnMixin",
     "grpo_defaults",

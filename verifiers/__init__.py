@@ -100,6 +100,8 @@ __all__ = [
     "VerifiersGRPOConfig",
     "VerifiersRLOOTrainer",
     "VerifiersRLOOConfig",
+    "VerifiersOnlineDPOTrainer",
+    "VerifiersOnlineDPOConfig",
 ]
 
 _LAZY_IMPORTS = {
@@ -143,6 +145,8 @@ if TYPE_CHECKING:
         VerifiersGRPOConfig,
         VerifiersRLOOTrainer,
         VerifiersRLOOConfig,
+        VerifiersOnlineDPOTrainer,
+        VerifiersOnlineDPOConfig,
     )
     from .utils.model_utils import (  # noqa: F401
         get_model,

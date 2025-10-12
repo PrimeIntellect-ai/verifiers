@@ -8,7 +8,6 @@ to convert the verifiers Environment rubric scoring system to TRL's reward funct
 import asyncio
 import concurrent.futures
 import logging
-from typing import Optional
 
 from verifiers.envs import Environment
 
@@ -32,7 +31,9 @@ class EnvironmentRewardAdapter:
         self.logger = logging.getLogger(__name__)
         self.__name__ = f"EnvironmentRewardAdapter_{type(env).__name__}"
 
-    def __call__(self, prompts: list[str], completions: list[str], **kwargs) -> list[float]:
+    def __call__(
+        self, prompts: list[str], completions: list[str], **kwargs
+    ) -> list[float]:
         """
         Convert TRL's reward function format to verifiers format and compute rewards.
 
