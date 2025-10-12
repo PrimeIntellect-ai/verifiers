@@ -4,9 +4,9 @@ This guide covers training models with Verifiers using GRPO (Group Relative Poli
 
 ## Training options
 
-You can train with the built-in `GRPOTrainer` or with the external `prime-rl` project.
+You can train with the built-in `RLTrainer` (exported as `vf.GRPOTrainer`) or with the external `prime-rl` project.
 
-- Use `GRPOTrainer` when you want a lightweight Python training loop, LoRA/PEFT support, or small-to-mid scale runs (2–16 GPUs) using Accelerate/DeepSpeed.
+- Use `vf.GRPOTrainer` when you want a lightweight Python training loop, LoRA/PEFT support, or small-to-mid scale runs (2–16 GPUs) using Accelerate/DeepSpeed.
 - Use `prime-rl` when you want an FSDP-first, higher-throughput setup with more configuration surface area and performance-oriented defaults.
 
 ### Summary of similarities and differences
@@ -16,12 +16,12 @@ You can train with the built-in `GRPOTrainer` or with the external `prime-rl` pr
   - One-step off-policy overlap by default (generate at step n-1 while training at step n)
 
 - Differences
-  - GRPOTrainer: Accelerate/DeepSpeed-based; optional LoRA/PEFT; easy to script and extend in Python
+- RLTrainer: Accelerate/DeepSpeed-based; optional LoRA/PEFT; easy to script and extend in Python
   - PRIME-RL: FSDP-first; `rl` entrypoint; strong checkpointing; extensive CLI/TOML configuration
 
-## Train with GRPOTrainer
+## Train with RLTrainer
 
-The included `GRPOTrainer` supports GRPO-style training via Accelerate/DeepSpeed with vLLM inference. It's designed for:
+The included trainer exposes GRPO-style updates via Accelerate/DeepSpeed with vLLM inference. It overlaps generation with training, scales losses by the global sample count, and logs aggregate reward components (overall and per-function means, standard deviation). It's designed for:
 - LoRA and smaller setups (2–16 GPUs)
 - Full-parameter finetuning
 - Experimentation and prototyping

@@ -173,8 +173,6 @@ def init_stat_tracker(device: torch.device) -> dict[str, torch.Tensor]:
     return {
         "sum": zero.clone(),
         "count": zero.clone(),
-        "min": torch.full((), float("inf"), device=device, dtype=torch.float32),
-        "max": torch.full((), float("-inf"), device=device, dtype=torch.float32),
     }
 
 
@@ -183,26 +181,19 @@ def update_stat_tracker(
 ) -> None:
     tracker["sum"] = tracker["sum"] + summary["sum"]
     tracker["count"] = tracker["count"] + summary["count"]
-    tracker["min"] = torch.minimum(tracker["min"], summary["min"])
-    tracker["max"] = torch.maximum(tracker["max"], summary["max"])
 
 
 def finalize_stat_tracker(
     tracker: dict[str, torch.Tensor], accelerator
-) -> dict[str, float] | None:
+) -> float | None:
     total_count = accelerator.gather(tracker["count"]).sum()
     if total_count.item() == 0:
         return None
 
     total_sum = accelerator.gather(tracker["sum"]).sum()
-    global_min = accelerator.gather(tracker["min"]).min()
-    global_max = accelerator.gather(tracker["max"]).max()
-
     mean = (total_sum / total_count).float().item()
-    min_value = global_min.float().item()
-    max_value = global_max.float().item()
 
-    return {"mean": mean, "min": min_value, "max": max_value}
+    return mean
 
 
 def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -214,8 +205,6 @@ def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
         "count": torch.tensor(
             values.numel(), device=values.device, dtype=torch.float32
         ),
-        "min": values.min(),
-        "max": values.max(),
     }
 
 

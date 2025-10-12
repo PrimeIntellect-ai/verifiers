@@ -112,6 +112,7 @@ class RLTrainer(Trainer):
                 zero_truncated_completions=args.zero_truncated_completions,
                 max_concurrent=args.max_concurrent,
                 scale_rewards=args.scale_rewards,
+                loss_type=self.loss_type,
             )
             self.generator.start()
             self.generator.submit_batch(0)
@@ -148,76 +149,75 @@ class RLTrainer(Trainer):
         model.train()
         total_loss = torch.zeros((), device=self.accelerator.device)
         local_microbatches = batch.microbatches[self.accelerator.process_index]
-        grad_accum_steps = max(len(local_microbatches), 1)
 
+        if batch.global_item_count <= 0:
+            return total_loss
+
+        world_size = max(self.accelerator.num_processes, 1)
+        # ddp/zero3 average gradients across ranks, so scale by per-rank items
+        loss_denominator = torch.tensor(
+            float(batch.global_item_count) / float(world_size),
+            device=self.accelerator.device,
+            dtype=torch.float32,
+        )
         entropy_tracker = init_stat_tracker(self.accelerator.device)
         ratio_tracker = init_stat_tracker(self.accelerator.device)
 
-        for microbatch in local_microbatches:
-            mb_input_ids = microbatch.input_ids
-            mb_attention_mask = microbatch.attention_mask
-            mb_sampling_logprobs = microbatch.sampling_logprobs
-            mb_advantages = microbatch.advantages
+        device = self.accelerator.device
+        pad_token_id = self.processing_class.pad_token_id
+        assert pad_token_id is not None
 
+        for microbatch in local_microbatches:
             input_ids = pad(
-                [torch.tensor(x, device=self.accelerator.device) for x in mb_input_ids],
-                padding_value=self.processing_class.pad_token_id,  # type: ignore :(
+                [torch.tensor(x, device=device) for x in microbatch.input_ids],
+                padding_value=pad_token_id,  # type: ignore :(
                 padding_side="right",
             )
             attention_mask = pad(
-                [
-                    torch.tensor(x, device=self.accelerator.device)
-                    for x in mb_attention_mask
-                ],
+                [torch.tensor(x, device=device) for x in microbatch.attention_mask],
                 padding_side="right",
             )
             sampling_logprobs = pad(
                 [
-                    torch.tensor(x, device=self.accelerator.device)
-                    for x in mb_sampling_logprobs
+                    torch.tensor(x, device=device)
+                    for x in microbatch.sampling_logprobs
                 ],
                 padding_value=0,
                 padding_side="right",
             )
 
-            if self.max_seq_len is not None and input_ids.size(1) > self.max_seq_len:
-                input_ids = input_ids[:, -self.max_seq_len :]
-                attention_mask = attention_mask[:, -self.max_seq_len :]
-                sampling_logprobs = sampling_logprobs[:, -self.max_seq_len :]
+            input_ids = input_ids[:, -self.max_seq_len :]
+            attention_mask = attention_mask[:, -self.max_seq_len :]
+            sampling_logprobs = sampling_logprobs[:, -self.max_seq_len :]
 
             mb_inputs = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "sampling_logprobs": sampling_logprobs,
-                "advantages": torch.tensor(
-                    mb_advantages, device=self.accelerator.device
-                ),
+                "advantages": torch.tensor(microbatch.advantages, device=device),
             }
             with self.compute_loss_context_manager():
-                loss, summaries = self.compute_loss(model, mb_inputs)
-            if self.args.n_gpu > 1:
-                loss = loss.mean()
-            loss = loss / grad_accum_steps
+                loss, summaries = self.compute_loss(
+                    model,
+                    mb_inputs,
+                    return_outputs=True,
+                    loss_denominator=loss_denominator,
+                )
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
             assert isinstance(summaries, dict)
             update_stat_tracker(ratio_tracker, summaries["importance_sampling_ratio"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
 
-        ratio_stats = finalize_stat_tracker(ratio_tracker, self.accelerator)
-        entropy_stats = finalize_stat_tracker(entropy_tracker, self.accelerator)
+        ratio_mean = finalize_stat_tracker(ratio_tracker, self.accelerator)
+        entropy_mean = finalize_stat_tracker(entropy_tracker, self.accelerator)
+        assert ratio_mean is not None
+        assert entropy_mean is not None
 
-        extra_metrics: dict[str, float] = {}
-        if ratio_stats is not None:
-            extra_metrics["sampling/importance_sampling_ratio/mean"] = ratio_stats[
-                "mean"
-            ]
-            extra_metrics["sampling/importance_sampling_ratio/min"] = ratio_stats["min"]
-            extra_metrics["sampling/importance_sampling_ratio/max"] = ratio_stats["max"]
-        if entropy_stats is not None:
-            extra_metrics["entropy/mean"] = entropy_stats["mean"]
-            extra_metrics["entropy/min"] = entropy_stats["min"]
-            extra_metrics["entropy/max"] = entropy_stats["max"]
+        extra_metrics: dict[str, float] = {
+            "sampling/importance_sampling_ratio": ratio_mean,
+            "entropy": entropy_mean,
+        }
 
         if self.accelerator.is_main_process:
             metrics_to_log = {**batch.metrics_dict, **extra_metrics}
@@ -336,9 +336,11 @@ class RLTrainer(Trainer):
         self,
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
-        return_outputs: bool = True,
-        num_items_in_batch: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+        return_outputs: bool = False,
+        num_items_in_batch: int | None = None,
+        loss_denominator: torch.Tensor | float | int | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+        del num_items_in_batch  # trainer passes this for gradient accumulation; scaling stays here
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
@@ -387,19 +389,22 @@ class RLTrainer(Trainer):
             )
         per_token_loss = per_token_loss * sampling_ratio
 
+        denominator = torch.as_tensor(
+            loss_denominator,
+            device=per_token_loss.device,
+            dtype=per_token_loss.dtype,
+        )
+        tiny = torch.finfo(denominator.dtype).tiny  # tiny avoids divide-by-zero drift
+        denominator = torch.clamp_min(denominator, tiny)
+
+        masked_loss = per_token_loss * completion_mask
         if self.loss_type == "grpo":
-            loss = (
-                (per_token_loss * completion_mask).sum(-1)
-                / completion_mask.sum(-1).clamp(min=1.0)
-            ).mean()
-        elif self.loss_type == "bnpo":
-            loss = (
-                per_token_loss * completion_mask
-            ).sum() / completion_mask.sum().clamp(min=1.0)
-        elif self.loss_type == "dr_grpo":
-            loss = (per_token_loss * completion_mask).sum() / (
-                per_token_loss.size(0) * self.max_seq_len
+            per_sequence_loss = masked_loss.sum(-1) / completion_mask.sum(-1).clamp(
+                min=1.0
             )
+            loss = per_sequence_loss.sum() / denominator
+        elif self.loss_type == "dr_grpo":
+            loss = masked_loss.sum() / denominator
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
