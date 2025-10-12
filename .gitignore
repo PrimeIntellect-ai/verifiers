@@ -10,6 +10,7 @@ uv.lock
 .cursor/
 .ropeproject/
 .scratch/
+.chroma_db/
 
 # artifacts
 core.* 
