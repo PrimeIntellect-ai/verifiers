@@ -76,7 +76,7 @@ class EnvironmentRewardAdapter:
 
             # Default parameters for verifiers
             answers = [""] * len(prompts)
-            states = [{}] * len(prompts)
+            states = [{"timing": {"total_ms": 0}} for _ in range(len(prompts))]
             tasks = ["default"] * len(prompts)
             infos = [{}] * len(prompts)
 
