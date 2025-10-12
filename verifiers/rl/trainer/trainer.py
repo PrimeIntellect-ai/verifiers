@@ -34,6 +34,8 @@ from verifiers.rl.trainer.utils import (
 )
 from verifiers.types import Messages
 from verifiers.utils.logging_utils import print_prompt_completions_sample
+
+
 class RLTrainer(Trainer):
     def __init__(
         self,
@@ -203,7 +205,7 @@ class RLTrainer(Trainer):
                 )
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
-
+            assert isinstance(summaries, dict)
             update_stat_tracker(ratio_tracker, summaries["importance_sampling_ratio"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
 
@@ -406,19 +408,14 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            ratio_summary = summarize_values(
-                sampling_ratio[completion_mask.bool()]
-            )
-            entropy_summary = summarize_values(
-                entropies[completion_mask.bool()]
-            )
+            ratio_summary = summarize_values(sampling_ratio[completion_mask.bool()])
+            entropy_summary = summarize_values(entropies[completion_mask.bool()])
 
-        if return_outputs:
-            return loss, {
-                "importance_sampling_ratio": ratio_summary,
-                "entropy": entropy_summary,
-            }
-        return loss
+        summaries = {
+            "importance_sampling_ratio": ratio_summary,
+            "entropy": entropy_summary,
+        }
+        return loss, summaries
 
     def get_train_dataloader(self):
         class StepsDataset(Dataset):
@@ -509,4 +506,3 @@ class RLTrainer(Trainer):
             and self.state.global_step % self.args.torch_empty_cache_steps == 0
         ):
             clear_device_cache()
-
