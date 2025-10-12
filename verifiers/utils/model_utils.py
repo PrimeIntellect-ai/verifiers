@@ -1,13 +1,13 @@
 from importlib.util import find_spec
 from typing import Any, Callable
 
+
 import torch  # type: ignore[unresolved-import]
 import torch.nn as nn  # type: ignore[unresolved-import]
 from transformers import (  # type: ignore[unresolved-import]
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-
 
 class _ForwardRedirection:
     """Implements the `forward-redirection`.
