@@ -5,8 +5,6 @@ This provides only the essential functionality needed to use verifiers environme
 with TRL's robust GRPOTrainer implementation.
 """
 
-import asyncio
-import concurrent.futures
 import logging
 from typing import Optional
 
@@ -17,6 +15,7 @@ from peft import PeftConfig
 
 from verifiers import Environment
 from verifiers.trainers.multi_turn_mixin import MultiTurnMixin
+from verifiers.trainers.environment_reward_adapter import EnvironmentRewardAdapter
 
 
 class VerifiersGRPOConfig(TRLGRPOConfig):
@@ -41,66 +40,6 @@ class VerifiersGRPOConfig(TRLGRPOConfig):
 
         # Initialize TRL config with remaining parameters
         super().__init__(*args, **kwargs)
-
-
-class EnvironmentRewardAdapter:
-    """
-    Bridge between TRL's reward function interface and verifiers Environment.
-
-    TRL expects: reward_func(prompts: list[str], completions: list[str]) -> list[float]
-    Verifiers provides: rubric.score_rollouts(...) -> RolloutScores
-    """
-
-    def __init__(self, env: Environment):
-        self.env = env
-        self.logger = logging.getLogger(__name__)
-        self.__name__ = f"EnvironmentRewardAdapter_{type(env).__name__}"
-
-    def __call__(
-        self, prompts: list[str], completions: list[str], **kwargs
-    ) -> list[float]:
-        """TRL-compatible reward function interface."""
-        try:
-            if not (hasattr(self.env, "rubric") and self.env.rubric):
-                self.logger.warning("No rubric found, using default rewards")
-                return [1.0] * len(prompts)
-
-            # Convert to verifiers format
-            prompt_messages = [
-                [{"role": "user", "content": str(prompt)}] for prompt in prompts
-            ]
-            completion_messages = [
-                [{"role": "assistant", "content": str(completion)}]
-                for completion in completions
-            ]
-
-            # Default parameters for verifiers
-            answers = [""] * len(prompts)
-            states = [{"timing": {"total_ms": 0}} for _ in range(len(prompts))]
-            tasks = ["default"] * len(prompts)
-            infos = [{}] * len(prompts)
-
-            # Run scoring in isolated thread to avoid async conflicts
-            def scoring_thread():
-                return asyncio.run(
-                    self.env.rubric.score_rollouts(
-                        prompt_messages,
-                        completion_messages,
-                        answers,
-                        states,
-                        tasks,
-                        infos,
-                    )
-                )
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                rollout_scores = executor.submit(scoring_thread).result(timeout=60)
-
-            return rollout_scores.reward
-
-        except Exception as e:
-            self.logger.error(f"Environment reward computation failed: {e}")
-            return [0.0] * len(prompts)
 
 
 class VerifiersGRPOTrainer(MultiTurnMixin, TRLGRPOTrainer):

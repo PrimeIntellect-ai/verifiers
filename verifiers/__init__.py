@@ -98,6 +98,8 @@ __all__ = [
     "lora_defaults",
     "VerifiersGRPOTrainer",
     "VerifiersGRPOConfig",
+    "VerifiersRLOOTrainer",
+    "VerifiersRLOOConfig",
 ]
 
 _LAZY_IMPORTS = {
@@ -139,6 +141,8 @@ if TYPE_CHECKING:
         lora_defaults,
         VerifiersGRPOTrainer,
         VerifiersGRPOConfig,
+        VerifiersRLOOTrainer,
+        VerifiersRLOOConfig,
     )
     from .utils.model_utils import (  # noqa: F401
         get_model,
