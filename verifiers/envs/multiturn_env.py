@@ -112,21 +112,15 @@ class MultiTurnEnv(Environment):
                 assert isinstance(rollout, list)
                 assert isinstance(completion, list)
                 assert isinstance(response, ChatCompletion)
-                response_text: str = ""
-                if response.choices and response.choices[0].message:
-                    response_text = response.choices[0].message.content or ""
+                response_text: str = response.choices[0].message.content or ""  # type: ignore
                 response_message: ChatMessage = {
                     "role": "assistant",
                     "content": response_text,
                 }
-                if (
-                    response.choices
-                    and response.choices[0].message
-                    and response.choices[0].message.tool_calls
-                ):
-                    response_message["tool_calls"] = response.choices[
+                if response.choices[0].message.tool_calls:
+                    response_message["tool_calls"] = response.choices[  # type: ignore
                         0
-                    ].message.tool_calls  # type:ignore
+                    ].message.tool_calls
                 rollout.append(response_message)
                 completion.append(response_message)
             else:
@@ -134,9 +128,7 @@ class MultiTurnEnv(Environment):
                 assert isinstance(completion, str)
                 assert isinstance(response, Completion)
                 state["responses_start_idx"].append(len(completion))
-                response_text: str = ""
-                if response.choices and response.choices[0]:
-                    response_text = response.choices[0].text or ""
+                response_text: str = response.choices[0].text or ""  # type: ignore
                 rollout += response_text
                 completion += response_text
             state["turn"] += 1
