@@ -80,6 +80,7 @@ class RLTrainer(Trainer):
         self.epsilon = args.epsilon
         self.loss_type = args.loss_type
         self.importance_sampling_level = args.importance_sampling_level
+        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         # generator (main process only)
         if self.accelerator.is_main_process:
@@ -362,7 +363,12 @@ class RLTrainer(Trainer):
                 f"Unknown importance sampling level: {self.importance_sampling_level}"
             )
 
-        coef_1 = torch.exp(log_importance_weights)
+        importance_ratio = torch.exp(log_importance_weights)
+        importance_ratio = torch.clamp(
+            importance_ratio,
+            max=self.vllm_importance_sampling_cap,
+        )
+        coef_1 = importance_ratio
         coef_2 = torch.clamp(
             coef_1,
             min=1 - self.epsilon,
@@ -391,7 +397,10 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            importance_ratio = torch.exp(log_importance_weights)
+            importance_ratio = torch.clamp(
+                torch.exp(log_importance_weights),
+                max=self.vllm_importance_sampling_cap,
+            )
             ratio_summary = summarize_values(
                 importance_ratio[completion_mask.bool()]
             )
