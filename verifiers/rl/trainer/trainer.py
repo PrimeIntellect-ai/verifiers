@@ -80,7 +80,6 @@ class RLTrainer(Trainer):
         self.epsilon = args.epsilon
         self.loss_type = args.loss_type
         self.importance_sampling_level = args.importance_sampling_level
-        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
 
         # generator (main process only)
         if self.accelerator.is_main_process:
@@ -351,9 +350,8 @@ class RLTrainer(Trainer):
         model_logprobs, entropies = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
-        reference_logprobs = model_logprobs.detach()
         advantages = inputs["advantages"]
-        log_ratio = model_logprobs - reference_logprobs
+        log_ratio = model_logprobs - sampling_logprobs
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
@@ -376,19 +374,6 @@ class RLTrainer(Trainer):
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
-        with torch.no_grad():
-            sampling_ratio = torch.exp(reference_logprobs - sampling_logprobs)
-            sampling_ratio = torch.clamp(
-                sampling_ratio,
-                max=self.vllm_importance_sampling_cap,
-            )
-            sampling_ratio = torch.where(
-                completion_mask.bool(),
-                sampling_ratio,
-                torch.ones_like(sampling_ratio),
-            )
-        per_token_loss = per_token_loss * sampling_ratio
-
         denominator = torch.as_tensor(
             loss_denominator,
             device=per_token_loss.device,
@@ -408,7 +393,10 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            ratio_summary = summarize_values(sampling_ratio[completion_mask.bool()])
+            importance_ratio = torch.exp(log_importance_weights)
+            ratio_summary = summarize_values(
+                importance_ratio[completion_mask.bool()]
+            )
             entropy_summary = summarize_values(entropies[completion_mask.bool()])
 
         summaries = {

@@ -144,14 +144,6 @@ class RLConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to give zero reward to truncated completions."},
     )
-    vllm_importance_sampling_cap: float = field(
-        default=2.0,
-        metadata={
-            "help": "Truncation parameter C for Truncated Importance Sampling (TIS). This sets an upper bound on the "
-            "importance sampling ratio, improving training stability."
-        },
-    )
-
     # sampling_args for generation
     max_tokens: Optional[int] = field(
         default=None,
