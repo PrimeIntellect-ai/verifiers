@@ -29,6 +29,8 @@ class Batch(BaseModel):
 
     batch_id: int
     microbatches: list[list[Microbatch]]
+    items_per_process: list[int]
+    global_item_count: int
     # logging
     generation_time: float = 0.0
     prompts: list[Any] = Field(default_factory=list)
@@ -64,6 +66,7 @@ class Generator:
         zero_truncated_completions: bool,
         max_concurrent: int,
         scale_rewards: str,
+        loss_type: str,
     ):
         self.env = env
         self.client_base_url = client_base_url
@@ -86,6 +89,7 @@ class Generator:
         self.zero_truncated_completions = zero_truncated_completions
         self.max_concurrent = max_concurrent
         self.scale_rewards = scale_rewards
+        self.loss_type = loss_type
 
         # Queues for communication
         self.request_queue = queue.Queue()
@@ -275,23 +279,25 @@ class Generator:
         metrics_dict = {}
         if rewards:
             rewards_arr = np.asarray(rewards, dtype=np.float32)
-            metrics_dict["reward/mean"] = float(rewards_arr.mean())
+            metrics_dict["reward"] = float(rewards_arr.mean())
             metrics_dict["reward/std"] = float(rewards_arr.std())
-            metrics_dict["reward/min"] = float(rewards_arr.min())
-            metrics_dict["reward/max"] = float(rewards_arr.max())
 
         if advantages:
             adv_arr = np.asarray(advantages, dtype=np.float32)
-            metrics_dict["advantage/std"] = float(adv_arr.std())
-            metrics_dict["advantage/max"] = float(adv_arr.max())
+            metrics_dict["advantage/absmean"] = float(np.abs(adv_arr).mean())
+
+        for reward_name, values in env_results.metrics.items():
+            if len(values) == 0:
+                continue
+            reward_values = np.asarray(values, dtype=np.float32)
+            metrics_dict[f"reward/{reward_name}"] = float(reward_values.mean())
 
         completion_lengths = [len(ids) for ids in processed_results.completion_ids]
         if completion_lengths:
             completion_lengths_arr = np.asarray(completion_lengths, dtype=np.float32)
-            metrics_dict["tokens/completion_mean"] = float(
+            metrics_dict["tokens/completion"] = float(
                 completion_lengths_arr.mean()
             )
-            metrics_dict["tokens/completion_max"] = float(completion_lengths_arr.max())
 
             completion_mask_lengths = np.asarray(
                 [sum(mask) for mask in processed_results.completion_mask],
@@ -328,10 +334,12 @@ class Generator:
         N = len(processed_results.rewards)
         per_proc = N // self.num_processes
         microbatches: list[list[Microbatch]] = []
+        items_per_process: list[int] = []
         for proc in range(self.num_processes):
             ps = proc * per_proc
             pe = ps + per_proc
             proc_mbs: list[Microbatch] = []
+            proc_item_total = 0
             for s in range(ps, pe, self.micro_batch_size):
                 e = min(s + self.micro_batch_size, pe)
                 ids_chunk = [
@@ -350,22 +358,34 @@ class Generator:
                     for i in range(s, e)
                 ]
                 adv_chunk = [advantages[i] for i in range(s, e)]
-                proc_mbs.append(
-                    Microbatch(
-                        input_ids=ids_chunk,
-                        attention_mask=mask_chunk,
-                        sampling_logprobs=slogp_chunk,
-                        advantages=adv_chunk,
-                    )
+                microbatch = Microbatch(
+                    input_ids=ids_chunk,
+                    attention_mask=mask_chunk,
+                    sampling_logprobs=slogp_chunk,
+                    advantages=adv_chunk,
                 )
+                proc_item_total += self.count_microbatch_items(microbatch)
+                proc_mbs.append(microbatch)
             microbatches.append(proc_mbs)
+            items_per_process.append(proc_item_total)
+
+        global_item_count = sum(items_per_process)
 
         return Batch(
             batch_id=batch_id,
             microbatches=microbatches,
+            items_per_process=items_per_process,
+            global_item_count=global_item_count,
             generation_time=wall_clock_s,
             rewards_dict=rewards_dict,
             completions=env_results.completion,
             prompts=env_results.prompt,
             metrics_dict=metrics_dict,
         )
+
+    def count_microbatch_items(self, microbatch: Microbatch) -> int:
+        if self.loss_type == "grpo":
+            return len(microbatch.input_ids)
+        if self.loss_type == "dr_grpo":
+            return len(microbatch.input_ids) * self.max_seq_len
+        raise ValueError(f"Unknown loss type: {self.loss_type}")

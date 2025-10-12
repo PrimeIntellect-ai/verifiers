@@ -1,9 +1,10 @@
 ### Verifiers Trainers
 
-This directory contains the built-in GRPO trainer and configuration utilities for training with Verifiers environments.
+This directory contains the built-in RL trainer and configuration utilities for training with Verifiers environments.
 
 - **Modules**: `RLTrainer`, `RLConfig`, `rl_defaults`, `lora_defaults`
-- **Exports**: available directly from `verifiers` (lazy-imported)
+- **Exports**: available directly from `verifiers` (lazy-imported as `vf.GRPOTrainer`)
+- **Features**: async vLLM rollouts, distributed loss scaling, aggregated reward metrics, LoRA/full-parameter support
 
 ### Installation
 
