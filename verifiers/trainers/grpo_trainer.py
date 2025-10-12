@@ -8,21 +8,42 @@ from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 
 import datasets
 import numpy as np
-import torch
-import wandb
-from accelerate.utils import broadcast_object_list, gather_object, is_peft_model
-from peft import PeftConfig, get_peft_model
-from torch.utils.data import DataLoader, Sampler
-from transformers import AutoModelForCausalLM
-from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-from transformers.modeling_utils import PreTrainedModel
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-from transformers.trainer import Trainer
-from transformers.trainer_callback import TrainerCallback
-from transformers.trainer_utils import seed_worker
-from trl.models import create_reference_model, prepare_deepspeed
-from trl.trainer.callbacks import SyncRefModelCallback
-from trl.trainer.utils import disable_dropout_in_model, pad, selective_log_softmax
+import torch  # type: ignore[unresolved-import]
+import wandb  # type: ignore[unresolved-import]
+from accelerate.utils import (  # type: ignore[unresolved-import]
+    broadcast_object_list,
+    gather_object,
+    is_peft_model,
+)
+from peft import PeftConfig, get_peft_model  # type: ignore[unresolved-import]
+from torch.utils.data import DataLoader, Sampler  # type: ignore[unresolved-import]
+from transformers import AutoModelForCausalLM  # type: ignore[unresolved-import]
+from transformers.integrations.deepspeed import (  # type: ignore[unresolved-import]
+    is_deepspeed_zero3_enabled,
+)
+from transformers.modeling_utils import (  # type: ignore[unresolved-import]
+    PreTrainedModel,
+)
+from transformers.tokenization_utils_base import (  # type: ignore[unresolved-import]
+    PreTrainedTokenizerBase,
+)
+from transformers.trainer import Trainer  # type: ignore[unresolved-import]
+from transformers.trainer_callback import (  # type: ignore[unresolved-import]
+    TrainerCallback,
+)
+from transformers.trainer_utils import seed_worker  # type: ignore[unresolved-import]
+from trl.models import (  # type: ignore[unresolved-import]
+    create_reference_model,
+    prepare_deepspeed,
+)
+from trl.trainer.callbacks import (  # type: ignore[unresolved-import]
+    SyncRefModelCallback,
+)
+from trl.trainer.utils import (  # type: ignore[unresolved-import]
+    disable_dropout_in_model,
+    pad,
+    selective_log_softmax,
+)
 
 from verifiers import Environment
 from verifiers.trainers.async_batch_generator import AsyncBatchGenerator, BatchRequest
@@ -130,7 +151,12 @@ class RepeatSampler(Sampler):
                         yield index
 
     def __len__(self) -> int:
-        return (self.num_samples // self.batch_size) * self.batch_size * self.mini_repeat_count * self.repeat_count
+        return (
+            (self.num_samples // self.batch_size)
+            * self.batch_size
+            * self.mini_repeat_count
+            * self.repeat_count
+        )
 
 
 # torch.nanstd doesn't exist, so we define it here
@@ -411,7 +437,7 @@ class GRPOTrainer(Trainer):
             train_dataset = train_dataset.filter(
                 filter_by_prompt_length,
                 num_proc=self.max_data_workers,
-                fn_kwargs={"processing_class": processing_class}
+                fn_kwargs={"processing_class": processing_class},
             )
             filtered_size = len(train_dataset)
             if filtered_size < original_size:
@@ -751,7 +777,7 @@ class GRPOTrainer(Trainer):
         deepspeed_plugin = self.accelerator.state.deepspeed_plugin
         zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
         if zero_stage_3:
-            import deepspeed
+            import deepspeed  # type: ignore[unresolved-import]
 
             gather_if_zero3 = deepspeed.zero.GatheredParameters
         else:
@@ -1135,12 +1161,22 @@ class GRPOTrainer(Trainer):
                     all_completion_ids=broadcast_data["completion_ids"],
                     all_prompt_mask=broadcast_data["prompt_mask"],
                 )
+            with torch.no_grad():
+                completion_mask = attention_mask[:, 1:]
+                logits_to_keep = completion_mask.size(1)
+                old_per_token_logps = self._get_per_token_logps(
+                    self.model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size=self.per_device_train_batch_size,
+                )
 
             # Concatenate all data for shuffling
             full_batch = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
-                "old_per_token_logps": None,
+                "old_per_token_logps": old_per_token_logps,
                 "advantages": advantages,
             }
 

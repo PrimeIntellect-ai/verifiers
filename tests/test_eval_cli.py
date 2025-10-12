@@ -44,7 +44,7 @@ def test_cli_sampling_args_precedence_over_flags(monkeypatch):
             self.api_key = api_key
             self.base_url = base_url
 
-    monkeypatch.setattr(vf_eval, "OpenAI", DummyOpenAI)
+    monkeypatch.setattr(vf_eval, "setup_client", lambda *args, **kwargs: DummyOpenAI())
 
     # Run evaluation with JSON sampling args overriding flags
     vf_eval.eval_environment(
@@ -55,6 +55,7 @@ def test_cli_sampling_args_precedence_over_flags(monkeypatch):
         model="gpt-4.1-mini",
         api_key_var="OPENAI_API_KEY",
         api_base_url="https://api.openai.com/v1",
+        extra_headers={},
         num_examples=1,
         rollouts_per_example=1,
         max_concurrent=1,
@@ -93,7 +94,7 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
             self.api_key = api_key
             self.base_url = base_url
 
-    monkeypatch.setattr(vf_eval, "OpenAI", DummyOpenAI)
+    monkeypatch.setattr(vf_eval, "setup_client", lambda *args, **kwargs: DummyOpenAI())
 
     # Run evaluation with JSON lacking max_tokens/temperature
     vf_eval.eval_environment(
@@ -104,6 +105,7 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
         model="gpt-4.1-mini",
         api_key_var="OPENAI_API_KEY",
         api_base_url="https://api.openai.com/v1",
+        extra_headers={},
         num_examples=1,
         rollouts_per_example=1,
         max_concurrent=1,

@@ -1,0 +1,103 @@
+name: Tag and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v1.2.3)'
+        required: true
+        type: string
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged release (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Checkout tagged release (push)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$PUSHED_REF"
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "Unable to determine release tag" >&2
+            exit 1
+          fi
+
+          case "$TAG" in
+            v*)
+              ;;
+            *)
+              echo "Release tags must be prefixed with 'v' (received '$TAG')" >&2
+              exit 1
+              ;;
+          esac
+
+          VERSION="${TAG#v}"
+          FILE_VERSION=$(python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("verifiers/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in verifiers/__init__.py")
+          print(match.group(1))
+          PY
+          )
+
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "Version mismatch: tag requests '$VERSION' but verifiers/__init__.py defines '$FILE_VERSION'" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --token "$PYPI_TOKEN" 
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          files: |
+            dist/*
+          generate_release_notes: true

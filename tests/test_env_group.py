@@ -1,5 +1,6 @@
 """Tests for the EnvGroup class."""
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -80,7 +81,9 @@ class TestEnvGroupRubric:
             prompt="Test prompt",
             completion="Test completion",
             answer="Test answer",
-            state={},
+            state={
+                "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}
+            },
             task="math",
         )
 
@@ -243,8 +246,17 @@ class TestEnvGroup:
         )
 
         # Mock the rollout methods to return different values
-        env1.rollout = AsyncMock(return_value=("response1", {"env": "env1"}))
-        env2.rollout = AsyncMock(return_value=("response2", {"env": "env2"}))
+        async def env1_rollout(*args, **kwargs):
+            return "response1", {"env": "env1"}
+
+        async def env2_rollout(*args, **kwargs):
+            return "response2", {"env": "env2"}
+
+        # Explicitly mark shadowing as intentional for the type checker, and keep references to mocks
+        env1_rollout_mock = AsyncMock(side_effect=env1_rollout)
+        env2_rollout_mock = AsyncMock(side_effect=env2_rollout)
+        env1.rollout = env1_rollout_mock  # type: ignore[method-assign]
+        env2.rollout = env2_rollout_mock  # type: ignore[method-assign]
 
         env_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
 
@@ -258,12 +270,12 @@ class TestEnvGroup:
 
         assert result1 == "response1"
         assert state1["env"] == "env1"
-        env1.rollout.assert_called_once()
-        env2.rollout.assert_not_called()
+        env1_rollout_mock.assert_called_once()
+        env2_rollout_mock.assert_not_called()
 
         # Reset mocks
-        env1.rollout.reset_mock()
-        env2.rollout.reset_mock()
+        env1_rollout_mock.reset_mock()
+        env2_rollout_mock.reset_mock()
 
         # Test routing to code environment
         result2, state2 = await env_group.rollout(
@@ -275,8 +287,8 @@ class TestEnvGroup:
 
         assert result2 == "response2"
         assert state2["env"] == "env2"
-        env1.rollout.assert_not_called()
-        env2.rollout.assert_called_once()
+        env1_rollout_mock.assert_not_called()
+        env2_rollout_mock.assert_called_once()
 
     def test_get_env_for_task(self, mock_openai_client):
         """Test getting environment for a specific task."""
@@ -320,8 +332,10 @@ class TestEnvGroup:
 
         env_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
 
-        # Mock the scoring
-        env_group.rubric.score_rollouts = AsyncMock(
+        # Mock the scoring with a properly-typed cast
+        from typing import cast
+
+        cast(Any, env_group.rubric).score_rollouts = AsyncMock(
             return_value=RolloutScores(reward=[0.8, 0.9], metrics={})
         )
 
@@ -373,6 +387,7 @@ class TestEnvGroup:
 
         # Should have concatenated eval datasets from both
         eval_dataset = env_group.get_eval_dataset()
+        assert eval_dataset is not None
         assert len(eval_dataset) == 2
         assert eval_dataset["task"][0] == "task1"
         assert eval_dataset["task"][1] == "task2"

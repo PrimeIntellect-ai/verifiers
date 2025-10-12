@@ -1,9 +1,12 @@
 from importlib.util import find_spec
 from typing import Any, Callable
 
-import torch
-import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+import torch  # type: ignore[unresolved-import]
+import torch.nn as nn  # type: ignore[unresolved-import]
+from transformers import (  # type: ignore[unresolved-import]
+    AutoModelForCausalLM,
+    AutoTokenizer,
+)
 
 
 class _ForwardRedirection:
@@ -82,7 +85,9 @@ def get_model(
         )
     if is_liger_available() and use_liger:
         print("Using Liger kernel")
-        from liger_kernel.transformers import AutoLigerKernelForCausalLM  # type: ignore
+        from liger_kernel.transformers import (  # type: ignore[unresolved-import]
+            AutoLigerKernelForCausalLM,
+        )
 
         return AutoLigerKernelForCausalLM.from_pretrained(model_name, **model_kwargs)
     else:

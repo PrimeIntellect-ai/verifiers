@@ -19,18 +19,37 @@ class ToolEnv(MultiTurnEnv):
         self.max_turns = max_turns
         self.error_formatter = error_formatter
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
-        self.tool_map = {tool.__name__: tool for tool in self.tools}
+        self.tool_map = {
+            getattr(tool, "__name__", tool.__class__.__name__): tool
+            for tool in self.tools
+        }
         super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
+
+    def add_tool(self, tool: Callable):
+        self.tools.append(tool)
+        if self.oai_tools is None:
+            self.oai_tools = []
+        self.oai_tools.append(convert_func_to_oai_tool(tool))
+        self.tool_map[getattr(tool, "__name__", tool.__class__.__name__)] = tool
+
+    def remove_tool(self, tool: Callable):
+        self.tools.remove(tool)
+        if self.oai_tools is None:
+            self.oai_tools = []
+        self.oai_tools.remove(convert_func_to_oai_tool(tool))
+        tool_name = getattr(tool, "__name__", tool.__class__.__name__)
+        self.tool_map.pop(tool_name)
 
     async def is_completed(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> bool:
+        completed = await super().is_completed(messages, state, **kwargs)
         assert isinstance(messages, list)
         is_assistant_message = messages[-1]["role"] == "assistant"
         no_tool_calls = (
             "tool_calls" not in messages[-1] or messages[-1]["tool_calls"] is None
         )
-        return is_assistant_message and no_tool_calls
+        return completed or (is_assistant_message and no_tool_calls)
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
@@ -38,7 +57,7 @@ class ToolEnv(MultiTurnEnv):
         """Call a tool based on JSON command."""
         try:
             tool_func = self.tool_map[tool_name]
-            result = str(await maybe_await(tool_func, **tool_args))
+            result = await maybe_await(tool_func, **tool_args)
             return {
                 "role": "tool",
                 "content": str(result),
@@ -58,10 +77,15 @@ class ToolEnv(MultiTurnEnv):
         assert "tool_calls" in messages[-1]
         tool_messages = []
         for tool_call in messages[-1]["tool_calls"]:
-            assert isinstance(tool_call, ChatCompletionMessageToolCall)
-            tool_name: str = tool_call.function.name
-            tool_args: dict = json.loads(tool_call.function.arguments)
-            tool_call_id: str = tool_call.id or ""
+            match tool_call:
+                case ChatCompletionMessageToolCall():
+                    tool_name: str = tool_call.function.name
+                    tool_args: dict = json.loads(tool_call.function.arguments)
+                    tool_call_id: str = tool_call.id or ""
+                case _:
+                    tool_name: str = tool_call["function"]["name"]
+                    tool_args: dict = json.loads(tool_call["function"]["arguments"])
+                    tool_call_id: str = tool_call["id"]
             tool_message: Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
             )

@@ -37,7 +37,7 @@ def load_environment(
     dataset = dataset.shuffle(seed=777)
 
     judge_client = OpenAI(api_key=os.getenv(judge_api_key_var), base_url=judge_base_url)
-    judge_prompt = """Evaluate this base model contination from a prefix, compared to the true continuation from Wikipedia.
+    judge_prompt = """Evaluate this base model continuation from a prefix, compared to the true continuation from Wikipedia.
 
 <prefix>
 {question}
@@ -67,8 +67,8 @@ Think aloud in a <scratchpad> for a few lines, then respond with the letter grad
 
     grade_parser = vf.XMLParser(fields=["grade"], answer_field="grade")
 
-    def grade_reward(prompt, completion, answer, state, **kwargs) -> float:
-        judge_response = rubric.judge(prompt, completion, answer, state, **kwargs)
+    async def grade_reward(judge, prompt, completion, answer, state, **kwargs) -> float:
+        judge_response = await judge(prompt, completion, answer, state, **kwargs)
         judge_grade = (
             (grade_parser.parse_answer(judge_response) or "F")
             .strip()

@@ -1,11 +1,11 @@
 try:
-    import torch._dynamo  # type: ignore
+    import torch._dynamo  # type: ignore[unresolved-import]
 
-    torch._dynamo.config.suppress_errors = True  # type: ignore
+    torch._dynamo.config.suppress_errors = True  # type: ignore[attr-defined]
 except ImportError:
     pass
 
-from peft import LoraConfig  # type: ignore
+from peft import LoraConfig  # type: ignore[unresolved-import]
 
 from .grpo_config import GRPOConfig
 from .grpo_trainer import GRPOTrainer

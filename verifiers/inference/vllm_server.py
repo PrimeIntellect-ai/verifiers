@@ -67,6 +67,7 @@ class WeightSyncWorkerExtension:
 
     pynccl_comm = None  # Communicator for weight updates
     client_rank = None  # Source rank for broadcasting updated weights
+    device = None  # Device to use for weight updates
 
     def init_communicator(self, host: str, port: int, world_size: int) -> None:
         """
@@ -92,7 +93,7 @@ class WeightSyncWorkerExtension:
         pg = StatelessProcessGroup.create(
             host=host, port=port, rank=rank, world_size=world_size
         )
-        self.pynccl_comm = PyNcclCommunicator(pg, device=self.device)  # type: ignore
+        self.pynccl_comm = PyNcclCommunicator(pg, device=self.device)
         self.client_rank = world_size - 1
 
     def update_named_param(self, name: str, dtype: str, shape: Sequence[int]) -> None:

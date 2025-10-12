@@ -2,7 +2,8 @@
 name = "math-group"
 version = "0.1.0"
 dependencies = [
-    "verifiers>=0.1.2",
+    "verifiers>=0.1.4",
+    "math-verify>=0.8.0",
 ]
 
 [build-system]

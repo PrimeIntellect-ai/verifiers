@@ -2,7 +2,7 @@
 name = "xml-tool-env"
 version = "0.1.0"
 dependencies = [
-    "verifiers>=0.1.2",
+    "verifiers>=0.1.4",
 ]
 
 [build-system]

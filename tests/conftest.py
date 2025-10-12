@@ -10,7 +10,9 @@ from verifiers import (
     Parser,
     Rubric,
     SingleTurnEnv,
+    StatefulToolEnv,
     ThinkParser,
+    ToolEnv,
     XMLParser,
 )
 
@@ -257,8 +259,10 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
         )
         self.env_response_count = 0
 
-    def is_completed(self, messages, state, **kwargs):
+    async def is_completed(self, messages, state, **kwargs):
         """Simple completion logic for testing."""
+        if await self.max_turns_reached(state):
+            return True
         if self.completion_condition == "answer":
             # Complete when assistant says "DONE"
             if messages and messages[-1].get("role") == "assistant":
@@ -319,6 +323,66 @@ def mock_multiturn_env_max_turns(mock_openai_client, sample_chat_dataset):
         dataset=sample_chat_dataset,
         max_turns=2,
         completion_condition="max_turns",  # Never complete naturally
+        parser=Parser(),
+        rubric=Rubric(),
+    )
+
+
+def square_tool(x: int) -> int:
+    return x * x
+
+
+def faulty_tool() -> None:
+    raise ValueError("failure")
+
+
+class BasicToolEnv(ToolEnv):
+    def __init__(self, **kwargs):
+        super().__init__(tools=[square_tool], **kwargs)
+
+
+@pytest.fixture
+def mock_tool_env(mock_openai_client, sample_chat_dataset):
+    return BasicToolEnv(
+        client=mock_openai_client,
+        model="test-model",
+        dataset=sample_chat_dataset,
+        parser=Parser(),
+        rubric=Rubric(),
+    )
+
+
+def offset_tool(x: int, offset: int) -> int:
+    return x + offset
+
+
+def secret_tool(x: int, secret: int) -> int:
+    return x + secret
+
+
+class ExampleStatefulToolEnv(StatefulToolEnv):
+    def __init__(self, **kwargs):
+        super().__init__(tools=[offset_tool], **kwargs)
+
+    async def setup_state(self, state, **kwargs):
+        state = await super().setup_state(state, **kwargs)
+        state["offset"] = 3
+        state["update_calls"] = 0
+        return state
+
+    def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+        state["update_calls"] += 1
+        updated_args = {**tool_args, "offset": state["offset"]}
+        state["last_tool_args"] = updated_args.copy()
+        return updated_args
+
+
+@pytest.fixture
+def mock_stateful_tool_env(mock_openai_client, sample_chat_dataset):
+    return ExampleStatefulToolEnv(
+        client=mock_openai_client,
+        model="test-model",
+        dataset=sample_chat_dataset,
         parser=Parser(),
         rubric=Rubric(),
     )

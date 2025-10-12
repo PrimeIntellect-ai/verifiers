@@ -52,12 +52,14 @@ class DoubleCheckEnv(MultiTurnEnv):
     def get_reward_weights(self, **kwargs) -> List[float]:
         return self.rubric.get_reward_weights()
 
-    def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+        """Check if the environment is completed."""
         return len(state["responses"]) == 1
 
-    def env_response(
+    async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Tuple[Messages, State]:
+        """Generate a response from the environment."""
         return [{"role": "user", "content": "Are you sure?"}], state
 
 

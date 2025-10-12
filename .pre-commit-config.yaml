@@ -8,3 +8,16 @@ repos:
       # Run the formatter.
       - id: ruff-format
         args: [--config=pyproject.toml]
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: ty
+        args:
+          - check
+          - --exit-zero
+          - --output-format=concise
+        language: python
+        additional_dependencies:
+          - ty==0.0.1a21
+        types_or: [python, pyi]

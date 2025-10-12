@@ -1,4 +1,19 @@
 ENDPOINTS = {
+    "qwen3-30b-i": {
+        "model": "qwen/qwen3-30b-a3b-instruct-2507",
+        "url": "https://api.pinference.ai/api/v1",
+        "key": "PRIME_API_KEY",
+    },
+    "qwen3-22b-": {
+        "model": "qwen/qwen3-30b-a3b-instruct-2507",
+        "url": "https://api.pinference.ai/api/v1",
+        "key": "PRIME_API_KEY",
+    },
+    "qwen3-next-thinking": {
+        "model": "qwen/qwen3-next-80b-a3b-thinking",
+        "url": "https://openrouter.ai/api/v1",
+        "key": "OPENROUTER_API_KEY",
+    },
     "my-model": {
         "model": "my-model",
         "url": "https://some-endpoint.com/v1",

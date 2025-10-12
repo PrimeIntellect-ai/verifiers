@@ -1,4 +1,4 @@
-from math_verify import parse, verify
+from math_verify import parse, verify  # type: ignore[unresolved-import]
 
 from verifiers.parsers.parser import Parser
 from verifiers.parsers.think_parser import ThinkParser

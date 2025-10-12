@@ -11,12 +11,6 @@ class TestParser:
         assert isinstance(basic_parser, Parser)
         assert hasattr(basic_parser, "logger")
 
-    def test_parser_with_kwargs(self):
-        """Test that Parser accepts arbitrary kwargs."""
-        parser = Parser(custom_attr="test_value", number=42)
-        assert parser.custom_attr == "test_value"
-        assert parser.number == 42
-
     def test_parse_returns_text_as_is(self, basic_parser):
         """Test that parse method returns text unchanged."""
         text = "This is a test string"

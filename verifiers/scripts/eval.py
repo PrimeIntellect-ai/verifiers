@@ -3,20 +3,23 @@ import importlib
 import importlib.util
 import json
 import logging
-import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, cast
 
 import numpy as np
 from datasets import Dataset
-from openai import OpenAI
 
 import verifiers as vf
+from verifiers import setup_logging
+from verifiers.types import Endpoints
+from verifiers.utils.client_utils import setup_client
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
-# Setup logger for eval script
-logger = logging.getLogger(__name__)
+# Setup logger for eval script using verifiers logging format
+logger = logging.getLogger("verifiers.scripts.eval")
 
 
 def eval_environment(
@@ -37,8 +40,9 @@ def eval_environment(
     save_dataset: bool,
     save_to_hf_hub: bool,
     hf_hub_dataset_name: str,
+    extra_headers: Dict[str, str],
 ):
-    logger.setLevel("DEBUG" if verbose else "INFO")
+    setup_logging("DEBUG" if verbose else "INFO")
     try:
         endpoints_path_obj = Path(endpoints_path)
         if endpoints_path_obj.is_dir():
@@ -47,13 +51,20 @@ def eval_environment(
             endpoints_file = endpoints_path_obj
 
         if endpoints_file.exists():
-            logger.info(f"Loading endpoint registry from {endpoints_file}")
+            logger.debug(f"Loading endpoint registry from {endpoints_file}")
             spec = importlib.util.spec_from_file_location("endpoints", endpoints_file)
             assert spec and spec.loader
             endpoints_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(endpoints_module)
-            ENDPOINTS = endpoints_module.ENDPOINTS
-            logger.info(f"Successfully loaded {len(ENDPOINTS)} endpoints from registry")
+            # check that module exposes ENDPOINTS
+            if not hasattr(endpoints_module, "ENDPOINTS"):
+                raise AttributeError(
+                    f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
+                )
+            ENDPOINTS = cast(Endpoints, endpoints_module.ENDPOINTS)
+            logger.debug(
+                f"Successfully loaded {len(ENDPOINTS)} endpoints from registry"
+            )
         else:
             raise ImportError(f"endpoints.py not found at {endpoints_file}")
     except (ImportError, AttributeError) as e:
@@ -62,26 +73,31 @@ def eval_environment(
             f"Please specify the model name (-m), API host base URL (-b), and API key variable name (-k). "
             f"Error details: {str(e)}"
         )
-        logger.info("Using default empty endpoints registry")
-        ENDPOINTS = {}
+        logger.debug("Using default empty endpoints registry")
+        ENDPOINTS: Endpoints = {}
 
     if model in ENDPOINTS:
         api_key_var = ENDPOINTS[model]["key"]
         api_base_url = ENDPOINTS[model]["url"]
         model = ENDPOINTS[model]["model"]
-        logger.info(f"Using endpoint configuration for model '{model}' from registry")
+        logger.debug(f"Using endpoint configuration for model '{model}' from registry")
     else:
-        logger.info(
+        logger.debug(
             f"Model '{model}' not found in endpoint registry, using command-line arguments"
         )
 
-    api_key_value = os.getenv(api_key_var, "EMPTY")
-    client = OpenAI(api_key=api_key_value, base_url=api_base_url)
-    logger.info(f"Initialized OpenAI client with base_url: {api_base_url}")
-
-    logger.info(f"Loading environment: {env}")
+    # Setup eval client with high limits to prevent API timeout errors
+    client = setup_client(
+        api_base_url,
+        api_key_var,
+        timeout=3600.0,  # 1h
+        max_connections=28000,  # Number of available ports
+        max_keepalive_connections=28000,  # Number of available ports
+        max_retries=10,  # 10 retries (w/ exponential backoffs)
+        extra_headers=extra_headers,
+    )
+    logger.debug(f"Initialized OpenAI client with base_url: {api_base_url}")
     vf_env = vf.load_environment(env_id=env, **env_args)
-    logger.info(f"Successfully loaded environment: {env}")
     # Merge sampling args with precedence to JSON payload over explicit flags
     merged_sampling_args: dict = {}
     if sampling_args is not None:
@@ -95,7 +111,7 @@ def eval_environment(
     logger.info(
         f"Configuration: num_examples={num_examples}, rollouts_per_example={rollouts_per_example}, max_concurrent={max_concurrent}"
     )
-
+    start_time = time.time()
     results = vf_env.evaluate(
         client=client,
         model=model,
@@ -104,42 +120,40 @@ def eval_environment(
         rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
     )
-    logger.info("Evaluation completed successfully")
-    logger.info("--- Evaluation ---")
-    logger.info(f"Environment: {env}")
-    logger.info(f"Model: {model}")
-    logger.info(f"Provider: {api_base_url}")
-    logger.info(f"Examples: {num_examples}")
-    logger.info(f"Rollouts per example: {rollouts_per_example}")
-    logger.info("--- Example ---")
+    end_time = time.time()
+    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+    print("--- Evaluation ---")
+    print(f"Environment: {env}")
+    print(f"Model: {model}")
+    print(f"Provider: {api_base_url}")
+    print(f"Examples: {num_examples}")
+    print(f"Rollouts per example: {rollouts_per_example}")
+    print("--- Example ---")
     printable_prompts = [messages_to_printable(p) for p in results.prompt]
     printable_completions = [messages_to_printable(c) for c in results.completion]
     vf.print_prompt_completions_sample(
         printable_prompts, printable_completions, results.reward, step=0
     )
-    logger.info("--- All ---")
-    logger.info("Rewards:")
-    logger.info(
+    print("--- All ---")
+    print("Rewards:")
+    print(
         f"reward: avg - {sum(results.reward) / len(results.reward):.3f}, std - {np.std(results.reward):.3f}"
     )
-    n = num_examples
     r = rollouts_per_example
-
-    if n < 0:
-        n = len(results.reward) // r
+    n = len(results.reward) // r
     for i in range(r):
         # rounded to 3 decimal places
         trials = [round(results.reward[(i * n) + j], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
-        logger.info(out)
+        print(out)
     for k in results.metrics:
         v = results.metrics[k]
-        logger.info(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
             # rounded to 3 decimal places
             trials = [round(v[(i * n) + j], 3) for j in range(n)]
             out = f"r{i + 1}: {trials}"
-            logger.info(out)
+            print(out)
 
     if save_dataset or save_to_hf_hub:
         ids = [i // rollouts_per_example for i in range(n * rollouts_per_example)]
@@ -150,6 +164,9 @@ def eval_environment(
             "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
             "completion": [sanitize_tool_calls(c) for c in printable_completions],
             "task": tasks,
+            "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
+            "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
+            "total_ms": [s["timing"]["total_ms"] for s in results.state],
         }
         if results.info[0] != {}:
             data_dict["info"] = results.info
@@ -167,8 +184,8 @@ def eval_environment(
             "num_examples": n,
             "rollouts_per_example": rollouts_per_example,
             "sampling_args": merged_sampling_args,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "time": datetime.now().strftime("%H:%M:%S"),
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time_ms": (end_time - start_time) * 1000,
             "avg_reward": sum(results.reward) / len(results.reward),
         }
         for k in results.metrics:
@@ -250,6 +267,12 @@ def main():
         help="Base URL for API",
     )
     parser.add_argument(
+        "--header",
+        action="append",
+        default=None,
+        help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
+    )
+    parser.add_argument(
         "--num-examples",
         "-n",
         type=int,
@@ -316,6 +339,17 @@ def main():
     )
     args = parser.parse_args()
 
+    # Build headers from repeated --header flags
+    merged_headers: Dict[str, str] = {}
+    for h in args.header or []:
+        if ":" not in h:
+            raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
+        k, v = h.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if not k:
+            raise ValueError("--header name cannot be empty")
+        merged_headers[k] = v
+
     eval_environment(
         env=args.env,
         env_args=args.env_args,
@@ -334,6 +368,7 @@ def main():
         save_dataset=args.save_dataset,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
+        extra_headers=merged_headers,
     )
 
 

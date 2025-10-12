@@ -5,7 +5,7 @@ description = "XLM Function Calling environment"
 tags = ["salesforce-xlam", "single-turn", "function-calling", "tool-use", "train"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.2.post0",
+    "verifiers>=0.1.4",
     "datasets",
 ]
 

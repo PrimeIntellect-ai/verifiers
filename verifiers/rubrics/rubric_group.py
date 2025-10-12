@@ -1,5 +1,12 @@
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Info, Messages, RewardFunc, RolloutScores, State
+from verifiers.types import (
+    Info,
+    Messages,
+    RewardFunc,
+    RolloutScore,
+    RolloutScores,
+    State,
+)
 
 
 class RubricGroup(Rubric):
@@ -10,7 +17,6 @@ class RubricGroup(Rubric):
     def __init__(self, rubrics: list[Rubric], **kwargs):
         if not rubrics:
             raise ValueError("RubricGroup must have at least one rubric")
-
         super().__init__(**kwargs)
         self.rubrics = rubrics
         self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
@@ -37,6 +43,33 @@ class RubricGroup(Rubric):
         assert len(self.rubrics) > 0, "RubricGroup must have at least one rubric"
         self.logger.warning("Adding reward function to the first rubric in the group.")
         self.rubrics[0].add_reward_func(func, weight)
+
+    async def score_rollout(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: str,
+        state: State,
+        task: str = "default",
+        info: Info | None = None,
+        **kwargs,
+    ) -> RolloutScore:
+        total_reward = 0.0
+        aggregated_metrics: dict[str, float] = {}
+        for rubric in self.rubrics:
+            score = await rubric.score_rollout(
+                prompt,
+                completion,
+                answer,
+                state,
+                task,
+                info,
+                **kwargs,
+            )
+            total_reward += score.reward
+            for key, value in score.metrics.items():
+                aggregated_metrics[key] = aggregated_metrics.get(key, 0.0) + value
+        return RolloutScore(reward=total_reward, metrics=aggregated_metrics)
 
     async def score_rollouts(
         self,

@@ -993,7 +993,9 @@ class SmolagentsToolEnv(MultiTurnEnv):
                 step_count += 1
         return step_count
 
-    def is_completed(self, messages: Messages, state: State, **kwargs: Any) -> bool:
+    async def is_completed(
+        self, messages: Messages, state: State, **kwargs: Any
+    ) -> bool:
         assert isinstance(messages, list)
         try:
             # Check if we've hit max steps by counting tool uses in the message history
@@ -1007,7 +1009,7 @@ class SmolagentsToolEnv(MultiTurnEnv):
         except Exception:
             return False
 
-    def call_tool(self, tool_json: str, **kwargs: Any) -> str:
+    async def call_tool(self, tool_json: str, **kwargs: Any) -> str:
         """Call a Smolagents Tool object based on JSON command."""
         try:
             command = json.loads(tool_json)
@@ -1040,7 +1042,7 @@ class SmolagentsToolEnv(MultiTurnEnv):
                 + 'Please format your tool call as \'{"name": "tool_name", "args": {"arg1": "value1", "arg2": "value2"}}\''
             )
 
-    def env_response(
+    async def env_response(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> Tuple[Messages, State]:
         assert isinstance(messages, list)
@@ -1048,7 +1050,7 @@ class SmolagentsToolEnv(MultiTurnEnv):
             parsed = self.llm_parser.parse(messages[-1]["content"])  # type: ignore
             # Check if we got a valid tool field (not just None from failed parsing)
             if hasattr(parsed, "tool") and parsed.tool is not None:
-                result = self.call_tool(parsed.tool)
+                result = await self.call_tool(parsed.tool)
                 if len(result.strip()) > 0:
                     return [
                         {

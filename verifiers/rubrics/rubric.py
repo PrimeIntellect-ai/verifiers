@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import time
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import (
@@ -139,6 +140,8 @@ class Rubric:
         """
         Evaluate all reward functions asynchronously for a single rollout.
         """
+        # start timer
+        start_time = time.time()
         if self.parallelize_scoring:
             score_tasks = [
                 self.call_reward_func(
@@ -180,6 +183,9 @@ class Rubric:
                 ]
             ),
         )
+        end_time = time.time()
+        state["timing"]["scoring_ms"] = (end_time - start_time) * 1000
+        state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
         return rewards
 
     async def score_rollouts(

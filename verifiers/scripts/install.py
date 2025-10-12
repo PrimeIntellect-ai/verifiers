@@ -24,7 +24,7 @@ def install_environment(env: str, path: str, from_repo: bool, branch: str):
                 "uv",
                 "pip",
                 "install",
-                f"{env_name} @ git+https://github.com/willccbb/verifiers.git@{branch}#subdirectory=environments/{env_folder}",
+                f"{env_name} @ git+https://github.com/PrimeIntellect-ai/verifiers.git@{branch}#subdirectory=environments/{env_folder}",
             ]
         )
     else:

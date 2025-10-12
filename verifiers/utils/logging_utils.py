@@ -8,6 +8,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import Messages
+from collections.abc import Mapping
 
 
 def setup_logging(
@@ -46,25 +47,55 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
+    def _attr_or_key(obj, key: str, default=None):
+        """Return obj.key if present, else obj[key] if Mapping, else default."""
+        val = getattr(obj, key, None)
+        if val is not None:
+            return val
+        if isinstance(obj, Mapping):
+            return obj.get(key, default)
+        return default
+
+    def _normalize_tool_call(tc):
+        """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
+        src = (
+            _attr_or_key(tc, "function") or tc
+        )  # prefer nested function object if present
+        name = _attr_or_key(src, "name", "") or ""
+        args = _attr_or_key(src, "arguments", {}) or {}
+
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args)
+            except Exception:
+                args = str(args)
+        return {"name": name, "args": args}
+
     def _format_messages(messages) -> Text:
         if isinstance(messages, str):
             return Text(messages)
+
         out = Text()
-        for idx, msg in enumerate(list(messages)):
-            if idx > 0:
+        for idx, msg in enumerate(messages):
+            if idx:
                 out.append("\n\n")
+
             assert isinstance(msg, dict)
             role = msg.get("role", "")
             content = msg.get("content", "")
             style = "bright_cyan" if role == "assistant" else "bright_magenta"
+
             out.append(f"{role}: ", style="bold")
             out.append(content, style=style)
-            if "tool_calls" in msg:
-                for tool_call in msg["tool_calls"]:
-                    name = getattr(tool_call.function, "name", "")
-                    args = getattr(tool_call.function, "arguments", {})
-                    tool_call_str = json.dumps({"name": name, "args": args}, indent=2)
-                    out.append(f"\n\n[tool call]\n{tool_call_str}", style=style)
+
+            for tc in msg.get("tool_calls") or []:  # treat None as empty list
+                payload = _normalize_tool_call(tc)
+                out.append(
+                    "\n\n[tool call]\n"
+                    + json.dumps(payload, indent=2, ensure_ascii=False),
+                    style=style,
+                )
+
         return out
 
     console = Console()

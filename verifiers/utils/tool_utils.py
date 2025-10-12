@@ -1,10 +1,10 @@
 from typing import Any
 
 from agents.function_schema import function_schema
-from verifiers.types import ChatCompletionToolParam
+from openai.types.chat import ChatCompletionFunctionToolParam
 
 
-def convert_func_to_oai_tool(func: Any) -> ChatCompletionToolParam:
+def convert_func_to_oai_tool(func: Any) -> ChatCompletionFunctionToolParam:
     """Convert *func* to an OpenAI function-calling tool schema.
     The returned mapping matches the structure expected in the `tools` list
     of the OpenAI ChatCompletion API.
@@ -17,5 +17,5 @@ def convert_func_to_oai_tool(func: Any) -> ChatCompletionToolParam:
             "description": function_schema_obj.description or "",
             "parameters": function_schema_obj.params_json_schema,
             "strict": True,
-        }
+        },
     }

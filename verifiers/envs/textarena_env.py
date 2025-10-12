@@ -12,7 +12,7 @@ from datasets import Dataset
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
-nltk.download = lambda *args, **kwargs: _original_nltk_download(
+nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore[invalid-assignment]
     *args, **{**kwargs, "quiet": True}
 )
 
@@ -77,11 +77,11 @@ class TextArenaEnv(MultiTurnEnv):
     async def is_completed(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> bool:
-        if "is_finished" in state and state["is_finished"]:
+        completed = await super().is_completed(messages, state, **kwargs)
+        if "is_completed" in state and state["is_completed"]:
             state.pop("ta_env")
-            return state["is_finished"]
-        self.parser
-        return False
+            return state["is_completed"]
+        return False or completed
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs: Any
@@ -98,8 +98,8 @@ class TextArenaEnv(MultiTurnEnv):
         assert isinstance(messages[-1], dict)
         guess = self.parser.parse_answer(messages)
         # step env
-        is_finished, _ = ta_env.step(str(guess))
-        state["is_finished"] = is_finished
+        is_completed, _ = ta_env.step(str(guess))
+        state["is_completed"] = is_completed
         _, observation = ta_env.get_observation()
         feedback = self.feedback_fn(observation)
         return [{"role": "user", "content": str(feedback)}], state

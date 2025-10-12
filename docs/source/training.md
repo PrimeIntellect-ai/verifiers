@@ -339,4 +339,4 @@ Tips:
 
 - Explore [Environments](environments.md) to create custom tasks
 - Review [Components](components.md) for advanced patterns
-- See the [examples directory](https://github.com/willccbb/verifiers/tree/main/examples) on GitHub for complete training scripts
+- See the [examples directory](https://github.com/PrimeIntellect-ai/verifiers/tree/main/examples) on GitHub for complete training scripts

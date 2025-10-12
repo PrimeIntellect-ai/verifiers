@@ -1,3 +1,5 @@
+from typing import Mapping
+
 from datasets import concatenate_datasets
 from openai import AsyncOpenAI
 
@@ -17,7 +19,7 @@ class EnvGroupRubric(Rubric):
     Custom rubric for EnvGroup that routes scoring to appropriate environment rubrics.
     """
 
-    def __init__(self, env_map: dict[str, Environment]):
+    def __init__(self, env_map: Mapping[str, Environment]):
         super().__init__()
         self.env_map = env_map
 

@@ -3,13 +3,14 @@ import logging
 import time
 
 import requests
-import torch
+import torch  # type: ignore
 from openai import AsyncOpenAI
 from requests import ConnectionError
 from requests.adapters import HTTPAdapter
-from trl.import_utils import is_requests_available, is_vllm_available
-from vllm.distributed.device_communicators.pynccl import (
-    PyNcclCommunicator,  # type: ignore
+from requests.exceptions import RequestException, Timeout
+from trl.import_utils import is_requests_available, is_vllm_available  # type: ignore
+from vllm.distributed.device_communicators.pynccl import (  # type: ignore
+    PyNcclCommunicator,
 )
 from vllm.distributed.utils import StatelessProcessGroup  # type: ignore
 
@@ -107,12 +108,12 @@ class VLLMClient(AsyncOpenAI):
 
         while True:
             try:
-                response = requests.get(url)  # type: ignore
-            except requests.exceptions.RequestException as exc:  # type: ignore
+                response = requests.get(url)
+            except RequestException as exc:
                 # Check if the total timeout duration has passed
                 elapsed_time = time.time() - start_time
                 if elapsed_time >= total_timeout:
-                    raise ConnectionError(  # type: ignore
+                    raise ConnectionError(
                         f"The vLLM server can't be reached at {self.host}:{self.server_port} after {total_timeout} "
                         "seconds. Make sure the server is running by running `trl vllm-serve`."
                     ) from exc
@@ -206,7 +207,7 @@ class VLLMClient(AsyncOpenAI):
             response = self.session.post(
                 url, json={"name": name, "dtype": dtype, "shape": shape}, timeout=300.0
             )
-        except requests.exceptions.Timeout:
+        except Timeout:
             logger.error(f"Timeout waiting for server response for {name} after 300s")
             raise Exception(f"Request timeout for {name} after 300s")
         except Exception as e:

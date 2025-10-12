@@ -5,7 +5,7 @@ from datetime import datetime
 from hashlib import sha1
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, cast
 
 import numpy as np
 from jinja2 import BaseLoader, Environment, StrictUndefined, select_autoescape
@@ -80,7 +80,8 @@ def _compute_percentiles(
     if arr.size == 0:
         return {f"p{p}": float("nan") for p in percentiles}
     qs = np.percentile(arr, percentiles)
-    return {f"p{p}": float(q) for p, q in zip(percentiles, qs)}
+    qs_list = cast(List[float], qs.tolist())
+    return {f"p{p}": float(q) for p, q in zip(percentiles, qs_list)}
 
 
 def compute_summary(results: GenerateOutputs) -> Dict[str, Any]:

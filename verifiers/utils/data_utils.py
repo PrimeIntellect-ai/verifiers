@@ -1,9 +1,9 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
 import random
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
-from datasets import Dataset, concatenate_datasets, load_dataset  # type: ignore
+from datasets import Dataset, concatenate_datasets, load_dataset
 
 ### PROMPTS ###
 
@@ -29,8 +29,8 @@ def extract_boxed_answer(text: str) -> str:
             i += 1
         return i - 1 if count == 0 else -1
 
-    # Find \boxed{
-    boxed_start = text.find("\\boxed{")
+    # Find last \boxed{
+    boxed_start = text.rfind("\\boxed{")
     if boxed_start == -1:
         return text
     # Find the content between the braces
@@ -210,86 +210,92 @@ def load_example_dataset(
     if name == "aime2024":
         if split is None:
             split = "train"
-        dataset = load_dataset("HuggingFaceH4/aime_2024")[split]  # type: ignore
+        dataset = load_dataset("HuggingFaceH4/aime_2024")[split]
     elif name == "aime2025":
         if split is None:
             split = "test"
-        aime_i = load_dataset("opencompass/AIME2025", "AIME2025-I")[split]  # type: ignore
-        aime_ii = load_dataset("opencompass/AIME2025", "AIME2025-II")[split]  # type: ignore
-        dataset = concatenate_datasets([aime_i, aime_ii])  # type: ignore
+        aime_i = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
+        )
+        aime_ii = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
+        )
+        dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:
             split = "train"
-        dataset = load_dataset("knoveleng/AMC-23")[split]  # type: ignore
+        dataset = load_dataset("knoveleng/AMC-23")[split]
     elif name == "gpqa_diamond":
         if split is None:
             split = "train"
-        dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond")[split]  # type: ignore
+        dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond")[split]
     elif name == "gpqa_main":
         if split is None:
             split = "train"
-        dataset = load_dataset("Idavidrein/gpqa", "gpqa_main")[split]  # type: ignore
+        dataset = load_dataset("Idavidrein/gpqa", "gpqa_main")[split]
     elif name == "gsm8k":
         if split is None:
             split = "test"
-        dataset: Dataset = load_dataset("openai/gsm8k", "main")[split]  # type: ignore
+        dataset = load_dataset("openai/gsm8k", "main")[split]
     elif name == "math":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("chiayewken/competition_math")[split]  # type: ignore
+        dataset = load_dataset("chiayewken/competition_math")[split]
     elif name == "math500":
         if split is None:
             split = "test"
-        dataset: Dataset = load_dataset("HuggingFaceH4/MATH-500")[split]  # type: ignore
+        dataset = load_dataset("HuggingFaceH4/MATH-500")[split]
     elif name == "mmlu":
         if split is None:
             split = "dev"
-        dataset = load_dataset("cais/mmlu", "all")[split]  # type: ignore
+        dataset = load_dataset("cais/mmlu", "all")[split]
     elif name == "mmlu_pro":
         if split is None:
             split = "validation"
-        dataset = load_dataset("TIGER-Lab/MMLU-Pro")[split]  # type: ignore
+        dataset = load_dataset("TIGER-Lab/MMLU-Pro")[split]
     elif name == "openbookqa":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("allenai/openbookqa", "main")[split]  # type: ignore
+        dataset = load_dataset("allenai/openbookqa", "main")[split]
     elif name == "openrs":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("knoveleng/open-rs")[split]  # type: ignore
+        dataset = load_dataset("knoveleng/open-rs")[split]
     elif name == "openrs_easy":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("knoveleng/open-rs")[split]  # type: ignore
-        dataset = dataset.filter(lambda x: x["level"] == "Easy")  # type: ignore
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
+        dataset = dataset.filter(lambda x: x["level"] == "Easy")
     elif name == "openrs_hard":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("knoveleng/open-rs")[split]  # type: ignore
-        dataset = dataset.filter(lambda x: x["level"] == "Hard")  # type: ignore
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
+        dataset = dataset.filter(lambda x: x["level"] == "Hard")
     elif name == "prime_code":
         if split is None:
             split = "train"
-        dataset: Dataset = load_dataset("PrimeIntellect/verifiable-coding-problems")[
-            split
-        ]  # type: ignore
+        dataset = cast(
+            Dataset, load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
+        )
         dataset = dataset.filter(
             lambda x: x["prompt"].startswith(
                 "Solve the following coding problem using the programming language python:"
             )
-        )  # type: ignore
+        )
     else:
         raise ValueError(
-            f"Dataset {name} not supported for preprocess_dataset. \
-Please ensure that the dataset is formatted with 'prompt' (str) and 'answer' (str) keys."
+            f"Dataset {name} not supported for preprocess_dataset. \nPlease ensure that the dataset is formatted with 'prompt' (str) and 'answer' (str) keys."
         )
 
     preprocess_fn = get_preprocess_fn(name)
+    dataset = cast(Dataset, dataset)
     if n is not None and n > 0:
-        dataset = dataset.shuffle(seed=seed).select(range(n))  # type: ignore
+        dataset = dataset.shuffle(seed=seed).select(range(n))
     dataset = dataset.map(
-        preprocess_fn, num_proc=10, remove_columns=dataset.column_names
-    )  # type: ignore
+        preprocess_fn,
+        num_proc=10,
+        remove_columns=dataset.column_names,
+    )
     if "temp_answer" in dataset.column_names:
         dataset = dataset.rename_column("temp_answer", "answer")
     return dataset

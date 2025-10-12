@@ -4,7 +4,7 @@ version = "0.1.1"
 description = "Environment models self-rewarding their own responses"
 tags = ["self-reward", "single-turn", "llm-judge", "knowledge", "train"]
 dependencies = [
-    "verifiers>=0.1.2.post1",
+    "verifiers>=0.1.4",
     "datasets",
     "openai",
 ]

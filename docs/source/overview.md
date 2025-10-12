@@ -41,14 +41,15 @@ from typing import Tuple
 class MyProtocol(vf.MultiTurnEnv):
     async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
         """Define how environment responds to model"""
-        # Custom logic for your protocol
         response = [{"role": "user", "content": "Environment feedback"}]
-        # Update state
         state["turn"] = state.get("turn", 0) + 1
         return response, state
     
     async def is_completed(self, messages: Messages, state: State) -> bool:
         """Define when interaction ends"""
+        # Always defer to the base implementation so turn limits are respected
+        if await super().is_completed(messages, state):
+            return True
         return state.get("task_complete", False)
 ```
 
@@ -58,26 +59,24 @@ Leverages models' built-in tool calling for agentic workflows:
 
 ```python
 env = vf.ToolEnv(
-    tools=[search, calculate, execute_code],  # Python functions
+    tools=[search, calculate, execute_code],  # Stateless Python functions
     max_turns=10,
-    dataset=dataset, # HuggingFace dataset
+    dataset=dataset,
     rubric=rubric
 )
 ```
 
-Tools may be sync or async, and are automatically converted to JSON schemas and integrated with the model's native function calling format.
+Tools may be sync or async. Keep them pure: the environment ends when the assistant responds without tool calls. If you must inject rollout-specific context, upgrade to `StatefulToolEnv` and override `update_tool_args` instead of relying on global state.
 
 ### SingleTurnEnv: Simple Evaluation
 
 For straightforward Q&A tasks without interaction:
 
-```python
 env = vf.SingleTurnEnv(
     dataset=dataset,
-    system_prompt="Answer the question."
+    system_prompt="Answer the question.",
     rubric=rubric,
 )
-```
 
 ## Key Components
 
@@ -112,9 +111,9 @@ Package your interaction protocol as a reusable module:
 ```
 my_environment/
 ├── outputs/                # Evaluation logs
-├── my_environment.py      # Defines load_environment() -> vf.Environment
-├── pyproject.toml        # Dependencies
-└── README.md            # Documentation
+├── my_environment.py       # Defines load_environment() -> vf.Environment
+├── pyproject.toml          # Dependencies
+└── README.md               # Documentation
 ```
 
 This enables:

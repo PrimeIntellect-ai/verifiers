@@ -6,7 +6,7 @@ import pytest
 from datasets import Dataset
 
 from verifiers import Environment, Parser, Rubric, ThinkParser
-from verifiers.types import GenerateOutputs, RolloutScores
+from verifiers.types import ChatCompletion, Completion, GenerateOutputs, RolloutScores
 
 
 # Create a concrete implementation for testing the abstract base class
@@ -18,22 +18,24 @@ class SimpleEnvironment(Environment):
         client,
         model,
         prompt,
-        answer="",
-        task="default",
-        info={},
-        sampling_args={},
+        answer: str = "",
+        task: str = "default",
+        info: dict | None = None,
+        sampling_args: dict | None = None,
         **kwargs,
     ):
         """Simple test rollout implementation."""
         response = await self.get_model_response(
-            prompt=prompt, client=client, model=model, sampling_args=sampling_args
+            prompt=prompt, client=client, model=model, sampling_args=sampling_args or {}
         )
         if self.message_type == "chat":
+            assert isinstance(response, ChatCompletion)
             completion = [
                 {"role": "assistant", "content": response.choices[0].message.content}
             ]
             state = {"responses": [response]}
         else:
+            assert isinstance(response, Completion)
             completion = response.choices[0].text
             state = {}
         return completion, state
@@ -45,14 +47,10 @@ class TestEnvironmentBase:
     def test_environment_initialization(self, mock_openai_client, sample_dataset):
         """Test that Environment initializes correctly."""
         env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
             dataset=sample_dataset,
             parser=Parser(),
             rubric=Rubric(),
         )
-        assert env.client == mock_openai_client
-        assert env.model == "test-model"
         assert env.message_type == "chat"
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
@@ -62,8 +60,6 @@ class TestEnvironmentBase:
     ):
         """Test Environment with only eval_dataset."""
         env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
             eval_dataset=sample_dataset,
             parser=Parser(),
             rubric=Rubric(),
@@ -89,8 +85,6 @@ class TestEnvironmentBase:
         """Test that completion mode with system prompt raises error."""
         with pytest.raises(ValueError, match="not supported for completion tasks"):
             SimpleEnvironment(
-                client=mock_openai_client,
-                model="test-model",
                 dataset=sample_dataset,
                 message_type="completion",
                 system_prompt="test prompt",
@@ -102,7 +96,7 @@ class TestEnvironmentBase:
         self, mock_openai_client, sample_dataset
     ):
         """Test that warning is logged when parser and rubric parser are different."""
-        from unittest.mock import patch, Mock
+        from unittest.mock import Mock, patch
 
         think_parser = ThinkParser()
         rubric = Rubric()  # Different parser class
@@ -536,13 +530,19 @@ class TestEnvironmentBase:
         )
 
         # Mock the rubric scoring
-        env.rubric.score_rollouts = AsyncMock(
+        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
         inputs = {"prompt": [[{"role": "user", "content": "Hello"}]], "answer": ["Hi"]}
 
-        results = await env.a_generate(inputs, score_rollouts=True)
+        results = await env.a_generate(
+            inputs,
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=True,
+            interleave_scoring=False,
+        )
 
         assert hasattr(results, "completion")
         assert hasattr(results, "state")
@@ -552,21 +552,27 @@ class TestEnvironmentBase:
     def test_generate_sync_wrapper(self, mock_openai_client, sample_dataset):
         """Test synchronous generate wrapper."""
         env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
             dataset=sample_dataset,
             parser=Parser(),
             rubric=Rubric(),
         )
 
         # Mock the rubric scoring
-        env.rubric.score_rollouts = AsyncMock(
+        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        inputs = {"prompt": [[{"role": "user", "content": "Hello"}]], "answer": ["Hi"]}
+        from verifiers.types import GenerateInputs
 
-        results = env.generate(inputs, client=env.client)
+        gi = GenerateInputs(
+            prompt=[[{"role": "user", "content": "Hello"}]], answer=["Hi"]
+        )  # type: ignore[arg-type]
+        results = env.generate(
+            gi,
+            client=mock_openai_client,
+            model="test-model",
+            interleave_scoring=False,
+        )
 
         assert hasattr(results, "completion")
         assert hasattr(results, "state")

@@ -5,11 +5,11 @@ env/
 .env
 .env.local
 uv.lock
-CLAUDE.md
-AGENTS.md
 .claude/
 .cursorrules
 .cursor/
+.ropeproject/
+.scratch/
 
 # artifacts
 core.* 
@@ -29,9 +29,10 @@ docs/build/
 
 # outputs
 wandb/
-outputs/
+/outputs/
 reports/
 logs/
+.chroma_db/
 
 # development
 local/

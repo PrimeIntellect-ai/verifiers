@@ -2,7 +2,7 @@
 Mock OpenAI client for testing purposes.
 """
 
-from typing import List, Dict
+from typing import Dict, List, Optional
 from unittest.mock import Mock
 
 
@@ -21,7 +21,9 @@ class MockCompletionResponse:
 
 class MockChatCompletions:
     def __init__(
-        self, responses: Dict[str, str] = None, default_response: str = "Test response"
+        self,
+        responses: Optional[Dict[str, str]] = None,
+        default_response: str = "Test response",
     ):
         self.responses = responses or {}
         self.default_response = default_response
@@ -51,7 +53,9 @@ class MockChatCompletions:
 
 class MockCompletions:
     def __init__(
-        self, responses: Dict[str, str] = None, default_response: str = "Test response"
+        self,
+        responses: Optional[Dict[str, str]] = None,
+        default_response: str = "Test response",
     ):
         self.responses = responses or {}
         self.default_response = default_response
@@ -83,8 +87,8 @@ class MockOpenAIClient:
 
     def __init__(
         self,
-        chat_responses: Dict[str, str] = None,
-        completion_responses: Dict[str, str] = None,
+        chat_responses: Optional[Dict[str, str]] = None,
+        completion_responses: Optional[Dict[str, str]] = None,
         default_chat_response: str = "Test chat response",
         default_completion_response: str = "Test completion response",
         base_url: str = "http://localhost:8000",
@@ -136,7 +140,7 @@ I need to search for information about this topic.
 def create_mock_error_client():
     """Create a mock client that simulates various error conditions."""
 
-    def create_error(**kwargs):
+    def create_error(*args, **kwargs):
         if "longer than the maximum" in str(kwargs):
             raise Exception(
                 "This model's maximum context length is 4096 tokens. Your message was longer than the maximum."
@@ -146,6 +150,6 @@ def create_mock_error_client():
         raise Exception("Generic error")
 
     client = MockOpenAIClient()
-    client.chat.completions.create = create_error
-    client.completions.create = create_error
+    client.chat.completions.create = create_error  # type: ignore[assignment]
+    client.completions.create = create_error  # type: ignore[assignment]
     return client

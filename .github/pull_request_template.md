@@ -11,17 +11,11 @@
 
 ## Testing
 <!-- Describe the tests you ran to verify your changes -->
-- [ ] All existing tests pass
+- [ ] All existing tests pass when running `uv run pytest` locally.
 - [ ] New tests have been added to cover the changes
-- [ ] Tests have been run locally with `python -m pytest tests/`
-
-### Test Coverage
-<!-- If applicable, mention the test coverage for new code -->
-- Current coverage: ___%
-- Coverage after changes: ___%
 
 ## Checklist
-- [ ] My code follows the style guidelines of this project
+- [ ] My code follows the style guidelines of this project as outlined in [AGENTS.md](/AGENTS.md)
 - [ ] I have performed a self-review of my own code
 - [ ] I have commented my code, particularly in hard-to-understand areas
 - [ ] I have made corresponding changes to the documentation

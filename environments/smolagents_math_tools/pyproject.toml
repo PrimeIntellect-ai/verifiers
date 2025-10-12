@@ -2,7 +2,7 @@
 name = "smolagents-math-tools"
 version = "0.1.0"
 dependencies = [
-    "verifiers>=0.1.2",
+    "verifiers>=0.1.4",
     "smolagents>=1.15.0",
 ]
 

@@ -1,0 +1,40 @@
+name: Style
+
+on:
+  push:
+    branches:
+      - main
+      - refactor
+  pull_request:
+    # This will trigger the workflow for pull requests to any branch
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Run ruff
+        uses: astral-sh/ruff-action@v3
+  ty:
+    name: Ty
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync
+      - name: Run ty
+        run: uv run ty check .

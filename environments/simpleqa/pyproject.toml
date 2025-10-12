@@ -4,7 +4,7 @@ version = "0.1.1"
 description = "SimpleQA eval"
 tags = ["simpleqa", "single-turn", "llm-judge", "knowledge"]
 dependencies = [
-    "verifiers>=0.1.2.post0",
+    "verifiers>=0.1.4",
 ]
 
 [build-system]

@@ -32,7 +32,6 @@ def load_environment(
 
     async def judge_reward(judge, prompt, completion, answer, state):
         judge_response = await judge(prompt, completion, answer, state)
-        print("J")
         return 1.0 if "yes" in judge_response.lower() else 0.0
 
     judge_rubric.add_reward_func(judge_reward, 1.0)

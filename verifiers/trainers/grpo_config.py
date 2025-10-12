@@ -1,11 +1,11 @@
 # adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import List, Optional, Union
 
-import transformers
+import transformers  # type: ignore[unresolved-import]
 from packaging import version
-from transformers import TrainingArguments  # type: ignore
+from transformers import TrainingArguments  # type: ignore[unresolved-import]
 
 
 @dataclass
@@ -22,7 +22,9 @@ class GRPOConfig(TrainingArguments):
     """
 
     if version.parse(transformers.__version__) <= version.parse("4.50.3"):
-        from transformers.training_args import _VALID_DICT_FIELDS  # type: ignore
+        from transformers.training_args import (  # type: ignore[unresolved-import]
+            _VALID_DICT_FIELDS,
+        )
 
         _VALID_DICT_FIELDS.append("model_init_kwargs")
     else:
@@ -37,6 +39,78 @@ class GRPOConfig(TrainingArguments):
             "help": "Keyword arguments for `transformers.AutoModelForCausalLM.from_pretrained`, used when the `model` "
             "argument of the `GRPOTrainer` is provided as a string."
         },
+    )
+
+    # Common TrainingArguments surfaced here for better typing in our tooling
+    output_dir: str = field(
+        default="",
+        metadata={"help": "Where to store artifacts and checkpoints."},
+    )
+    run_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "An optional experiment name for logging."},
+    )
+    lr_scheduler_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "Learning rate scheduler type."},
+    )
+    warmup_steps: int = field(
+        default=0,
+        metadata={"help": "Linear warmup over warmup_steps."},
+    )
+    max_steps: int = field(
+        default=-1,
+        metadata={
+            "help": "Total number of training steps to perform. -1 for full epochs."
+        },
+    )
+    bf16: bool = field(
+        default=False,
+        metadata={"help": "Whether to use bfloat16 precision."},
+    )
+    max_grad_norm: float = field(
+        default=1.0,
+        metadata={"help": "Max gradient norm for clipping."},
+    )
+    per_device_train_batch_size: int = field(
+        default=8,
+        metadata={"help": "Batch size per device for training."},
+    )
+    gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={"help": "Number of steps to accumulate before backward/update."},
+    )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={"help": "Enable gradient checkpointing to save memory."},
+    )
+    save_strategy: str = field(
+        default="steps",
+        metadata={"help": "When to save checkpoints (no, steps, epoch)."},
+    )
+    save_steps: int = field(
+        default=500,
+        metadata={
+            "help": "Save checkpoint every X updates steps when save_strategy=steps."
+        },
+    )
+    save_only_model: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, save only model weights (not optimizer/scheduler)."
+        },
+    )
+    logging_steps: int = field(
+        default=500,
+        metadata={"help": "Log every X updates steps."},
+    )
+    log_on_each_node: bool = field(
+        default=True,
+        metadata={"help": "Whether to log on each node in multi-node setup."},
+    )
+    report_to: Optional[Union[str, List[str]]] = field(
+        default=None,
+        metadata={"help": "Integration to report results and logs to (e.g., 'wandb')."},
     )
 
     # Parameters that control the model and reference model
@@ -251,8 +325,8 @@ class GRPOConfig(TrainingArguments):
     scale_rewards: bool = field(
         default=False,
         metadata={
-            "help": "Whether to scale the rewards by dividing them by their standard deviation. If `True` (default), "
-            "the rewards are normalized by the standard deviation, ensuring they have unit variance. If `False`, no "
+            "help": "Whether to scale the rewards by dividing them by their standard deviation. If `True`, "
+            "the rewards are normalized by the standard deviation, ensuring they have unit variance. If `False` (default), no "
             "scaling is applied. The Dr. GRPO paper recommends not scaling the rewards, as scaling by the standard "
             "deviation introduces a question-level difficulty bias."
         },
@@ -359,6 +433,9 @@ class GRPOConfig(TrainingArguments):
                 * self.steps_per_generation
             )
 
+        # Type narrowing for static checkers
+        assert self.generation_batch_size is not None
+
         if (
             self.generation_batch_size
             % self.per_device_train_batch_size
@@ -374,6 +451,7 @@ class GRPOConfig(TrainingArguments):
             self.per_device_train_batch_size * num_processes
         )
 
+        assert self.generation_batch_size is not None
         # Check if the effective batch size can be divided by the number of generations
         if self.num_generations < 2:
             raise ValueError(

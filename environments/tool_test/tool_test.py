@@ -77,23 +77,15 @@ def load_environment(
     num_train_examples: int = 1000, num_eval_examples: int = 100
 ) -> vf.ToolEnv:
     """
-    Loads a custom environment.
+    Loads tool-test environment.
     """
 
-    # for each row, choose random non-empty subset of tools
-    # prompt: call the following tools
-    # completion: call the following tools
-
-    # for each row, choose random non-empty subset of tools
-    # prompt: call the following tools
-    # completion: call the following tools
     train_rows = []
     eval_rows = []
     for i in range(num_train_examples + num_eval_examples):
         tool_names = random.sample(
             tool_name_list, random.randint(1, len(tool_name_list))
         )
-
         prompt = [
             {
                 "role": "user",

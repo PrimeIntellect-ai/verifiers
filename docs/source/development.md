@@ -12,7 +12,7 @@ This guide covers development setup, testing, and contributing to the verifiers 
 
 ```bash
 # Clone and install for development
-git clone https://github.com/willccbb/verifiers.git
+git clone https://github.com/PrimeIntellect-ai/verifiers.git
 cd verifiers
 uv sync --all-extras
 uv run pre-commit install
@@ -98,6 +98,8 @@ def test_with_mock(mock_client):
 3. **Leverage existing fixtures** from `conftest.py`
 4. **Group related tests** in test classes
 5. **Keep tests fast** - use mocks instead of real API calls
+
+> **Tip:** When subclassing `MultiTurnEnv`, always call `await super().is_completed(...)` (or `await self.max_turns_reached(state)`) so shared guards—especially max turn limits—remain effective. 
 
 ## Contributing
 

@@ -1,3 +1,4 @@
+import logging
 from typing import Callable
 
 from verifiers.parsers.parser import Parser
@@ -5,9 +6,14 @@ from verifiers.types import ChatMessage
 
 
 class ThinkParser(Parser):
-    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
+        self.logger = logging.getLogger(f"verifiers.parsers.{self.__class__.__name__}")
+        super().__init__(extract_fn=extract_fn)
         self.extract_fn = extract_fn
+        self.logger.warning(
+            "ThinkParser is intended for use with models which always include <think>...</think> tags but do NOT parse them automatically. "
+            "This will cause parsing failures if the model does not include <think>...</think> tags."
+        )
 
     def parse(self, text: str) -> str:
         if "</think>" in text:

@@ -10,14 +10,12 @@ class Parser:
 
     Default behavior:
     - `parse` returns text as-is
-    - `get_final_answer` returns the last message's content (or text if string)
+    - `parse_answer` returns the last message's content (or text if string)
     """
 
-    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x, **kwargs):
+    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
         self.logger = logging.getLogger(f"verifiers.parsers.{self.__class__.__name__}")
         self.extract_fn = extract_fn
-        for key, value in kwargs.items():
-            setattr(self, key, value)
 
     def parse(self, text: str) -> Any:
         return self.extract_fn(text)
@@ -44,7 +42,8 @@ class Parser:
         if isinstance(completion, str):
             return self.parse(completion)
         else:
-            return self.parse(completion[-1]["content"])  # type: ignore
+            ans = str(self.get_assistant_messages(completion)[-1].get("content", ""))
+            return self.parse(ans)
 
     def get_format_reward_func(self) -> Callable:
         """

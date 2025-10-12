@@ -1,14 +1,31 @@
-<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/40c36e38-c5bd-4c5a-9cb3-f7b902cd155d">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8">
+    <img alt="Prime Intellect" src="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8" width="312" style="max-width: 100%;">
+  </picture>
+</p>
+
+---
+
+<h3 align="center">
+Verifiers: Environments for LLM Reinforcement Learning
+</h3>
+
+---
 
 <p align="center">
-  <h1>Verifiers</h1>
+  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/style.yml">
+    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/style.yml/badge.svg" alt="Style" />
+  </a>
+  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml">
+    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml/badge.svg" alt="Test" />
+  </a>
+  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml">
+    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml/badge.svg" alt="Envs" />
+  </a>
 </p>
 
-<p>
-Environments for LLM Reinforcement Learning
-</p>
-
-</div>
 
 ## Overview
 
@@ -16,13 +33,16 @@ Verifiers is a library of modular components for creating RL environments and tr
 
 Full documentation is available [here](https://verifiers.readthedocs.io/en/latest/). 
 
+Verifiers is also the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub.
+
 ## Setup
 
-We recommend using `verifiers` with along [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
+We recommend using `verifiers` along with [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
 ```bash
+# install uv (first time only)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv init # create a fresh project
-source .venv/bin/activate
+# create a fresh project -- 3.11 + 3.12 supported
+uv init && uv venv --python 3.12 
 ```
 
 For local (CPU) development and evaluation with API models, do:
@@ -32,22 +52,24 @@ uv add verifiers # uv add 'verifiers[dev]' for Jupyter + testing support
 
 For training on GPUs with `vf.GRPOTrainer`, do:
 ```bash
-uv add 'verifiers[all]' && uv pip install flash-attn --no-build-isolation
+uv add 'verifiers[train]' && uv pip install flash-attn --no-build-isolation
 ```
 
 To use the latest `main` branch, do:
 ```bash
-uv add verifiers @ git+https://github.com/willccbb/verifiers.git
+uv add verifiers@git+https://github.com/PrimeIntellect-ai/verifiers.git
 ```
 
 To use with `prime-rl`, see [here](https://github.com/PrimeIntellect-ai/prime-rl).
 
-To install `verifiers` from source for core library development, do:
+To install `verifiers` from source for core library development, install with:
 ```bash
-git clone https://github.com/willccbb/verifiers.git
-cd verifiers
+curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash
+```
+
+If you want to dev with the trainer, do:
+```bash
 uv sync --all-extras && uv pip install flash-attn --no-build-isolation
-uv run pre-commit install
 ```
 
 In general, we recommend that you build and train Environments *with* `verifiers`, not *in* `verifiers`. If you find yourself needing to clone and modify the core library in order to implement key functionality for your project, we'd love for you to open an issue so that we can try and streamline the development experience. Our aim is for `verifiers` to be a reliable toolkit to build on top of, and to minimize the "fork proliferation" which often pervades the RL infrastructure ecosystem.
@@ -58,39 +80,42 @@ Environments in Verifiers are installable Python modules which can specify depen
 
 To initialize a blank Environment module template, do:
 ```bash
-vf-init vf-environment-name # -p /path/to/environments (defaults to "./environments")
+uv run vf-init environment-name # -p /path/to/environments (defaults to "./environments")
 ```
 
 To an install an Environment module into your project, do:
 ```bash
-vf-install vf-environment-name # -p /path/to/environments (defaults to "./environments") 
+uv run vf-install environment-name # -p /path/to/environments (defaults to "./environments") 
 ```
 
 To install an Environment module from this repo's `environments` folder, do:
 ```bash
-vf-install vf-math-python --from-repo # -b branch_or_commit (defaults to "main")
+uv run vf-install math-python --from-repo # -b branch_or_commit (defaults to "main")
 ```
 
 Once an Environment module is installed, you can create an instance of the Environment using `load_environment`, passing any necessary args:
 ```python
 import verifiers as vf
-vf_env = vf.load_environment("vf-environment-name", **env_args)
+vf_env = vf.load_environment("environment-name", **env_args)
 ```
 
 To run a quick evaluation of your Environment with an API-based model, do:
 ```bash
-vf-eval vf-environment-name # vf-eval -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts for each
+uv run vf-eval environment-name -s # run and save eval results locally
+# vf-eval -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts for each
 ```
 
-The core elements of Environments in are:
+If you're using Prime Intellect infrastructure, the [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) provides first-class commands for working with Verifiers environments through the [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments). Install it with `uv tool install prime`, authenticate via `prime login`, then use `prime env push` to publish your package and `prime env install owner/name` (optionally pinning a version) to consume it from pods or local machines.
+
+The core elements of Environments are:
 - Datasets: a Hugging Face `Dataset` with a `prompt` column for inputs, and optionally `answer (str)` or `info (dict)` columns for evaluation (both can be omitted for environments that evaluate based solely on completion quality)
 - Rollout logic: interactions between models and the environment (e.g. `env_response` + `is_completed` for any `MultiTurnEnv`)
 - Rubrics: an encapsulation for one or more reward functions
 - Parsers: optional; an encapsulation for reusable parsing logic
 
-We support both `/v1/chat/completions`-style and `/v1/completions`-style inference via OpenAI clients, though we generally recommend `/v1/chat/completions`-style inference for the vast majority of applications. Both the included `GRPOTrainer` as well as `prime-rl` support the full set of [SamplingParams](https://docs.vllm.ai/en/v0.6.0/dev/sampling_params.html) exposed by vLLM (via their OpenAI-compatible [server](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html) interface), and leveraging this will often be the appropriate way to implement rollout strategies requiring finer-grained control, such as interrupting and resuming generations for interleaved tool use, or enforcing reasoning budgets.
+We support both `/v1/chat/completions`-style and `/v1/completions`-style inference via OpenAI clients, though we generally recommend `/v1/chat/completions`-style inference for the vast majority of applications. Both the included `GRPOTrainer` as well as `prime-rl` support the full set of [SamplingParams](https://docs.vllm.ai/en/stable/api/vllm/sampling_params.html#vllm.sampling_params.SamplingParams) exposed by vLLM (via their OpenAI-compatible [server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html) interface), and leveraging this will often be the appropriate way to implement rollout strategies requiring finer-grained control, such as interrupting and resuming generations for interleaved tool use, or enforcing reasoning budgets.
 
-The primary constraint we impose on rollout logic is that token sequences must be *increasing*, i.e. once a token has been added to a model's context in a rollout, it must remain as the rollout progresses. Note that this causes issues with some popular reasoning models such as the Qwen3 and DeepSeek-R1-Distill series; see [Footguns](#footguns) for guidance on adapting these models to support multi-turn rollouts.  
+The primary constraint we impose on rollout logic is that token sequences must be *increasing*, i.e. once a token has been added to a model's context in a rollout, it must remain as the rollout progresses. Note that this causes issues with some popular reasoning models such as the Qwen3 and DeepSeek-R1-Distill series; see [Troubleshooting](https://verifiers.readthedocs.io/en/latest/training.html#common-issues) for guidance on adapting these models to support multi-turn rollouts.  
 
 ### SingleTurnEnv
 
@@ -149,14 +174,15 @@ Note on concurrency: environment APIs accept `max_concurrent` to control paralle
 `vf-eval` also supports specifying `sampling_args` as a JSON object, which is sent to the vLLM inference engine:
 
 ```bash
-vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
+uv run vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
 ```
 
 Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`.
 
 ### ToolEnv
 
-For many applications involving tool use, you can use `ToolEnv` to leverage models' native tool/function-calling capabilities in an agentic loop. Tools can be specified as generic Python functions (with type hints and docstrings), which will then be passed in JSON schema form to each inference request.
+For many applications involving tool use, you can use `ToolEnv` to leverage models' native tool/function-calling capabilities in an agentic loop. Tools must be stateless and idempotent—each call should be fully determined by the provided arguments—because the environment will automatically terminate once the assistant responds without tool calls. Tools can be specified as generic Python functions (with type hints and docstrings), which will then be passed in JSON schema form to each inference request.
+
 
 ```python
 import verifiers as vf
@@ -168,13 +194,22 @@ vf_env = vf.ToolEnv(
 )
 ```
 
-In cases where your tools require heavy computational resources, we recommend hosting your tools as standalone servers (e.g. MCP servers) and creating lightweight wrapper functions to pass to `ToolEnv`. Parallel tool call support is enabled by default. 
+In cases where your tools require heavy computational resources, we recommend hosting your tools as standalone servers (e.g. MCP servers) and creating lightweight wrapper functions to pass to `ToolEnv`. Parallel tool call support is enabled by default. If you need to inject per-rollout or cross-call state (IDs, credentials, cached resources), promote the environment to `StatefulToolEnv` and populate that state through `setup_state`/`update_tool_args` instead of hiding globals.
+
+#### StatefulToolEnv
+
+`StatefulToolEnv` extends `ToolEnv` for workflows where tool calls must incorporate dynamic state (for example, sandbox handles or per-user secrets). Implement `setup_state` to seed the state dict and override `update_tool_args` to merge state into each tool invocation. Any arguments you strip from the OpenAI schema via `args_to_skip` should be tracked in `skipped_args` so the model never sees sensitive parameters. Avoid storing global state; keep everything in the provided `state` dict.
+
+#### SandboxEnv & PythonEnv
+
+`SandboxEnv` builds on `StatefulToolEnv` to coordinate long-running sandboxes. Queue heavyweight provisioning inside `setup_state` (without awaiting) and gate tool execution on readiness inside `update_tool_args` or the tools themselves. `PythonEnv` is a concrete sandboxed executor that demonstrates the pattern: it spins up a Prime sandbox, injects the sandbox ID into each tool call, and tears down resources when the rollout finishes. Treat both environments as references when building similar stateful tool workflows.
 
 For training, or self-hosted endpoints, you'll want to enable auto tool choice in [vLLM](https://docs.vllm.ai/en/stable/features/tool_calling.html#automatic-function-calling) with the appropriate parser. If your model does not support native tool calling, you may find the `XMLParser` abstraction useful for rolling your own tool call parsing on top of `MultiTurnEnv`; see `environments/xml_tool_env` for an example.
 
 ### MultiTurnEnv
 
-Both `SingleTurnEnv` and `ToolEnv` are instances of `MultiTurnEnv`, which exposes an interface for writing custom Environment interaction protocols. The two methods you must override are
+Both `SingleTurnEnv` and `ToolEnv` are instances of `MultiTurnEnv`, which exposes an interface for writing custom Environment interaction protocols. Override `is_completed` and `env_response`, and make sure any custom completion logic defers to the base class so turn limits and other shared guards keep working.
+
 
 ```python
 from typing import Tuple
@@ -188,7 +223,11 @@ class YourMultiTurnEnv(vf.MultiTurnEnv):
                  **kwargs):
 	
   async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
+    # Always call the base check so max_turns and shared guards are respected
+    if await super().is_completed(messages, state, **kwargs):
+        return True
     # return whether or not a rollout is completed
+    return state.get("task_complete", False)
 
   async def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:
     # return new environment message(s) + updated state
@@ -196,6 +235,13 @@ class YourMultiTurnEnv(vf.MultiTurnEnv):
 
 If your application requires more fine-grained control than is allowed by `MultiTurnEnv`, you may want to inherit from the base `Environment` functionality directly and override the `rollout` method.
 
+### ToolEnv
+For many applications involving tool use, you can use `ToolEnv` to leverage models' native tool/function-calling capabilities in an agentic loop. Tools must be stateless and idempotent—each call should be fully determined by the provided arguments—because the environment will automatically terminate once the assistant responds without tool calls.
+
+#### StatefulToolEnv
+`StatefulToolEnv` extends `ToolEnv` for workflows where tool calls must incorporate dynamic state ...
+#### SandboxEnv & PythonEnv
+`SandboxEnv` builds on `StatefulToolEnv` to coordinate long-running sandboxes ... `PythonEnv` is a concrete sandboxed executor that demonstrates the pattern ...
 
 ## Training
 
@@ -240,7 +286,7 @@ uv run rl \
 - Ensure your `wandb` and `huggingface-cli` logins are set up (or set `report_to=None` in `training_args`). You should also have something set as your `OPENAI_API_KEY` in your environment (can be a dummy key for vLLM). 
 - If using high max concurrency, increase the number of allowed open sockets (e.g. `ulimit -n 4096`)
 - On some setups, inter-GPU communication can [hang](https://github.com/huggingface/trl/issues/2923) or crash during vLLM weight syncing. This can usually be alleviated by setting (or unsetting) `NCCL_P2P_DISABLE=1` in your environment (or potentially `NCCL_CUMEM_ENABLE=1`). Try this as your first step if you experience NCCL-related issues.
-- If problems persist, please open an [issue](https://github.com/willccbb/verifiers/issues).
+- If problems persist, please open an [issue](https://github.com/PrimeIntellect-ai/verifiers/issues).
 
 ### Resource Requirements
 `GRPOTrainer` is optimized for setups with at least 2 GPUs, scaling up to multiple nodes. 2-GPU setups with sufficient memory to enable small-scale experimentation can be [rented](https://app.primeintellect.ai/dashboard/create-cluster?image=ubuntu_22_cuda_12) for <$1/hr.
@@ -252,27 +298,24 @@ If you do not require LoRA support, you may want to use the `prime-rl` trainer, 
 
 See the full [docs](https://verifiers.readthedocs.io/en/latest/) for more information.
 
-## Contributions
+## Contribution Guidelines
 
 Verifiers warmly welcomes community contributions! Please open an issue or PR if you encounter bugs or other pain points during your development, or start a discussion for more open-ended questions.
 
-Please note that the core `verifiers/` library is intended to be a relatively lightweight set of reusable components rather than an exhaustive catalog of RL environments. For *applications* of `verifiers` (e.g. "an Environment for XYZ task"), you are welcome to submit a PR for a self-contained module that lives within `environments/` if it serves as a canonical example of a new pattern. Stay tuned for more info shortly about our plans for supporting community Environment contributions 🙂
+Please note that the core `verifiers/` library is intended to be a relatively lightweight set of reusable components rather than an exhaustive catalog of RL environments. Consider sharing any environments you create to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) 🙂
 
 ## Citation
+
+Originally created by Will Brown ([@willccbb](https://github.com/willccbb)).
 
 If you use this code in your research, please cite:
 
 ```bibtex
 @misc{brown_verifiers_2025,
   author       = {William Brown},
-  title        = {{Verifiers}: Reinforcement Learning with LLMs in Verifiable Environments},
+  title        = {{Verifiers}: Environments for LLM Reinforcement Learning},
   howpublished = {\url{https://github.com/willccbb/verifiers}},
   note         = {Commit abcdefg • accessed DD Mon YYYY},
   year         = {2025}
 }
 ```
-
-## Roadmap
-- Default patterns for hosted resources such as code sandboxes, auxiliary models, and MCP servers
-- Multimodal input support
-- Non-increasing token sequences via REINFORCE

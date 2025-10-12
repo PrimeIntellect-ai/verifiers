@@ -5,7 +5,7 @@ version = "0.1.0"
 tags = ["sentence-repeater", "multi-turn", "train", "eval"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.2.post0",
+    "verifiers>=0.1.4",
     "datasets",
 ]
 

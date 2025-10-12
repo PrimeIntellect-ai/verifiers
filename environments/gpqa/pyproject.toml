@@ -5,7 +5,7 @@ description = "GPQA environment"
 tags = ["gpqa", "single-turn", "eval", "multiple-choice"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.2.post0",
+    "verifiers>=0.1.4",
     "datasets",
 ]
 

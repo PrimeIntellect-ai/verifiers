@@ -2,7 +2,7 @@ import threading
 from collections import deque
 from typing import Any
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader  # type: ignore[unresolved-import]
 
 
 class AsyncDataLoaderWrapper:
