@@ -120,7 +120,7 @@ def build_train_command(env_id: str, config_path_str: str, trainer_gpu_str: str)
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a tmux session and run vf-vllm (top) and vf-rl (bottom) from a TOML config."
+            "Create a tmux session and run vf-vllm (top) and vf-train (bottom) from a TOML config."
         )
     )
     parser.add_argument("at", type=str)

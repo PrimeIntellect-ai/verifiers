@@ -20,11 +20,11 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Whether to use LoRA."},
     )
     lora_rank: int = field(
-        default=8,
+        default=16,
         metadata={"help": "LoRA rank."},
     )
     lora_alpha: int = field(
-        default=8,
+        default=64,
         metadata={"help": "LoRA alpha."},
     )
     lora_dropout: float = field(

@@ -14,7 +14,7 @@ gpus = 2
 
 [trainer.args]
 run_name = "reverse-text"
-micro_batch_size = 8
+micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 512
 max_steps = 200
