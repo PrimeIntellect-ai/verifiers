@@ -100,28 +100,31 @@ The training loop mirrors the mathematics above:
    totals and the global denominator so that every rank receives the same
    metadata alongside the token tensors.【F:verifiers/rl/trainer/generator.py†L24-L54】【F:verifiers/rl/trainer/generator.py†L332-L383】
 2. `training_step` materializes each microbatch once, padding and truncating on
-   the fly before dispatching the tensors to `compute_loss`.  Every call passes
-   the shared `global_item_count`, so gradient scaling happens before
-   `Accelerate` reduces the partitions.【F:verifiers/rl/trainer/trainer.py†L223-L279】
-3. `compute_loss` receives the shared denominator through
-   `num_items_in_batch` and applies the appropriate normalization rule
-   for the selected loss type, reproducing the behaviour of the reference
-   implementation even when different ranks see different numbers of
-   microbatches.【F:verifiers/rl/trainer/trainer.py†L415-L505】
+   the fly before dispatching the tensors to `compute_loss`.  Each call ships the
+   per-rank average `global_item_count / num_processes`, so gradient scaling
+   happens before `Accelerate` reduces the partitions.【F:verifiers/rl/trainer/trainer.py†L210-L286】
+3. `compute_loss` receives the shared denominator through `loss_denominator`
+   and applies the appropriate normalization rule for the selected loss type,
+   reproducing the behaviour of the reference implementation even when different
+   ranks see different numbers of microbatches.【F:verifiers/rl/trainer/trainer.py†L392-L483】
 
-Because the denominator is derived from the global counts, increasing the number
-of GPUs, changing the microbatch size, or rearranging rollouts (e.g. future
-packing of non-sequential trajectories) leaves the effective update unchanged as
-long as the global batch size and optimization hyperparameters are fixed.
+Because the denominator is derived from the global counts and rescaled by the
+world size, increasing the number of GPUs, changing the microbatch size, or
+rearranging rollouts (e.g. future packing of non-sequential trajectories) leaves
+the effective update unchanged as long as the global batch size and optimization
+hyperparameters are fixed.
 
 ### Interaction with the Hugging Face Trainer and ZeRO-3
 
 `training_step` performs the normalization before invoking
-`self.accelerator.backward(loss)`, letting `Accelerate` and DeepSpeed’s ZeRO-3
-collectives combine the gradients without altering the per-token weights.  When
+`self.accelerator.backward(loss)`.  Both PyTorch DDP and DeepSpeed’s ZeRO-3
+integration in the Hugging Face Trainer average gradients across ranks, so the
+trainer divides the summed loss by the per-rank average item count.  This keeps
+the final update identical to the single-device reference while still letting
+`Accelerate` and ZeRO-3 partition and reduce tensors transparently.  When
 ZeRO-3 is active, the trainer temporarily gathers partitioned parameters before
 syncing with vLLM, matching Hugging Face’s expectation that every rank returns a
-loss already reduced over its local work.【F:verifiers/rl/trainer/trainer.py†L270-L314】【F:verifiers/rl/trainer/trainer.py†L370-L405】
+loss already reduced over its local work.【F:verifiers/rl/trainer/trainer.py†L210-L334】【F:verifiers/rl/trainer/trainer.py†L354-L423】
 
 ## Relationship to Prime RL
 
@@ -130,5 +133,7 @@ unmasked tokens when operating in token ratio mode, or to the number of
 sequences in the local batch when using sequence ratio mode, and divides the
 summed loss by that value.  Our trainer follows the same semantics by computing
 those totals as part of batch preparation and shipping the aggregated
-`global_item_count` with the rollout data so that every rank applies the same
-normalizer even when asynchronous generation yields uneven microbatch counts.
+`global_item_count` with the rollout data; we then divide by the per-rank
+average to counteract the distributed gradient averaging so every rank applies
+the same normalizer even when asynchronous generation yields uneven microbatch
+counts.【F:verifiers/rl/trainer/generator.py†L24-L116】【F:verifiers/rl/trainer/trainer.py†L210-L286】

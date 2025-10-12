@@ -221,3 +221,70 @@ def shuffle_tensor_dict(
         key: tensor[permutation] if tensor is not None else None
         for key, tensor in tensor_dict.items()
     }
+
+
+def init_stat_tracker(device: torch.device) -> dict[str, torch.Tensor]:
+    zero = torch.zeros((), device=device, dtype=torch.float32)
+    return {
+        "sum": zero.clone(),
+        "count": zero.clone(),
+    }
+
+
+def update_stat_tracker(
+    tracker: dict[str, torch.Tensor], summary: dict[str, torch.Tensor]
+) -> None:
+    tracker["sum"] = tracker["sum"] + summary["sum"]
+    tracker["count"] = tracker["count"] + summary["count"]
+
+
+def finalize_stat_tracker(
+    tracker: dict[str, torch.Tensor], accelerator
+) -> float | None:
+    total_count = accelerator.gather(tracker["count"]).sum()
+    if total_count.item() == 0:
+        return None
+
+    total_sum = accelerator.gather(tracker["sum"]).sum()
+    mean = (total_sum / total_count).float().item()
+
+    return mean
+
+
+def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
+    if values.numel() == 0:
+        return init_stat_tracker(values.device)
+    values = values.to(torch.float32)
+    return {
+        "sum": values.sum(),
+        "count": torch.tensor(
+            values.numel(), device=values.device, dtype=torch.float32
+        ),
+    }
+
+
+def gather_logprobs_and_entropy(
+    logits: torch.Tensor, target_token_ids: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Streamed variant of TRL's ``selective_log_softmax`` helper.
+
+    Materializing ``torch.log_softmax`` for the full ``(batch, seq_len, vocab)``
+    tensor increases peak memory versus the original TRL utility.  By
+    processing one batch row at a time we match that footprint while also
+    collecting entropy statistics for logging.
+    """
+
+    per_row_logprobs: list[torch.Tensor] = []
+    per_row_entropies: list[torch.Tensor] = []
+
+    for row_logits, row_token_ids in zip(logits, target_token_ids):
+        row_logprobs = torch.log_softmax(row_logits, dim=-1)
+        per_row_logprobs.append(
+            row_logprobs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
+        )
+        row_logprobs_detached = row_logprobs.detach()
+        per_row_entropies.append(
+            -(row_logprobs_detached.exp() * row_logprobs_detached).sum(dim=-1)
+        )
+
+    return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)

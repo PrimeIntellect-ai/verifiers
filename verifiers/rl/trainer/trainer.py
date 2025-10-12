@@ -24,80 +24,16 @@ from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.generator import Generator
 from verifiers.rl.trainer.utils import (
+    finalize_stat_tracker,
+    gather_logprobs_and_entropy,
+    init_stat_tracker,
     pad,
     prepare_peft_model,
+    summarize_values,
+    update_stat_tracker,
 )
 from verifiers.types import Messages
 from verifiers.utils.logging_utils import print_prompt_completions_sample
-
-
-def init_stat_tracker(device: torch.device) -> dict[str, torch.Tensor]:
-    zero = torch.zeros((), device=device, dtype=torch.float32)
-    return {
-        "sum": zero.clone(),
-        "count": zero.clone(),
-    }
-
-
-def update_stat_tracker(
-    tracker: dict[str, torch.Tensor], summary: dict[str, torch.Tensor]
-) -> None:
-    tracker["sum"] = tracker["sum"] + summary["sum"]
-    tracker["count"] = tracker["count"] + summary["count"]
-
-
-def finalize_stat_tracker(
-    tracker: dict[str, torch.Tensor], accelerator
-) -> float | None:
-    total_count = accelerator.gather(tracker["count"]).sum()
-    if total_count.item() == 0:
-        return None
-
-    total_sum = accelerator.gather(tracker["sum"]).sum()
-    mean = (total_sum / total_count).float().item()
-
-    return mean
-
-
-def summarize_values(values: torch.Tensor) -> dict[str, torch.Tensor]:
-    if values.numel() == 0:
-        return init_stat_tracker(values.device)
-    values = values.to(torch.float32)
-    return {
-        "sum": values.sum(),
-        "count": torch.tensor(
-            values.numel(), device=values.device, dtype=torch.float32
-        ),
-    }
-
-
-def gather_logprobs_and_entropy(
-    logits: torch.Tensor, target_token_ids: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Streamed variant of TRL's ``selective_log_softmax`` helper.
-
-    Materializing ``torch.log_softmax`` for the full ``(batch, seq_len, vocab)``
-    tensor increases peak memory versus the original TRL utility.  By
-    processing one batch row at a time we match that footprint while also
-    collecting entropy statistics for logging.
-    """
-
-    per_row_logprobs: list[torch.Tensor] = []
-    per_row_entropies: list[torch.Tensor] = []
-
-    for row_logits, row_token_ids in zip(logits, target_token_ids):
-        row_logprobs = torch.log_softmax(row_logits, dim=-1)
-        per_row_logprobs.append(
-            row_logprobs.gather(dim=-1, index=row_token_ids.unsqueeze(-1)).squeeze(-1)
-        )
-        row_logprobs_detached = row_logprobs.detach()
-        per_row_entropies.append(
-            -(row_logprobs_detached.exp() * row_logprobs_detached).sum(dim=-1)
-        )
-
-    return torch.stack(per_row_logprobs, dim=0), torch.stack(per_row_entropies, dim=0)
-
-
 class RLTrainer(Trainer):
     def __init__(
         self,
@@ -214,8 +150,10 @@ class RLTrainer(Trainer):
 
         if batch.global_item_count <= 0:
             return total_loss
-        global_item_total_tensor = torch.tensor(
-            batch.global_item_count,
+
+        world_size = max(self.accelerator.num_processes, 1)
+        loss_denominator = torch.tensor(
+            float(batch.global_item_count) / float(world_size),
             device=self.accelerator.device,
             dtype=torch.float32,
         )
@@ -260,7 +198,7 @@ class RLTrainer(Trainer):
                     model,
                     mb_inputs,
                     return_outputs=True,
-                    num_items_in_batch=global_item_total_tensor,
+                    loss_denominator=loss_denominator,
                 )
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
@@ -395,7 +333,7 @@ class RLTrainer(Trainer):
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,
-        num_items_in_batch: torch.Tensor | float | int | None = None,
+        loss_denominator: torch.Tensor | float | int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
@@ -445,22 +383,22 @@ class RLTrainer(Trainer):
             )
         per_token_loss = per_token_loss * sampling_ratio
 
-        assert num_items_in_batch is not None
-        global_item_total = torch.as_tensor(
-            num_items_in_batch,
+        denominator = torch.as_tensor(
+            loss_denominator,
             device=per_token_loss.device,
             dtype=per_token_loss.dtype,
         )
-        global_item_total = torch.clamp_min(global_item_total, 1.0)
+        tiny = torch.finfo(denominator.dtype).tiny
+        denominator = torch.clamp_min(denominator, tiny)
 
         masked_loss = per_token_loss * completion_mask
         if self.loss_type == "grpo":
             per_sequence_loss = masked_loss.sum(-1) / completion_mask.sum(-1).clamp(
                 min=1.0
             )
-            loss = per_sequence_loss.sum() / global_item_total
+            loss = per_sequence_loss.sum() / denominator
         elif self.loss_type == "dr_grpo":
-            loss = masked_loss.sum() / global_item_total
+            loss = masked_loss.sum() / denominator
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
