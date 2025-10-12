@@ -163,7 +163,7 @@ class RLTrainer(Trainer):
         ratio_tracker = init_stat_tracker(self.accelerator.device)
 
         device = self.accelerator.device
-        pad_token_id = self.processing_class.pad_token_id
+        pad_token_id = getattr(self.processing_class, "pad_token_id", None)
         assert pad_token_id is not None
 
         for microbatch in local_microbatches:
@@ -177,10 +177,7 @@ class RLTrainer(Trainer):
                 padding_side="right",
             )
             sampling_logprobs = pad(
-                [
-                    torch.tensor(x, device=device)
-                    for x in microbatch.sampling_logprobs
-                ],
+                [torch.tensor(x, device=device) for x in microbatch.sampling_logprobs],
                 padding_value=0,
                 padding_side="right",
             )
@@ -336,10 +333,11 @@ class RLTrainer(Trainer):
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
         return_outputs: bool = False,
-        num_items_in_batch: int | None = None,
+        num_items_in_batch: torch.Tensor | None = None,
         loss_denominator: torch.Tensor | float | int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
-        del num_items_in_batch  # trainer passes this for gradient accumulation; scaling stays here
+        # trainer passes num_items_in_batch for gradient accumulation; scaling stays here
+        del num_items_in_batch
         input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
         logits_to_keep = completion_mask.size(1)
