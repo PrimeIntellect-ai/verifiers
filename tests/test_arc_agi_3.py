@@ -1,9 +1,9 @@
 """Tests for the arc-agi-3 environment."""
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from arc_agi_3_agents.structs import FrameData, GameAction, GameState, Scorecard
+from arc_agi_3_agents.structs import FrameData, GameAction, GameState
 
 from verifiers.types import State
 
@@ -259,9 +259,10 @@ class TestArcAgi3Environment:
             assert "02 03" in result
 
             # Empty frame
-            frame = FrameData(game_id="test", frame=[], score=0, state=GameState.NOT_FINISHED)
+            frame = FrameData(
+                game_id="test", frame=[], score=0, state=GameState.NOT_FINISHED
+            )
             result = _render_grid(frame)
             assert result == "(empty frame)"
         finally:
             sys.path.pop(0)
-

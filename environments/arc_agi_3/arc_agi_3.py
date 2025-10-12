@@ -231,9 +231,7 @@ class ArcAgi3Client:
 
     async def close_scorecard(self, card_id: str) -> Dict[str, Any]:
         response = await self._request_with_retry(
-            lambda: self._client.post(
-                "/api/scorecard/close", json={"card_id": card_id}
-            )
+            lambda: self._client.post("/api/scorecard/close", json={"card_id": card_id})
         )
         data = self._parse_response(response)
         if Scorecard is not None:
@@ -285,15 +283,19 @@ class ArcAgi3Client:
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(self.initial_backoff * (2**attempt))
                         continue
-                    raise ArcAgi3RateLimitError("Rate limit exceeded. API limit: 600 RPM")
+                    raise ArcAgi3RateLimitError(
+                        "Rate limit exceeded. API limit: 600 RPM"
+                    )
                 return response
             except httpx.RequestError as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.initial_backoff * (2**attempt))
                     continue
-                raise ArcAgi3APIError(f"Request failed after {self.max_retries} attempts: {exc}") from exc
-        
+                raise ArcAgi3APIError(
+                    f"Request failed after {self.max_retries} attempts: {exc}"
+                ) from exc
+
         raise ArcAgi3APIError(f"Request failed: {last_error}") from last_error
 
     @staticmethod
@@ -305,7 +307,11 @@ class ArcAgi3Client:
                 f"ARC API returned non-JSON (status {response.status_code})"
             ) from exc
         if response.status_code == 429:
-            error_msg = data.get("message", "Rate limit exceeded") if isinstance(data, dict) else "Rate limit exceeded"
+            error_msg = (
+                data.get("message", "Rate limit exceeded")
+                if isinstance(data, dict)
+                else "Rate limit exceeded"
+            )
             raise ArcAgi3RateLimitError(error_msg)
         if isinstance(data, dict) and data.get("error"):
             error_code = data.get("error")
@@ -365,7 +371,7 @@ class ArcAgi3Env(vf.MultiTurnEnv):
         state_key = id(state)
         self._clients[state_key] = client
         scorecard_task = asyncio.create_task(client.open_scorecard(tag_values))
-        
+
         arc_state = {
             "state_key": state_key,
             "card_id": None,
@@ -403,11 +409,11 @@ class ArcAgi3Env(vf.MultiTurnEnv):
         """Wait for scorecard to be ready (only awaits on first call)."""
         if arc_state.get("scorecard_ready"):
             return
-        
+
         scorecard_task = arc_state.get("scorecard_task")
         if scorecard_task is None:
             raise ValueError("Scorecard task not found in state")
-        
+
         try:
             card_id = await scorecard_task
             arc_state["card_id"] = card_id
@@ -668,9 +674,7 @@ def load_environment(
     dataset = _build_dataset(game_entries)
     api_key = os.getenv("ARC_API_KEY")
     if not api_key:
-        raise ValueError(
-            "ARC_API_KEY is required. Set it in environments/arc_agi_3/.env or as an environment variable."
-        )
+        raise ValueError("ARC_API_KEY is required to call the ARC-AGI-3 API")
     rubric = vf.Rubric()
     rubric.add_reward_func(success, weight=1.0)
     env = ArcAgi3Env(
