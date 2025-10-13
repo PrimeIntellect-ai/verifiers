@@ -1,8 +1,7 @@
 import math
-from itertools import permutations, product
 import random
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
 
 import verifiers as vf
 from datasets import Dataset
@@ -112,9 +111,9 @@ def _validate_guess_format(
     return True
 
 
-def _score_guess(answer: str, guess: str, c: int) -> Tuple[int, int]:
-    return score_guess(answer, guess, c)
-
+def _parse_code_str(code: str) -> Tuple[int, ...]:
+    """Parse a digit string like "0123" into a tuple of ints (0, 1, 2, 3)."""
+    return tuple(int(ch) for ch in code)
 
 # ---------------------------
 # Complexity estimates
@@ -140,13 +139,13 @@ def default_turn_budget(
 # ---------------------------
 
 
-def _consistent_with_history(
-    candidate: str, history: List[dict], c: int
+def _consistent_with_feedback(
+    candidate: Tuple[int, ...], history: List[dict], c: int
 ) -> bool:
-    """Return True if candidate matches all feedback entries in history."""
+    """Return True if candidate matches all feedback given so far."""
     for step in reversed(history):
         g = step["guess"]
-        b, w = _score_guess(candidate, g, c)
+        b, w = score_guess(candidate, g, c)
         if b != step["black"] or w != step["white"]:
             return False
     return True
@@ -160,7 +159,7 @@ def _candidate_count(
 ) -> int:
     total = 0
     for code in _all_codes(code_length, num_symbols, allow_duplicates):
-        if _consistent_with_history(code, history, num_symbols):
+        if _consistent_with_feedback(code, history, num_symbols):
             total += 1
     return total
 
@@ -269,18 +268,17 @@ class MastermindEnv(MultiTurnEnv):
                     + f"Attempts left: {attempts_left}"
                 )
                 state["next_turn_response"] = [{"role": "user", "content": feedback}]
-                state["last_turn_processed"] = current_turn
             else:
-                parsed_guess = tuple([int(i) for i in guess])
-                answer = str(state["answer"])  # dataset-provided
-                black, white = _score_guess(answer, parsed_guess, self.config.num_symbols)
-                state["history"].append(
-                    {"guess": parsed_guess, "black": black, "white": white}
-                )
+                # score guess
+                answer_tuple = state["answer_tuple"]
+                guess_tuple = _parse_code_str(guess)
+                black, white = score_guess(answer_tuple, guess_tuple, self.config.num_symbols)
+                state["history"].append({"guess": guess_tuple, "black": black, "white": white})
+                # update game state
                 state["is_solved"] = black == self.config.code_length
                 feedback = f"Feedback: B={black}, W={white}. Attempts left: {attempts_left}"
                 state["next_turn_response"] = [{"role": "user", "content": feedback}]
-                state["last_turn_processed"] = current_turn
+            state["last_turn_processed"] = current_turn
 
         if state["is_solved"]:
             return True
@@ -291,6 +289,7 @@ class MastermindEnv(MultiTurnEnv):
         state["history"] = []
         state["is_solved"] = False
         state["last_turn_processed"] = 0
+        state["answer_tuple"] = _parse_code_str(state["answer"])
         # Store config for scoring functions that rely on it
         state["code_length"] = self.config.code_length
         state["num_symbols"] = self.config.num_symbols
@@ -335,7 +334,7 @@ def candidate_reduction_reward(state: State, **kwargs) -> float:
 
     0 when no reduction (final == initial); 1 when reduced to a single
     candidate (final == 1). For solved episodes, treats final as 1 without
-    enumeration. This can be expensive for larger configurations.
+    enumeration. This can be expensive for larger game configurations.
     """
     n = state["code_length"]
     c = state["num_symbols"]
@@ -349,6 +348,7 @@ def candidate_reduction_reward(state: State, **kwargs) -> float:
     if state["is_solved"]:
         final = 1
     else:
+        # avoid recalculating if called more than once.
         cached = state.get("candidate_count_final")
         if isinstance(cached, int) and cached > 0:
             final = cached
