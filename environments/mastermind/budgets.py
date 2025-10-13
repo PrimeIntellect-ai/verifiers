@@ -310,7 +310,7 @@ def _sample_codes(
 
 
 def _all_codes(n: int, c: int, repeats: bool) -> list[tuple[int, ...]]:
-    """Enumerate the full answer space.
+    """Enumerate the full code space.
 
     The size of the result grows combinatorially with n and c.
     """
@@ -325,7 +325,7 @@ def _all_codes(n: int, c: int, repeats: bool) -> list[tuple[int, ...]]:
 def _entropy_for_guess(
     guess: tuple[int, ...], codes: list[tuple[int, ...]], c: int
 ) -> float:
-    counts = Counter(score_guess(ans, guess, c) for ans in codes)
+    counts = Counter(score_guess(code, guess, c) for code in codes)
     k = len(codes)
     H = 0.0
     for v in counts.values():
