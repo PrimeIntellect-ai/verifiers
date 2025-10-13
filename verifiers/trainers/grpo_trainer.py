@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Sized, Tuple, Union
 import datasets
 import numpy as np
 import torch  # type: ignore[unresolved-import]
-import wandb  # type: ignore[unresolved-import]
 from accelerate.utils import (  # type: ignore[unresolved-import]
     broadcast_object_list,
     gather_object,
@@ -46,6 +45,7 @@ from trl.trainer.utils import (  # type: ignore[unresolved-import]
 )
 
 from verifiers import Environment
+from verifiers.tracking import NullTracker, Tracker, WandbTracker
 from verifiers.trainers.async_batch_generator import AsyncBatchGenerator, BatchRequest
 from verifiers.trainers.async_dataloader_wrapper import AsyncDataLoaderWrapper
 from verifiers.trainers.grpo_config import GRPOConfig
@@ -275,6 +275,7 @@ class GRPOTrainer(Trainer):
         args: GRPOConfig,
         processing_class: PreTrainedTokenizerBase,
         callbacks: Optional[list[TrainerCallback]] = None,
+        trackers: Optional[list[Tracker]] = None,
         optimizers: tuple[
             Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]
         ] = (None, None),
@@ -282,6 +283,14 @@ class GRPOTrainer(Trainer):
         **kwargs,
     ):
         self.logger = logging.getLogger(__name__)
+
+        if trackers is None:
+            if args.report_to and "wandb" in args.report_to:
+                self.trackers = [WandbTracker()]
+            else:
+                self.trackers = [NullTracker()]
+        else:
+            self.trackers = trackers
 
         # Models
         if peft_config is not None:
@@ -611,6 +620,12 @@ class GRPOTrainer(Trainer):
             max_queue_size=args.async_max_queue_size,
             generation_timeout=args.async_generation_timeout,
         )
+
+        for tracker in self.trackers:
+            try:
+                tracker.init()
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize tracker {tracker.__class__.__name__}: {e}")
 
     def get_train_dataloader(self):
         if self.train_dataset is None:
@@ -1447,27 +1462,20 @@ class GRPOTrainer(Trainer):
                 self.state.global_step,
             )
 
-            # Log to wandb if available
-            if (
-                self.args.report_to
-                and "wandb" in self.args.report_to
-                and wandb.run is not None
-            ):
-                import pandas as pd
+            # Log completion tables to trackers
+            table_data = {
+                "step": [str(self.state.global_step)] * len(prompts),
+                "prompt": prompts,
+                "completion": [
+                    self._sanitize_tool_calls(c)  # type: ignore
+                    for c in completions
+                ],
+            }
+            for k, v in reward_dict.items():
+                table_data[k] = v
 
-                table_data = {
-                    "step": [str(self.state.global_step)] * len(prompts),
-                    "prompt": prompts,
-                    "completion": [
-                        self._sanitize_tool_calls(c)  # type: ignore
-                        for c in completions
-                    ],
-                }
-                for k, v in reward_dict.items():
-                    table_data[k] = v
-
-                df = pd.DataFrame(table_data)
-                wandb.log({"eval_completions": wandb.Table(dataframe=df)})
+            for tracker in self.trackers:
+                tracker.log_table("eval_completions", table_data, step=self.state.global_step)
 
         # Log all metrics
         self.log(metrics)
@@ -1502,13 +1510,6 @@ class GRPOTrainer(Trainer):
                     self.state.global_step,
                 )
 
-            if (
-                self.args.report_to
-                and "wandb" in self.args.report_to
-                and wandb.run is not None
-            ):
-                import pandas as pd
-
                 table = {
                     "step": [str(self.state.global_step)]
                     * len(self._textual_logs["prompt"]),
@@ -1520,10 +1521,14 @@ class GRPOTrainer(Trainer):
                     **{k: list(v) for k, v in self._textual_logs["rewards"].items()},
                 }
                 if len(table["prompt"]) > 0:
-                    df = pd.DataFrame(table)
                     if self.wandb_log_unique_prompts:
+                        import pandas as pd
+                        df = pd.DataFrame(table)
                         df = df.drop_duplicates(subset=["prompt"])
-                    wandb.log({"completions": wandb.Table(dataframe=df)})
+                        table = {k: df[k].tolist() for k in table.keys()}
+
+                    for tracker in self.trackers:
+                        tracker.log_table("completions", table, step=self.state.global_step)
 
             # Clear the textual logs after logging
             self._textual_logs["prompt"].clear()
