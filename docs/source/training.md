@@ -81,6 +81,7 @@ args = vf.grpo_defaults(run_name="experiment")
 args.per_device_train_batch_size = 8    # Prompts per GPU per step
 args.num_generations = 16               # Completions per prompt (group size)
 args.gradient_accumulation_steps = 4    # Steps before optimizer update
+args.rollout_filter_ratio = 1.0 # Percentage of top rollouts to keep based on variance.
 
 # Effective batch size = per_device_train_batch_size * num_processes * gradient_accumulation_steps
 # Must be divisible by num_generations
@@ -90,6 +91,7 @@ args.gradient_accumulation_steps = 4    # Steps before optimizer update
 - `num_generations`: Larger groups (16-32) increase reward diversity but use more memory
 - `per_device_train_batch_size`: Limited by GPU memory after model weights
 - `gradient_accumulation_steps`: Use to achieve larger effective batch sizes
+- `rollout_filter_ratio`: Discard low-variance trajectories (e.g. keep top 25 %) to stabilize learning and avoid collapse.
 
 ### Generation Parameters
 

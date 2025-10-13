@@ -145,6 +145,15 @@ class GRPOConfig(TrainingArguments):
             "* gradient_accumulation_steps) must be evenly divisible by this value."
         },
     )
+    rollout_filter_ratio: float = field(
+        default=1.0,
+        metadata={
+            "help": "Ratio of rollouts to keep after filtering. Must be in the range (0.0, 1.0]. For example, if "
+            "set to 0.5, only the top 50% of rollouts based on their rewards will be kept for training. If set to "
+            "1.0 (default), all rollouts are kept."
+        },
+    )
+    # Deprecated, use max_seq_len instead
     max_completion_length: Optional[int] = field(
         default=None,
         metadata={"help": "Deprecated. Use `max_seq_len` instead."},
@@ -471,6 +480,46 @@ class GRPOConfig(TrainingArguments):
                 f"prompt ({self.num_generations}). Given the current effective train batch size, the valid values for "
                 f"the number of generations are: {possible_values}."
             )
+
+        if not (0 < self.rollout_filter_ratio <= 1.0):
+            raise ValueError(
+                f"rollout_filter_ratio must be in (0, 1], got {self.rollout_filter_ratio}."
+            )
+
+        groups = (
+            self.generation_batch_size // self.num_generations
+        )  # prompts per step (since each prompt has G generations)
+
+        top_n = int(self.rollout_filter_ratio * groups)
+
+        if top_n <= 0:
+            # Smallest workable ratio is 1/groups
+            min_ratio = 1.0 / max(groups, 1)
+            raise ValueError(
+                "rollout_filter_ratio is too small: after filtering, no groups would remain. "
+                f"Given B={self.generation_batch_size}, G={self.num_generations} -> groups={groups}, set rollout_filter_ratio >= {min_ratio:.6f} "
+                "(or increase generation_batch_size)."
+            )
+
+        K = top_n * self.num_generations  # kept total samples after filtering
+
+        # Sharding evenly across processes
+        if K % self.world_size != 0:
+            raise ValueError(
+                "After rollout filtering, kept samples must be divisible by world_size. "
+                f"Got K={K}, world_size={self.world_size}. "
+            )
+
+        # Per-process kept
+        K_per_proc = K // self.world_size
+
+        # Spliting per-process batch into gradient_accumulation_steps equal chunks later.
+        if K_per_proc % self.gradient_accumulation_steps != 0:
+            raise ValueError(
+                "Per-process kept batch size must be divisible by gradient_accumulation_steps. "
+                f"Got K_per_proc={K_per_proc}, gradient_accumulation_steps={self.gradient_accumulation_steps}. "
+            )
+
         if self.eval_strategy != "no":
             global_eval_batch_size = self.per_device_eval_batch_size * num_processes
             possible_values = [
