@@ -11,6 +11,9 @@ from verifiers.parsers.xml_parser import XMLParser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, State
 
+from .budgets import get_budget, _space_size, _all_codes
+from .scoring import score_guess
+
 
 # ---------------------------
 # System prompts
@@ -95,76 +98,27 @@ def _prompt_for(
 # ---------------------------
 
 
-def _validate_guess_format(guess: str, code_length: int, num_symbols: int) -> bool:
+def _validate_guess_format(
+    guess: str, code_length: int, num_symbols: int, allow_duplicates: bool
+) -> bool:
     if len(guess) != code_length:
         return False
     if not guess.isdigit():
         return False
-    return all(0 <= int(ch) < num_symbols for ch in guess)
+    if not all(0 <= int(ch) < num_symbols for ch in guess):
+        return False
+    if not allow_duplicates and len(set(guess)) != len(guess):
+        return False
+    return True
 
 
-def _score_guess(answer: str, guess: str) -> Tuple[int, int]:
-    """Return (black, white) pegs. Assumes same length and digits 0..9.
-
-    Optimized implementation avoiding intermediate lists and Counter.
-    """
-    L = len(answer)
-    black = 0
-    ca = [0] * 10
-    cg = [0] * 10
-    for i in range(L):
-        a = answer[i]
-        g = guess[i]
-        if a == g:
-            black += 1
-        else:
-            ia = ord(a) - 48  # '0' -> 0
-            ig = ord(g) - 48
-            ca[ia] += 1
-            cg[ig] += 1
-    white = 0
-    for i in range(10):
-        ai = ca[i]
-        gi = cg[i]
-        white += ai if ai < gi else gi
-    return black, white
+def _score_guess(answer: str, guess: str, c: int) -> Tuple[int, int]:
+    return score_guess(answer, guess, c)
 
 
 # ---------------------------
 # Complexity estimates
 # ---------------------------
-
-
-def _feedback_upper_bound(n: int) -> int:
-    """Upper bound on the number of distinct feedback outcomes (b,w) for code length n.
-
-    Uses R_max = (n + 1)(n + 2)/2 as an analytical bound, though this overcounts somewhat.
-    """
-    return (n + 1) * (n + 2) // 2
-
-
-def _space_size(n: int, c: int, repeats: bool) -> int:
-    """Size of the hypothesis space."""
-    if repeats:
-        return c ** n
-    if c < n:
-        return 0 # shouldn't be possible to get here, but there are no valid options.
-    return math.perm(c, n)
-
-
-def _it_lower_bound_guesses(n: int, c: int, repeats: bool) -> int:
-    """Information-theoretic lower bound on required guesses.
-
-    Computes ceil(log_R(space_size)) where R is an upper bound on distinct
-    feedback patterns.
-    """
-    space = _space_size(n, c, repeats)
-    if space <= 1:
-        return 1
-    R = _feedback_upper_bound(n)
-    if R < 2:
-        return 1
-    return math.ceil(math.log(space) / math.log(R))
 
 
 def default_turn_budget(
@@ -175,13 +129,10 @@ def default_turn_budget(
     slack_factor: float = 0.3,
     min_slack: int = 2,
 ) -> int:
-    """Recommended per-episode guess limit for Mastermind.
-
-    Formula: T_allow = IT_lower_bound(n,c,repeats) + max(min_slack, ceil(slack_factor * n))
-    """
-    it = _it_lower_bound_guesses(n, c, repeats)
+    """Returns estimated worst case turn budgets + slack configuration."""
+    base_inclusive = get_budget(n, c, repeats)
     slack = max(min_slack, math.ceil(slack_factor * n))
-    return max(1, it + slack)
+    return max(1, int(base_inclusive) + slack)
 
 
 # ---------------------------
@@ -189,23 +140,13 @@ def default_turn_budget(
 # ---------------------------
 
 
-def _generate_all_codes(code_length: int, num_symbols: int, allow_duplicates: bool) -> Iterable[str]:
-    digits = tuple(str(i) for i in range(num_symbols))
-    # Apply join lazily via map to avoid an explicit Python loop
-    return (
-        map("".join, product(digits, repeat=code_length))
-        if allow_duplicates
-        else map("".join, permutations(digits, code_length))
-    )
-        
-
 def _consistent_with_history(
-    candidate: str, history: List[dict]
+    candidate: str, history: List[dict], c: int
 ) -> bool:
     """Return True if candidate matches all feedback entries in history."""
     for step in reversed(history):
         g = step["guess"]
-        b, w = _score_guess(candidate, g)
+        b, w = _score_guess(candidate, g, c)
         if b != step["black"] or w != step["white"]:
             return False
     return True
@@ -218,8 +159,8 @@ def _candidate_count(
     history: List[dict],
 ) -> int:
     total = 0
-    for code in _generate_all_codes(code_length, num_symbols, allow_duplicates):
-        if _consistent_with_history(code, history):
+    for code in _all_codes(code_length, num_symbols, allow_duplicates):
+        if _consistent_with_history(code, history, num_symbols):
             total += 1
     return total
 
@@ -239,7 +180,7 @@ class MastermindConfig:
     seed: int = 0
     use_candidate_reduction_reward: bool = True
     # Turn budget slack controls
-    slack_factor: float = 0.3
+    slack_factor: float = 0.5
     min_slack: int = 2
 
 
@@ -314,20 +255,27 @@ class MastermindEnv(MultiTurnEnv):
             # Parse and score latest assistant guess
             guess = self.parser.parse_answer(messages)
             attempts_left = max(self.config.max_turns - current_turn, 0)
-            if not isinstance(guess, str) or not _validate_guess_format(
-                guess, self.config.code_length, self.config.num_symbols
+            if not _validate_guess_format(
+                guess,
+                self.config.code_length,
+                self.config.num_symbols,
+                self.config.allow_duplicates,
             ):
                 feedback = (
-                    f"Invalid guess. Use exactly {self.config.code_length} digits, each in 0..{self.config.num_symbols - 1}.  "
-                    f"Attempts left: {attempts_left}"
+                    (
+                        f"Invalid guess. Use exactly {self.config.code_length} digits, each in 0..{self.config.num_symbols - 1}. "
+                        f"Duplicates are {'allowed' if self.config.allow_duplicates else 'not allowed'}. "
+                    )
+                    + f"Attempts left: {attempts_left}"
                 )
                 state["next_turn_response"] = [{"role": "user", "content": feedback}]
                 state["last_turn_processed"] = current_turn
             else:
+                parsed_guess = tuple([int(i) for i in guess])
                 answer = str(state["answer"])  # dataset-provided
-                black, white = _score_guess(answer, guess)
+                black, white = _score_guess(answer, parsed_guess, self.config.num_symbols)
                 state["history"].append(
-                    {"guess": guess, "black": black, "white": white}
+                    {"guess": parsed_guess, "black": black, "white": white}
                 )
                 state["is_solved"] = black == self.config.code_length
                 feedback = f"Feedback: B={black}, W={white}. Attempts left: {attempts_left}"
@@ -360,24 +308,17 @@ class MastermindEnv(MultiTurnEnv):
 # ---------------------------
 
 
-def solved_reward(parser: XMLParser, completion: Messages, answer: str, **kwargs) -> float:
-    guess = parser.parse_answer(completion)
-    return 1.0 if isinstance(guess, str) and guess == str(answer) else 0.0
+def solved_reward(state: State, **kwargs) -> float:
+    return 1.0 if state["is_solved"] else 0.0
 
 
-def speed_reward(parser: XMLParser, completion: Messages, answer: str, **kwargs) -> float:
-    is_solved = solved_reward(parser, completion, answer, **kwargs)
-    if is_solved <= 0:
+def speed_reward(state: State, **kwargs) -> float:
+    if not state["is_solved"]:
         return 0.0
-    # number of assistant turns used
-    try:
-        turns = len(parser.get_assistant_messages(completion))
-        return 1.0 / max(turns, 1)
-    except Exception:
-        return 0.0
+    return 1.0 / state["last_turn_processed"]
 
 
-def partial_feedback_reward(parser: XMLParser, completion: Messages, state: State, **kwargs) -> float:
+def partial_feedback_reward(state: State, **kwargs) -> float:
     """Reward based on the latest turn's feedback from state["history"]."""
     history = state["history"]
     if not history:
@@ -417,7 +358,7 @@ def candidate_reduction_reward(state: State, **kwargs) -> float:
             state["candidate_count_final"] = final
 
     gain = (math.log(initial) - math.log(final)) / math.log(initial)
-    return float(gain)
+    return gain
 
 
 # ---------------------------
@@ -474,7 +415,7 @@ def load_environment(
     use_think: bool = True,
     seed: int = 0,
     use_candidate_reduction_reward: bool = True,
-    slack_factor: float = 0.3,
+    slack_factor: float = 0.5,
     min_slack: int = 2,
     rubric_weights: dict | None = None,
     **kwargs,

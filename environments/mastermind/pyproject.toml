@@ -12,5 +12,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["mastermind.py", "README.md"]
-
+include = ["mastermind.py", "budgets.py", "scoring.py", "README.md"]
