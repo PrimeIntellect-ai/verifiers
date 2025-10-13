@@ -14,10 +14,7 @@ import math
 import random
 from collections import Counter
 from itertools import product, permutations
-try:
-    from .scoring import score_guess  # package import
-except Exception:
-    from scoring import score_guess  # top-level module fallback
+from scoring import score_guess
 
 # worst case turn budget estimates at ~0.999 confidence
 # key: (code_length, dictionary_size, duplicates_allowed) -> turns_to_solve
@@ -417,13 +414,13 @@ result if we do need to calculate it.
     key = (n, c, repeats)
     if key in BUDGETS:
         return BUDGETS[key]
-    estimate =  estimate_turns(
+    estimate = estimate_turns(
         n,
         c,
         repeats,
-        confidence=confidence,
         samples=samples,
         guesses=guesses,
         seed=seed,
     )
     BUDGETS[key] = estimate
+    return estimate
