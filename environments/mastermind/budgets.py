@@ -322,14 +322,6 @@ def _all_codes(n: int, c: int, repeats: bool) -> list[tuple[int, ...]]:
         return [tuple(x) for x in permutations(range(c), n)]
 
 
-def _random_guess(n: int, c: int, repeats: bool, rnd: random.Random) -> tuple[int, ...]:
-    if repeats:
-        return tuple(rnd.randrange(c) for _ in range(n))
-    picks = rnd.sample(range(c), n)
-    rnd.shuffle(picks)
-    return tuple(picks)
-
-
 def _entropy_for_guess(
     guess: tuple[int, ...], answers: list[tuple[int, ...]], c: int
 ) -> float:
