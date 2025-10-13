@@ -310,11 +310,9 @@ def _sample_codes(
 
 
 def _all_codes(n: int, c: int, repeats: bool) -> list[tuple[int, ...]]:
-    """Enumerate the full answer space as tuples of ints.
+    """Enumerate the full answer space.
 
-    Used for small spaces to avoid Monte Carlo sampling error that can
-    otherwise inflate the inclusive turn estimate by one due to tiny
-    entropy underestimation.
+    The size of the result grows combinatorially with n and c.
     """
     if not repeats and c < n:
         return []
@@ -387,10 +385,8 @@ def estimate_turns(
     else:
         answers = _sample_codes(n, c, repeats, samples, seed=seed)
 
-    rnd = random.Random(seed) if seed is not None else random
-    m = max(1, int(guesses))
     Hs = [_entropy_for_guess(g, answers, c)
-          for g in _sample_codes(n, c, repeats, guesses, rnd)]
+          for g in _sample_codes(n, c, repeats, guesses, seed=seed)]
     Hq = _quantile(Hs, confidence)
     total = math.ceil(math.log(space) / max(Hq, 1e-12)) + 1
     return int(total)
