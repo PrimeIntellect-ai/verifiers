@@ -56,8 +56,10 @@ class Environment(ABC):
         message_type: MessageType = "chat",
         oai_tools: list[ChatCompletionToolParam] | None = None,
         max_workers: int = 512,
+        name: str | None = None,
         **kwargs,
     ):
+        self.name = name
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
         self.message_type: Literal["chat", "completion"] = message_type
         self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
@@ -537,8 +539,11 @@ class Environment(ABC):
             tasks = [run_one(i) for i in range(n)]
             from tqdm.asyncio import tqdm_asyncio
 
+            env_name_label = f" in {self.name}" if self.name else ""
             await tqdm_asyncio.gather(
-                *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
+                *tasks,
+                total=n,
+                desc=f"Running {n} rollouts{env_name_label} (interleaved)",
             )
 
             results.completion = results_completion  # type: ignore[assignment]

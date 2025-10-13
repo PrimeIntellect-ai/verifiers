@@ -363,14 +363,37 @@ def display_and_push_results(
 ):
     """Display results and optionally push to Environment Hub."""
     logger.info(f"\n--- {env} ---")
-    logger.info(
-        f"Rewards: avg={np.mean(results.reward):.3f}, std={np.std(results.reward):.3f}"
+
+    # Display example rollout
+    logger.info("--- Example ---")
+    printable_prompts = [messages_to_printable(p) for p in results.prompt]
+    printable_completions = [messages_to_printable(c) for c in results.completion]
+    vf.print_prompt_completions_sample(
+        printable_prompts, printable_completions, results.reward, step=0
     )
+
+    # Display results summary
+    logger.info("--- Results ---")
+    logger.info("Rewards:")
+    logger.info(
+        f"reward: avg - {np.mean(results.reward):.3f}, std - {np.std(results.reward):.3f}"
+    )
+
+    # Display per-rollout breakdown
+    r = rollouts_per_example
+    n = len(results.reward) // r
+    for i in range(r):
+        trials = [round(results.reward[(i * n) + j], 3) for j in range(n)]
+        logger.info(f"r{i + 1}: {trials}")
 
     for metric_name, metric_values in results.metrics.items():
         logger.info(
-            f"{metric_name}: avg={np.mean(metric_values):.3f}, std={np.std(metric_values):.3f}"
+            f"{metric_name}: avg - {np.mean(metric_values):.3f}, std - {np.std(metric_values):.3f}"
         )
+        # Display per-rollout breakdown for metrics
+        for i in range(r):
+            trials = [round(metric_values[(i * n) + j], 3) for j in range(n)]
+            logger.info(f"r{i + 1}: {trials}")
 
     if args.save_dataset:
         save_results_to_disk(
@@ -1068,10 +1091,7 @@ Examples:
 
     results_dict = asyncio.run(run_multi_model_eval())
 
-    if len(envs) > 1:
-        logger.info("\n" + "=" * 80)
-        logger.info("EVALUATION RESULTS")
-        logger.info("=" * 80)
+    logger.info("\n" + "=" * 80 + "\n" + "EVALUATION RESULTS" + "\n" + "=" * 80)
 
     for idx, (env, results) in enumerate(results_dict.items()):
         env_model = model_list[idx]
@@ -1093,11 +1113,10 @@ Examples:
         )
 
     if len(envs) > 1:
-        logger.info("\n" + "=" * 80)
-        logger.info(f"✓ Completed evaluation of {len(envs)} environments")
-        logger.info("=" * 80)
+        completion_msg = f"✓ Completed evaluation of {len(envs)} environments"
     else:
-        logger.info("✓ Evaluation complete")
+        completion_msg = "✓ Evaluation complete"
+    logger.info("\n" + "=" * 80 + "\n" + completion_msg + "\n" + "=" * 80)
 
 
 if __name__ == "__main__":
