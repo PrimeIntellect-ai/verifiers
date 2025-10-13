@@ -33,6 +33,7 @@ wandb/
 /outputs/
 reports/
 logs/
+.chroma_db/
 
 # development
 local/

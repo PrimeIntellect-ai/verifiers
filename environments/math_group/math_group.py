@@ -7,7 +7,7 @@ from verifiers.utils.data_utils import (
 
 
 def load_environment(**kwargs):
-    system_prompt = """
+    system_prompt = """\
     Think step-by-step inside <think>...</think> tags.
 
     Then, give your final numerical answer inside \\boxed{{...}}.

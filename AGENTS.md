@@ -8,7 +8,7 @@ Other relevant `AGENTS.md` files:
 
 ## Setup
 
-We strongly recommend using `uv` for developing `verifiers`.
+We use `uv` for developing `verifiers`.
 ```bash
 # Install uv (first time)
 curl -LsSf https://astral.sh/uv/install.sh | sh

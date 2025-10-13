@@ -429,11 +429,19 @@ class ViewRunScreen(Screen):
 
     def _get_metadata_text(self) -> Text:
         meta = self.run.metadata
+        sampling_args = meta.get("sampling_args", {})
         avg_reward = meta.get("avg_reward", "")
         if isinstance(avg_reward, (int, float)):
             avg_reward_str = f"{avg_reward:.3f}"
         else:
             avg_reward_str = str(avg_reward) if avg_reward else "N/A"
+
+        def format_sampling_param(value: Any) -> str:
+            return str(value) if value is not None else "N/A"
+
+        temperature_str = format_sampling_param(sampling_args.get("temperature"))
+        max_tokens_str = format_sampling_param(sampling_args.get("max_tokens"))
+
         # Create three columns of information without markup, with styled labels
         col1_items = [
             ("Environment: ", str(self.run.env_id)),
@@ -454,8 +462,8 @@ class ViewRunScreen(Screen):
 
         col3_items = [
             ("Avg reward: ", avg_reward_str),
-            ("Max tokens: ", str(meta.get("max_tokens", ""))),
-            ("Temperature: ", str(meta.get("temperature", ""))),
+            ("Max tokens: ", max_tokens_str),
+            ("Temperature: ", temperature_str),
             ("", ""),
         ]
 

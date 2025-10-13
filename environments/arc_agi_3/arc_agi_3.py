@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import textwrap
@@ -40,11 +41,15 @@ SYSTEM_PROMPT = textwrap.dedent(
 )
 
 DEFAULT_BASE_URL = "https://three.arcprize.org"
-DEFAULT_GAME_ID = "ls20"
+DEFAULT_GAME_ID = "ls20-fa137e247ce6"
 
 
 class ArcAgi3APIError(RuntimeError):
     """Raised when the ARC-AGI-3 API returns an error payload."""
+
+
+class ArcAgi3RateLimitError(ArcAgi3APIError):
+    """Raised when the ARC-AGI-3 API rate limit is exceeded."""
 
 
 def _coerce_game_action(value: Any) -> GameAction:
@@ -187,7 +192,14 @@ def _summary_prompt(
 class ArcAgi3Client:
     """Thin wrapper around the official ARC-AGI-3 HTTP API."""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        max_retries: int = 3,
+        initial_backoff: float = 1.0,
+    ) -> None:
         base = base_url.rstrip("/")
         if not base:
             raise ValueError("A non-empty base_url is required")
@@ -203,19 +215,23 @@ class ArcAgi3Client:
             follow_redirects=True,
         )
         self._base_url = base
+        self.max_retries = max_retries
+        self.initial_backoff = initial_backoff
 
     @property
     def scorecard_url(self) -> str:
         return f"{self._base_url}/scorecards"
 
     async def open_scorecard(self, tags: List[str]) -> str:
-        response = await self._client.post("/api/scorecard/open", json={"tags": tags})
+        response = await self._request_with_retry(
+            lambda: self._client.post("/api/scorecard/open", json={"tags": tags})
+        )
         data = self._parse_response(response)
         return str(data["card_id"])
 
     async def close_scorecard(self, card_id: str) -> Dict[str, Any]:
-        response = await self._client.post(
-            "/api/scorecard/close", json={"card_id": card_id}
+        response = await self._request_with_retry(
+            lambda: self._client.post("/api/scorecard/close", json={"card_id": card_id})
         )
         data = self._parse_response(response)
         if Scorecard is not None:
@@ -247,7 +263,9 @@ class ArcAgi3Client:
                 raise ValueError("ACTION6 requires both x and y fields")
             body["x"] = payload.x
             body["y"] = payload.y
-        response = await self._client.post(f"/api/cmd/{action.name}", json=body)
+        response = await self._request_with_retry(
+            lambda: self._client.post(f"/api/cmd/{action.name}", json=body)
+        )
         data = self._parse_response(response)
         frame = FrameData.model_validate(data)
         return frame
@@ -255,17 +273,50 @@ class ArcAgi3Client:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _request_with_retry(self, request_func) -> httpx.Response:
+        """Execute request with exponential backoff for transient failures."""
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                response = await request_func()
+                if response.status_code == 429:
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(self.initial_backoff * (2**attempt))
+                        continue
+                    raise ArcAgi3RateLimitError(
+                        "Rate limit exceeded. API limit: 600 RPM"
+                    )
+                return response
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.initial_backoff * (2**attempt))
+                    continue
+                raise ArcAgi3APIError(
+                    f"Request failed after {self.max_retries} attempts: {exc}"
+                ) from exc
+
+        raise ArcAgi3APIError(f"Request failed: {last_error}") from last_error
+
     @staticmethod
     def _parse_response(response: httpx.Response) -> Dict[str, Any]:
         try:
             data = response.json()
-        except json.JSONDecodeError as exc:  # pragma: no cover - network guard
+        except json.JSONDecodeError as exc:
             raise ArcAgi3APIError(
                 f"ARC API returned non-JSON (status {response.status_code})"
             ) from exc
-        # Prefer API-provided error message even on non-2xx
+        if response.status_code == 429:
+            error_msg = (
+                data.get("message", "Rate limit exceeded")
+                if isinstance(data, dict)
+                else "Rate limit exceeded"
+            )
+            raise ArcAgi3RateLimitError(error_msg)
         if isinstance(data, dict) and data.get("error"):
-            raise ArcAgi3APIError(str(data["error"]))
+            error_code = data.get("error")
+            error_msg = data.get("message", str(error_code))
+            raise ArcAgi3APIError(f"{error_code}: {error_msg}")
         if response.is_error:
             raise ArcAgi3APIError(
                 f"HTTP {response.status_code}: {data if isinstance(data, dict) else 'error'}"
@@ -317,12 +368,15 @@ class ArcAgi3Env(vf.MultiTurnEnv):
             api_key=self.api_key,
             timeout=self.request_timeout,
         )
-        card_id = await client.open_scorecard(tag_values)
         state_key = id(state)
         self._clients[state_key] = client
+        scorecard_task = asyncio.create_task(client.open_scorecard(tag_values))
+
         arc_state = {
             "state_key": state_key,
-            "card_id": card_id,
+            "card_id": None,
+            "scorecard_task": scorecard_task,
+            "scorecard_ready": False,
             "game_id": game_id,
             "guid": None,
             "frames": [],
@@ -337,11 +391,10 @@ class ArcAgi3Env(vf.MultiTurnEnv):
             "tags": tag_values,
             "actions_taken": 0,
             "max_actions": self.max_actions,
-            "scorecard_url": f"{client.scorecard_url}/{card_id}",
+            "scorecard_url": None,
             "errors": [],
         }
         state["arc"] = arc_state
-        # Mutate prompt in-place so rollout sees the instructions
         prompt = state.get("prompt", [])
         if isinstance(prompt, list):
             prompt.append(
@@ -351,6 +404,25 @@ class ArcAgi3Env(vf.MultiTurnEnv):
                 }
             )
         return state
+
+    async def _ensure_scorecard_ready(self, arc_state: Dict[str, Any]) -> None:
+        """Wait for scorecard to be ready (only awaits on first call)."""
+        if arc_state.get("scorecard_ready"):
+            return
+
+        scorecard_task = arc_state.get("scorecard_task")
+        if scorecard_task is None:
+            raise ValueError("Scorecard task not found in state")
+
+        try:
+            card_id = await scorecard_task
+            arc_state["card_id"] = card_id
+            arc_state["scorecard_ready"] = True
+            client = self._clients.get(arc_state["state_key"])
+            if client:
+                arc_state["scorecard_url"] = f"{client.scorecard_url}/{card_id}"
+        except Exception as exc:
+            raise ArcAgi3APIError(f"Failed to open scorecard: {exc}") from exc
 
     async def is_completed(
         self, messages: Messages, state: State, **kwargs: Any
@@ -437,6 +509,8 @@ class ArcAgi3Env(vf.MultiTurnEnv):
                     if last_frame_data
                     else FrameData(game_id=arc["game_id"])
                 )
+                if not arc.get("scorecard_ready"):
+                    await self._ensure_scorecard_ready(arc)
                 summary = _summary_prompt(
                     frame,
                     arc["actions_taken"],
@@ -444,6 +518,9 @@ class ArcAgi3Env(vf.MultiTurnEnv):
                     limit_reached=True,
                 )
                 return ([{"role": "user", "content": summary}], state)
+
+            if not arc.get("scorecard_ready"):
+                await self._ensure_scorecard_ready(arc)
 
             client = self._clients.get(arc["state_key"])
             if client is None:  # pragma: no cover - defensive guard
@@ -582,7 +659,7 @@ async def success(state: State) -> float:
     return 1.0 if arc.get("final_state") == GameState.WIN.value else 0.0
 
 
-DEFAULT_GAME_IDS = ["ls20"]
+DEFAULT_GAME_IDS = ["ls20-fa137e247ce6"]
 
 
 def load_environment(
