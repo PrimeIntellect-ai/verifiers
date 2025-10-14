@@ -24,8 +24,8 @@ class MultiTurnEnv(Environment):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
-    async def prompt_too_long(self, state: State) -> bool:
-        return state.get("prompt_too_long", False)
+    async def bad_request(self, state: State) -> bool:
+        return state.get("bad_request", False)
 
     async def max_turns_reached(self, state: State) -> bool:
         """Check if the maximum number of turns has been reached."""
@@ -37,8 +37,8 @@ class MultiTurnEnv(Environment):
     async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """When overriding, call self.max_turns_reached(state) to check if turn limit reached."""
         max_turns_reached = await self.max_turns_reached(state)
-        prompt_too_long = await self.prompt_too_long(state)
-        return max_turns_reached or prompt_too_long
+        bad_request = await self.bad_request(state)
+        return max_turns_reached or bad_request
 
     @abstractmethod
     async def env_response(
@@ -104,8 +104,8 @@ class MultiTurnEnv(Environment):
                 initial_prompt=len(state["responses"]) == 0,
                 **kwargs,
             )
-            if response is not None and response.id == "overlong-prompt":
-                state["prompt_too_long"] = True
+            if response is not None and response.id == "bad_request":
+                state["bad_request"] = True
                 break
             state["responses"].append(response)
             if self.message_type == "chat":
@@ -119,8 +119,14 @@ class MultiTurnEnv(Environment):
                     "role": "assistant",
                     "content": response_text,
                 }
-                if response.choices and response.choices[0].message and response.choices[0].message.tool_calls:
-                    response_message["tool_calls"] = response.choices[0].message.tool_calls #type:ignore
+                if (
+                    response.choices
+                    and response.choices[0].message
+                    and response.choices[0].message.tool_calls
+                ):
+                    response_message["tool_calls"] = response.choices[
+                        0
+                    ].message.tool_calls  # type:ignore
                 rollout.append(response_message)
                 completion.append(response_message)
             else:

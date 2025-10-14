@@ -29,7 +29,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import (
     cleanup_messages,
-    get_overlong_prompt_dummy_response,
+    get_error_dummy_response,
     sanitize_tool_calls,
 )
 
@@ -280,12 +280,12 @@ class Environment(ABC):
         except Exception as e:
             # In case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
-            if isinstance(e, BadRequestError) and e.response.text.startswith(
-                '{"error":{"message":"This model\'s maximum context length is'
-            ):
-                self.logger.debug("Caught overlong prompt.")
-                return get_overlong_prompt_dummy_response(
-                    message_type or self.message_type
+            if isinstance(e, BadRequestError):
+                self.logger.error(f"Error getting model response: {e}")
+                return get_error_dummy_response(
+                    message_type or self.message_type,
+                    error_message=str(e),
+                    model=model,
                 )
             self.logger.error(f"Error getting model response: {e} \n\nExiting...")
             raise e

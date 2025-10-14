@@ -121,35 +121,45 @@ def sanitize_tool_calls(messages: Messages):
     return sanitized_messages
 
 
-def get_overlong_prompt_dummy_response(message_type: MessageType) -> ModelResponse:
+def get_error_dummy_response(
+    message_type: MessageType, error_message: str, model: str = ""
+) -> ModelResponse:
+    """
+    Return a dummy response for general errors (non-context-length issues)
+    """
+    content = "Error occurred during model request."
+    if error_message:
+        # Truncate error message to avoid overly long content
+        content = f"Error occurred during model request: {error_message}"
+
     if message_type == "chat":
         return ChatCompletion(
-            id="overlong-prompt",
+            id="bad_request",
             created=0,
-            model="",
+            model=model,
             object="chat.completion",
             choices=[
                 Choice(
                     index=0,
                     message=ChatCompletionMessage(
                         role="assistant",
-                        content="Prompt too long.",
+                        content=content,
                     ),
-                    finish_reason="length",
+                    finish_reason="stop",
                 )
             ],
         )
     elif message_type == "completion":
         return Completion(
-            id="overlong-prompt",
+            id="bad_request",
             created=0,
-            model="",
+            model=model,
             object="text_completion",
             choices=[
                 CompletionChoice(
                     index=0,
-                    text="Prompt too long.",
-                    finish_reason="length",
+                    text=content,
+                    finish_reason="stop",
                 )
             ],
         )
