@@ -68,6 +68,9 @@ def load_environment(env_id: str, **env_args) -> Environment:
 
         env_instance: Environment = env_load_func(**env_args)
 
+        if env_instance.name is None:
+            env_instance.name = env_id
+
         logger.info(f"Successfully loaded environment '{env_id}'")
 
         return env_instance

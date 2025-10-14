@@ -4,6 +4,7 @@ venv/
 env/
 .env
 .env.local
+**/.env-metadata.json
 uv.lock
 .claude/
 .cursorrules

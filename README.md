@@ -90,7 +90,7 @@ uv run vf-install environment-name # -p /path/to/environments (defaults to "./en
 
 To install an Environment module from this repo's `environments` folder, do:
 ```bash
-uv run vf-install math-python --from-repo # -b branch_or_commit (defaults to "main")
+uv run vf-install wordle --from-repo # -b branch_or_commit (defaults to "main")
 ```
 
 Once an Environment module is installed, you can create an instance of the Environment using `load_environment`, passing any necessary args:
@@ -103,6 +103,111 @@ To run a quick evaluation of your Environment with an API-based model, do:
 ```bash
 uv run vf-eval environment-name -s # run and save eval results locally
 # vf-eval -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts for each
+```
+
+### Multi-Environment Evaluation
+
+`vf-eval` supports evaluating multiple environments in parallel, which is useful for benchmarking models across multiple tasks.
+
+#### Simple CLI Usage
+
+For quick evaluations with global settings applied to all environments:
+
+```bash
+# Single environment
+uv run vf-eval gsm8k --num-examples 10 --model gpt-4o
+
+# Multiple environments with shared settings  
+uv run vf-eval gsm8k wordle --num-examples 100 --model gpt-4o-mini --temperature 0.7
+```
+
+#### Per-Environment CLI Configuration
+
+For different settings per environment without a config file:
+
+```bash
+# Different num_examples and rollouts per environment
+uv run vf-eval --env id=gsm8k,num_examples=100 \
+               --env id=wordle,num_examples=50,rollouts_per_example=5 \
+               --model gpt-4o
+
+# Different temperatures per environment
+uv run vf-eval --env id=gsm8k,temperature=0.9 \
+               --env id=gpqa,temperature=0.7,rollouts_per_example=10 \
+               --model gpt-4o --save-to-env-hub
+```
+
+The `--env` flag supports: `id`, `num_examples`, `rollouts_per_example`, `max_concurrent`, `temperature`, and other JSON-compatible values.
+
+#### Config File Approach (Recommended)
+
+For per-environment customization, use a TOML or JSON config file:
+
+```toml
+# eval_config.toml
+environment_ids = ["gsm8k", "wordle"]
+
+# Global defaults
+num_examples = 10
+rollouts_per_example = 3
+max_concurrent = 32
+
+[model]
+name = "gpt-5"
+
+[sampling]
+max_tokens = 2048
+
+# Per-environment overrides
+[env.wordle]
+num_examples = 50
+rollouts_per_example = 3
+use_think = true  # env-specific init arg
+```
+
+Run with:
+```bash
+# Use config file
+vf-eval --config eval_config.toml
+
+# Config file with CLI overrides (CLI takes precedence)
+vf-eval --config eval_config.toml --num-examples 20 --model gpt-4o
+```
+
+See [`examples/eval_config_example.toml`](examples/eval_config_example.toml) for a complete example with all available options.
+
+#### Environment Hub Integration
+
+**[CLOSED BETA]** Push evaluation results to Environment Hub for tracking (requires prime eval permissions):
+
+```bash
+vf-eval --config eval_config.toml --save-to-env-hub
+```
+
+Requires `prime-evals` installed and authenticated. Install with `pip install prime-evals` or `uv pip install prime-evals`.
+
+You can also use multi-environment evaluation programmatically:
+
+```python
+import asyncio
+from openai import AsyncOpenAI
+from verifiers.scripts.eval import eval_environments_parallel
+
+client = AsyncOpenAI(api_key="...", base_url="http://localhost:8000/v1")
+
+results = await eval_environments_parallel(
+    envs=["gsm8k", "wordle"],
+    env_args_dict={"gsm8k": {}, "wordle": {}},
+    client=client,
+    model="gpt-4o-mini",
+    num_examples=[100, 50],
+    rollouts_per_example=[3, 3],
+    max_concurrent=[32, 32],
+    sampling_args={"temperature": 0.7, "max_tokens": 2048},
+)
+
+for env, output in results.items():
+    print(f"{env}: avg_reward={sum(output.reward)/len(output.reward):.3f}")
 ```
 
 If you're using Prime Intellect infrastructure, the [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) provides first-class commands for working with Verifiers environments through the [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments). Install it with `uv tool install prime`, authenticate via `prime login`, then use `prime env push` to publish your package and `prime env install owner/name` (optionally pinning a version) to consume it from pods or local machines.
