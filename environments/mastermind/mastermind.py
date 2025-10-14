@@ -10,7 +10,7 @@ from verifiers.parsers.xml_parser import XMLParser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, State
 
-from budgets import get_budget, _space_size, _all_codes
+from budgets import get_budget, _space_size, _all_codes, _sample_codes
 from scoring import score_guess
 
 
@@ -382,19 +382,15 @@ def _make_dataset(
     # Initial user prompt content (first message) — keep concise
     initial_prompt = "Start: make your first guess."
 
-    # Sample answers uniformly without enumerating the full code space
-    for i in range(n_total):
-        if config.allow_duplicates:
-            # Independent draws in 0..(S-1)
-            answer = "".join(str(random.randrange(config.num_symbols)) for _ in range(config.code_length))
-        else:
-            # Uniform over permutations without replacement
-            if config.num_symbols < config.code_length:
-                answer = ""
-            else:
-                picks = random.sample(range(config.num_symbols), config.code_length)
-                random.shuffle(picks)
-                answer = "".join(str(x) for x in picks)
+    tuples = _sample_codes(
+        config.code_length,
+        config.num_symbols,
+        config.allow_duplicates,
+        n_total,
+        seed=config.seed,
+    )
+    for i, code in enumerate(tuples):
+        answer = "".join(str(x) for x in code)
         row = {"question": initial_prompt, "answer": answer}
         if i < num_train_examples:
             rows_train.append(row)
