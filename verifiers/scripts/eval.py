@@ -12,7 +12,7 @@ from typing import Any
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    import tomli as tomllib
+    import tomli as tomllib  # type: ignore[import-untyped]
 
 import numpy as np
 from datasets import Dataset
@@ -23,7 +23,7 @@ from verifiers.types import GenerateOutputs
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
 try:
-    from prime_evals import (
+    from prime_evals import (  # type: ignore[import-untyped]
         APIClient,
         EvalsClient,
         InvalidEvaluationError,
