@@ -1,5 +1,6 @@
 import sys
 import asyncio
+from importlib.util import find_spec
 from unittest.mock import Mock, patch
 
 import pytest
@@ -11,6 +12,8 @@ from verifiers.scripts.eval import (
     push_eval_to_env_hub,
 )
 from verifiers.types import GenerateOutputs
+
+PRIME_EVALS_AVAILABLE = find_spec("prime_evals") is not None
 
 
 class FakeEnvironment:
@@ -244,6 +247,7 @@ class TestEvalEnvironmentsParallel:
             assert len(results_dict) == 3
 
 
+@pytest.mark.skipif(not PRIME_EVALS_AVAILABLE, reason="prime-evals not installed")
 class TestPrimeHubIntegration:
     """Test cases for Environment Hub integration."""
 
