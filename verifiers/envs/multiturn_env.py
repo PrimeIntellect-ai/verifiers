@@ -83,13 +83,17 @@ class MultiTurnEnv(Environment):
         start_time = time.time()
         state = await maybe_await(self.setup_state, state, **kwargs)
         if self.message_type == "chat":
-            assert isinstance(prompt, list)
+            assert isinstance(state["prompt"], list)
             completion = []
         else:
-            assert isinstance(prompt, str)
+            assert isinstance(state["prompt"], str)
             completion = ""
             state["responses_start_idx"] = []
-        rollout = list(prompt) if not isinstance(prompt, str) else prompt
+        rollout = (
+            list(state["prompt"])
+            if not isinstance(state["prompt"], str)
+            else state["prompt"]
+        )
         while not is_completed:
             if await maybe_await(self.is_completed, rollout, state, **kwargs):
                 is_completed = True
@@ -119,8 +123,14 @@ class MultiTurnEnv(Environment):
                     "role": "assistant",
                     "content": response_text,
                 }
-                if response.choices and response.choices[0].message and response.choices[0].message.tool_calls:
-                    response_message["tool_calls"] = response.choices[0].message.tool_calls #type:ignore
+                if (
+                    response.choices
+                    and response.choices[0].message
+                    and response.choices[0].message.tool_calls
+                ):
+                    response_message["tool_calls"] = response.choices[
+                        0
+                    ].message.tool_calls  # type:ignore
                 rollout.append(response_message)
                 completion.append(response_message)
             else:
