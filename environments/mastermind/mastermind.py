@@ -33,7 +33,7 @@ On each turn, follow this format strictly:
 Reason about the next guess.
 </think>
 <guess>
-{code_length} digits with no spaces, from 1 to {max_digit}
+{code_length} digits with no spaces, from 0 to {max_digit}
 </guess>
 
 Feedback you will receive each turn:
