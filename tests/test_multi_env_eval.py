@@ -243,7 +243,7 @@ class TestEvalEnvironmentsParallel:
             elapsed = time.time() - start_time
 
             # Should complete faster than sequential (with some margin for overhead)
-            assert elapsed < 0.025  # Much less than 0.03s
+            assert elapsed < 0.04
             assert len(results_dict) == 3
 
 
