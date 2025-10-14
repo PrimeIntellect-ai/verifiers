@@ -14,6 +14,7 @@ import math
 import random
 from collections import Counter
 from itertools import product, permutations
+from typing import Iterable
 from scoring import score_guess
 
 # Worst-case turn budget estimates at ~0.995 quantile (guesses=400)
@@ -309,17 +310,20 @@ def _sample_codes(
     return codes
 
 
-def _all_codes(n: int, c: int, repeats: bool) -> list[tuple[int, ...]]:
-    """Enumerate the full code space.
+def _all_codes(n: int, c: int, repeats: bool) -> Iterable[tuple[int, ...]]:
+    """Iterate the full code space as tuples.
 
-    The size of the result grows combinatorially with n and c.
+    The size of the result grows combinatorially with n and c. Callers that
+    need to reuse or take len(...) should materialize with list(...).
     """
     if not repeats and c < n:
-        return []
+        return iter(())
+    # itertools conveniently returns tuples, so we don't need to process
+    # the output.
     if repeats:
-        return [tuple(x) for x in product(range(c), repeat=n)]
+        return product(range(c), repeat=n)
     else:
-        return [tuple(x) for x in permutations(range(c), n)]
+        return permutations(range(c), n)
 
 
 def _entropy_for_guess(
@@ -375,7 +379,7 @@ def estimate_turns(
     # build set of solution codes to be guessed.
     if space <= samples:
         # For small spaces, enumerate exactly to avoid sampling error.
-        codes = _all_codes(n, c, repeats)
+        codes = list(_all_codes(n, c, repeats))
     else:
         codes = _sample_codes(n, c, repeats, samples, seed=seed)
 
