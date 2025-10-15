@@ -280,13 +280,21 @@ class Environment(ABC):
         except Exception as e:
             # In case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
-            if isinstance(e, BadRequestError) and e.response.text.startswith(
-                '{"error":{"message":"This model\'s maximum context length is'
-            ):
-                self.logger.debug("Caught overlong prompt.")
-                return get_overlong_prompt_dummy_response(
-                    message_type or self.message_type
-                )
+            if isinstance(e, BadRequestError):
+                error_text = e.response.text.lower()
+                context_length_phrases = [
+                    "context length",
+                    "token count exceeds",
+                    "maximum context length",
+                    "tokens in the input messages or the completion",
+                    "please reduce the number of tokens",
+                    "model's context length",
+                ]
+                if any(phrase in error_text for phrase in context_length_phrases):
+                    self.logger.debug("Caught overlong prompt.")
+                    return get_overlong_prompt_dummy_response(
+                        message_type or self.message_type
+                    )
             self.logger.error(f"Error getting model response: {e} \n\nExiting...")
             raise e
 
