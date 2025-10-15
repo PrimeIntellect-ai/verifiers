@@ -46,15 +46,17 @@ class DummyEnvironment(Environment):
                 {"role": "assistant", "content": response.choices[0].message.content}
             ]
             state = {
+                "completion": completion,
                 "responses": [response],
                 "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
             }
         else:
             completion = response.choices[0].text
             state = {
-                "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}
+                "completion": completion,
+                "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
             }
-        return completion, state
+        return state
 
 
 def _make_env(

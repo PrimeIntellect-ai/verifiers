@@ -51,12 +51,13 @@ class TestStatefulToolEnv:
             response="Done",
         )
 
-        completion, state = await mock_stateful_tool_env.rollout(
+        state = await mock_stateful_tool_env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=[user_message],
             answer="",
         )
+        completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and tool_messages[0]["content"] == "8"

@@ -59,13 +59,13 @@ class TestMultiTurnEnv:
             response="Final response DONE",
         )
 
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,
             answer="target_answer",
         )
-
+        completion = state["completion"]
         # Should have: assistant + user + assistant + user + assistant
         assert len(completion) == 5
         assert completion[0]["role"] == "assistant"
@@ -79,7 +79,7 @@ class TestMultiTurnEnv:
         assert state["answer"] == "target_answer"
         assert state["prompt"] == prompt
         # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] != []
         assert "responses" in state
         assert len(state["responses"]) == 3  # Three assistant responses
 
@@ -92,12 +92,13 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start conversation"}]
-        completion, state = await mock_multiturn_env_max_turns.rollout(
+        state = await mock_multiturn_env_max_turns.rollout(
             client=mock_multiturn_env_max_turns.client,
             model="test-model",
             prompt=prompt,
             answer="target_answer",
         )
+        completion = state["completion"]
 
         # Should stop at max_turns=2: assistant + user + assistant (3 messages)
         assert len(completion) == 3
@@ -141,12 +142,13 @@ class TestMultiTurnEnv:
         mock_openai_client.set_default_responses(chat_response="Still thinking")
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=prompt,
             answer="target",
         )
+        completion = state["completion"]
 
         assert state["turn"] == 2
         assert state.get("env_calls", 0) == 1
@@ -162,7 +164,7 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Test state"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,
@@ -173,8 +175,7 @@ class TestMultiTurnEnv:
 
         # Check all state fields are initialized
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] != []
         assert state["answer"] == "test_answer"
         assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
@@ -190,12 +191,13 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Quick question"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,
             answer="target_answer",
         )
+        completion = state["completion"]
 
         # Should complete immediately
         assert len(completion) == 1
@@ -220,12 +222,13 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start conversation"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,
             answer="target_answer",
         )
+        completion = state["completion"]
 
         # Verify environment responses are included
         assert len(completion) >= 3
@@ -243,14 +246,12 @@ class TestMultiTurnEnv:
             messages=[{"role": "user", "content": "Original message"}],
             response="Response DONE",
         )
-
-        completion, state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=original_prompt,
             answer="test_answer",
         )
-
         # Original prompt should be unchanged
         assert original_prompt == prompt_copy
 
@@ -265,7 +266,7 @@ class TestMultiTurnEnv:
         prompt = [{"role": "user", "content": "Test sampling"}]
         sampling_args = {"temperature": 0.8, "max_tokens": 50}
 
-        completion, state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,
@@ -309,9 +310,10 @@ class TestMultiTurnEnv:
         )
 
         prompt = "Start:"
-        completion, state = await env.rollout(
+        state = await env.rollout(
             client=mock_openai_client, model="test-model", prompt=prompt, answer="Done"
         )
+        completion = state["completion"]
 
         assert isinstance(completion, str)
         assert "First response" in completion
@@ -346,12 +348,13 @@ class TestMultiTurnEnv:
         env.client.set_default_responses(chat_response="Continue")  # type: ignore
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
             client=env.client,  # type: ignore
             model="test-model",
             prompt=prompt,  # type: ignore
             answer="test",  # type: ignore
         )
+        completion = state["completion"]
 
         # Should complete when turn_count reaches 2
         assert state["turn_count"] == 2
@@ -397,12 +400,13 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
             client=env.client,  # type: ignore
             model="test-model",
             prompt=prompt,  # type: ignore
             answer="test",  # type: ignore
         )
+        completion = state["completion"]
 
         # Should complete immediately after first assistant response
         assert len(completion) == 1
@@ -436,7 +440,7 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
             client=mock_multiturn_env.client,
             model="test-model",
             prompt=prompt,

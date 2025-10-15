@@ -80,12 +80,13 @@ class TestSingleTurnEnv:
         prompt = [{"role": "user", "content": "What is 2+2?"}]
         answer = "4"
 
-        completion, state = await mock_singleturn_env.rollout(
+        state = await mock_singleturn_env.rollout(
             client=mock_singleturn_env.client,
             model="test-model",
             prompt=prompt,
             answer=answer,
         )
+        completion = state["completion"]
 
         # Should return list format for chat
         assert isinstance(completion, list)
@@ -107,12 +108,13 @@ class TestSingleTurnEnv:
         prompt = "Calculate 2+2:"
         answer = "4"
 
-        completion, state = await mock_singleturn_env_completion.rollout(
+        state = await mock_singleturn_env_completion.rollout(
             client=mock_singleturn_env_completion.client,
             model="test-model",
             prompt=prompt,
             answer=answer,
         )
+        completion = state["completion"]
 
         # Should return string format for completion
         assert isinstance(completion, str)
@@ -132,13 +134,14 @@ class TestSingleTurnEnv:
         answer = "Hi"
         sampling_args = {"temperature": 0.8, "max_tokens": 100}
 
-        completion, state = await mock_singleturn_env.rollout(
+        state = await mock_singleturn_env.rollout(
             client=mock_singleturn_env.client,
             model="test-model",
             prompt=prompt,
             answer=answer,
             sampling_args=sampling_args,
         )
+        completion = state["completion"]
 
         assert isinstance(completion, list)
         assert completion[0]["content"] == "This is a test response"
@@ -156,7 +159,7 @@ class TestSingleTurnEnv:
         task = "math"
         info = {"difficulty": "easy"}
 
-        completion, state = await mock_singleturn_env.rollout(
+        state = await mock_singleturn_env.rollout(
             client=mock_singleturn_env.client,
             model="test-model",
             prompt=prompt,
@@ -164,6 +167,7 @@ class TestSingleTurnEnv:
             task=task,
             info=info,
         )
+        completion = state["completion"]
 
         assert isinstance(completion, list)
         # Check state contains all the information
@@ -198,7 +202,7 @@ class TestSingleTurnEnv:
         task = "greeting"
         info = {"context": "test"}
 
-        completion, state = await mock_singleturn_env.rollout(
+        state = await mock_singleturn_env.rollout(
             client=mock_singleturn_env.client,
             model="test-model",
             prompt=prompt,
@@ -209,8 +213,7 @@ class TestSingleTurnEnv:
 
         # Check all expected state fields
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] != []
         assert state["answer"] == answer
         assert state["task"] == task
         assert state["info"] == info
@@ -336,21 +339,23 @@ class TestSingleTurnEnv:
         )
 
         # Test chat rollout
-        chat_completion, chat_state = await chat_env.rollout(
+        chat_state = await chat_env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=[{"role": "user", "content": "Hello"}],
             answer="Hi",
         )
+        chat_completion = chat_state["completion"]
         assert isinstance(chat_completion, list)
 
         # Test completion rollout
-        completion_result, comp_state = await completion_env.rollout(
+        comp_state = await completion_env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt="Complete this:",
             answer="Done",
         )
+        completion_result = comp_state["completion"]
         assert isinstance(completion_result, str)
 
     @pytest.mark.asyncio

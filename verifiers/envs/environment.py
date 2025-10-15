@@ -301,10 +301,10 @@ class Environment(ABC):
         info: Info | None = None,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> State:
         """
         Run a rollout for a given prompt.
-        Returns a tuple of (completion, state).
+        Returns a State dict containing the completion and other rollout information.
         """
         pass
 
@@ -319,7 +319,7 @@ class Environment(ABC):
         info: Info | None = None,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> State:
         """
         Run a rollout with a semaphore.
         """
@@ -339,7 +339,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         **kwargs,
-    ) -> list[tuple[Messages, State]]:
+    ) -> list[State]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
@@ -482,7 +482,7 @@ class Environment(ABC):
                 # Generation stage
                 if gen_semaphore is not None:
                     async with gen_semaphore:
-                        comp_i, state_i = await self.rollout(
+                        state_i = await self.rollout(
                             client,
                             model,
                             prompt_i,
@@ -493,7 +493,7 @@ class Environment(ABC):
                             **kwargs,
                         )
                 else:
-                    comp_i, state_i = await self.rollout(
+                    state_i = await self.rollout(
                         client,
                         model,
                         prompt_i,
@@ -503,14 +503,14 @@ class Environment(ABC):
                         gen_sampling_args,
                         **kwargs,
                     )
-                results_completion[i] = comp_i
+                results_completion[i] = state_i["completion"]
                 results_state[i] = state_i
                 # Scoring stage
                 if score_semaphore is not None:
                     async with score_semaphore:
                         rs = await self.rubric.score_rollout(
                             prompt=prompt_i,
-                            completion=comp_i,
+                            completion=state_i["completion"],
                             answer=answer_i,
                             state=state_i,
                             task=task_i,
@@ -520,7 +520,7 @@ class Environment(ABC):
                 else:
                     rs = await self.rubric.score_rollout(
                         prompt=prompt_i,
-                        completion=comp_i,
+                        completion=state_i["completion"],
                         answer=answer_i,
                         state=state_i,
                         task=task_i,
@@ -559,8 +559,8 @@ class Environment(ABC):
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
                 **kwargs,
             )
-            results.completion = [rollout[0] for rollout in rollouts]
-            results.state = [rollout[1] for rollout in rollouts]
+            results.completion = [rollout["completion"] for rollout in rollouts]
+            results.state = rollouts
             if score_rollouts:
                 rollout_scores = await self.rubric.score_rollouts(
                     prompts=results.prompt,

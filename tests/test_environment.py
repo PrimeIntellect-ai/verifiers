@@ -33,12 +33,12 @@ class SimpleEnvironment(Environment):
             completion = [
                 {"role": "assistant", "content": response.choices[0].message.content}
             ]
-            state = {"responses": [response]}
+            state = {"completion": completion, "responses": [response]}
         else:
             assert isinstance(response, Completion)
             completion = response.choices[0].text
-            state = {}
-        return completion, state
+            state = {"completion": completion}
+        return state
 
 
 class TestEnvironmentBase:

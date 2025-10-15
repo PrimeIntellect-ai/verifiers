@@ -59,7 +59,7 @@ class MultiTurnEnv(Environment):
         info: Info | None = None,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> State:
         """
         Generate a multi-turn rollout with the environment (messages, state).
         """
@@ -165,4 +165,5 @@ class MultiTurnEnv(Environment):
                     assert isinstance(completion, str)
                     rollout += env_msgs
                     completion += env_msgs
-        return completion, state
+            state["completion"] = completion
+        return state

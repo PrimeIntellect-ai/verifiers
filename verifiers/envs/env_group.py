@@ -158,7 +158,7 @@ class EnvGroup(Environment):
         info: Info | None = None,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[str | list[ChatMessage], State]:
+    ) -> State:
         """
         Route rollout to the appropriate sub-environment based on task.
 

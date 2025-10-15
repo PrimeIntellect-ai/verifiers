@@ -46,12 +46,13 @@ class TestToolEnv:
             response="Done",
         )
 
-        completion, state = await mock_tool_env.rollout(
+        state = await mock_tool_env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=[user_message],
             answer="",
         )
+        completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and tool_messages[0]["content"] == "16"
@@ -66,12 +67,13 @@ class TestToolEnv:
             response="Hi",
         )
 
-        completion, state = await mock_tool_env.rollout(
+        state = await mock_tool_env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=[{"role": "user", "content": "Hello"}],
             answer="",
         )
+        completion = state["completion"]
 
         assert len(state["responses"]) == 1
         assert completion[-1]["role"] == "assistant"
@@ -100,12 +102,13 @@ class TestToolEnv:
             tool_calls=[tool_call],
         )
 
-        completion, _ = await env.rollout(
+        state = await env.rollout(
             client=mock_openai_client,
             model="test-model",
             prompt=[{"role": "user", "content": "Invoke"}],
             answer="",
         )
+        completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and "failure" in tool_messages[0]["content"]
