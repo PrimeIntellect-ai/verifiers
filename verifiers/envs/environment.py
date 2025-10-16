@@ -283,9 +283,9 @@ class Environment(ABC):
             if isinstance(e, BadRequestError):
                 error_text = e.response.text.lower()
                 context_length_phrases = [
-                    "This model\'s maximum context length is",
-                    "is longer than the model\'s context length",
-                    "exceeds the model\'s context length"
+                    "This model's maximum context length is",
+                    "is longer than the model's context length",
+                    "exceeds the model's context length",
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
                     self.logger.debug("Caught overlong prompt.")
@@ -905,7 +905,7 @@ class Environment(ABC):
                 while j < len(zipped) and zipped[j][0]["role"] != "assistant":
                     consecutive_messages.append(zipped[j][0])
                     j += 1
-                
+
                 # Tokenize conversation ending at last completed assistant response
                 token_prefix: list[int] = processing_class.apply_chat_template(
                     conversation=messages_consumed,
@@ -914,11 +914,13 @@ class Environment(ABC):
 
                 # Tokenize with new user/tool messages and assistant prompt for next generation
                 # Must include add_generation_prompt=True to match what vLLM sees
-                token_prefix_with_turn: list[int] = processing_class.apply_chat_template(
-                    conversation=messages_consumed + consecutive_messages,
-                    add_generation_prompt=True,
+                token_prefix_with_turn: list[int] = (
+                    processing_class.apply_chat_template(
+                        conversation=messages_consumed + consecutive_messages,
+                        add_generation_prompt=True,
+                    )
                 )
-                
+
                 assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
                     f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
                 )
