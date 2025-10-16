@@ -161,7 +161,8 @@ class RLTrainer(Trainer):
             dtype=torch.float32,
         )
         entropy_tracker = init_stat_tracker(self.accelerator.device)
-        ratio_tracker = init_stat_tracker(self.accelerator.device)
+        ir_tracker = init_stat_tracker(self.accelerator.device)
+        tir_tracker = init_stat_tracker(self.accelerator.device)
 
         device = self.accelerator.device
         pad_token_id = getattr(self.processing_class, "pad_token_id", None)
@@ -203,16 +204,20 @@ class RLTrainer(Trainer):
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
             assert isinstance(summaries, dict)
-            update_stat_tracker(ratio_tracker, summaries["importance_sampling_ratio"])
+            update_stat_tracker(ir_tracker, summaries["importance_sampling"])
+            update_stat_tracker(tir_tracker, summaries["importance_sampling_truncated"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
 
-        ratio_mean = finalize_stat_tracker(ratio_tracker, self.accelerator)
+        ir_mean = finalize_stat_tracker(ir_tracker, self.accelerator)
+        tir_mean = finalize_stat_tracker(tir_tracker, self.accelerator)
         entropy_mean = finalize_stat_tracker(entropy_tracker, self.accelerator)
-        assert ratio_mean is not None
+        assert ir_mean is not None
+        assert tir_mean is not None
         assert entropy_mean is not None
 
         extra_metrics: dict[str, float] = {
-            "sampling/importance_sampling_ratio": ratio_mean,
+            "sampling/importance": ir_mean,
+            "sampling/importance_truncated": tir_mean,
             "entropy": entropy_mean,
         }
 
@@ -349,13 +354,13 @@ class RLTrainer(Trainer):
         model_logprobs, entropies = self.get_logprobs(
             model, input_ids, attention_mask, logits_to_keep
         )
-        advantages = inputs["advantages"]
-        log_ratio = model_logprobs - sampling_logprobs
+        old_logprobs = model_logprobs.detach()
+        log_ratio = model_logprobs - old_logprobs
         if self.importance_sampling_level == "token":
-            log_importance_weights = log_ratio
+            log_importance_ratio = old_logprobs - sampling_logprobs
         elif self.importance_sampling_level == "sequence":
-            log_importance_weights = (
-                (log_ratio * completion_mask).sum(-1)
+            log_importance_ratio = (
+                ((old_logprobs - sampling_logprobs) * completion_mask).sum(-1)
                 / completion_mask.sum(-1).clamp(min=1.0)
             ).unsqueeze(-1)
         else:
@@ -363,20 +368,24 @@ class RLTrainer(Trainer):
                 f"Unknown importance sampling level: {self.importance_sampling_level}"
             )
 
-        importance_ratio = torch.exp(log_importance_weights)
-        importance_ratio = torch.clamp(
+        importance_ratio = torch.exp(log_importance_ratio)
+        ratio = torch.exp(log_ratio)
+        truncated_importance_ratio = torch.clamp(
             importance_ratio,
             max=self.vllm_importance_sampling_cap,
         )
-        coef_1 = importance_ratio
+        coef_1 = ratio
         coef_2 = torch.clamp(
             coef_1,
             min=1 - self.epsilon,
             max=1 + self.epsilon,
         )
+        advantages = inputs["advantages"]
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        per_token_loss = (
+            -torch.min(per_token_loss1, per_token_loss2) * truncated_importance_ratio
+        )
 
         denominator = torch.as_tensor(
             loss_denominator,
@@ -397,17 +406,15 @@ class RLTrainer(Trainer):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
         with torch.no_grad():
-            importance_ratio = torch.clamp(
-                torch.exp(log_importance_weights),
-                max=self.vllm_importance_sampling_cap,
+            tir_summary = summarize_values(
+                truncated_importance_ratio[completion_mask.bool()]
             )
-            ratio_summary = summarize_values(
-                importance_ratio[completion_mask.bool()]
-            )
+            ir_summary = summarize_values(importance_ratio[completion_mask.bool()])
             entropy_summary = summarize_values(entropies[completion_mask.bool()])
 
         summaries = {
-            "importance_sampling_ratio": ratio_summary,
+            "importance_sampling_truncated": tir_summary,
+            "importance_sampling": ir_summary,
             "entropy": entropy_summary,
         }
         return loss, summaries
