@@ -13,11 +13,13 @@ class ToolEnv(MultiTurnEnv):
         tools: list[Callable] | None = None,
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"{str(e)}",
+        disallow_non_tool_responses: bool = True,
         **kwargs,
     ):
         self.tools = tools or []
         self.max_turns = max_turns
         self.error_formatter = error_formatter
+        self.disallow_non_tool_responses = disallow_non_tool_responses
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
@@ -74,20 +76,35 @@ class ToolEnv(MultiTurnEnv):
         self, messages: Messages, state: State, **kwargs
     ) -> tuple[Messages, State]:
         assert isinstance(messages, list)
-        assert "tool_calls" in messages[-1]
-        tool_messages = []
-        for tool_call in messages[-1]["tool_calls"]:
-            match tool_call:
-                case ChatCompletionMessageToolCall():
-                    tool_name: str = tool_call.function.name
-                    tool_args: dict = json.loads(tool_call.function.arguments)
-                    tool_call_id: str = tool_call.id or ""
-                case _:
-                    tool_name: str = tool_call["function"]["name"]
-                    tool_args: dict = json.loads(tool_call["function"]["arguments"])
-                    tool_call_id: str = tool_call["id"]
-            tool_message: Message = await self.call_tool(
-                tool_name, tool_args, tool_call_id
-            )
-            tool_messages.append(tool_message)
-        return tool_messages, state
+        if self.disallow_non_tool_responses:
+            assert "tool_calls" in messages[-1]
+        if "tool_calls" in messages[-1]:
+            tool_messages = []
+            for tool_call in messages[-1]["tool_calls"]:
+                match tool_call:
+                    case ChatCompletionMessageToolCall():
+                        tool_name: str = tool_call.function.name
+                        tool_args: dict = json.loads(tool_call.function.arguments)
+                        tool_call_id: str = tool_call.id or ""
+                    case _:
+                        tool_name: str = tool_call["function"]["name"]
+                        tool_args: dict = json.loads(tool_call["function"]["arguments"])
+                        tool_call_id: str = tool_call["id"]
+                tool_message: Message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id
+                )
+                tool_messages.append(tool_message)
+            return tool_messages, state
+        else:
+            return await self.response_to_non_tool_call(messages, state, **kwargs)
+
+    async def response_to_non_tool_call(
+        self, messages: Messages, state: State, **kwargs
+    ) -> tuple[Messages, State]:
+        """
+        If disallow_non_tool_responses=False, we might want to add "nudging"
+        as user messages to remind the model what to do. By default, we don't
+        do anything.
+        """
+        assert self.disallow_non_tool_responses is False
+        return [], state
