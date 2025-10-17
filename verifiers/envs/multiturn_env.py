@@ -16,7 +16,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 
-logger = logging.getLogger("verifiers.envs.multiturn_env")
+logger = logging.getLogger(__name__)
 
 
 class MultiTurnEnv(Environment):
@@ -57,6 +57,7 @@ class MultiTurnEnv(Environment):
         answer: str = "",
         task: str = "default",
         info: Info | None = None,
+        id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
@@ -66,12 +67,12 @@ class MultiTurnEnv(Environment):
         info = info or {}
         is_completed = False
         state = {
-            "id": 0,  # TODO: add id
             "prompt": prompt,
             "completion": [],
             "answer": answer,
             "task": task,
             "info": info,
+            "id": id,
             "responses": [],
             "turn": 0,
             "timing": {
@@ -108,19 +109,25 @@ class MultiTurnEnv(Environment):
                 state["prompt_too_long"] = True
                 break
             state["responses"].append(response)
+            response_text: str = ""
             if self.message_type == "chat":
                 assert isinstance(rollout, list)
                 assert isinstance(completion, list)
                 assert isinstance(response, ChatCompletion)
-                response_text: str = ""
                 if response.choices and response.choices[0].message:
                     response_text = response.choices[0].message.content or ""
                 response_message: ChatMessage = {
                     "role": "assistant",
                     "content": response_text,
                 }
-                if response.choices and response.choices[0].message and response.choices[0].message.tool_calls:
-                    response_message["tool_calls"] = response.choices[0].message.tool_calls #type:ignore
+                if (
+                    response.choices
+                    and response.choices[0].message
+                    and response.choices[0].message.tool_calls
+                ):
+                    response_message["tool_calls"] = response.choices[  # type: ignore
+                        0
+                    ].message.tool_calls
                 rollout.append(response_message)
                 completion.append(response_message)
             else:
@@ -128,7 +135,6 @@ class MultiTurnEnv(Environment):
                 assert isinstance(completion, str)
                 assert isinstance(response, Completion)
                 state["responses_start_idx"].append(len(completion))
-                response_text: str = ""
                 if response.choices and response.choices[0]:
                     response_text = response.choices[0].text or ""
                 rollout += response_text

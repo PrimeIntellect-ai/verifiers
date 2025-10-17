@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
+from typing import AsyncContextManager
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import (
@@ -12,7 +13,7 @@ from verifiers.types import (
     RolloutScores,
     State,
 )
-from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.async_utils import maybe_await, maybe_semaphore
 
 
 class Rubric:
@@ -76,6 +77,7 @@ class Rubric:
         state: State,
         task: str = "default",
         info: Info | None = None,
+        id: int | None = None,
         **kwargs,
     ) -> float:
         """
@@ -97,6 +99,7 @@ class Rubric:
             state=state,
             task=task,
             info=info,
+            id=id,
         )
         common.update(self.class_objects)
         merged = {**common, **kwargs}
@@ -115,18 +118,6 @@ class Rubric:
                 ans = 0.0
         return ans
 
-    async def score_rollout_with_semaphore(
-        self,
-        semaphore: asyncio.Semaphore,
-        *args,
-        **kwargs,
-    ) -> RolloutScore:
-        """
-        Score a rollout with a semaphore.
-        """
-        async with semaphore:
-            return await self.score_rollout(*args, **kwargs)
-
     async def score_rollout(
         self,
         prompt: Messages,
@@ -135,6 +126,7 @@ class Rubric:
         state: State,
         task: str = "default",
         info: Info | None = None,
+        id: int | None = None,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -152,6 +144,7 @@ class Rubric:
                     state=state,
                     task=task,
                     info=info,
+                    id=id,
                     **kwargs,
                 )
                 for func in self.get_reward_funcs()
@@ -168,6 +161,7 @@ class Rubric:
                     state=state,
                     task=task,
                     info=info,
+                    id=id,
                     **kwargs,
                 )
                 reward_scores.append(score)
@@ -188,6 +182,24 @@ class Rubric:
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
         return rewards
 
+    async def run_score_rollout(
+        self,
+        sem: AsyncContextManager[None],
+        *args,
+        **kwargs,
+    ) -> RolloutScore:
+        """
+        Score a rollout with a semaphore.
+        """
+        async with sem:
+            return await self.score_rollout(*args, **kwargs)
+
+    async def score_group(self, states: list[State], **kwargs):
+        """
+        Override for group-level comparisons. Store results with in-place per-rollout state.
+        """
+        return
+
     async def score_rollouts(
         self,
         prompts: list[Messages],
@@ -196,6 +208,7 @@ class Rubric:
         states: list[State],
         tasks: list[str],
         infos: list[Info],
+        ids: list[int] | None = None,
         max_concurrent: int = -1,
         **kwargs,
     ) -> RolloutScores:
@@ -212,20 +225,27 @@ class Rubric:
         """
         from tqdm.asyncio import tqdm_asyncio
 
-        if max_concurrent > 0:
-            semaphore = asyncio.Semaphore(max_concurrent)
-            rollout_tasks = [
-                self.score_rollout_with_semaphore(semaphore, *pcasti, **kwargs)
-                for pcasti in zip(prompts, completions, answers, states, tasks, infos)
-            ]
-        else:
-            rollout_tasks = [
-                self.score_rollout(*pcasti, **kwargs)
-                for pcasti in zip(prompts, completions, answers, states, tasks, infos)
-            ]
+        # set ids if not present (backward-compatibility)
+        ids = ids or [0 for i in range(len(prompts))]
+        await self.score_group(
+            states,
+            prompts=prompts,
+            completions=completions,
+            answers=answers,
+            tasks=tasks,
+            infos=infos,
+            ids=ids,
+            **kwargs,
+        )
+
+        maybe_sem = await maybe_semaphore(max_concurrent)
+        score_tasks = [
+            self.run_score_rollout(maybe_sem, *pcastii, **kwargs)
+            for pcastii in zip(prompts, completions, answers, states, tasks, infos, ids)
+        ]
 
         rewards = await tqdm_asyncio.gather(
-            *rollout_tasks,
+            *score_tasks,
             total=len(prompts),
             desc=f"Evaluating {len(prompts)} rollouts",
         )

@@ -4,7 +4,9 @@ import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from typing import TYPE_CHECKING, Literal
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, AsyncContextManager, Literal
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
@@ -17,6 +19,7 @@ from verifiers.types import (
     ChatMessage,
     Completion,
     GenerateInputs,
+    GenerateMetadata,
     GenerateOutputs,
     Info,
     Messages,
@@ -27,11 +30,13 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
+from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.message_utils import (
     cleanup_messages,
     get_overlong_prompt_dummy_response,
     sanitize_tool_calls,
 )
+from verifiers.utils.path_utils import get_results_path
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
@@ -56,6 +61,8 @@ class Environment(ABC):
         message_type: MessageType = "chat",
         oai_tools: list[ChatCompletionToolParam] | None = None,
         max_workers: int = 512,
+        env_id: str | None = None,
+        env_args: dict | None = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -109,6 +116,10 @@ class Environment(ABC):
         if self.dataset is None and self.eval_dataset is None:
             raise ValueError("Either dataset or eval_dataset must be provided")
 
+        self.env_id = env_id or ""
+        self.env_args = env_args or {}
+        self.rollouts_per_example = None
+
     def format_prompt(
         self,
         prompt_str: str,
@@ -131,7 +142,9 @@ class Environment(ABC):
         question_key: str = "question",
         answer_key: str = "answer",
     ) -> Dataset:
-        # skip if "prompt" already exists
+        """
+        Create 'id' and 'prompt' columns if not present.
+        """
         if "id" not in dataset.column_names:
             dataset = dataset.add_column("id", range(len(dataset)))  # type: ignore
 
@@ -211,12 +224,12 @@ class Environment(ABC):
         Returns special error messages for context length issues.
         """
         sampling_args = sampling_args or {}
-        # Resolve message type first
+        # resolve message type first
         if message_type is None:
             message_type = self.message_type
-        # Normalize sampling args:
-        # - If max_tokens is provided for chat, rename to max_completion_tokens
-        # - Drop any None-valued entries to avoid sending them to the client
+        # normalize sampling args:
+        # - if max_tokens is provided for chat, rename to max_completion_tokens
+        # - drop any None-valued entries to avoid sending to the client
         if "max_tokens" in sampling_args:
             if sampling_args["max_tokens"] is None:
                 sampling_args.pop("max_tokens")
@@ -278,7 +291,7 @@ class Environment(ABC):
                 )
                 return response
         except Exception as e:
-            # In case of making a request with an overlong prompt, e.g from a too-long
+            # in case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
             if isinstance(e, BadRequestError) and e.response.text.startswith(
                 '{"error":{"message":"This model\'s maximum context length is'
@@ -299,6 +312,7 @@ class Environment(ABC):
         answer: str = "",
         task: str = "default",
         info: Info | None = None,
+        id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
@@ -308,24 +322,25 @@ class Environment(ABC):
         """
         pass
 
-    async def run_rollout_with_semaphore(
+    async def run_rollout(
         self,
-        semaphore: asyncio.Semaphore,
+        sem: AsyncContextManager[None],
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
         answer: str = "",
         task: str = "default",
         info: Info | None = None,
+        id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
         """
         Run a rollout with a semaphore.
         """
-        async with semaphore:
+        async with sem:
             return await self.rollout(
-                client, model, prompt, answer, task, info, sampling_args, **kwargs
+                client, model, prompt, answer, task, info, id, sampling_args, **kwargs
             )
 
     async def run_rollouts(
@@ -336,6 +351,7 @@ class Environment(ABC):
         answers: list[str],
         tasks: list[str],
         infos: list[Info],
+        ids: list[int],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         **kwargs,
@@ -345,34 +361,29 @@ class Environment(ABC):
         """
         from tqdm.asyncio import tqdm_asyncio
 
-        if max_concurrent > 0:
-            semaphore = asyncio.Semaphore(max_concurrent)
-            rollout_tasks = [
-                self.run_rollout_with_semaphore(
-                    semaphore,
-                    client,
-                    model,
-                    prompt,
-                    answer,
-                    task,
-                    info,
-                    sampling_args,
-                    **kwargs,
-                )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
-            ]
-        else:
-            rollout_tasks = [
-                self.rollout(
-                    client, model, prompt, answer, task, info, sampling_args, **kwargs
-                )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
-            ]
+        maybe_sem = await maybe_semaphore(max_concurrent)
+        rollout_tasks = [
+            self.run_rollout(
+                maybe_sem,
+                client,
+                model,
+                prompt,
+                answer,
+                task,
+                info,
+                id,
+                sampling_args,
+                **kwargs,
+            )
+            for prompt, answer, task, info, id in zip(
+                prompts, answers, tasks, infos, ids
+            )
+        ]
         return await tqdm_asyncio.gather(
             *rollout_tasks, total=len(prompts), desc=f"Running {len(prompts)} rollouts"
         )
 
-    async def a_generate(
+    async def generate(
         self,
         inputs: GenerateInputs | Dataset | dict,
         client: AsyncOpenAI,
@@ -383,6 +394,7 @@ class Environment(ABC):
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
         interleave_scoring: bool = True,
+        results_path: Path | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -434,19 +446,46 @@ class Environment(ABC):
         results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
 
         # prepare GenerateOutputs and run rollouts
+        if self.rollouts_per_example is None:
+            num_total_rollouts = len(results_dict)
+            num_examples = len(list(set(results_dict["id"])))
+            rollouts_per_example = num_total_rollouts // num_examples
+        else:
+            rollouts_per_example = self.rollouts_per_example
+        if results_path is None:
+            path_to_save = get_results_path(self.env_id, model)
+        else:
+            path_to_save = results_path
+        metadata = GenerateMetadata(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            base_url=str(client.base_url),
+            num_examples=len(results_dict["prompt"]),
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=gen_sampling_args,
+            avg_reward=0.0,
+            avg_metrics={},
+            state_columns=[],
+            path_to_save=path_to_save,
+            date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            time_ms=0.0,
+        )
         results = GenerateOutputs(
             prompt=results_dict["prompt"],
             answer=results_dict["answer"],
             task=results_dict["task"],
             info=results_dict["info"],
+            id=results_dict["id"],
             completion=[],
             state=[],
             reward=[],
             metrics={},
+            metadata=metadata,
         )
         n = len(results.prompt)
 
-        # Resolve concurrency knobs
+        # resolve concurrency knobs
         gen_limit = max_concurrent_generation
         score_limit = max_concurrent_scoring
         if gen_limit is None:
@@ -455,44 +494,28 @@ class Environment(ABC):
             score_limit = max_concurrent
 
         if interleave_scoring and score_rollouts:
-            # Interleaved pipeline: generate and score per rollout with separate semaphores
+            # interleaved pipeline: separate semaphores for generation and scoring
             results_completion: list[Messages] = [None] * n  # type: ignore[assignment]
             results_state: list[State] = [None] * n  # type: ignore[assignment]
             rewards: list[float] = [0.0] * n
-            # Pre-allocate metrics using known reward function names
+
+            # pre-allocate metrics using known reward function names
             reward_func_names = self.rubric.get_reward_func_names()
             metrics: dict[str, list[float]] = {
                 name: [0.0] * n for name in reward_func_names
             }
 
-            gen_semaphore = (
-                asyncio.Semaphore(gen_limit) if gen_limit and gen_limit > 0 else None
-            )
-            score_semaphore = (
-                asyncio.Semaphore(score_limit)
-                if score_limit and score_limit > 0
-                else None
-            )
+            maybe_gen_sem = await maybe_semaphore(gen_limit)
+            maybe_score_sem = await maybe_semaphore(score_limit)
 
             async def run_one(i: int) -> None:
                 prompt_i = results.prompt[i]
                 answer_i = results.answer[i]
                 task_i = results.task[i]
                 info_i = results.info[i]
-                # Generation stage
-                if gen_semaphore is not None:
-                    async with gen_semaphore:
-                        comp_i, state_i = await self.rollout(
-                            client,
-                            model,
-                            prompt_i,
-                            answer_i,
-                            task_i,
-                            info_i,
-                            gen_sampling_args,
-                            **kwargs,
-                        )
-                else:
+                id_i = results.id[i]
+                # generation stage
+                async with maybe_gen_sem:
                     comp_i, state_i = await self.rollout(
                         client,
                         model,
@@ -500,24 +523,14 @@ class Environment(ABC):
                         answer_i,
                         task_i,
                         info_i,
+                        id_i,
                         gen_sampling_args,
                         **kwargs,
                     )
                 results_completion[i] = comp_i
                 results_state[i] = state_i
-                # Scoring stage
-                if score_semaphore is not None:
-                    async with score_semaphore:
-                        rs = await self.rubric.score_rollout(
-                            prompt=prompt_i,
-                            completion=comp_i,
-                            answer=answer_i,
-                            state=state_i,
-                            task=task_i,
-                            info=info_i,
-                            **kwargs,
-                        )
-                else:
+                # scoring stage
+                async with maybe_score_sem:
                     rs = await self.rubric.score_rollout(
                         prompt=prompt_i,
                         completion=comp_i,
@@ -525,11 +538,12 @@ class Environment(ABC):
                         state=state_i,
                         task=task_i,
                         info=info_i,
+                        id=id_i,
                         **kwargs,
                     )
                 rewards[i] = rs.reward
                 for k, v in rs.metrics.items():
-                    # Ensure key exists in case of EnvGroup/RubricGroup dynamics
+                    # ensure key exists in case of EnvGroup/RubricGroup
                     if k not in metrics:
                         metrics[k] = [0.0] * n
                     metrics[k][i] = v
@@ -578,7 +592,10 @@ class Environment(ABC):
                 results.metrics = rollout_scores.metrics
             return results
 
-    def generate(
+    # alias for backward compatibility
+    a_generate = generate
+
+    def generate_sync(
         self,
         inputs: GenerateInputs | Dataset,
         client: AsyncOpenAI | OpenAI,
@@ -593,7 +610,7 @@ class Environment(ABC):
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
             client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
-        coro = self.a_generate(
+        coro = self.generate(
             inputs,
             client,
             model,
@@ -630,10 +647,10 @@ class Environment(ABC):
             executor.shutdown(wait=False)
 
     #########################################################
-    # Helper functions for evaluation and dataset generation
+    # helper functions for evaluation and dataset generation
     #########################################################
 
-    def evaluate(
+    async def evaluate(
         self,
         client: AsyncOpenAI | OpenAI,
         model: str,
@@ -659,7 +676,7 @@ class Environment(ABC):
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
-        results = self.generate(
+        results = self.generate_sync(
             inputs,
             client,
             model,
@@ -840,7 +857,7 @@ class Environment(ABC):
             conversation=prompt,  # type: ignore
             add_generation_prompt=True,
         )
-        messages_consumed = [m for m in prompt]
+        messages_consumed: list[ChatMessage | dict] = [m for m in prompt]
         prompt_mask: list[int] = [0] * len(prompt_ids)
         completion_ids: list[int] = []
         completion_mask: list[int] = []
@@ -1016,6 +1033,7 @@ class Environment(ABC):
         mask_env_responses: bool = False,
         mask_truncated_completions: bool = False,
         zero_truncated_completions: bool = False,
+        message_type: MessageType | None = "chat",
     ) -> ProcessedOutputs:
         """
         Process results with vLLM tokens/logprobs.
