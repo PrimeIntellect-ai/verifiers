@@ -32,6 +32,7 @@ from verifiers.utils.message_utils import (
     get_overlong_prompt_dummy_response,
     sanitize_tool_calls,
 )
+from verifiers.utils.async_utils import tqdm_gather_with_metrics
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import (  # type: ignore
@@ -479,7 +480,7 @@ class Environment(ABC):
                 else None
             )
 
-            async def run_one(i: int) -> None:
+            async def run_one(i: int) -> tuple[float, State]:
                 prompt_i = results.prompt[i]
                 answer_i = results.answer[i]
                 task_i = results.task[i]
@@ -539,11 +540,12 @@ class Environment(ABC):
                         metrics[k] = [0.0] * n
                     metrics[k][i] = v
 
-            tasks = [run_one(i) for i in range(n)]
-            from tqdm.asyncio import tqdm_asyncio
+                return rs.reward, state_i
 
-            await tqdm_asyncio.gather(
-                *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
+            tasks = [run_one(i) for i in range(n)]
+
+            await tqdm_gather_with_metrics(
+                tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
             )
 
             results.completion = results_completion  # type: ignore[assignment]
