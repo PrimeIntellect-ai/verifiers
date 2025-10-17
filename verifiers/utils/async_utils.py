@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Callable, Optional
+from typing import AsyncContextManager, Callable, Optional
 
 
 async def maybe_await(func: Callable, *args, **kwargs):
@@ -20,7 +20,7 @@ class NullAsyncContext:
 
 async def maybe_semaphore(
     limit: Optional[int] = None,
-) -> asyncio.Semaphore | NullAsyncContext:
+) -> AsyncContextManager:
     """
     Return either a real semaphore (if limit is set),
     or a no-op context manager (if limit is None or <= 0).

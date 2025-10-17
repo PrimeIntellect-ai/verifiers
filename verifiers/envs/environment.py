@@ -324,7 +324,7 @@ class Environment(ABC):
 
     async def run_rollout(
         self,
-        sem: AsyncContextManager[None],
+        sem: AsyncContextManager,
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
