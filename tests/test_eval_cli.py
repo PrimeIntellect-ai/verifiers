@@ -70,6 +70,7 @@ def test_cli_sampling_args_precedence_over_flags(monkeypatch):
         save_dataset=False,
         save_to_hf_hub=False,
         hf_hub_dataset_name="",
+        interleave_scoring=True,
     )
 
     sa = captured["sampling_args"]
@@ -118,6 +119,7 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
         save_dataset=False,
         save_to_hf_hub=False,
         hf_hub_dataset_name="",
+        interleave_scoring=True,
     )
 
     sa = captured["sampling_args"]

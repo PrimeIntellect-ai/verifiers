@@ -179,6 +179,12 @@ uv run vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
 
 Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`.
 
+Note on scoring behavior: by default, `vf-eval` uses interleaved scoring, where each rollout is scored individually as it completes (`score_rollout`). If your environment's rubric relies on seeing the entire batch of completions at once (e.g., in a custom `score_rollouts` method), you can force the old batch-scoring behavior with the `--no-interleave-scoring` flag:
+
+```bash
+uv run vf-eval vf-environment-name --no-interleave-scoring
+```
+
 ### ToolEnv
 
 For many applications involving tool use, you can use `ToolEnv` to leverage models' native tool/function-calling capabilities in an agentic loop. Tools must be stateless and idempotent—each call should be fully determined by the provided arguments—because the environment will automatically terminate once the assistant responds without tool calls. Tools can be specified as generic Python functions (with type hints and docstrings), which will then be passed in JSON schema form to each inference request.

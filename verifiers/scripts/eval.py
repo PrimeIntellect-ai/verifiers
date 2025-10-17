@@ -40,6 +40,7 @@ def eval_environment(
     save_dataset: bool,
     save_to_hf_hub: bool,
     hf_hub_dataset_name: str,
+    interleave_scoring: bool,
     extra_headers: Dict[str, str],
 ):
     setup_logging("DEBUG" if verbose else "INFO")
@@ -119,6 +120,7 @@ def eval_environment(
         num_examples=num_examples,
         rollouts_per_example=rollouts_per_example,
         max_concurrent=max_concurrent,
+        interleave_scoring=interleave_scoring,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
@@ -337,6 +339,13 @@ def main():
         default="",
         help="Name of dataset to save to Hugging Face Hub",
     )
+    parser.add_argument(
+        "--no-interleave-scoring",
+        dest="interleave_scoring",
+        default=True,
+        action="store_false",
+        help="Disable interleaved scoring and generation. This will use the score_rollouts method instead.",
+    )
     args = parser.parse_args()
 
     # Build headers from repeated --header flags
@@ -368,6 +377,7 @@ def main():
         save_dataset=args.save_dataset,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
+        interleave_scoring=args.interleave_scoring,
         extra_headers=merged_headers,
     )
 
