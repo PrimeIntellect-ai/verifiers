@@ -1,6 +1,6 @@
 [project]
 name = "simpleqa"
-version = "0.1.1"
+version = "0.1.2"
 description = "SimpleQA eval"
 tags = ["simpleqa", "single-turn", "llm-judge", "knowledge"]
 dependencies = [
