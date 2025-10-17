@@ -77,7 +77,7 @@ def load_environment(env_id: str, **env_args) -> Environment:
             f"Failed to import environment module {module_name} for env_id {env_id}: {str(e)}"
         )
         raise ValueError(
-            f"Could not import '{env_id}' environment. Ensure the package for the '{env_id}' environment is installed."
+            f"Could not import '{env_id}' environment. Ensure the package for the '{env_id}' environment is installed with `vf-install {env_id}`."
         ) from e
     except Exception as e:
         logger.error(
