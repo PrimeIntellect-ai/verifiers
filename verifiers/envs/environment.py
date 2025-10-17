@@ -343,12 +343,12 @@ class Environment(ABC):
         infos: list[Info],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> list[tuple[Messages, State]]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
-        from tqdm.asyncio import tqdm_asyncio
 
         if max_concurrent > 0:
             semaphore = asyncio.Semaphore(max_concurrent)
@@ -373,9 +373,16 @@ class Environment(ABC):
                 )
                 for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
             ]
-        return await tqdm_asyncio.gather(
-            *rollout_tasks, total=len(prompts), desc=f"Running {len(prompts)} rollouts"
-        )
+        if use_tqdm:
+            from tqdm.asyncio import tqdm_asyncio
+
+            return await tqdm_asyncio.gather(
+                *rollout_tasks,
+                total=len(prompts),
+                desc=f"Running {len(prompts)} rollouts",
+            )
+        else:
+            return await asyncio.gather(*rollout_tasks)
 
     async def a_generate(
         self,
@@ -388,6 +395,7 @@ class Environment(ABC):
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
         interleave_scoring: bool = True,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -540,11 +548,15 @@ class Environment(ABC):
                     metrics[k][i] = v
 
             tasks = [run_one(i) for i in range(n)]
-            from tqdm.asyncio import tqdm_asyncio
 
-            await tqdm_asyncio.gather(
-                *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
-            )
+            if use_tqdm:
+                from tqdm.asyncio import tqdm_asyncio
+
+                await tqdm_asyncio.gather(
+                    *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
+                )
+            else:
+                await asyncio.gather(*tasks)
 
             results.completion = results_completion  # type: ignore[assignment]
             results.state = results_state  # type: ignore[assignment]
@@ -562,6 +574,7 @@ class Environment(ABC):
                 model=model,
                 sampling_args=gen_sampling_args,
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
+                use_tqdm=use_tqdm,
                 **kwargs,
             )
             results.completion = [rollout[0] for rollout in rollouts]
@@ -578,6 +591,7 @@ class Environment(ABC):
                     if score_limit is not None
                     else max_concurrent,
                     apply_weights=True,
+                    use_tqdm=use_tqdm,
                 )
                 results.reward = rollout_scores.reward
                 results.metrics = rollout_scores.metrics

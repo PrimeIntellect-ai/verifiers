@@ -197,6 +197,7 @@ class Rubric:
         tasks: list[str],
         infos: list[Info],
         max_concurrent: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> RolloutScores:
         """
@@ -210,7 +211,6 @@ class Rubric:
         - inter-group comparisons (voting, ranking, Elo, etc.)
         - scores computed using global state stored in Rubric class
         """
-        from tqdm.asyncio import tqdm_asyncio
 
         if max_concurrent > 0:
             semaphore = asyncio.Semaphore(max_concurrent)
@@ -224,11 +224,16 @@ class Rubric:
                 for pcasti in zip(prompts, completions, answers, states, tasks, infos)
             ]
 
-        rewards = await tqdm_asyncio.gather(
-            *rollout_tasks,
-            total=len(prompts),
-            desc=f"Evaluating {len(prompts)} rollouts",
-        )
+        if use_tqdm:
+            from tqdm.asyncio import tqdm_asyncio
+
+            rewards = await tqdm_asyncio.gather(
+                *rollout_tasks,
+                total=len(prompts),
+                desc=f"Evaluating {len(prompts)} rollouts",
+            )
+        else:
+            rewards = await asyncio.gather(*rollout_tasks)
 
         if not rewards:
             reward_func_names = self.get_reward_func_names()
