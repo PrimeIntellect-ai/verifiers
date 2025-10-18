@@ -143,7 +143,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             await self.post_rollout(messages, state, **kwargs)
             await self.destroy_sandbox(state.pop("sandbox_id"))
         return completed
-    
+
     def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())

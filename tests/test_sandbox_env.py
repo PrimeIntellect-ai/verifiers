@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from verifiers.envs.sandbox_env import SandboxEnv
 from datasets import Dataset
 
+
 @pytest.fixture
 def sandbox_env():
     """Fixture to create a SandboxEnv instance with mocked dataset."""
@@ -11,6 +12,7 @@ def sandbox_env():
     env.logger = MagicMock()
     env.active_sandboxes = {"sandbox1", "sandbox2", "sandbox3"}
     return env
+
 
 @patch("verifiers.envs.sandbox_env.SandboxClient")
 @patch("verifiers.envs.sandbox_env.APIClient")
@@ -30,6 +32,7 @@ def test_bulk_delete_sandboxes(mock_api_client, mock_sandbox_client, sandbox_env
     )
     assert sandbox_env.active_sandboxes == {"sandbox2"}
 
+
 def test_bulk_delete_sandboxes_failure(sandbox_env):
     """Test the bulk_delete_sandboxes method when an exception occurs."""
     with patch("verifiers.envs.sandbox_env.SandboxClient") as mock_sandbox_client:
@@ -42,4 +45,8 @@ def test_bulk_delete_sandboxes_failure(sandbox_env):
         sandbox_env.logger.error.assert_called_once_with(
             f"Failed to bulk delete sandboxes {global_ids_to_delete}: Deletion failed"
         )
-        assert sandbox_env.active_sandboxes == {"sandbox1", "sandbox2", "sandbox3"}  # No change
+        assert sandbox_env.active_sandboxes == {
+            "sandbox1",
+            "sandbox2",
+            "sandbox3",
+        }  # No change
