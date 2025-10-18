@@ -291,7 +291,7 @@ class TestEnvironmentBase:
         # Create a mock tokenizer
         mock_tokenizer = Mock()
 
-        def apply_template(add_generation_prompt=True):
+        def apply_template(conversation, add_generation_prompt=True):
             # Return deterministic token ids ensuring prefix property
             return list(range(10 if add_generation_prompt else 14))
 

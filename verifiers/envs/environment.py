@@ -298,13 +298,18 @@ class Environment(ABC):
         except Exception as e:
             # in case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
-            if isinstance(e, BadRequestError) and e.response.text.startswith(
-                '{"error":{"message":"This model\'s maximum context length is'
-            ):
-                self.logger.debug("Caught overlong prompt.")
-                return get_overlong_prompt_dummy_response(
-                    message_type or self.message_type
-                )
+            if isinstance(e, BadRequestError):
+                error_text = e.response.text.lower()
+                context_length_phrases = [
+                    "This model's maximum context length is",
+                    "is longer than the model's context length",
+                    "exceeds the model's context length",
+                ]
+                if any(phrase in error_text for phrase in context_length_phrases):
+                    self.logger.debug("Caught overlong prompt.")
+                    return get_overlong_prompt_dummy_response(
+                        message_type or self.message_type
+                    )
             self.logger.error(f"Error getting model response: {e} \n\nExiting...")
             raise e
 
@@ -375,12 +380,12 @@ class Environment(ABC):
         ids: list[int] = [],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> list[tuple[Messages, State]]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
-        from tqdm.asyncio import tqdm_asyncio
 
         maybe_sem = await maybe_semaphore(max_concurrent)
         if len(completions) == 0:
@@ -411,9 +416,17 @@ class Environment(ABC):
                 prompts, completions, answers, states, tasks, infos, ids
             )
         ]
-        return await tqdm_asyncio.gather(
-            *rollout_tasks, total=len(prompts), desc=f"Running {len(prompts)} rollouts"
-        )
+        if use_tqdm:
+            from tqdm.asyncio import tqdm_asyncio
+
+            rollout_results = await tqdm_asyncio.gather(
+                *rollout_tasks,
+                total=len(prompts),
+                desc=f"Running {len(prompts)} rollouts",
+            )
+        else:
+            rollout_results = await asyncio.gather(*rollout_tasks)
+        return list(rollout_results)
 
     async def init_completion(self) -> Messages:
         if self.message_type == "chat":
@@ -464,6 +477,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_every: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -513,9 +527,8 @@ class Environment(ABC):
                 info["oai_tools"] = self.oai_tools
 
         results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
-        results_dict["completion"] = [
-            await self.init_completion() for _ in range(len(results_dict["prompt"]))
-        ]
+        n = len(results_dict["prompt"])
+        results_dict["completion"] = [await self.init_completion() for _ in range(n)]
         results_dict["state"] = [
             await self.init_state(
                 prompt=results_dict["prompt"][i],
@@ -525,7 +538,7 @@ class Environment(ABC):
                 info=results_dict["info"][i],
                 id=results_dict["id"][i],
             )
-            for i in range(len(results_dict["prompt"]))
+            for i in range(n)
         ]
 
         # prepare GenerateOutputs and run rollouts
@@ -559,11 +572,10 @@ class Environment(ABC):
             task=results_dict["task"],
             info=results_dict["info"],
             id=results_dict["id"],
-            reward=[],
-            metrics={},
+            reward=[0.0] * n,
+            metrics={name: [0.0] * n for name in self.rubric.get_reward_func_names()},
             metadata=metadata,
         )
-        n = len(results.prompt)
 
         # resolve concurrency knobs
         gen_limit = max_concurrent_generation
@@ -575,15 +587,7 @@ class Environment(ABC):
 
         if interleave_scoring and score_rollouts:
             # interleaved pipeline: separate semaphores for generation and scoring
-            rewards: list[float] = [0.0] * n
-            results.reward = rewards
             # pre-allocate metrics using known reward function names
-            reward_func_names = self.rubric.get_reward_func_names()
-            metrics: dict[str, list[float]] = {
-                name: [0.0] * n for name in reward_func_names
-            }
-            results.metrics = metrics
-
             maybe_gen_sem = await maybe_semaphore(gen_limit)
             maybe_score_sem = await maybe_semaphore(score_limit)
             num_completed = 0
@@ -625,23 +629,27 @@ class Environment(ABC):
                         id=id_i,
                         **kwargs,
                     )
-                rewards[i] = rs.reward
+                results.reward[i] = rs.reward
                 for k, v in rs.metrics.items():
                     # ensure key exists in case of EnvGroup/RubricGroup
-                    if k not in metrics:
-                        metrics[k] = [0.0] * n
-                    metrics[k][i] = v
+                    if k not in results.metrics:
+                        results.metrics[k] = [0.0] * n
+                    results.metrics[k][i] = v
                 num_completed += 1
                 if save_every > 0 and num_completed % save_every == 0:
                     self.logger.debug(f"Saving results to {results_path}")
                     save_results(results)
 
             tasks = [run_one(i) for i in range(n)]
-            from tqdm.asyncio import tqdm_asyncio
 
-            await tqdm_asyncio.gather(
-                *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
-            )
+            if use_tqdm:
+                from tqdm.asyncio import tqdm_asyncio
+
+                await tqdm_asyncio.gather(
+                    *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
+                )
+            else:
+                await asyncio.gather(*tasks)
             return results
         else:
             # non-interleaved: generate all then score all
@@ -664,6 +672,7 @@ class Environment(ABC):
                 ids=results.id,
                 sampling_args=gen_sampling_args,
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
+                use_tqdm=use_tqdm,
                 **kwargs,
             )
             results.completion = [rollout[0] for rollout in rollouts]
@@ -681,9 +690,13 @@ class Environment(ABC):
                     if score_limit is not None
                     else max_concurrent,
                     apply_weights=True,
+                    use_tqdm=use_tqdm,
                 )
                 results.reward = rollout_scores.reward
                 results.metrics = rollout_scores.metrics
+            else:
+                results.reward = []
+                results.metrics = {}
             return results
 
     # alias for backward compatibility

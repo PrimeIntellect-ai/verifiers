@@ -92,7 +92,6 @@ Environment APIs live in `verifiers/envs/`. Actual environment implementations g
 ```bash
 # Add verifiers
 uv add verifiers            # core
-uv add 'verifiers[dev]'     # + dev tools  
 uv add 'verifiers[all]'     # + training
 
 # Scaffold new environment

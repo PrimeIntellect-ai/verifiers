@@ -47,7 +47,7 @@ uv init && uv venv --python 3.12
 
 For local (CPU) development and evaluation with API models, do:
 ```bash
-uv add verifiers # uv add 'verifiers[dev]' for Jupyter + testing support
+uv add verifiers
 ```
 
 For training on GPUs with `vf.GRPOTrainer`, do:
