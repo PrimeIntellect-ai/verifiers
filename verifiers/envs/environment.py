@@ -147,24 +147,13 @@ class Environment(ABC):
         """
         Create `example_id` and `prompt` columns if not present.
         """
-        if "example_id" in dataset.column_names:
-            if not isinstance(dataset["example_id"][0], int):
-                dataset = dataset.rename_column("example_id", "src_example_id")
-                dataset = dataset.add_column(
-                    "example_id", range(len(dataset))
-                )  # type: ignore[arg-type]
-        elif "id" in dataset.column_names:
-            if not isinstance(dataset["id"][0], int):
-                dataset = dataset.rename_column("id", "src_id")
-                dataset = dataset.add_column(
-                    "example_id", range(len(dataset))
-                )  # type: ignore[arg-type]
-            else:
-                dataset = dataset.rename_column("id", "example_id")
-        else:
-            dataset = dataset.add_column(
-                "example_id", range(len(dataset))
-            )  # type: ignore[arg-type]
+        # if "id" column is present and not int, rename it to "src_id"
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
 
         # extract format_prompt as a standalone function to avoid capturing self
         def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -430,13 +419,7 @@ class Environment(ABC):
                 **kwargs,
             )
             for prompt, completion, answer, state, task, info, example_id in zip(
-                prompts,
-                completions,
-                answers,
-                states,
-                tasks,
-                infos,
-                example_ids,
+                prompts, completions, answers, states, tasks, infos, example_ids
             )
         ]
         if use_tqdm:
@@ -553,7 +536,7 @@ class Environment(ABC):
                 info = json.loads(info)
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
-        if "example_id" not in results_dict or not results_dict["example_id"]:
+        if not results_dict.get("example_id"):
             results_dict["example_id"] = list(range(n))
         results_dict["state"] = [
             await self.init_state(
