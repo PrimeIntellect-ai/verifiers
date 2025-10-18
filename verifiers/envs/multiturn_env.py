@@ -119,8 +119,14 @@ class MultiTurnEnv(Environment):
                     "role": "assistant",
                     "content": response_text,
                 }
-                if response.choices and response.choices[0].message and response.choices[0].message.tool_calls:
-                    response_message["tool_calls"] = response.choices[0].message.tool_calls #type:ignore
+                if (
+                    response.choices
+                    and response.choices[0].message
+                    and response.choices[0].message.tool_calls
+                ):
+                    response_message["tool_calls"] = response.choices[
+                        0
+                    ].message.tool_calls  # type:ignore
                 rollout.append(response_message)
                 completion.append(response_message)
             else:

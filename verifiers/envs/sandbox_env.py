@@ -144,6 +144,16 @@ class SandboxEnv(vf.StatefulToolEnv):
             await self.destroy_sandbox(state.pop("sandbox_id"))
         return completed
 
+    def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
+        """Delete multiple sandboxes by their global IDs"""
+        sandbox_client = SandboxClient(APIClient())
+        try:
+            sandbox_client.bulk_delete(global_ids)
+            self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
+            self.active_sandboxes.difference_update(global_ids)
+        except Exception as e:
+            self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
+
     def cleanup_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:
