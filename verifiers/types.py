@@ -52,7 +52,7 @@ class GenerateInputs(BaseModel):
     answer: list[str] | None = None
     task: list[str] | None = None
     info: list[Info] | None = None
-    id: list[int] | None = None
+    example_id: list[int] | None = None
 
 
 class GenerateMetadata(BaseModel):
@@ -82,7 +82,7 @@ class GenerateOutputs(BaseModel):
     state: list[State]
     task: list[str]
     info: list[Info]
-    id: list[int]
+    example_id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]] = Field(default_factory=dict)
     metadata: GenerateMetadata

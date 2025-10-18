@@ -42,7 +42,7 @@ class SimpleEnvironment(Environment):
         state: dict | None = None,
         task: str = "default",
         info: dict | None = None,
-        id: int = 0,
+        example_id: int = 0,
         sampling_args: dict | None = None,
         **kwargs,
     ):
@@ -57,7 +57,7 @@ class SimpleEnvironment(Environment):
                 answer=answer,
                 task=task,
                 info=info,
-                id=id,
+                example_id=example_id,
             )
         response = await self.get_model_response(
             prompt=prompt, client=client, model=model, sampling_args=sampling_args or {}
@@ -614,7 +614,7 @@ class TestEnvironmentBase:
             prompt=[[{"role": "user", "content": "Hello"}]],
             answer=["Hi"],
             info=[{}],
-            id=[0],
+            example_id=[0],
         )
         results = env.generate_sync(
             inputs,
@@ -647,7 +647,7 @@ class TestEnvironmentBase:
                 }
             ],
             info=[{}],
-            id=[0],
+            example_id=[0],
             metrics={},
             metadata=_make_metadata(num_examples=1),
         )
@@ -660,5 +660,5 @@ class TestEnvironmentBase:
         assert "answer" in dataset.column_names
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
-        assert "id" in dataset.column_names
+        assert "example_id" in dataset.column_names
         assert "custom_field" not in dataset.column_names

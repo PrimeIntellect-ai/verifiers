@@ -77,7 +77,7 @@ class Rubric:
         state: State,
         task: str = "default",
         info: Info | None = None,
-        id: int | None = None,
+        example_id: int | None = None,
         **kwargs,
     ) -> float:
         """
@@ -99,7 +99,7 @@ class Rubric:
             state=state,
             task=task,
             info=info,
-            id=id,
+            example_id=example_id,
         )
         common.update(self.class_objects)
         merged = {**common, **kwargs}
@@ -126,7 +126,7 @@ class Rubric:
         state: State,
         task: str = "default",
         info: Info | None = None,
-        id: int | None = None,
+        example_id: int | None = None,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -144,7 +144,7 @@ class Rubric:
                     state=state,
                     task=task,
                     info=info,
-                    id=id,
+                    example_id=example_id,
                     **kwargs,
                 )
                 for func in self.get_reward_funcs()
@@ -161,7 +161,7 @@ class Rubric:
                     state=state,
                     task=task,
                     info=info,
-                    id=id,
+                    example_id=example_id,
                     **kwargs,
                 )
                 reward_scores.append(score)
@@ -208,7 +208,7 @@ class Rubric:
         states: list[State],
         tasks: list[str],
         infos: list[Info],
-        ids: list[int] | None = None,
+        example_ids: list[int] | None = None,
         max_concurrent: int = -1,
         use_tqdm: bool = True,
         **kwargs,
@@ -225,8 +225,8 @@ class Rubric:
         - scores computed using global state stored in Rubric class
         """
 
-        # set ids if not present (backward-compatibility)
-        ids = ids or [0 for i in range(len(prompts))]
+        # set example_ids if not present
+        example_ids = example_ids or list(range(len(prompts)))
         await self.score_group(
             states,
             prompts=prompts,
@@ -234,14 +234,16 @@ class Rubric:
             answers=answers,
             tasks=tasks,
             infos=infos,
-            ids=ids,
+            example_ids=example_ids,
             **kwargs,
         )
 
         maybe_sem = await maybe_semaphore(max_concurrent)
         score_tasks = [
-            self.run_score_rollout(maybe_sem, *pcastii, **kwargs)
-            for pcastii in zip(prompts, completions, answers, states, tasks, infos, ids)
+            self.run_score_rollout(maybe_sem, *pcastie, **kwargs)
+            for pcastie in zip(
+                prompts, completions, answers, states, tasks, infos, example_ids
+            )
         ]
 
         if use_tqdm:

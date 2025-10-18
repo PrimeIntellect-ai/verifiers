@@ -45,7 +45,7 @@ class DummyEnvironment(Environment):
         state: State | None = None,
         task: str = "default",
         info: Info | None = {},
-        id: int = 0,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ):
@@ -63,7 +63,7 @@ class DummyEnvironment(Environment):
                 answer=answer,
                 task=task,
                 info=info,
-                id=id,
+                example_id=example_id,
             )
         if self.message_type == "chat":
             assert isinstance(completion, list)
@@ -294,7 +294,7 @@ def test_make_dataset_basic_without_tools(mock_openai_client):
         task=["default"],
         reward=[1.0],
         metrics={"foo": [0.1]},
-        id=[0],
+        example_id=[0],
         metadata=_make_metadata(num_examples=1),
     )
     ds = build_dataset(results)
