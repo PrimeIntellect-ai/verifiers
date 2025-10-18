@@ -75,7 +75,7 @@ def cleanup_message(message: ChatMessage) -> ChatMessage:
                 and "type" in c_dict
                 and c_dict["type"] == "image_url"
             ):
-                new_c.pop("text")
+                new_c.pop("text", None)
                 new_message["content"].append(new_c)
             elif str(c_dict.get("type", "")).startswith("input_audio"):
                 # Ensure input_audio content blocks only have the required fields
