@@ -121,13 +121,6 @@ def main():
         "--verbose", "-v", default=False, action="store_true", help="Verbose output"
     )
     parser.add_argument(
-        "--print-results",
-        "-P",
-        default=False,
-        action="store_true",
-        help="Print results to console",
-    )
-    parser.add_argument(
         "--no-interleave-scoring",
         "-N",
         default=False,
@@ -233,7 +226,7 @@ def main():
         max_concurrent_scoring=args.max_concurrent_scoring,
         interleave_scoring=not args.no_interleave_scoring,
         # logging
-        print_results=args.print_results,
+        print_results=True,
         verbose=args.verbose,
         # saving
         state_columns=args.state_columns,

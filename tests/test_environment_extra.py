@@ -84,7 +84,9 @@ class DummyEnvironment(Environment):
         return completion, state
 
 
-def _make_metadata(num_examples: int, rollouts_per_example: int = 1) -> GenerateMetadata:
+def _make_metadata(
+    num_examples: int, rollouts_per_example: int = 1
+) -> GenerateMetadata:
     return GenerateMetadata(
         env_id="dummy-env",
         env_args={},
@@ -275,7 +277,6 @@ def test_sanitize_tool_calls_outputs_strings():
 
 
 def test_make_dataset_basic_without_tools(mock_openai_client):
-    env = _make_env(mock_openai_client)
     results = GenerateOutputs(
         prompt=[[{"role": "user", "content": "Hi"}]],
         completion=[[{"role": "assistant", "content": "Hello"}]],

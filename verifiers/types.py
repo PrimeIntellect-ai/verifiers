@@ -48,10 +48,11 @@ class GenerateInputs(BaseModel):
     """Pydantic model for generation inputs."""
 
     prompt: list[Messages]
-    answer: list[str] | None = None
-    info: list[dict] | None = None
-    task: list[str] | None = None
     completion: list[Messages] | None = None
+    answer: list[str] | None = None
+    task: list[str] | None = None
+    info: list[Info] | None = None
+    id: list[int] | None = None
 
 
 class GenerateMetadata(BaseModel):

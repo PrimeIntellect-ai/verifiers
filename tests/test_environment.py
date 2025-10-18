@@ -1,17 +1,22 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
+from typing import List, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from datasets import Dataset
+from openai.types.chat.chat_completion import Choice
 
 from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import (
     ChatCompletion,
+    ChatMessage,
     Completion,
+    GenerateInputs,
     GenerateMetadata,
     GenerateOutputs,
+    Messages,
     RolloutScores,
 )
 from verifiers.utils.eval_utils import make_dataset as build_dataset
@@ -66,7 +71,7 @@ class SimpleEnvironment(Environment):
                 "role": "assistant",
                 "content": response.choices[0].message.content,
             }
-            completion.append(message)
+            completion.append(cast(ChatMessage, message))
             state["completion"] = completion
         else:
             assert isinstance(response, Completion)
@@ -78,7 +83,9 @@ class SimpleEnvironment(Environment):
         return completion, state
 
 
-def _make_metadata(num_examples: int, rollouts_per_example: int = 1) -> GenerateMetadata:
+def _make_metadata(
+    num_examples: int, rollouts_per_example: int = 1
+) -> GenerateMetadata:
     return GenerateMetadata(
         env_id="test-env",
         env_args={},
@@ -184,7 +191,7 @@ class TestEnvironmentBase:
 
         prompt = "What is 2+2?"
         system_prompt = "You are a helpful assistant."
-        few_shot = [
+        few_shot: List[ChatMessage] = [
             {"role": "user", "content": "What is 1+1?"},
             {"role": "assistant", "content": "2"},
         ]
@@ -197,6 +204,7 @@ class TestEnvironmentBase:
         assert formatted[1]["role"] == "user"
         assert formatted[1]["content"] == "What is 1+1?"
         assert formatted[2]["role"] == "assistant"
+        assert "content" in formatted[2]
         assert formatted[2]["content"] == "2"
         assert formatted[3]["role"] == "user"
         assert formatted[3]["content"] == prompt
@@ -230,7 +238,7 @@ class TestEnvironmentBase:
             rubric=Rubric(),
         )
 
-        prompt = [{"role": "user", "content": "Hello"}]
+        prompt: Messages = [{"role": "user", "content": "Hello"}]
         response = await env.get_model_response(
             prompt=prompt,
             client=mock_openai_client,
@@ -240,8 +248,13 @@ class TestEnvironmentBase:
 
         # Check response structure
         assert hasattr(response, "choices")
+        assert response is not None
+        assert response.choices is not None
         assert len(response.choices) > 0
+        assert response.choices[0] is not None
+        assert isinstance(response.choices[0], Choice)
         assert hasattr(response.choices[0], "message")
+        assert response.choices[0].message is not None
         assert hasattr(response.choices[0].message, "content")
         mock_openai_client.chat.completions.create.assert_called_once()
 
@@ -267,32 +280,26 @@ class TestEnvironmentBase:
 
         # Check response structure
         assert hasattr(response, "choices")
+        assert response is not None
         assert len(response.choices) > 0
         assert hasattr(response.choices[0], "text")
         mock_openai_client.completions.create.assert_called_once()
 
     def test_process_chat_format(self, mock_openai_client, sample_dataset):
         """Test processing chat format conversations."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
 
         # Create a mock tokenizer
         mock_tokenizer = Mock()
 
-        def apply_template(conversation, tokenize=False, add_generation_prompt=True):
+        def apply_template(add_generation_prompt=True):
             # Return deterministic token ids ensuring prefix property
             return list(range(10 if add_generation_prompt else 14))
 
         mock_tokenizer.apply_chat_template = Mock(side_effect=apply_template)
         mock_tokenizer.encode = Mock(side_effect=lambda text: list(range(len(text))))
 
-        prompt = [{"role": "user", "content": "What is 2+2?"}]
-        completion = [{"role": "assistant", "content": "4"}]
+        prompt: List[ChatMessage] = [{"role": "user", "content": "What is 2+2?"}]
+        completion: List[ChatMessage] = [{"role": "assistant", "content": "4"}]
         # Minimal vLLM-style chat completion with tokens/logprobs
         token_entries = [
             Mock(logprob=-0.1, token="token_id:11"),
@@ -321,20 +328,15 @@ class TestEnvironmentBase:
         assert isinstance(prompt_mask, list)
         assert isinstance(completion_ids, list)
         assert isinstance(completion_mask, list)
+        assert isinstance(completion_logprobs, list)
         assert len(prompt_ids) == len(prompt_mask)
         assert len(completion_ids) == len(completion_mask)
+        assert len(completion_ids) == len(completion_logprobs)
         assert all(m == 0 for m in prompt_mask)  # Prompt mask should be all 0s
         assert all(m == 1 for m in completion_mask)  # Completion mask should be all 1s
 
     def test_process_completion_format(self, mock_openai_client, sample_dataset):
         """Test processing completion format text."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
 
         # Create a mock tokenizer
         mock_tokenizer = Mock()
@@ -358,16 +360,16 @@ class TestEnvironmentBase:
             completion_ids,
             completion_mask,
             completion_logprobs,
-        ) = process_completion_format_vllm(
-            prompt, completion, state, mock_tokenizer
-        )
+        ) = process_completion_format_vllm(prompt, completion, state, mock_tokenizer)
 
         assert isinstance(prompt_ids, list)
         assert isinstance(prompt_mask, list)
         assert isinstance(completion_ids, list)
         assert isinstance(completion_mask, list)
-        assert len(prompt_ids) == len(prompt)
-        assert len(completion_ids) == len(completion)
+        assert isinstance(completion_logprobs, list)
+        assert len(prompt_ids) == len(prompt_mask)
+        assert len(completion_ids) == len(completion_mask)
+        assert len(completion_ids) == len(completion_logprobs)
         assert all(m == 0 for m in prompt_mask)
         assert all(m == 1 for m in completion_mask)
 
@@ -397,8 +399,8 @@ class TestEnvironmentBase:
         mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
         mock_tokenizer.encode = Mock(side_effect=mock_encode)
 
-        prompts = [[{"role": "user", "content": "Hello"}]]
-        completions = [[{"role": "assistant", "content": "Hi there!"}]]
+        prompts: List[Messages] = [[{"role": "user", "content": "Hello"}]]
+        completions: List[Messages] = [[{"role": "assistant", "content": "Hi there!"}]]
         # Minimal vLLM-style chat completion mock for assistant turn
         token_entries = [
             Mock(logprob=-0.1, token="token_id:101"),
@@ -456,8 +458,8 @@ class TestEnvironmentBase:
         mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
         mock_tokenizer.encode = Mock(side_effect=mock_encode)
 
-        prompts = [[{"role": "user", "content": "Hello"}]]
-        completions = [[{"role": "assistant", "content": "Hi there!"}]]
+        prompts: List[Messages] = [[{"role": "user", "content": "Hello"}]]
+        completions: List[Messages] = [[{"role": "assistant", "content": "Hi there!"}]]
         # Produce enough assistant tokens to force truncation
         token_entries = [
             Mock(logprob=-0.1, token="token_id:201"),
@@ -493,13 +495,6 @@ class TestEnvironmentBase:
 
     def test_parse_chat_completion_logprobs(self, mock_openai_client, sample_dataset):
         """Test parsing logprobs from a vLLM chat completion."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
 
         # Create mock chat completion with logprobs
         mock_completion = Mock()
@@ -516,13 +511,6 @@ class TestEnvironmentBase:
 
     def test_parse_chat_completion_tokens(self, mock_openai_client, sample_dataset):
         """Test parsing tokens from a vLLM chat completion."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
 
         # Create mock chat completion with tokens
         mock_completion = Mock()
@@ -548,7 +536,7 @@ class TestEnvironmentBase:
             rubric=Rubric(),
         )
 
-        prompts = [
+        prompts: List[Messages] = [
             [{"role": "user", "content": "Hello"}],
             [{"role": "user", "content": "Hi"}],
         ]
@@ -622,12 +610,12 @@ class TestEnvironmentBase:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        inputs = {
-            "prompt": [[{"role": "user", "content": "Hello"}]],
-            "answer": ["Hi"],
-            "info": [{}],
-            "id": [0],
-        }
+        inputs = GenerateInputs(
+            prompt=[[{"role": "user", "content": "Hello"}]],
+            answer=["Hi"],
+            info=[{}],
+            id=[0],
+        )
         results = env.generate_sync(
             inputs,
             client=mock_openai_client,
@@ -641,13 +629,6 @@ class TestEnvironmentBase:
 
     def test_make_dataset(self, mock_openai_client, sample_dataset):
         """Test creating a dataset from evaluation results."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
 
         results = GenerateOutputs(
             prompt=[[{"role": "user", "content": "Hello"}]],

@@ -147,6 +147,9 @@ class Environment(ABC):
         """
         Create 'id' and 'prompt' columns if not present.
         """
+        # if "id" column is present and not int, rename it to "src_id"
+        if "id" in dataset.column_names and not isinstance(dataset["id"][0], int):
+            dataset = dataset.rename_column("id", "src_id")
         if "id" not in dataset.column_names:
             dataset = dataset.add_column("id", range(len(dataset)))  # type: ignore
 
@@ -451,6 +454,8 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        num_examples: int | None = None,
+        rollouts_per_example: int | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
@@ -524,12 +529,9 @@ class Environment(ABC):
         ]
 
         # prepare GenerateOutputs and run rollouts
-        if self.rollouts_per_example is None:
-            num_total_rollouts = len(results_dict)
-            num_examples = len(list(set(results_dict["id"])))
-            rollouts_per_example = num_total_rollouts // num_examples
-        else:
-            rollouts_per_example = self.rollouts_per_example
+        num_rollouts = len(results_dict)
+        ne_metadata = num_examples or len(list(set(results_dict["id"])))
+        rpe_metadata = rollouts_per_example or num_rollouts // ne_metadata
         if results_path is None:
             path_to_save = get_results_path(self.env_id, model)
         else:
@@ -539,8 +541,8 @@ class Environment(ABC):
             env_args=self.env_args,
             model=model,
             base_url=str(client.base_url),
-            num_examples=len(results_dict["prompt"]),
-            rollouts_per_example=rollouts_per_example,
+            num_examples=ne_metadata,
+            rollouts_per_example=rpe_metadata,
             sampling_args=gen_sampling_args,
             avg_reward=0.0,
             avg_metrics={},
@@ -642,7 +644,7 @@ class Environment(ABC):
             )
             return results
         else:
-            # Non-interleaved: generate all then score all
+            # non-interleaved: generate all then score all
             if save_every > 0:
                 self.logger.warning(
                     (
@@ -693,6 +695,8 @@ class Environment(ABC):
         client: AsyncOpenAI | OpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        num_examples: int | None = None,
+        rollouts_per_example: int | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
@@ -710,6 +714,8 @@ class Environment(ABC):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
             score_rollouts=score_rollouts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
@@ -745,7 +751,6 @@ class Environment(ABC):
             executor.shutdown(wait=False)
 
     # evaluation
-
     def get_eval_inputs(
         self, num_examples: int = -1, rollouts_per_example: int = 1
     ) -> Dataset:
@@ -786,6 +791,7 @@ class Environment(ABC):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            rollouts_per_example=rollouts_per_example,
             score_rollouts=score_rollouts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
