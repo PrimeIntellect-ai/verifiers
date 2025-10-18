@@ -659,6 +659,7 @@ class Environment(ABC):
                 states=results.state,
                 tasks=results.task,
                 infos=results.info,
+                ids=results.id,
                 sampling_args=gen_sampling_args,
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
                 **kwargs,
@@ -673,6 +674,7 @@ class Environment(ABC):
                     states=results.state,
                     tasks=results.task,
                     infos=results.info,
+                    ids=results.id,
                     max_concurrent=score_limit
                     if score_limit is not None
                     else max_concurrent,

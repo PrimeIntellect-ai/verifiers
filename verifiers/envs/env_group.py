@@ -153,9 +153,12 @@ class EnvGroup(Environment):
         client: AsyncOpenAI,
         model: str,
         prompt: str | list[ChatMessage],
+        completion: str | list[ChatMessage] | None = None,
         answer: str = "",
+        state: State | None = None,
         task: str = "default",
         info: Info | None = None,
+        id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[str | list[ChatMessage], State]:
@@ -169,13 +172,25 @@ class EnvGroup(Environment):
         """
         info = info or {}
         sampling_args = sampling_args or {}
+        if state is None:
+            state = {}
 
         # Route to appropriate environment
         env = self.env_map[task]
 
         # Pass through all arguments
         return await env.rollout(
-            client, model, prompt, answer, task, info, sampling_args, **kwargs
+            client,
+            model,
+            prompt,
+            completion,
+            answer,
+            state,
+            task,
+            info,
+            id,
+            sampling_args,
+            **kwargs,
         )
 
     def get_env_for_task(self, task: str) -> Environment:
