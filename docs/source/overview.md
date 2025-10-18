@@ -228,6 +228,13 @@ vf-install my-environment-module # from ./environments/my_environment_module
 vf-eval my-environment-module -m gpt-5 -n 10 -r 5 -s 
 ```
 
+You can re-run the scoring on a previously saved evaluation (`-s` flag), which is useful for debugging a rubric without re-running expensive model inferences.
+
+```bash
+# Re-score a previous run using its unique ID.
+vf-eval my-environment-module -m gpt-5 --rerun-scoring-from <RUN_ID> -s
+```
+
 We also provide a TUI for browsing locally-cached (with `-s`) eval results:
 ```bash
 vf-tui 

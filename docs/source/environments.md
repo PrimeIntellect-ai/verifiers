@@ -99,6 +99,16 @@ Use the CLI to quickly test:
 vf-eval my-math-env -m gpt-4.1-mini -n 5 # runs a small batch of rollouts; use -h to see options
 ```
 
+A common workflow is to run an evaluation once, save the results (`-s`), and then iterate on your rubric. You can re-score the saved rollouts using the `--rerun-scoring-from` flag, passing the unique ID of the run.
+
+```bash
+# First, run and save the results
+vf-eval my-math-env -m gpt-4.1-mini -n 5 -s
+
+# Then, after modifying your rubric, re-score the same rollouts
+vf-eval my-math-env --rerun-scoring-from -m gpt-4.1-mini <RUN_ID_FROM_PREVIOUS_STEP>
+```
+
 Or test programmatically:
 
 ```python
