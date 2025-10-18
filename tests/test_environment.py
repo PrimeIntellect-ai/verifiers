@@ -1,12 +1,26 @@
 """Tests for the base Environment class."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from datasets import Dataset
 
 from verifiers import Environment, Parser, Rubric, ThinkParser
-from verifiers.types import ChatCompletion, Completion, GenerateOutputs, RolloutScores
+from verifiers.types import (
+    ChatCompletion,
+    Completion,
+    GenerateMetadata,
+    GenerateOutputs,
+    RolloutScores,
+)
+from verifiers.utils.eval_utils import make_dataset as build_dataset
+from verifiers.utils.processing_utils import (
+    parse_chat_completion_logprobs,
+    parse_chat_completion_tokens,
+    process_chat_format_vllm,
+    process_completion_format_vllm,
+)
 
 
 # Create a concrete implementation for testing the abstract base class
@@ -18,27 +32,68 @@ class SimpleEnvironment(Environment):
         client,
         model,
         prompt,
+        completion=None,
         answer: str = "",
+        state: dict | None = None,
         task: str = "default",
         info: dict | None = None,
+        id: int = 0,
         sampling_args: dict | None = None,
         **kwargs,
     ):
         """Simple test rollout implementation."""
+        info = info or {}
+        if completion is None:
+            completion = await self.init_completion()
+        if state is None:
+            state = await self.init_state(
+                prompt=prompt,
+                completion=completion,
+                answer=answer,
+                task=task,
+                info=info,
+                id=id,
+            )
         response = await self.get_model_response(
             prompt=prompt, client=client, model=model, sampling_args=sampling_args or {}
         )
         if self.message_type == "chat":
             assert isinstance(response, ChatCompletion)
-            completion = [
-                {"role": "assistant", "content": response.choices[0].message.content}
-            ]
-            state = {"responses": [response]}
+            assert isinstance(completion, list)
+            state.setdefault("responses", [])
+            state["responses"].append(response)
+            message = {
+                "role": "assistant",
+                "content": response.choices[0].message.content,
+            }
+            completion.append(message)
+            state["completion"] = completion
         else:
             assert isinstance(response, Completion)
-            completion = response.choices[0].text
-            state = {}
+            assert isinstance(completion, str)
+            state.setdefault("responses", [])
+            state["responses"].append(response)
+            completion = completion + (response.choices[0].text or "")
+            state["completion"] = completion
         return completion, state
+
+
+def _make_metadata(num_examples: int, rollouts_per_example: int = 1) -> GenerateMetadata:
+    return GenerateMetadata(
+        env_id="test-env",
+        env_args={},
+        model="test-model",
+        base_url="http://localhost",
+        num_examples=num_examples,
+        rollouts_per_example=rollouts_per_example,
+        sampling_args={},
+        date="1970-01-01",
+        time_ms=0.0,
+        avg_reward=0.0,
+        avg_metrics={},
+        state_columns=[],
+        path_to_save=Path("test.jsonl"),
+    )
 
 
 class TestEnvironmentBase:
@@ -258,7 +313,7 @@ class TestEnvironmentBase:
             completion_ids,
             completion_mask,
             completion_logprobs,
-        ) = env.process_chat_format_vllm(
+        ) = process_chat_format_vllm(
             prompt, completion, state, mock_tokenizer, mask_env_responses=False
         )
 
@@ -303,7 +358,7 @@ class TestEnvironmentBase:
             completion_ids,
             completion_mask,
             completion_logprobs,
-        ) = env.process_completion_format_vllm(
+        ) = process_completion_format_vllm(
             prompt, completion, state, mock_tokenizer
         )
 
@@ -456,7 +511,7 @@ class TestEnvironmentBase:
             Mock(logprob=-0.3),
         ]
 
-        logprobs = env.parse_chat_completion_logprobs(mock_completion)
+        logprobs = parse_chat_completion_logprobs(mock_completion)
         assert logprobs == [-0.5, -1.2, -0.3]
 
     def test_parse_chat_completion_tokens(self, mock_openai_client, sample_dataset):
@@ -479,7 +534,7 @@ class TestEnvironmentBase:
             Mock(token="id:9012"),
         ]
 
-        tokens = env.parse_chat_completion_tokens(mock_completion)
+        tokens = parse_chat_completion_tokens(mock_completion)
         assert tokens == [1234, 5678, 9012]
 
     @pytest.mark.asyncio
@@ -509,6 +564,7 @@ class TestEnvironmentBase:
             answers=answers,
             tasks=tasks,
             infos=infos,
+            ids=list(range(len(prompts))),
         )
 
         assert len(results) == 2
@@ -534,7 +590,11 @@ class TestEnvironmentBase:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        inputs = {"prompt": [[{"role": "user", "content": "Hello"}]], "answer": ["Hi"]}
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "id": [0],
+        }
 
         results = await env.a_generate(
             inputs,
@@ -562,13 +622,14 @@ class TestEnvironmentBase:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        from verifiers.types import GenerateInputs
-
-        gi = GenerateInputs(
-            prompt=[[{"role": "user", "content": "Hello"}]], answer=["Hi"]
-        )  # type: ignore[arg-type]
-        results = env.generate(
-            gi,
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "info": [{}],
+            "id": [0],
+        }
+        results = env.generate_sync(
+            inputs,
             client=mock_openai_client,
             model="test-model",
             interleave_scoring=False,
@@ -594,12 +655,23 @@ class TestEnvironmentBase:
             answer=["Hi"],
             reward=[1.0],
             task=["default"],
-            state=[{"custom_field": "value"}],
+            state=[
+                {
+                    "custom_field": "value",
+                    "timing": {
+                        "generation_ms": 0.0,
+                        "scoring_ms": 0.0,
+                        "total_ms": 0.0,
+                    },
+                }
+            ],
             info=[{}],
+            id=[0],
             metrics={},
+            metadata=_make_metadata(num_examples=1),
         )
 
-        dataset = env.make_dataset(results, state_columns=["custom_field"])
+        dataset = build_dataset(results, state_columns=["custom_field"])
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
@@ -607,4 +679,5 @@ class TestEnvironmentBase:
         assert "answer" in dataset.column_names
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
-        assert "custom_field" in dataset.column_names
+        assert "id" in dataset.column_names
+        assert "custom_field" not in dataset.column_names

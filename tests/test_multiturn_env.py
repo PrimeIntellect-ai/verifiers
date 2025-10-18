@@ -78,8 +78,7 @@ class TestMultiTurnEnv:
         # Check state structure
         assert state["answer"] == "target_answer"
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert "responses" in state
         assert len(state["responses"]) == 3  # Three assistant responses
 
@@ -173,8 +172,7 @@ class TestMultiTurnEnv:
 
         # Check all state fields are initialized
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert state["answer"] == "test_answer"
         assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
