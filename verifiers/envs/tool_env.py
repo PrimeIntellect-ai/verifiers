@@ -83,6 +83,7 @@ class ToolEnv(MultiTurnEnv):
                     tool_args: dict = json.loads(tool_call.function.arguments)
                     tool_call_id: str = tool_call.id or ""
                 case _:
+                    assert "function" in tool_call
                     tool_name: str = tool_call["function"]["name"]
                     tool_args: dict = json.loads(tool_call["function"]["arguments"])
                     tool_call_id: str = tool_call["id"]

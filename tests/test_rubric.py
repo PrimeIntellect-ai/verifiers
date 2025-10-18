@@ -185,8 +185,8 @@ class TestRubric:
             info={},
         )
 
-        # Should receive parser, prompt, answer, state, task, info (completion used directly)
-        assert result == 6
+        # Should receive parser, prompt, answer, state, task, info, id (completion used directly)
+        assert result == 7
 
     @pytest.mark.asyncio
     async def test_call_reward_func_error_handling(self):

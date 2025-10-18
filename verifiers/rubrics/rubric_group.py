@@ -99,7 +99,7 @@ class RubricGroup(Rubric):
                 states,
                 tasks,
                 infos,
-                max_concurrent,
+                max_concurrent=max_concurrent,
                 **kwargs,
             )
             # aggregate reward (element-wise sum across rubrics)

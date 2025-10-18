@@ -110,14 +110,18 @@ env = vf.load_environment("my-math-env")
 
 # Test with a model
 client = OpenAI()
-results = env.evaluate(
-    client, "gpt-4.1-mini",
+results = env.evaluate_sync(
+    client=client,
+    model="gpt-4.1-mini",
     num_examples=5,
     rollouts_per_example=2,
     max_concurrent=32,
+    save_every=10,
 )
 print(results)
 ```
+
+Prefer `AsyncOpenAI` + `await env.evaluate(...)` for fully async workflows; the sync helper is ideal when integrating into existing blocking scripts. Intermediate saving via `save_every` requires the default interleaved scoring pipeline.
 
 ### 3. Iterate on Design
 
