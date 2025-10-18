@@ -226,7 +226,7 @@ class TestSingleTurnEnv:
                 [{"role": "user", "content": "What is 3+3?"}],
             ],
             "answer": ["4", "6"],
-            "id": [0, 1],
+            "example_id": [0, 1],
         }
 
         # Mock the rubric.score_rollouts method
@@ -276,7 +276,7 @@ class TestSingleTurnEnv:
         inputs = {
             "prompt": [[{"role": "user", "content": "Hello"}]],
             "answer": ["Hi"],
-            "id": [0],
+            "example_id": [0],
         }
 
         results = await mock_singleturn_env.a_generate(
@@ -297,7 +297,7 @@ class TestSingleTurnEnv:
             "prompt": [[{"role": "user", "content": "Hello"}]],
             "answer": ["Hi"],
             "info": [{}],
-            "id": [0],
+            "example_id": [0],
         }
 
         # Mock the rubric.score_rollouts method

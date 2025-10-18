@@ -552,7 +552,7 @@ class TestEnvironmentBase:
             answers=answers,
             tasks=tasks,
             infos=infos,
-            ids=list(range(len(prompts))),
+            example_ids=list(range(len(prompts))),
         )
 
         assert len(results) == 2
@@ -581,7 +581,7 @@ class TestEnvironmentBase:
         inputs = {
             "prompt": [[{"role": "user", "content": "Hello"}]],
             "answer": ["Hi"],
-            "id": [0],
+            "example_id": [0],
         }
 
         results = await env.a_generate(

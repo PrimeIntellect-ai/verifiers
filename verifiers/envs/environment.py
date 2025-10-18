@@ -145,7 +145,7 @@ class Environment(ABC):
         answer_key: str = "answer",
     ) -> Dataset:
         """
-        Create 'id' and 'prompt' columns if not present.
+        Create `example_id` and `prompt` columns if not present.
         """
         # if "id" column is present and not int, rename it to "src_id"
         if "example_id" in dataset.column_names and not isinstance(
@@ -390,6 +390,8 @@ class Environment(ABC):
         """
 
         maybe_sem = await maybe_semaphore(max_concurrent)
+        if not example_ids:
+            example_ids = list(range(len(prompts)))
         if len(completions) == 0:
             completions = [await self.init_completion() for _ in range(len(prompts))]
         if len(states) == 0:
@@ -518,6 +520,8 @@ class Environment(ABC):
                 "but reward functions requiring ground truth data may return 0.0. "
                 "Proceeding with empty values."
             )
+        if "example_id" not in results_dict and "id" in results_dict:
+            results_dict["example_id"] = deepcopy(results_dict["id"])
         results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
         n = len(results_dict["prompt"])
         results_dict["completion"] = [await self.init_completion() for _ in range(n)]
@@ -532,7 +536,7 @@ class Environment(ABC):
                 info = json.loads(info)
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
-        if not results_dict.get("id"):
+        if not results_dict.get("example_id"):
             results_dict["example_id"] = list(range(n))
         results_dict["state"] = [
             await self.init_state(

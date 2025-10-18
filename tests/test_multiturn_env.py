@@ -3,7 +3,7 @@
 import pytest
 from datasets import Dataset
 
-from verifiers import MultiTurnEnv, Parser, Rubric
+from verifiers import Messages, MultiTurnEnv, Parser, Rubric, State
 
 
 class TestMultiTurnEnv:
@@ -168,6 +168,7 @@ class TestMultiTurnEnv:
             answer="test_answer",
             task="test_task",
             info={"extra": "data"},
+            example_id=0,
         )
 
         # Check all state fields are initialized
@@ -176,6 +177,7 @@ class TestMultiTurnEnv:
         assert state["answer"] == "test_answer"
         assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
+        assert state["example_id"] == 0
         assert "responses" in state
         assert isinstance(state["responses"], list)
 
@@ -284,10 +286,14 @@ class TestMultiTurnEnv:
             def __init__(self, **kwargs):
                 super().__init__(message_type="completion", **kwargs)
 
-            def is_completed(self, messages, state, **kwargs):
+            async def is_completed(
+                self, messages: Messages, state: State, **kwargs
+            ) -> bool:
                 return "DONE" in messages
 
-            def env_response(self, messages, state, **kwargs):
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> tuple[Messages, State]:
                 return " Continue.", state
 
         completion_dataset = Dataset.from_dict(

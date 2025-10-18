@@ -178,7 +178,7 @@ def make_dataset(
     save_info = any(info != {} for info in results.info)
     save_answer = any(answer != "" for answer in results.answer)
     results_dict = {
-        "id": results.id,
+        "example_id": results.example_id,
         "prompt": clean_prompts,
         "completion": clean_completions,
         "task": results.task,

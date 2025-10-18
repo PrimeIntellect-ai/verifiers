@@ -77,7 +77,7 @@ State = dict[str, Any]
     "task": str,                      # Task identifier (for EnvGroup)
     "info": dict[str, Any],          # Additional metadata from dataset
     "responses": list[Any],          # Raw LLM response objects
-    "id": int,                        # Row identifier from the dataset
+    "example_id": int,                # Row identifier from the dataset
     "timing": dict[str, float],       # Timing information for generation and scoring
     
     # Custom fields added by specific environments:

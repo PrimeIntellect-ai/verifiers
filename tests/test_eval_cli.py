@@ -82,7 +82,7 @@ def _run_cli(monkeypatch, overrides):
             ],
             task=["default"],
             info=[{}],
-            id=[0],
+            example_id=[0],
             reward=[1.0],
             metrics={},
             metadata=metadata,
