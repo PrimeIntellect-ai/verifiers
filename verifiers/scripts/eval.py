@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import importlib
 import importlib.util
 import json
@@ -22,6 +23,80 @@ from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_c
 logger = logging.getLogger("verifiers.scripts.eval")
 
 
+def _find_run_path(env_id: str, model: str, run_id: str, env_dir_path: str) -> Path:
+    """Locate the path to a specific evaluation run directory."""
+    env_model_str = f"{env_id}--{model.replace('/', '--')}"
+
+    # Check local environment directory first
+    module_name = env_id.replace("-", "_")
+    local_env_dir = Path(env_dir_path) / module_name
+
+    potential_paths = [
+        local_env_dir / "outputs" / "evals" / env_model_str / run_id,
+        Path("./outputs") / "evals" / env_model_str / run_id,
+    ]
+
+    for path in potential_paths:
+        if path.is_dir() and (path / "results.jsonl").exists():
+            logger.debug(f"Found run directory at: {path}")
+            return path
+
+    raise FileNotFoundError(
+        f"Could not find run directory for env='{env_id}', model='{model}', run_id='{run_id}'"
+    )
+
+
+def _load_results_for_rescoring(results_file: Path) -> vf.GenerateOutputs:
+    """Parse a results.jsonl file and load it into a GenerateOutputs object."""
+    prompts, completions, answers, tasks, infos, states = [], [], [], [], [], []
+
+    with open(results_file, "r") as f:
+        for line in f:
+            data = json.loads(line)
+
+            # --- Robustly deserialize prompt and completion ---
+            for key, target_list in [("prompt", prompts), ("completion", completions)]:
+                field_data = data.get(key)
+                if isinstance(field_data, str):
+                    try:
+                        # Attempt to parse as JSON (for chat format)
+                        deserialized = json.loads(field_data)
+                        target_list.append(deserialized)
+                    except json.JSONDecodeError:
+                        # If it fails, it's a plain string (for completion format)
+                        target_list.append(field_data)
+                else:
+                    # It's already in the correct list/dict format (or None)
+                    target_list.append(field_data or [])
+
+            answers.append(data.get("answer", ""))
+            tasks.append(data.get("task", "default"))
+            infos.append(data.get("info", {}))
+
+            # Reconstruct state, including cached judge responses if present
+            state = {
+                "timing": {
+                    "generation_ms": data.get("generation_ms", 0),
+                    "scoring_ms": 0,  # Reset scoring time
+                    "total_ms": data.get("generation_ms", 0),
+                }
+            }
+            if "judge_response" in data:
+                state["judge_response"] = data["judge_response"]
+            states.append(state)
+
+    return vf.GenerateOutputs(
+        prompt=prompts,
+        completion=completions,
+        answer=answers,
+        state=states,
+        info=infos,
+        task=tasks,
+        reward=[],  # To be populated by re-scoring
+        metrics={},  # To be populated by re-scoring
+    )
+
+
 def eval_environment(
     env: str,
     env_args: dict,
@@ -40,6 +115,7 @@ def eval_environment(
     save_dataset: bool,
     save_to_hf_hub: bool,
     hf_hub_dataset_name: str,
+    rerun_scoring_from: str | None,
     extra_headers: Dict[str, str],
 ):
     setup_logging("DEBUG" if verbose else "INFO")
@@ -107,21 +183,66 @@ def eval_environment(
     if temperature is not None and "temperature" not in merged_sampling_args:
         merged_sampling_args["temperature"] = temperature
 
-    logger.info(f"Starting evaluation with model: {model}")
-    logger.info(
-        f"Configuration: num_examples={num_examples}, rollouts_per_example={rollouts_per_example}, max_concurrent={max_concurrent}"
-    )
-    start_time = time.time()
-    results = vf_env.evaluate(
-        client=client,
-        model=model,
-        sampling_args=merged_sampling_args,
-        num_examples=num_examples,
-        rollouts_per_example=rollouts_per_example,
-        max_concurrent=max_concurrent,
-    )
-    end_time = time.time()
-    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+    if rerun_scoring_from:
+        logger.info(f"Attempting to re-run scoring from run ID: {rerun_scoring_from}")
+        start_time = time.time()
+
+        run_path = _find_run_path(env, model, rerun_scoring_from, env_dir_path)
+        with open(run_path / "metadata.json") as f:
+            metadata = json.load(f)
+
+        num_examples = metadata.get("num_examples", num_examples)
+        rollouts_per_example = metadata.get(
+            "rollouts_per_example", rollouts_per_example
+        )
+        logger.info(
+            f"Loaded metadata: num_examples={num_examples}, rollouts_per_example={rollouts_per_example}"
+        )
+
+        loaded_data = _load_results_for_rescoring(run_path / "results.jsonl")
+
+        async def rescore_data():
+            return await vf_env.rubric.score_rollouts(
+                prompts=loaded_data.prompt,
+                completions=loaded_data.completion,
+                answers=loaded_data.answer,
+                states=loaded_data.state,
+                tasks=loaded_data.task,
+                infos=loaded_data.info,
+                max_concurrent=max_concurrent,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            import nest_asyncio
+
+            nest_asyncio.apply()
+            new_scores = loop.run_until_complete(rescore_data())
+        except RuntimeError:
+            new_scores = asyncio.run(rescore_data())
+        end_time = time.time()
+
+        loaded_data.reward = new_scores.reward
+        loaded_data.metrics = new_scores.metrics
+        results = loaded_data
+        logger.info(f"Re-scoring completed in {end_time - start_time:.2f} seconds")
+    else:
+        logger.info(f"Starting evaluation with model: {model}")
+        logger.info(
+            f"Configuration: num_examples={num_examples}, rollouts_per_example={rollouts_per_example}, max_concurrent={max_concurrent}"
+        )
+        start_time = time.time()
+        results = vf_env.evaluate(
+            client=client,
+            model=model,
+            sampling_args=merged_sampling_args,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            max_concurrent=max_concurrent,
+        )
+        end_time = time.time()
+        logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+
     print("--- Evaluation ---")
     print(f"Environment: {env}")
     print(f"Model: {model}")
@@ -335,7 +456,14 @@ def main():
         "-D",
         type=str,
         default="",
-        help="Name of dataset to save to Hugging Face Hub",
+        help="Name for dataset on Hugging Face Hub",
+    )
+    parser.add_argument(
+        "--rerun-scoring-from",
+        "-R",
+        type=str,
+        default=None,
+        help="Run ID of a previous evaluation to re-score from results.jsonl",
     )
     args = parser.parse_args()
 
@@ -369,6 +497,7 @@ def main():
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
         extra_headers=merged_headers,
+        rerun_scoring_from=args.rerun_scoring_from,
     )
 
 
