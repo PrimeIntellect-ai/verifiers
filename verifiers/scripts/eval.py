@@ -4,19 +4,17 @@ import importlib.util
 import json
 import logging
 import time
-import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, cast
 
 import numpy as np
-from datasets import Dataset
 
 import verifiers as vf
 from verifiers import setup_logging
 from verifiers.types import Endpoints
 from verifiers.utils.client_utils import setup_client
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.eval_storage import save_results_to_disk, save_results_to_hf_hub
+from verifiers.utils.message_utils import messages_to_printable
 
 # Setup logger for eval script using verifiers logging format
 logger = logging.getLogger("verifiers.scripts.eval")
@@ -155,68 +153,27 @@ def eval_environment(
             out = f"r{i + 1}: {trials}"
             print(out)
 
-    if save_dataset or save_to_hf_hub:
-        ids = [i // rollouts_per_example for i in range(n * rollouts_per_example)]
-        rewards = results.reward
-        tasks = results.task
-        data_dict = {
-            "id": ids,
-            "prompt": [sanitize_tool_calls(p) for p in printable_prompts],
-            "completion": [sanitize_tool_calls(c) for c in printable_completions],
-            "task": tasks,
-            "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
-            "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
-            "total_ms": [s["timing"]["total_ms"] for s in results.state],
-        }
-        if results.info[0] != {}:
-            data_dict["info"] = results.info
-        if results.answer[0] != "":
-            data_dict["answer"] = results.answer
-        data_dict["reward"] = rewards
-        for k in results.metrics:
-            v = results.metrics[k]
-            data_dict[k] = v
+    if save_dataset:
+        save_results_to_disk(
+            env=env,
+            results=results,
+            model=model,
+            num_examples=n,
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=merged_sampling_args,
+            env_dir_path=env_dir_path,
+        )
 
-        dataset = Dataset.from_dict(data_dict)
-        metadata = {
-            "env": env,
-            "model": model,
-            "num_examples": n,
-            "rollouts_per_example": rollouts_per_example,
-            "sampling_args": merged_sampling_args,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "time_ms": (end_time - start_time) * 1000,
-            "avg_reward": sum(results.reward) / len(results.reward),
-        }
-        for k in results.metrics:
-            metadata[f"avg_{k}"] = sum(results.metrics[k]) / len(results.metrics[k])
-
-        uuid_str = str(uuid.uuid4())[:8]
-        env_model_str = f"{env}--{model.replace('/', '--')}"
-        if save_dataset:
-            module_name = env.replace("-", "_")
-            local_env_dir = Path(env_dir_path) / module_name
-            if local_env_dir.exists():
-                results_path = (
-                    local_env_dir / "outputs" / "evals" / env_model_str / uuid_str
-                )
-            else:
-                results_path = Path("./outputs") / "evals" / env_model_str / uuid_str
-            results_path.parent.mkdir(parents=True, exist_ok=True)
-            dataset.to_json(results_path / "results.jsonl")
-            with open(results_path / "metadata.json", "w") as f:
-                json.dump(metadata, f)
-
-            logger.info(f"Saved dataset to {results_path}")
-        if save_to_hf_hub:
-            if hf_hub_dataset_name == "":
-                dataset_name = (
-                    f"{env}_{model.replace('/', '-')}_n{n}_r{rollouts_per_example}"
-                )
-            else:
-                dataset_name = hf_hub_dataset_name
-            dataset.push_to_hub(dataset_name)
-            logger.info(f"Saved dataset to Hugging Face Hub: {dataset_name}")
+    if save_to_hf_hub:
+        dataset_name = hf_hub_dataset_name if hf_hub_dataset_name else None
+        save_results_to_hf_hub(
+            env=env,
+            results=results,
+            model=model,
+            num_examples=n,
+            rollouts_per_example=rollouts_per_example,
+            dataset_name=dataset_name,
+        )
 
 
 def main():
