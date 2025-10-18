@@ -96,6 +96,12 @@ __all__ = [
     "GRPOConfig",
     "grpo_defaults",
     "lora_defaults",
+    "VerifiersGRPOTrainer",
+    "VerifiersGRPOConfig",
+    "VerifiersRLOOTrainer",
+    "VerifiersRLOOConfig",
+    "VerifiersOnlineDPOTrainer",
+    "VerifiersOnlineDPOConfig",
 ]
 
 _LAZY_IMPORTS = {
@@ -106,10 +112,9 @@ _LAZY_IMPORTS = {
     "GRPOTrainer": "verifiers.trainers:GRPOTrainer",
     "grpo_defaults": "verifiers.trainers:grpo_defaults",
     "lora_defaults": "verifiers.trainers:lora_defaults",
+    "VerifiersGRPOTrainer": "verifiers.trainers:VerifiersGRPOTrainer",
+    "VerifiersGRPOConfig": "verifiers.trainers:VerifiersGRPOConfig",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
-    "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
-    "PythonEnv": "verifiers.envs.python_env:PythonEnv",
-    "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
 }
 
 
@@ -136,6 +141,12 @@ if TYPE_CHECKING:
         GRPOTrainer,
         grpo_defaults,
         lora_defaults,
+        VerifiersGRPOTrainer,
+        VerifiersGRPOConfig,
+        VerifiersRLOOTrainer,
+        VerifiersRLOOConfig,
+        VerifiersOnlineDPOTrainer,
+        VerifiersOnlineDPOConfig,
     )
     from .utils.model_utils import (  # noqa: F401
         get_model,

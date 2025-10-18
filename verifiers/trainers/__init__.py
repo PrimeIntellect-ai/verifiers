@@ -9,6 +9,11 @@ from peft import LoraConfig  # type: ignore[unresolved-import]
 
 from .grpo_config import GRPOConfig
 from .grpo_trainer import GRPOTrainer
+from .verifiers_grpo_trainer import VerifiersGRPOTrainer, VerifiersGRPOConfig
+from .verifiers_rloo_trainer import VerifiersRLOOTrainer, VerifiersRLOOConfig
+from .verifiers_online_dpo_trainer import VerifiersOnlineDPOTrainer, VerifiersOnlineDPOConfig
+from .environment_reward_adapter import EnvironmentRewardAdapter
+from .multi_turn_mixin import MultiTurnMixin
 
 
 def grpo_defaults(run_name: str) -> GRPOConfig:
@@ -46,4 +51,17 @@ def lora_defaults(r=8, alpha=16) -> LoraConfig:
     )
 
 
-__all__ = ["GRPOConfig", "GRPOTrainer", "grpo_defaults", "lora_defaults"]
+__all__ = [
+    "GRPOConfig",
+    "GRPOTrainer",
+    "VerifiersGRPOTrainer",
+    "VerifiersGRPOConfig",
+    "VerifiersRLOOTrainer",
+    "VerifiersRLOOConfig",
+    "VerifiersOnlineDPOTrainer",
+    "VerifiersOnlineDPOConfig",
+    "EnvironmentRewardAdapter",
+    "MultiTurnMixin",
+    "grpo_defaults",
+    "lora_defaults"
+]
