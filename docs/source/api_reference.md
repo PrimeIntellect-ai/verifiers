@@ -78,12 +78,12 @@ State = dict[str, Any]
     "info": dict[str, Any],          # Additional metadata from dataset
     "responses": list[Any],          # Raw LLM response objects
     "id": int,                        # Row identifier from the dataset
+    "timing": dict[str, float],       # Timing information for generation and scoring
     
     # Custom fields added by specific environments:
     "turn": int,                     # Current turn number (MultiTurnEnv)
     "tools_called": list[str],       # Tool invocations (ToolEnv)
     "game_state": Any,               # Game-specific state
-    "timing": dict[str, float],      # Per-rollout timings (generation/scoring/total)
 }
 ```
 
