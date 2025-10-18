@@ -514,21 +514,22 @@ class Environment(ABC):
                 "but reward functions requiring ground truth data may return 0.0. "
                 "Proceeding with empty values."
             )
+        results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
+        n = len(results_dict["prompt"])
+        results_dict["completion"] = [await self.init_completion() for _ in range(n)]
         if not results_dict.get("answer"):
-            results_dict["answer"] = [""] * len(results_dict["prompt"])
+            results_dict["answer"] = [""] * n
         if not results_dict.get("task"):
-            results_dict["task"] = ["default"] * len(results_dict["prompt"])
+            results_dict["task"] = ["default"] * n
         if not results_dict.get("info"):
-            results_dict["info"] = [{}] * len(results_dict["prompt"])
-        for i, info in enumerate(results_dict["info"]):
+            results_dict["info"] = [{}] * n
+        for info in results_dict["info"]:
             if isinstance(info, str):
                 info = json.loads(info)
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
-
-        results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
-        n = len(results_dict["prompt"])
-        results_dict["completion"] = [await self.init_completion() for _ in range(n)]
+        if not results_dict.get("id"):
+            results_dict["id"] = list(range(n))
         results_dict["state"] = [
             await self.init_state(
                 prompt=results_dict["prompt"][i],
