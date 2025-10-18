@@ -210,7 +210,7 @@ def sample_chat_dataset():
                 [{"role": "user", "content": "What is the capital of France?"}],
             ],
             "answer": ["4", "Paris"],
-            "id": [0, 1],
+            "example_id": [0, 1],
         }
     )
 

@@ -135,7 +135,7 @@ state = {
     "task": task, # optional environment ID column
     "info": info, # evaluation metadata (dict) -- can use answer/info/both
     "responses": [], # Raw API responses from OpenAI client
-    "id": id, # Source dataset row identifier
+    "example_id": example_id, # Source dataset row identifier
     "turn": 0,
     "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
     # custom user-managed state

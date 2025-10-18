@@ -167,7 +167,7 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
         tasks=["default"] * 3,
         infos=[{}] * 3,
         max_concurrent=2,
-        ids=list(range(len(prompts))),
+        example_ids=list(range(len(prompts))),
     )
     results: List = asyncio.run(coro)
     assert len(results) == 3
@@ -244,7 +244,7 @@ async def test_generate_inside_running_loop(mock_openai_client):
     inputs = {
         "prompt": [[{"role": "user", "content": "Hi"}]],
         "answer": [""],
-        "id": [0],
+        "example_id": [0],
     }
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
     out = await env.a_generate(

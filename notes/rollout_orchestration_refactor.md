@@ -66,12 +66,12 @@ Notes:
 - `Environment.generate(...)` and `Environment.evaluate(...)` pass-through these flags with sensible defaults.
 - `AsyncBatchGenerator` continues to call `a_generate` and benefits from interleaving by default without changes.
 
-#### ID Tracking
+#### Example ID Tracking
 - Inputs:
-  - If an `id` column is present in `inputs`/`Dataset`, carry it through to `state["id"]` per rollout.
-  - If not present, synthesize a simple 0..N-1 `id` by example (before repeat), and propagate to each rollout.
-- For `evaluate(..., rollouts_per_example>1)`: replicate rollouts using `Dataset.repeat`; map `id` as `i // rollouts_per_example` if ids are synthesized. If an `id` column exists, repeat it directly.
-- Do not change `GenerateOutputs` schema; expose `id` via `state` and surface it in `make_dataset`.
+  - If an `example_id` column is present in `inputs`/`Dataset`, carry it through to `state["example_id"]` per rollout.
+  - If not present, synthesize a simple 0..N-1 `example_id` by example (before repeat), and propagate to each rollout.
+- For `evaluate(..., rollouts_per_example>1)`: replicate rollouts using `Dataset.repeat`; map `example_id` as `i // rollouts_per_example` if IDs are synthesized. If an `example_id` column exists, repeat it directly.
+- Do not change `GenerateOutputs` schema; expose `example_id` via `state` and surface it in `make_dataset`.
 
 #### Timing Tracking
 - Add `state["timing"] = {"generation_ms": float, "scoring_ms": float, "total_ms": float}`.
