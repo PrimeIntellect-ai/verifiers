@@ -148,10 +148,12 @@ class Environment(ABC):
         Create 'id' and 'prompt' columns if not present.
         """
         # if "id" column is present and not int, rename it to "src_id"
-        if "id" in dataset.column_names and not isinstance(dataset["id"][0], int):
-            dataset = dataset.rename_column("id", "src_id")
-        if "id" not in dataset.column_names:
-            dataset = dataset.add_column("id", range(len(dataset)))  # type: ignore
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
 
         # extract format_prompt as a standalone function to avoid capturing self
         def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -177,7 +179,7 @@ class Environment(ABC):
                         "answer": x[answer_key],
                     }
                 )
-        assert "id" in dataset.column_names
+        assert "example_id" in dataset.column_names
         assert "prompt" in dataset.column_names
         return dataset
 
@@ -324,7 +326,7 @@ class Environment(ABC):
         state: State = {},
         task: str = "default",
         info: Info | None = None,
-        id: int = 0,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
@@ -345,7 +347,7 @@ class Environment(ABC):
         state: State = {},
         task: str = "default",
         info: Info | None = None,
-        id: int = 0,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
@@ -362,7 +364,7 @@ class Environment(ABC):
                 state,
                 task,
                 info,
-                id,
+                example_id,
                 sampling_args,
                 **kwargs,
             )
@@ -377,7 +379,7 @@ class Environment(ABC):
         states: list[State] = [],
         tasks: list[str] = [],
         infos: list[Info] = [],
-        ids: list[int] = [],
+        example_ids: list[int] = [],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         use_tqdm: bool = True,
@@ -392,9 +394,11 @@ class Environment(ABC):
             completions = [await self.init_completion() for _ in range(len(prompts))]
         if len(states) == 0:
             states = [
-                await self.init_state(prompt, completion, answer, task, info, id)
-                for prompt, completion, answer, task, info, id in zip(
-                    prompts, completions, answers, tasks, infos, ids
+                await self.init_state(
+                    prompt, completion, answer, task, info, example_id
+                )
+                for prompt, completion, answer, task, info, example_id in zip(
+                    prompts, completions, answers, tasks, infos, example_ids
                 )
             ]
         rollout_tasks = [
@@ -408,12 +412,12 @@ class Environment(ABC):
                 state,
                 task,
                 info,
-                id,
+                example_id,
                 sampling_args,
                 **kwargs,
             )
-            for prompt, completion, answer, state, task, info, id in zip(
-                prompts, completions, answers, states, tasks, infos, ids
+            for prompt, completion, answer, state, task, info, example_id in zip(
+                prompts, completions, answers, states, tasks, infos, example_ids
             )
         ]
         if use_tqdm:
@@ -441,7 +445,7 @@ class Environment(ABC):
         answer: str,
         task: str,
         info: Info,
-        id: int,
+        example_id: int,
         **kwargs,
     ) -> State:
         state = {
@@ -450,7 +454,7 @@ class Environment(ABC):
             "answer": answer,
             "task": task,
             "info": info,
-            "id": id,
+            "example_id": example_id,
             "responses": [],
             "turn": 0,
             "timing": {
@@ -529,7 +533,7 @@ class Environment(ABC):
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
         if not results_dict.get("id"):
-            results_dict["id"] = list(range(n))
+            results_dict["example_id"] = list(range(n))
         results_dict["state"] = [
             await self.init_state(
                 prompt=results_dict["prompt"][i],
@@ -537,14 +541,14 @@ class Environment(ABC):
                 answer=results_dict["answer"][i],
                 task=results_dict["task"][i],
                 info=results_dict["info"][i],
-                id=results_dict["id"][i],
+                example_id=results_dict["example_id"][i],
             )
             for i in range(n)
         ]
 
         # prepare GenerateOutputs and run rollouts
         num_rollouts = len(results_dict)
-        ne_metadata = num_examples or len(list(set(results_dict["id"])))
+        ne_metadata = num_examples or len(list(set(results_dict["example_id"])))
         rpe_metadata = rollouts_per_example or num_rollouts // ne_metadata
         if results_path is None:
             path_to_save = get_results_path(self.env_id, model)
@@ -572,7 +576,7 @@ class Environment(ABC):
             state=results_dict["state"],
             task=results_dict["task"],
             info=results_dict["info"],
-            id=results_dict["id"],
+            example_id=results_dict["example_id"],
             reward=[0.0] * n,
             metrics={name: [0.0] * n for name in self.rubric.get_reward_func_names()},
             metadata=metadata,
@@ -600,7 +604,7 @@ class Environment(ABC):
                 state_i = results.state[i]
                 task_i = results.task[i]
                 info_i = results.info[i]
-                id_i = results.id[i]
+                example_id_i = results.example_id[i]
                 nonlocal num_completed
 
                 # generation stage
@@ -614,7 +618,7 @@ class Environment(ABC):
                         state_i,
                         task_i,
                         info_i,
-                        id_i,
+                        example_id_i,
                         gen_sampling_args,
                         **kwargs,
                     )
@@ -627,7 +631,7 @@ class Environment(ABC):
                         state=state_i,
                         task=task_i,
                         info=info_i,
-                        id=id_i,
+                        example_id=example_id_i,
                         **kwargs,
                     )
                 results.reward[i] = rs.reward
@@ -670,7 +674,7 @@ class Environment(ABC):
                 states=results.state,
                 tasks=results.task,
                 infos=results.info,
-                ids=results.id,
+                example_ids=results.example_id,
                 sampling_args=gen_sampling_args,
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
                 use_tqdm=use_tqdm,
@@ -686,7 +690,7 @@ class Environment(ABC):
                     states=results.state,
                     tasks=results.task,
                     infos=results.info,
-                    ids=results.id,
+                    example_ids=results.example_id,
                     max_concurrent=score_limit
                     if score_limit is not None
                     else max_concurrent,
