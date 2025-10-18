@@ -252,10 +252,10 @@ The included trainer (`vf.GRPOTrainer`) supports running GRPO-style RL training 
 
 ```bash
 # install environment
-vf-install vf-wordle (-p /path/to/environments | --from-repo)
+vf-install wordle (-p /path/to/environments | --from-repo)
 
 # quick eval
-vf-eval vf-wordle -m (model_name in configs/endpoints.py) -n NUM_EXAMPLES -r ROLLOUTS_PER_EXAMPLE
+vf-eval wordle -m (model_name in configs/endpoints.py) -n NUM_EXAMPLES -r ROLLOUTS_PER_EXAMPLE
 
 # inference (shell 0)
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model willcb/Qwen3-1.7B-Wordle \
