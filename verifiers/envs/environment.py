@@ -856,7 +856,6 @@ class Environment(ABC):
     make_dataset = make_dataset
 
     # processing results
-
     def process_env_results_vllm(
         self,
         prompts: list[Messages],
