@@ -1,0 +1,15 @@
+{"id":0,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
+{"id":1,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":1.0}
+{"id":2,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"A","correct_answer":1.0}
+{"id":3,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":0.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":0.0}
+{"id":4,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
+{"id":0,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
+{"id":1,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":1.0}
+{"id":2,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"A","correct_answer":1.0}
+{"id":3,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":1.0}
+{"id":4,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
+{"id":0,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
+{"id":1,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":1.0}
+{"id":2,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"A","correct_answer":1.0}
+{"id":3,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"B","correct_answer":1.0}
+{"id":4,"prompt":[{"content":"","role":"user"}],"completion":[],"task":"default","reward":1.0,"generation_ms":0.0,"scoring_ms":0.0,"total_ms":0.0,"answer":"C","correct_answer":1.0}
