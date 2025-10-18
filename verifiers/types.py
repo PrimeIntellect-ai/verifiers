@@ -138,11 +138,13 @@ class EvalConfig(BaseModel):
     # evaluation
     model: str
     client_config: ClientConfig
+    sampling_args: SamplingArgs
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
+    max_concurrent_generation: int | None = None
+    max_concurrent_scoring: int | None = None
     interleave_scoring: bool = True
-    sampling_args: SamplingArgs
     # logging
     print_results: bool = False
     verbose: bool = False

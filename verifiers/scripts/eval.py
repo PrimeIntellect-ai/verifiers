@@ -86,6 +86,18 @@ def main():
         help="Maximum number of concurrent requests",
     )
     parser.add_argument(
+        "--max-concurrent-generation",
+        type=int,
+        default=None,
+        help="Maximum number of concurrent generation requests",
+    )
+    parser.add_argument(
+        "--max-concurrent-scoring",
+        type=int,
+        default=None,
+        help="Maximum number of concurrent scoring requests",
+    )
+    parser.add_argument(
         "--max-tokens",
         "-t",
         type=int,
@@ -213,11 +225,13 @@ def main():
         # evaluation
         model=args.model,
         client_config=client_config,
+        sampling_args=merged_sampling_args,
         num_examples=args.num_examples,
         rollouts_per_example=args.rollouts_per_example,
         max_concurrent=args.max_concurrent,
+        max_concurrent_generation=args.max_concurrent_generation,
+        max_concurrent_scoring=args.max_concurrent_scoring,
         interleave_scoring=not args.no_interleave_scoring,
-        sampling_args=merged_sampling_args,
         # logging
         print_results=args.print_results,
         verbose=args.verbose,
@@ -228,6 +242,7 @@ def main():
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
     )
+    logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
     asyncio.run(run_evaluation(eval_config))
 
 

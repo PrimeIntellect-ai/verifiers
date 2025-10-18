@@ -2,17 +2,20 @@ import importlib.util
 import json
 import logging
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 import numpy as np
-from datasets import Dataset
+from datasets import Dataset, disable_progress_bar, enable_progress_bar
+from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
     # run evaluation
+    results_path = get_eval_results_path(config)
     logger.info(f"Starting evaluation with model: {config.model}")
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
@@ -119,6 +123,12 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         max_concurrent=config.max_concurrent,
+        max_concurrent_generation=config.max_concurrent_generation,
+        max_concurrent_scoring=config.max_concurrent_scoring,
+        interleave_scoring=config.interleave_scoring,
+        results_path=results_path,
+        state_columns=config.state_columns,
+        save_every=config.save_every,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
@@ -126,6 +136,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         print_results(results)
     if config.save_results:
         save_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+        logger.info(f"Results saved to {results.metadata.path_to_save}")
+        if config.save_to_hf_hub:
+            logger.info(
+                f"Dataset saved to Hugging Face Hub: {config.hf_hub_dataset_name}"
+            )
     return results
 
 
@@ -189,6 +204,18 @@ def make_dataset(
     return dataset
 
 
+@contextmanager
+def quiet_datasets():
+    prev_level = ds_logging.get_verbosity()
+    ds_logging.set_verbosity(ds_logging.WARNING)
+    disable_progress_bar()
+    try:
+        yield
+    finally:
+        ds_logging.set_verbosity(prev_level)
+        enable_progress_bar()
+
+
 def save_results(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
@@ -198,7 +225,8 @@ def save_results(
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
     dataset = make_dataset(results, push_to_hf_hub, hf_hub_dataset_name)
     if save_results:
-        dataset.to_json(path_to_save / "results.jsonl")
+        with quiet_datasets():
+            dataset.to_json(path_to_save / "results.jsonl")
         metadata_dict = sanitize_metadata(results.metadata)
         with open(path_to_save / "metadata.json", "w") as f:
             json.dump(metadata_dict, f)

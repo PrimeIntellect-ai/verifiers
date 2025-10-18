@@ -54,7 +54,9 @@ class MultiTurnEnv(Environment):
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
         id: int = 0,
@@ -64,31 +66,18 @@ class MultiTurnEnv(Environment):
         """
         Generate a multi-turn rollout with the environment (messages, state).
         """
+        completion = completion or await self.init_completion()
         info = info or {}
         is_completed = False
-        state = {
-            "prompt": prompt,
-            "completion": [],
-            "answer": answer,
-            "task": task,
-            "info": info,
-            "id": id,
-            "responses": [],
-            "turn": 0,
-            "timing": {
-                "generation_ms": 0.0,
-                "scoring_ms": 0.0,
-                "total_ms": 0.0,
-            },
-        }
+        state = await self.init_state(prompt, completion, answer, task, info, id)
         start_time = time.time()
         state = await maybe_await(self.setup_state, state, **kwargs)
         if self.message_type == "chat":
             assert isinstance(prompt, list)
-            completion = []
+            assert isinstance(completion, list)
         else:
             assert isinstance(prompt, str)
-            completion = ""
+            assert isinstance(completion, str)
             state["responses_start_idx"] = []
         rollout = list(prompt) if not isinstance(prompt, str) else prompt
         while not is_completed:
