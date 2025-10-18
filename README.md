@@ -145,7 +145,7 @@ vf_env = SingleTurnEnv(
 	dataset=dataset,
 	rubric=rubric
 )
-results = vf_env.evaluate(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
+results = vf_env.evaluate_sync(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
 vf_env.make_dataset(results) # HF dataset format
 ```
 
@@ -177,7 +177,7 @@ Note on concurrency: environment APIs accept `max_concurrent` to control paralle
 uv run vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
 ```
 
-Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`.
+Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`. Pass `--save-every N` to checkpoint long runs incrementally when interleaving generation and scoring.
 
 ### ToolEnv
 
