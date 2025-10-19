@@ -1,4 +1,4 @@
-model = "willcb/Qwen2.5-0.5B-Instruct"
+model = "Qwen/Qwen2.5-Math-1.5B-Instruct"
 
 [env]
 id = "gsm8k"
@@ -22,6 +22,4 @@ micro_batch_size = 12
 rollouts_per_example = 12
 batch_size = 144
 max_steps = 100
-eval_strategy = "steps"
-eval_steps = 10
 max_seq_len = 2048

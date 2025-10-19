@@ -285,7 +285,7 @@ class RLConfig(TrainingArguments):
         default="wandb",
         metadata={"help": "Integration to report results and logs to (e.g., 'wandb')."},
     )
-    remove_unused_columns: Optional[bool] = field(
+    remove_unused_columns: bool = field(
         default=False,
         metadata={
             "help": "Whether to only keep the column 'prompt' in the dataset. If you use a custom reward function "

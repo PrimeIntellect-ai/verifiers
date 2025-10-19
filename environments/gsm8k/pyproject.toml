@@ -3,9 +3,9 @@ name = "gsm8k"
 version = "0.1.1"
 description = "GSM8K environment"
 tags = ["gsm8k", "single-turn", "math", "train", "eval"]
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.5.post0",
 ]
 
 [build-system]

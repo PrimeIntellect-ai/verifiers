@@ -102,7 +102,6 @@ __all__ = [
 _LAZY_IMPORTS = {
     "get_model": "verifiers.rl.trainer.utils:get_model",
     "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
-    "get_tokenizer": "verifiers.rl.trainer.utils:get_tokenizer",
     "RLConfig": "verifiers.rl.trainer:RLConfig",
     "RLTrainer": "verifiers.rl.trainer:RLTrainer",
     "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
