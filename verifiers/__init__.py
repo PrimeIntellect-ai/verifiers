@@ -75,6 +75,7 @@ __all__ = [
     "ToolRubric",
     "MathRubric",
     "TextArenaEnv",
+    "ReasoningGymEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -111,6 +112,7 @@ _LAZY_IMPORTS = {
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
+    "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
 }
 
@@ -130,6 +132,7 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
+    from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
     from .rl.trainer import (  # noqa: F401

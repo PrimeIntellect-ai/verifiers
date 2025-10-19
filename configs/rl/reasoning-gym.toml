@@ -1,11 +1,12 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "reasoning-gym"
+id = "reasoning-gym-env"
 
 [env.args]
 gym = "arc_1d"
-num_samples = 4000
+num_train_examples = 2000
+num_eval_examples = 2000
 seed = 1
 
 [inference]
