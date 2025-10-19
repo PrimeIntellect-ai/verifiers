@@ -989,16 +989,27 @@ class GRPOTrainer(Trainer):
     
     def _gather_batch_data(self, batch_offset: int = 0):
         """
-        Gather batch data from all processes and convert PIL images in prompts to base64 image_url.
-        If prompt already has an image_url, leave it as is.
-        If prompt has a placeholder {"type": "image"} and x has a PIL image, convert it.
+        Gather batch data from all processes and convert PIL images (single or multiple)
+        in prompts to base64 image_url.
+    
+        Handles:
+          - 'image': single PIL.Image
+          - 'images': list of PIL.Image objects (matched in order to placeholders)
+          - placeholders {"type": "image"}
+          - existing image_url (skipped)
+          - direct PIL.Image objects inside content
         """
+    
         batches = self._async_dataloader.peek_ahead(batch_offset)
     
-        if batch_offset == 0:
-            batch = batches[0] if batches else None
-        else:
-            batch = batches[batch_offset - 1] if batches else None
+        if not batches:
+            return [], [], [], []
+    
+        batch = (
+            batches[0]
+            if batch_offset == 0
+            else batches[batch_offset - 1] if batch_offset - 1 < len(batches) else None
+        )
     
         if batch is None:
             return [], [], [], []
@@ -1007,31 +1018,56 @@ class GRPOTrainer(Trainer):
             batch = [batch]
     
         prompts = []
+    
         for x in batch:
-            prompt = x["prompt"]
+            prompt = x.get("prompt", [])
+            single_image = x.get("image", None)
+            multiple_images = x.get("images", [])
+            img_index = 0  # track which image in x["images"] we're up to
+    
             for message in prompt:
                 content = message.get("content", [])
-                if isinstance(content, list):
-                    for c in content:
-                        if not isinstance(c, dict):
-                            continue
-                        if c.get("type") == "image_url": # If already base64, skip
-                            continue
-                        if c.get("type") == "image" and "image" in x and x["image"] is not None: # If placeholder and we have a PIL image, convert
-                            img_url = pil_to_base64_url(x["image"])
+                if not isinstance(content, list):
+                    continue
+    
+                for i, c in enumerate(content):
+                    if hasattr(c, "save"):
+                        img_url = pil_to_base64_url(c)
+                        content[i] = {
+                            "type": "image_url",
+                            "image_url": {"url": img_url},
+                        }
+                        continue
+    
+                    if not isinstance(c, dict):
+                        continue
+    
+                    ctype = c.get("type")
+    
+                    if ctype == "image_url": #already an image_url -> skip
+                        continue
+                        
+                    if ctype == "image": # placeholder and we have an image list
+                        # Prefer multiple_images if available
+                        if multiple_images and img_index < len(multiple_images):
+                            pil_img = multiple_images[img_index]
+                            img_index += 1
+                        elif single_image is not None:
+                            pil_img = single_image
+                        else:
+                            pil_img = None
+    
+                        if pil_img is not None:
+                            img_url = pil_to_base64_url(pil_img)
                             c.clear()
                             c.update({
                                 "type": "image_url",
-                                "image_url": {"url": img_url}
+                                "image_url": {"url": img_url},
                             })
-                elif isinstance(content, str):
-                    pass
-                else:
-                    print("Unknown content type:", type(content))
     
             prompts.append(prompt)
     
-        answers = [x["answer"] for x in batch]
+        answers = [x.get("answer") for x in batch]
         tasks = [x.get("task", "default") for x in batch]
         infos = [x.get("info", {}) for x in batch]
     
@@ -1039,6 +1075,7 @@ class GRPOTrainer(Trainer):
         all_answers = gather_object(answers)
         all_tasks = gather_object(tasks)
         all_infos = gather_object(infos)
+
         return all_prompts, all_answers, all_tasks, all_infos
 
     def _prepare_inputs(  # type: ignore
