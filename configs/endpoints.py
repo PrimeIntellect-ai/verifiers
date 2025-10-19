@@ -4,8 +4,6 @@ ENDPOINTS = {
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
     },
-<<<<<<< HEAD
-=======
     "qwen3-235b-i": {
         "model": "qwen/qwen3-235b-a22b-instruct-2507",
         "url": "https://api.pinference.ai/api/v1",
@@ -76,7 +74,6 @@ ENDPOINTS = {
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
     },
->>>>>>> main
     "gpt-4.1-mini": {
         "model": "gpt-4.1-mini",
         "url": "https://api.openai.com/v1",
@@ -102,42 +99,4 @@ ENDPOINTS = {
         "url": "https://api.deepseek.com/v1",
         "key": "DEEPSEEK_API_KEY",
     },
-<<<<<<< HEAD
-    "qwen3-a22b-instruct": {
-        "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "qwen3-235b-i": {
-        "model": "qwen-3-235b-a22b-instruct-2507",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "qwen3-235b-t": {
-        "model": "qwen-3-235b-a22b-thinking-2507",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "qwen3-coder": {
-        "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "qwen3-32b": {
-        "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "glm-4.5": {
-        "model": "zai-org/GLM-4.5",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-    "kimi-k2": {
-        "model": "moonshotai/Kimi-K2-Instruct",
-        "url": "https://openrouter.ai/api/v1",
-        "key": "OPENROUTER_API_KEY",
-    },
-=======
->>>>>>> main
 }

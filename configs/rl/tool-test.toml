@@ -1,0 +1,23 @@
+model = "Qwen/Qwen2.5-1.5B-Instruct"
+
+[env]
+id = "tool-test"
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "tool-test"
+micro_batch_size = 16
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 200
+max_seq_len = 512

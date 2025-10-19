@@ -1,7 +1,7 @@
-model = "Qwen/Qwen2.5-0.5B-Instruct"
+model = "Qwen/Qwen2.5-1.5B-Instruct"
 
 [env]
-id = "primeintellect/alphabet-sort"
+id = "primeintellect/sentence-repeater"
 
 [inference]
 gpus = 6
@@ -13,9 +13,9 @@ enforce_eager = true
 gpus = 6
 
 [trainer.args]
-run_name = "alphabet-sort"
-micro_batch_size = 32
+run_name = "sentence-repeater"
+micro_batch_size = 8
 rollouts_per_example = 16
 batch_size = 512
 max_steps = 200
-max_seq_len = 512
+max_seq_len = 4096

@@ -39,6 +39,7 @@ dependencies = [
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
     "prime-sandboxes>=0.1.0",
+    "wget>=3.2",
 ]
 
 [dependency-groups]
@@ -51,6 +52,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "ipykernel",
     "ipywidgets",
+    "reasoning-gym",
     "textarena",
     "nltk",
     "math-verify>=0.8.0",
@@ -74,6 +76,7 @@ envs = [
     "math-verify>=0.8.0",
     "duckduckgo-search",
     "brave-search",
+    "reasoning-gym",
     "nltk",
     "textarena",
 ]

@@ -1,10 +1,9 @@
-model = "willcb/Qwen3-0.6B"
+model = "willcb/Qwen2.5-0.5B-Instruct"
 
 [env]
 id = "gsm8k"
 
 [env.args]
-use_think = true
 num_eval_examples = 100
 
 [inference]

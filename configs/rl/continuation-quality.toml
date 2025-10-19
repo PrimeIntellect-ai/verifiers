@@ -1,10 +1,7 @@
-model = "Qwen/Qwen3-4B-Instruct-2507"
+model = "Qwen/Qwen2.5-0.5B"
 
 [env]
-id = "will/wordle"
-
-[env.args]
-use_think = true
+id = "primeintellect/continuation-quality"
 
 [inference]
 gpus = 6
@@ -16,10 +13,9 @@ enforce_eager = true
 gpus = 2
 
 [trainer.args]
-run_name = "wordle"
-micro_batch_size = 8
+run_name = "continuation-quality"
+micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 512
-max_steps = 500
-max_tokens = 1024
+max_steps = 200
 max_seq_len = 4096

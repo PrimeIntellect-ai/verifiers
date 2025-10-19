@@ -1,4 +1,4 @@
-model = "willcb/Qwen3-14B-Arc-1D-SFT"
+model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
 id = "reasoning-gym"

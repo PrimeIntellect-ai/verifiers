@@ -6,12 +6,7 @@ from typing import Any
 import verifiers as vf
 
 try:
-<<<<<<< HEAD
-    from prime_cli.api.client import APIClient  # type: ignore[import-untyped]
-    from prime_cli.api.sandbox import (  # type: ignore[import-untyped]
-=======
     from prime_sandboxes import (
->>>>>>> main
         AdvancedConfigs,
         APIClient,
         AsyncSandboxClient,
