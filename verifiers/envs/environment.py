@@ -626,6 +626,8 @@ class Environment(ABC):
                         gen_sampling_args,
                         **kwargs,
                     )
+                    results.completion[i] = comp_i
+                    results.state[i] = state_i
                 # scoring stage
                 async with maybe_score_sem:
                     rs = await self.rubric.score_rollout(

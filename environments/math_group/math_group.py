@@ -7,14 +7,8 @@ from verifiers.utils.data_utils import (
 
 
 def load_environment(**kwargs):
-    system_prompt = """\
-    Think step-by-step inside <think>...</think> tags.
-
-    Then, give your final numerical answer inside \\boxed{{...}}.
-    """
-
     # env 1: gsm8k
-    parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
+    parser = vf.Parser(extract_fn=extract_boxed_answer)
 
     def gsm8k_answer_reward_func(parser, completion, answer, **kwargs):
         response = parser.parse_answer(completion) or ""
@@ -46,7 +40,7 @@ def load_environment(**kwargs):
     dataset2 = load_example_dataset("math", split="train").select(range(1000))
     env2 = vf.SingleTurnEnv(
         dataset=dataset2,
-        system_prompt=system_prompt,
+        system_prompt=BOXED_SYSTEM_PROMPT,
         parser=parser,
         rubric=rubric2,
     )

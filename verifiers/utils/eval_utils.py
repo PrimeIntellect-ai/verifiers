@@ -155,8 +155,8 @@ def sanitize_metadata(metadata: GenerateMetadata) -> dict:
 def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     dataset_name = (
         results.metadata.env_id
-        + "--"
-        + results.metadata.model.replace("/", "--")
+        + "_"
+        + results.metadata.model.replace("/", "_")
         + "_n"
         + str(results.metadata.num_examples)
         + "_r"

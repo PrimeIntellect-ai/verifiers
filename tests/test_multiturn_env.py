@@ -139,7 +139,7 @@ class TestMultiTurnEnv:
 
         mock_openai_client.set_default_responses(chat_response="Still thinking")
 
-        prompt = [{"role": "user", "content": "Start"}]
+        prompt: Messages = [{"role": "user", "content": "Start"}]
         completion, state = await env.rollout(
             client=mock_openai_client,
             model="test-model",
@@ -150,6 +150,8 @@ class TestMultiTurnEnv:
         assert state["turn"] == 2
         assert state.get("env_calls", 0) == 1
         assert len(state["responses"]) == 2
+        assert isinstance(completion, list)
+        assert "content" in completion[-1]
         assert completion[-1]["role"] == "assistant"
         assert completion[-1]["content"] == "Still thinking"
 
@@ -375,7 +377,9 @@ class TestMultiTurnEnv:
         """Test completion detection works before env_response is called."""
 
         class ImmediateCompletionEnv(MultiTurnEnv):
-            def is_completed(self, messages, state, **kwargs):
+            async def is_completed(
+                self, messages: Messages, state: State, **kwargs
+            ) -> bool:
                 # Complete if we have any assistant message
                 return (
                     any(msg.get("role") == "assistant" for msg in messages)
@@ -383,9 +387,11 @@ class TestMultiTurnEnv:
                     else False
                 )
 
-            def env_response(self, messages, state, **kwargs):  # type: ignore
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> tuple[Messages, State]:  # type: ignore
                 # This should never be called due to immediate completion
-                return {"role": "user", "content": "Should not appear"}, state
+                return [{"role": "user", "content": "Should not appear"}], state
 
         env = ImmediateCompletionEnv(
             client=mock_openai_client,
