@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "reasoning-gym-env"
+id = "primeintellect/reasoning-gym-env"
 
 [env.args]
 gym = "arc_1d"
