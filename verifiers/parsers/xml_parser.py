@@ -47,6 +47,12 @@ class XMLParser(Parser):
                 raise ValueError(f"Duplicate field name: {canonical}")
             seen.add(canonical)
             self._fields.append((canonical, alternatives))
+        if "think" in seen:
+            self.logger.warning(
+                "You have included the 'think' field in the XMLParser. This should only be used with models which always include <think>...</think> tags but do NOT parse them automatically. "
+                "This will cause parsing failures if the model does not include <think>...</think> tags, or if the chat template automatically removes <think>...</think> tags."
+                "In particular, you should NOT use this parser configuration with Qwen3 or DeepSeek-R1 models."
+            )
 
     def parse(self, text: str, strip: bool = True, last: bool = False) -> Any:
         """

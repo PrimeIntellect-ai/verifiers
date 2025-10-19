@@ -67,6 +67,8 @@ def load_environment(env_id: str, **env_args) -> Environment:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
         env_instance: Environment = env_load_func(**env_args)
+        env_instance.env_id = env_instance.env_id or env_id
+        env_instance.env_args = env_instance.env_args or env_args
 
         logger.info(f"Successfully loaded environment '{env_id}'")
 

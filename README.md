@@ -1,9 +1,9 @@
 <p align="center">
-</p>
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/40c36e38-c5bd-4c5a-9cb3-f7b902cd155d#gh-light-mode-only" alt="Prime Intellect" width="312">
-  <img src="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8#gh-dark-mode-only"  alt="Prime Intellect" width="312">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/40c36e38-c5bd-4c5a-9cb3-f7b902cd155d">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8">
+    <img alt="Prime Intellect" src="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8" width="312" style="max-width: 100%;">
+  </picture>
 </p>
 
 ---
@@ -75,7 +75,7 @@ uv init && uv venv --python 3.12
 
 For local (CPU) development and evaluation with API models, do:
 ```bash
-uv add verifiers # uv add 'verifiers[dev]' for Jupyter + testing support
+uv add verifiers
 ```
 
 For training on GPUs with `vf.GRPOTrainer`, do:
@@ -173,7 +173,7 @@ vf_env = SingleTurnEnv(
 	dataset=dataset,
 	rubric=rubric
 )
-results = vf_env.evaluate(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
+results = vf_env.evaluate_sync(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
 vf_env.make_dataset(results) # HF dataset format
 ```
 
@@ -205,7 +205,7 @@ Note on concurrency: environment APIs accept `max_concurrent` to control paralle
 uv run vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
 ```
 
-Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`.
+Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`. Pass `--save-every N` to checkpoint long runs incrementally when interleaving generation and scoring.
 
 ### ToolEnv
 
@@ -284,10 +284,10 @@ The included trainer (`vf.GRPOTrainer`) supports running GRPO-style RL training 
 
 ```bash
 # install environment
-vf-install vf-wordle (-p /path/to/environments | --from-repo)
+vf-install wordle (-p /path/to/environments | --from-repo)
 
 # quick eval
-vf-eval vf-wordle -m (model_name in configs/endpoints.py) -n NUM_EXAMPLES -r ROLLOUTS_PER_EXAMPLE
+vf-eval wordle -m (model_name in configs/endpoints.py) -n NUM_EXAMPLES -r ROLLOUTS_PER_EXAMPLE
 
 # inference (shell 0)
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model willcb/Qwen3-1.7B-Wordle \

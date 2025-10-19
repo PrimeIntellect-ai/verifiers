@@ -346,6 +346,7 @@ class TestEnvGroup:
             ],
             "answer": ["math_answer", "code_answer"],
             "task": ["math", "code"],
+            "example_id": [0, 1],
         }
 
         results = await env_group.a_generate(

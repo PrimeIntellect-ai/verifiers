@@ -201,24 +201,10 @@ class RLConfig(TrainingArguments):
     )
 
     # generation parameters
-    num_batches_ahead: int = field(
-        default=1,
-        metadata={
-            "help": "Number of batches to generate ahead. Higher values can improve GPU utilization but use more memory. "
-            "Set to 0 for synchronous generation (submit and wait immediately, no look-ahead)."
-        },
-    )
-    async_max_queue_size: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "Maximum number of batches that can be queued for async generation. If None, defaults to "
-            "2 * num_batches_ahead."
-        },
-    )
-    async_generation_timeout: float = field(
+    generation_timeout: float = field(
         default=600.0,
         metadata={
-            "help": "Timeout in seconds for async generation. If a batch doesn't complete within this time, "
+            "help": "Timeout in seconds for generation. If a batch doesn't complete within this time, "
             "a TimeoutError is raised."
         },
     )
@@ -317,9 +303,7 @@ class RLConfig(TrainingArguments):
             self.output_dir = f"outputs/{self.run_name}"
 
         if self.vllm_importance_sampling_cap <= 0:
-            raise ValueError(
-                "`vllm_importance_sampling_cap` must be a positive value."
-            )
+            raise ValueError("`vllm_importance_sampling_cap` must be a positive value.")
 
         # configure lora
         if not self.use_lora:

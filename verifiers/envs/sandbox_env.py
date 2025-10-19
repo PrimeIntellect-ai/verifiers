@@ -6,16 +6,21 @@ from typing import Any
 import verifiers as vf
 
 try:
+<<<<<<< HEAD
     from prime_cli.api.client import APIClient  # type: ignore[import-untyped]
     from prime_cli.api.sandbox import (  # type: ignore[import-untyped]
+=======
+    from prime_sandboxes import (
+>>>>>>> main
         AdvancedConfigs,
+        APIClient,
         AsyncSandboxClient,
         CreateSandboxRequest,
         SandboxClient,
     )
 except ImportError:
     raise ImportError(
-        "prime-cli is not installed. Please install it with `uv pip install prime`."
+        "prime-sandboxes is not installed. Please install it with `uv pip install prime-sandboxes`."
     )
 
 
@@ -91,7 +96,14 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Executed command in {e - s:.1f}s. Got output: {output}")
         return output
 
-    async def _destroy_sandbox(self, sandbox_id: str | None) -> None:
+    async def post_rollout(self, messages: vf.Messages, state: vf.State, **kwargs):
+        """
+        Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
+        run computation here and cache the result in state before sandbox is destroyed.
+        """
+        pass
+
+    async def destroy_sandbox(self, sandbox_id: str | None) -> None:
         if sandbox_id is None:
             return
         try:
@@ -133,7 +145,8 @@ class SandboxEnv(vf.StatefulToolEnv):
         """
         completed = await super().is_completed(messages, state, **kwargs)
         if completed:
-            await self._destroy_sandbox(state.pop("sandbox_id"))
+            await self.post_rollout(messages, state, **kwargs)
+            await self.destroy_sandbox(state.pop("sandbox_id"))
         return completed
 
     def cleanup_sandboxes(self):

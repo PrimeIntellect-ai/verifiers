@@ -4,7 +4,9 @@ import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from typing import TYPE_CHECKING, Literal, cast
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, AsyncContextManager, Literal
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
@@ -12,11 +14,10 @@ from openai import AsyncOpenAI, BadRequestError, OpenAI
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    ChatCompletion,
     ChatCompletionToolParam,
     ChatMessage,
-    Completion,
     GenerateInputs,
+    GenerateMetadata,
     GenerateOutputs,
     Info,
     Messages,
@@ -27,10 +28,16 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
+from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.eval_utils import make_dataset, save_results
 from verifiers.utils.message_utils import (
     cleanup_messages,
     get_overlong_prompt_dummy_response,
-    sanitize_tool_calls,
+)
+from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.processing_utils import (
+    process_chat_format_vllm,
+    process_completion_format_vllm,
 )
 
 if TYPE_CHECKING:
@@ -56,6 +63,8 @@ class Environment(ABC):
         message_type: MessageType = "chat",
         oai_tools: list[ChatCompletionToolParam] | None = None,
         max_workers: int = 512,
+        env_id: str | None = None,
+        env_args: dict | None = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -109,6 +118,10 @@ class Environment(ABC):
         if self.dataset is None and self.eval_dataset is None:
             raise ValueError("Either dataset or eval_dataset must be provided")
 
+        self.env_id = env_id or ""
+        self.env_args = env_args or {}
+        self.rollouts_per_example = None
+
     def format_prompt(
         self,
         prompt_str: str,
@@ -131,9 +144,16 @@ class Environment(ABC):
         question_key: str = "question",
         answer_key: str = "answer",
     ) -> Dataset:
-        # skip if "prompt" already exists
-        if "id" not in dataset.column_names:
-            dataset = dataset.add_column("id", range(len(dataset)))  # type: ignore
+        """
+        Create `example_id` and `prompt` columns if not present.
+        """
+        # if "id" column is present and not int, rename it to "src_id"
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
 
         # extract format_prompt as a standalone function to avoid capturing self
         def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -159,7 +179,7 @@ class Environment(ABC):
                         "answer": x[answer_key],
                     }
                 )
-        assert "id" in dataset.column_names
+        assert "example_id" in dataset.column_names
         assert "prompt" in dataset.column_names
         return dataset
 
@@ -174,7 +194,7 @@ class Environment(ABC):
             return self.dataset.select(range(n))
         return self.dataset
 
-    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset | None:
+    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
         if self.eval_dataset is None:
             self.logger.warning(
                 "eval_dataset is not set, falling back to train dataset"
@@ -211,12 +231,12 @@ class Environment(ABC):
         Returns special error messages for context length issues.
         """
         sampling_args = sampling_args or {}
-        # Resolve message type first
+        # resolve message type first
         if message_type is None:
             message_type = self.message_type
-        # Normalize sampling args:
-        # - If max_tokens is provided for chat, rename to max_completion_tokens
-        # - Drop any None-valued entries to avoid sending them to the client
+        # normalize sampling args:
+        # - if max_tokens is provided for chat, rename to max_completion_tokens
+        # - drop any None-valued entries to avoid sending to the client
         if "max_tokens" in sampling_args:
             if sampling_args["max_tokens"] is None:
                 sampling_args.pop("max_tokens")
@@ -278,15 +298,20 @@ class Environment(ABC):
                 )
                 return response
         except Exception as e:
-            # In case of making a request with an overlong prompt, e.g from a too-long
+            # in case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
-            if isinstance(e, BadRequestError) and e.response.text.startswith(
-                '{"error":{"message":"This model\'s maximum context length is'
-            ):
-                self.logger.debug("Caught overlong prompt.")
-                return get_overlong_prompt_dummy_response(
-                    message_type or self.message_type
-                )
+            if isinstance(e, BadRequestError):
+                error_text = e.response.text.lower()
+                context_length_phrases = [
+                    "This model's maximum context length is",
+                    "is longer than the model's context length",
+                    "exceeds the model's context length",
+                ]
+                if any(phrase in error_text for phrase in context_length_phrases):
+                    self.logger.debug("Caught overlong prompt.")
+                    return get_overlong_prompt_dummy_response(
+                        message_type or self.message_type
+                    )
             self.logger.error(f"Error getting model response: {e} \n\nExiting...")
             raise e
 
@@ -296,9 +321,12 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
@@ -308,24 +336,37 @@ class Environment(ABC):
         """
         pass
 
-    async def run_rollout_with_semaphore(
+    async def run_rollout(
         self,
-        semaphore: asyncio.Semaphore,
+        sem: AsyncContextManager,
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
         """
         Run a rollout with a semaphore.
         """
-        async with semaphore:
+        async with sem:
             return await self.rollout(
-                client, model, prompt, answer, task, info, sampling_args, **kwargs
+                client,
+                model,
+                prompt,
+                completion,
+                answer,
+                state,
+                task,
+                info,
+                example_id,
+                sampling_args,
+                **kwargs,
             )
 
     async def run_rollouts(
@@ -333,56 +374,116 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         prompts: list[Messages],
-        answers: list[str],
-        tasks: list[str],
-        infos: list[Info],
+        completions: list[Messages] = [],
+        answers: list[str] = [],
+        states: list[State] = [],
+        tasks: list[str] = [],
+        infos: list[Info] = [],
+        example_ids: list[int] = [],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> list[tuple[Messages, State]]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
-        from tqdm.asyncio import tqdm_asyncio
 
-        if max_concurrent > 0:
-            semaphore = asyncio.Semaphore(max_concurrent)
-            rollout_tasks = [
-                self.run_rollout_with_semaphore(
-                    semaphore,
-                    client,
-                    model,
-                    prompt,
-                    answer,
-                    task,
-                    info,
-                    sampling_args,
-                    **kwargs,
+        maybe_sem = await maybe_semaphore(max_concurrent)
+        if not example_ids:
+            example_ids = list(range(len(prompts)))
+        if len(completions) == 0:
+            completions = [await self.init_completion() for _ in range(len(prompts))]
+        if len(states) == 0:
+            states = [
+                await self.init_state(
+                    prompt, completion, answer, task, info, example_id
                 )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
+                for prompt, completion, answer, task, info, example_id in zip(
+                    prompts, completions, answers, tasks, infos, example_ids
+                )
             ]
+        rollout_tasks = [
+            self.run_rollout(
+                maybe_sem,
+                client,
+                model,
+                prompt,
+                completion,
+                answer,
+                state,
+                task,
+                info,
+                example_id,
+                sampling_args,
+                **kwargs,
+            )
+            for prompt, completion, answer, state, task, info, example_id in zip(
+                prompts, completions, answers, states, tasks, infos, example_ids
+            )
+        ]
+        if use_tqdm:
+            from tqdm.asyncio import tqdm_asyncio
+
+            rollout_results = await tqdm_asyncio.gather(
+                *rollout_tasks,
+                total=len(prompts),
+                desc=f"Running {len(prompts)} rollouts",
+            )
         else:
-            rollout_tasks = [
-                self.rollout(
-                    client, model, prompt, answer, task, info, sampling_args, **kwargs
-                )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
-            ]
-        return await tqdm_asyncio.gather(
-            *rollout_tasks, total=len(prompts), desc=f"Running {len(prompts)} rollouts"
-        )
+            rollout_results = await asyncio.gather(*rollout_tasks)
+        return list(rollout_results)
 
-    async def a_generate(
+    async def init_completion(self) -> Messages:
+        if self.message_type == "chat":
+            return []
+        else:
+            return ""
+
+    async def init_state(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: str,
+        task: str,
+        info: Info,
+        example_id: int,
+        **kwargs,
+    ) -> State:
+        state = {
+            "prompt": prompt,
+            "completion": completion,
+            "answer": answer,
+            "task": task,
+            "info": info,
+            "example_id": example_id,
+            "responses": [],
+            "turn": 0,
+            "timing": {
+                "generation_ms": 0.0,
+                "scoring_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        }
+        return state
+
+    async def generate(
         self,
         inputs: GenerateInputs | Dataset | dict,
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        num_examples: int | None = None,
+        rollouts_per_example: int | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
         interleave_scoring: bool = True,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_every: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -419,34 +520,73 @@ class Environment(ABC):
                 "but reward functions requiring ground truth data may return 0.0. "
                 "Proceeding with empty values."
             )
+        if "example_id" not in results_dict and "id" in results_dict:
+            results_dict["example_id"] = deepcopy(results_dict["id"])
+        results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
+        n = len(results_dict["prompt"])
+        results_dict["completion"] = [await self.init_completion() for _ in range(n)]
         if not results_dict.get("answer"):
-            results_dict["answer"] = [""] * len(results_dict["prompt"])
+            results_dict["answer"] = [""] * n
         if not results_dict.get("task"):
-            results_dict["task"] = ["default"] * len(results_dict["prompt"])
+            results_dict["task"] = ["default"] * n
         if not results_dict.get("info"):
-            results_dict["info"] = [{}] * len(results_dict["prompt"])
-        for i, info in enumerate(results_dict["info"]):
+            results_dict["info"] = [{}] * n
+        for info in results_dict["info"]:
             if isinstance(info, str):
                 info = json.loads(info)
             if self.oai_tools and "oai_tools" not in info:
                 info["oai_tools"] = self.oai_tools
-
-        results_dict["prompt"] = [cleanup_messages(p) for p in results_dict["prompt"]]
+        if not results_dict.get("example_id"):
+            results_dict["example_id"] = list(range(n))
+        results_dict["state"] = [
+            await self.init_state(
+                prompt=results_dict["prompt"][i],
+                completion=results_dict["completion"][i],
+                answer=results_dict["answer"][i],
+                task=results_dict["task"][i],
+                info=results_dict["info"][i],
+                example_id=results_dict["example_id"][i],
+            )
+            for i in range(n)
+        ]
 
         # prepare GenerateOutputs and run rollouts
+        num_rollouts = len(results_dict)
+        ne_metadata = num_examples or len(list(set(results_dict["example_id"])))
+        rpe_metadata = rollouts_per_example or num_rollouts // ne_metadata
+        if results_path is None:
+            path_to_save = get_results_path(self.env_id, model)
+        else:
+            path_to_save = results_path
+        metadata = GenerateMetadata(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            base_url=str(client.base_url),
+            num_examples=ne_metadata,
+            rollouts_per_example=rpe_metadata,
+            sampling_args=gen_sampling_args,
+            avg_reward=0.0,
+            avg_metrics={},
+            state_columns=state_columns or [],
+            path_to_save=path_to_save,
+            date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            time_ms=0.0,
+        )
         results = GenerateOutputs(
             prompt=results_dict["prompt"],
+            completion=results_dict["completion"],
             answer=results_dict["answer"],
+            state=results_dict["state"],
             task=results_dict["task"],
             info=results_dict["info"],
-            completion=[],
-            state=[],
-            reward=[],
-            metrics={},
+            example_id=results_dict["example_id"],
+            reward=[0.0] * n,
+            metrics={name: [0.0] * n for name in self.rubric.get_reward_func_names()},
+            metadata=metadata,
         )
-        n = len(results.prompt)
 
-        # Resolve concurrency knobs
+        # resolve concurrency knobs
         gen_limit = max_concurrent_generation
         score_limit = max_concurrent_scoring
         if gen_limit is None:
@@ -455,69 +595,41 @@ class Environment(ABC):
             score_limit = max_concurrent
 
         if interleave_scoring and score_rollouts:
-            # Interleaved pipeline: generate and score per rollout with separate semaphores
-            results_completion: list[Messages] = [None] * n  # type: ignore[assignment]
-            results_state: list[State] = [None] * n  # type: ignore[assignment]
-            rewards: list[float] = [0.0] * n
-            # Pre-allocate metrics using known reward function names
-            reward_func_names = self.rubric.get_reward_func_names()
-            metrics: dict[str, list[float]] = {
-                name: [0.0] * n for name in reward_func_names
-            }
-
-            gen_semaphore = (
-                asyncio.Semaphore(gen_limit) if gen_limit and gen_limit > 0 else None
-            )
-            score_semaphore = (
-                asyncio.Semaphore(score_limit)
-                if score_limit and score_limit > 0
-                else None
-            )
+            # interleaved pipeline: separate semaphores for generation and scoring
+            # pre-allocate metrics using known reward function names
+            maybe_gen_sem = await maybe_semaphore(gen_limit)
+            maybe_score_sem = await maybe_semaphore(score_limit)
+            num_completed = 0
 
             async def run_one(i: int) -> None:
                 prompt_i = results.prompt[i]
+                completion_i = results.completion[i]
                 answer_i = results.answer[i]
+                state_i = results.state[i]
                 task_i = results.task[i]
                 info_i = results.info[i]
-                # Generation stage
-                if gen_semaphore is not None:
-                    async with gen_semaphore:
-                        comp_i, state_i = await self.rollout(
-                            client,
-                            model,
-                            prompt_i,
-                            answer_i,
-                            task_i,
-                            info_i,
-                            gen_sampling_args,
-                            **kwargs,
-                        )
-                else:
+                example_id_i = results.example_id[i]
+                nonlocal num_completed
+
+                # generation stage
+                async with maybe_gen_sem:
                     comp_i, state_i = await self.rollout(
                         client,
                         model,
                         prompt_i,
+                        completion_i,
                         answer_i,
+                        state_i,
                         task_i,
                         info_i,
+                        example_id_i,
                         gen_sampling_args,
                         **kwargs,
                     )
-                results_completion[i] = comp_i
-                results_state[i] = state_i
-                # Scoring stage
-                if score_semaphore is not None:
-                    async with score_semaphore:
-                        rs = await self.rubric.score_rollout(
-                            prompt=prompt_i,
-                            completion=comp_i,
-                            answer=answer_i,
-                            state=state_i,
-                            task=task_i,
-                            info=info_i,
-                            **kwargs,
-                        )
-                else:
+                    results.completion[i] = comp_i
+                    results.state[i] = state_i
+                # scoring stage
+                async with maybe_score_sem:
                     rs = await self.rubric.score_rollout(
                         prompt=prompt_i,
                         completion=comp_i,
@@ -525,36 +637,53 @@ class Environment(ABC):
                         state=state_i,
                         task=task_i,
                         info=info_i,
+                        example_id=example_id_i,
                         **kwargs,
                     )
-                rewards[i] = rs.reward
+                results.reward[i] = rs.reward
                 for k, v in rs.metrics.items():
-                    # Ensure key exists in case of EnvGroup/RubricGroup dynamics
-                    if k not in metrics:
-                        metrics[k] = [0.0] * n
-                    metrics[k][i] = v
+                    # ensure key exists in case of EnvGroup/RubricGroup
+                    if k not in results.metrics:
+                        results.metrics[k] = [0.0] * n
+                    results.metrics[k][i] = v
+                num_completed += 1
+                if save_every > 0 and num_completed % save_every == 0:
+                    self.logger.debug(f"Saving results to {results_path}")
+                    save_results(results)
 
             tasks = [run_one(i) for i in range(n)]
-            from tqdm.asyncio import tqdm_asyncio
 
-            await tqdm_asyncio.gather(*tasks, total=n, desc=f"Running {n} rollouts")
+            if use_tqdm:
+                from tqdm.asyncio import tqdm_asyncio
 
-            results.completion = results_completion  # type: ignore[assignment]
-            results.state = results_state  # type: ignore[assignment]
-            results.reward = rewards
-            results.metrics = metrics
+                await tqdm_asyncio.gather(
+                    *tasks, total=n, desc=f"Running {n} rollouts (interleaved)"
+                )
+            else:
+                await asyncio.gather(*tasks)
             return results
         else:
-            # Non-interleaved: generate all then score all
+            # non-interleaved: generate all then score all
+            if save_every > 0:
+                self.logger.warning(
+                    (
+                        "Intermediate saving is not supported for non-interleaved rollouts. "
+                        f"save_every={save_every} will be ignored."
+                    )
+                )
             rollouts = await self.run_rollouts(
-                prompts=results.prompt,
-                answers=results.answer,
-                tasks=results.task,
-                infos=results.info,
                 client=client,
                 model=model,
+                prompts=results.prompt,
+                completions=results.completion,
+                answers=results.answer,
+                states=results.state,
+                tasks=results.task,
+                infos=results.info,
+                example_ids=results.example_id,
                 sampling_args=gen_sampling_args,
                 max_concurrent=gen_limit if gen_limit is not None else max_concurrent,
+                use_tqdm=use_tqdm,
                 **kwargs,
             )
             results.completion = [rollout[0] for rollout in rollouts]
@@ -567,40 +696,58 @@ class Environment(ABC):
                     states=results.state,
                     tasks=results.task,
                     infos=results.info,
+                    example_ids=results.example_id,
                     max_concurrent=score_limit
                     if score_limit is not None
                     else max_concurrent,
                     apply_weights=True,
+                    use_tqdm=use_tqdm,
                 )
                 results.reward = rollout_scores.reward
                 results.metrics = rollout_scores.metrics
+            else:
+                results.reward = []
+                results.metrics = {}
             return results
 
-    def generate(
+    # alias for backward compatibility
+    a_generate = generate
+
+    def generate_sync(
         self,
         inputs: GenerateInputs | Dataset,
         client: AsyncOpenAI | OpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        num_examples: int | None = None,
+        rollouts_per_example: int | None = None,
         score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
         interleave_scoring: bool = True,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_every: int = -1,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
             client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
-        coro = self.a_generate(
+        coro = self.generate(
             inputs,
-            client,
-            model,
-            sampling_args,
-            score_rollouts,
-            max_concurrent,
-            max_concurrent_generation,
-            max_concurrent_scoring,
-            interleave_scoring,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            score_rollouts=score_rollouts,
+            max_concurrent=max_concurrent,
+            max_concurrent_generation=max_concurrent_generation,
+            max_concurrent_scoring=max_concurrent_scoring,
+            interleave_scoring=interleave_scoring,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_every=save_every,
             **kwargs,
         )
         # check if we're in existing event loop (e.g. Jupyter)
@@ -626,27 +773,10 @@ class Environment(ABC):
             # shutdown the executor to prevent thread leaks
             executor.shutdown(wait=False)
 
-    #########################################################
-    # Helper functions for evaluation and dataset generation
-    #########################################################
-
-    def evaluate(
-        self,
-        client: AsyncOpenAI | OpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-        num_examples: int = -1,
-        rollouts_per_example: int = 1,
-        score_rollouts: bool = True,
-        max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
-        interleave_scoring: bool = True,
-        **kwargs,
-    ) -> GenerateOutputs:
-        """
-        Evaluate model on the Environment evaluation dataset.
-        """
+    # evaluation
+    def get_eval_inputs(
+        self, num_examples: int = -1, rollouts_per_example: int = 1
+    ) -> Dataset:
         if self.eval_dataset is None:
             self.logger.info("eval_dataset is not set, falling back to train dataset")
             assert self.dataset is not None
@@ -656,361 +786,86 @@ class Environment(ABC):
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
-        results = self.generate(
+        return inputs
+
+    async def evaluate(
+        self,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        score_rollouts: bool = True,
+        max_concurrent: int = -1,
+        max_concurrent_generation: int | None = None,
+        max_concurrent_scoring: int | None = None,
+        interleave_scoring: bool = True,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_every: int = -1,
+        **kwargs,
+    ) -> GenerateOutputs:
+        """
+        Evaluate model on the Environment evaluation dataset.
+        """
+        inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        return await self.generate(
             inputs,
-            client,
-            model,
-            sampling_args,
-            score_rollouts,
-            max_concurrent,
-            max_concurrent_generation,
-            max_concurrent_scoring,
-            interleave_scoring,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            rollouts_per_example=rollouts_per_example,
+            score_rollouts=score_rollouts,
+            max_concurrent=max_concurrent,
+            max_concurrent_generation=max_concurrent_generation,
+            max_concurrent_scoring=max_concurrent_scoring,
+            interleave_scoring=interleave_scoring,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_every=save_every,
             **kwargs,
         )
-        return results
 
-    def make_dataset(
+    def evaluate_sync(
         self,
-        results: GenerateOutputs,
+        client: OpenAI | AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        num_examples: int = -1,
         rollouts_per_example: int = 1,
-        push_to_hf_hub: bool = False,
-        hub_name: str | None = None,
+        score_rollouts: bool = True,
+        max_concurrent: int = -1,
+        max_concurrent_generation: int | None = None,
+        max_concurrent_scoring: int | None = None,
+        interleave_scoring: bool = True,
+        results_path: Path | None = None,
         state_columns: list[str] | None = None,
+        save_every: int = -1,
         **kwargs,
-    ) -> Dataset:
+    ) -> GenerateOutputs:
         """
-        Make a dataset from the evaluation results.
-
-        Args:
-            results: The evaluation results to convert to a dataset
-            rollouts_per_example: The number of rollouts per example
-            push_to_hf_hub: Whether to push the dataset to the Hugging Face Hub
-            hub_name: The name of the dataset on the Hugging Face Hub
-            state_columns: List of state columns to include in the dataset
-            concatenate_safe: Whether to ensure the dataset can be concatenated with others
-                          by standardizing column types (useful for combining results from
-                          different environments). Defaults to True for consistent schemas.
-            **kwargs: Additional arguments passed to Dataset creation
+        Evaluate model on the Environment evaluation dataset synchronously.
         """
-        # TODO: enable saving of multimodal datasets
-        state_columns = state_columns or []
-
-        if push_to_hf_hub and hub_name is None:
-            raise ValueError("hub_name must be provided if push_to_hf_hub is True")
-
-        cols = ["prompt", "completion", "answer", "task", "reward", "average_reward"]
-
-        if rollouts_per_example > 1:
-            average_reward = []
-            for i in range(0, len(results.reward), rollouts_per_example):
-                chunk = results.reward[i : i + rollouts_per_example]
-                avg = sum(chunk) / len(chunk)
-                average_reward.extend([avg] * rollouts_per_example)
-        else:
-            average_reward = results.reward
-
-        results_dict = {
-            "prompt": results.prompt,
-            "completion": [],
-            "answer": results.answer,
-            "task": results.task,
-            "reward": results.reward,
-            "average_reward": average_reward,
-        }
-        if results.info[0] != {}:
-            results_dict["info"] = results.info
-            cols.append("info")
-        for i in range(len(results.completion)):
-            results_dict["completion"].append(
-                sanitize_tool_calls(results.completion[i])
-            )
-        results_dict.update(results.metrics)
-        cols.extend(results.metrics.keys())
-        if results.state[0] is not None:
-            for col in state_columns:
-                if col in results.state[0]:
-                    results_dict[col] = [state[col] for state in results.state]
-                    cols.append(col)
-                else:
-                    self.logger.warning(
-                        f"Column {col} not found in state, skipping from dataset."
-                    )
-        dataset = Dataset.from_dict({col: results_dict[col] for col in cols})
-        if push_to_hf_hub:
-            assert hub_name is not None
-            dataset.push_to_hub(hub_name)
-        return dataset
-
-    #########################################################
-    # Optional helper functions for parsing vLLM completions
-    #########################################################
-
-    def parse_chat_completion_logprobs(
-        self, chat_completion: ChatCompletion
-    ) -> list[float]:
-        """Parses the completion logprobs from a vLLM chat completion"""
-        assert len(chat_completion.choices) == 1, (
-            "Response should always have one choice"
-        )
-        assert chat_completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        assert chat_completion.choices[0].logprobs.content is not None, (
-            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        logprobs = [
-            logprob.logprob for logprob in chat_completion.choices[0].logprobs.content
-        ]
-        return logprobs
-
-    def parse_completion_logprobs(self, completion: Completion) -> list[float]:
-        """Parses the completion logprobs from a vLLM chat completion"""
-        assert len(completion.choices) == 1, "Response should always have one choice"
-        assert completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
-        )
-        assert completion.choices[0].logprobs.token_logprobs is not None, (
-            "Logprob token_logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
-        )
-        return completion.choices[0].logprobs.token_logprobs
-
-    def parse_chat_completion_tokens(
-        self, chat_completion: ChatCompletion
-    ) -> list[int]:
-        """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
-        assert len(chat_completion.choices) == 1, (
-            "Response should always have one choice"
-        )
-        assert chat_completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        assert chat_completion.choices[0].logprobs.content is not None, (
-            "Logprob content should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/chat/completions"
-        )
-        tokens = [
-            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
-            int(token.token.split(":")[-1])
-            for token in chat_completion.choices[0].logprobs.content
-        ]
-        return tokens
-
-    def parse_completion_tokens(self, completion: Completion) -> list[int]:
-        """Parses the output token ids from a list of chat completions returned by vLLM OAI server."""
-        assert len(completion.choices) == 1, "Response should always have one choice"
-        assert completion.choices[0].logprobs is not None, (
-            "Logprobs should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
-        )
-        assert completion.choices[0].logprobs.tokens is not None, (
-            "Logprob tokens should not be None. Make sure to set logprobs=True in the extra body when making the request to /v1/completions"
-        )
-        tokens = [
-            # tokens are token_id:<int> because we request `return_tokens_as_token_ids` from vllm in GRPOTrainer
-            int(token.split(":")[-1])
-            for token in completion.choices[0].logprobs.tokens
-        ]
-        return tokens
-
-    def process_chat_format_vllm(
-        self,
-        prompt: list[ChatMessage],
-        completion: list[ChatMessage],
-        state: State,
-        processing_class: "PreTrainedTokenizerBase",
-        mask_env_responses: bool = False,
-    ) -> tuple[list[int], list[int], list[int], list[int], list[float]]:
-        """
-        Process chat format conversations using incremental prefixes.
-        """
-        responses = state["responses"]
-        responses_idx = 0
-        zipped = []
-        for turn in completion:
-            if turn["role"] == "assistant":
-                zipped.append((turn, responses[responses_idx]))
-                responses_idx += 1
-            else:
-                zipped.append((turn, None))
-        assert len(responses) == responses_idx, "Responses not fully consumed"
-        assert len(zipped) == len(completion), "Length mismatch"
-        prompt_ids = cast(
-            list[int],
-            processing_class.apply_chat_template(
-                conversation=prompt,  # type: ignore
-                add_generation_prompt=True,
-            ),
-        )
-        messages_consumed = [m for m in prompt]
-        prompt_mask: list[int] = [0] * len(prompt_ids)
-        completion_ids: list[int] = []
-        completion_mask: list[int] = []
-        completion_logprobs: list[float] = []
-        i = 0
-        while i < len(zipped):
-            message, response = zipped[i]
-
-            def deserialize_tool_calls(message: dict) -> dict:
-                """
-                Deserialize tool calls in messages, if any are present. Iterates
-                over all messages in a message list and tries to find
-                "tool_calls" key. If found, assumes it is a OAI format and has
-                key "function" with "arguments" key which is stringified. It
-                will then deserialize the argument so that chat tmeplates like
-                Qwen3's can be used.
-                """
-
-                def deserialize_tool_call(tool_call) -> dict:
-                    tool_call = dict(tool_call)
-                    function = dict(tool_call["function"])
-                    return {
-                        **tool_call,
-                        "function": {
-                            **function,
-                            "arguments": json.loads(function["arguments"]),
-                        },
-                    }
-
-                return {
-                    **message,
-                    "tool_calls": [
-                        deserialize_tool_call(tool_call)
-                        for tool_call in message.get("tool_calls", []) or []
-                    ],
-                }
-
-            message = deserialize_tool_calls(message)
-
-            # assistant case -- use response
-            if message["role"] == "assistant":
-                assert response is not None, "Response should not be None"
-                completion_turn_ids = self.parse_chat_completion_tokens(response)
-                completion_turn_mask = [1] * len(completion_turn_ids)
-                completion_turn_logprobs = self.parse_chat_completion_logprobs(response)
-                completion_ids.extend(completion_turn_ids)
-                completion_mask.extend(completion_turn_mask)
-                completion_logprobs.extend(completion_turn_logprobs)
-                messages_consumed.append(cast(ChatMessage, message))
-                i += 1
-            # user/tool case -- use message
-            else:
-                assert message["role"] == "user" or message["role"] == "tool"
-                # Collect all consecutive non-assistant messages
-                consecutive_messages: list[ChatMessage] = [cast(ChatMessage, message)]
-                j = i + 1
-                while j < len(zipped) and zipped[j][0]["role"] != "assistant":
-                    consecutive_messages.append(cast(ChatMessage, zipped[j][0]))
-                    j += 1
-                token_prefix = cast(
-                    list[int],
-                    processing_class.apply_chat_template(
-                        conversation=messages_consumed  # type: ignore
-                    ),
-                )
-                token_prefix_with_turn = cast(
-                    list[int],
-                    processing_class.apply_chat_template(
-                        conversation=messages_consumed + consecutive_messages,  # type: ignore
-                    ),
-                )
-                assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
-                    f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
-                )
-                completion_turn_ids = token_prefix_with_turn[len(token_prefix) :]
-                if mask_env_responses:
-                    completion_turn_mask = [0] * len(completion_turn_ids)
-                else:
-                    completion_turn_mask = [1] * len(completion_turn_ids)
-                completion_turn_logprobs = [0.0] * len(completion_turn_ids)
-                completion_ids.extend(completion_turn_ids)
-                completion_mask.extend(completion_turn_mask)
-                completion_logprobs.extend(completion_turn_logprobs)
-                messages_consumed.extend(consecutive_messages)
-                i = j
-        return (
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
-            completion_logprobs,
+        inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        return self.generate_sync(
+            inputs,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            score_rollouts=score_rollouts,
+            max_concurrent=max_concurrent,
+            max_concurrent_generation=max_concurrent_generation,
+            max_concurrent_scoring=max_concurrent_scoring,
+            interleave_scoring=interleave_scoring,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_every=save_every,
+            **kwargs,
         )
 
-    def process_completion_format_vllm(
-        self,
-        prompt: str,
-        completion: str,
-        state: State,
-        processing_class: "PreTrainedTokenizerBase",
-        mask_env_responses: bool = False,
-    ) -> tuple[list[int], list[int], list[int], list[int], list[float]]:
-        """
-        Process completion format conversations using incremental prefixes.
-        """
-        responses: list[Completion] = state["responses"]
-        responses_start_idx: list[int] = state["responses_start_idx"]
-        assert len(responses) == len(responses_start_idx), (
-            "Should have an index for each completion response"
-        )
+    make_dataset = make_dataset
 
-        idx = 0
-        zipped: list[tuple[str, Completion | None]] = []
-        for response, response_start_idx in zip(responses, responses_start_idx):
-            if response_start_idx > idx:
-                # non-model-generated section
-                zipped.append((completion[idx:response_start_idx], None))
-            response_text = response.choices[0].text or ""
-            zipped.append((response_text, response))
-            idx = response_start_idx + len(response_text)
-        assert idx == len(completion), "Completion not fully consumed"
-
-        prompt_ids = cast(list[int], processing_class.encode(prompt))
-        rollout_consumed = prompt
-        prompt_mask: list[int] = [0] * len(prompt_ids)
-        completion_ids: list[int] = []
-        completion_mask: list[int] = []
-        completion_logprobs: list[float] = []
-        i = 0
-        while i < len(zipped):
-            text, response = zipped[i]
-            # model-generated case -- use response
-            if response is not None:
-                completion_turn_ids = self.parse_completion_tokens(response)
-                completion_turn_mask = [1] * len(completion_turn_ids)
-                completion_turn_logprobs = self.parse_completion_logprobs(response)
-                completion_ids.extend(completion_turn_ids)
-                completion_mask.extend(completion_turn_mask)
-                completion_logprobs.extend(completion_turn_logprobs)
-                rollout_consumed += text
-                i += 1
-            # non-model-generated (user/tool case) -- use text
-            else:
-                token_prefix = cast(
-                    list[int], processing_class.encode(rollout_consumed)
-                )
-                token_prefix_with_turn: list[int] = cast(
-                    list[int], processing_class.encode(rollout_consumed + text)
-                )
-                assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
-                    f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
-                )
-                completion_turn_ids = token_prefix_with_turn[len(token_prefix) :]
-                if mask_env_responses:
-                    completion_turn_mask = [0] * len(completion_turn_ids)
-                else:
-                    completion_turn_mask = [1] * len(completion_turn_ids)
-                completion_turn_logprobs = [0.0] * len(completion_turn_ids)
-                completion_ids.extend(completion_turn_ids)
-                completion_mask.extend(completion_turn_mask)
-                completion_logprobs.extend(completion_turn_logprobs)
-                rollout_consumed += text
-                i += 1
-        return (
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
-            completion_logprobs,
-        )
-
+    # processing results
     def process_env_results_vllm(
         self,
         prompts: list[Messages],
@@ -1022,6 +877,7 @@ class Environment(ABC):
         mask_env_responses: bool = False,
         mask_truncated_completions: bool = False,
         zero_truncated_completions: bool = False,
+        message_type: MessageType | None = "chat",
     ) -> ProcessedOutputs:
         """
         Process results with vLLM tokens/logprobs.
@@ -1047,7 +903,7 @@ class Environment(ABC):
                     completion_ids,
                     completion_mask,
                     completion_logprobs,
-                ) = self.process_chat_format_vllm(
+                ) = process_chat_format_vllm(
                     prompt, completion, state, processing_class, mask_env_responses
                 )
             else:
@@ -1058,7 +914,7 @@ class Environment(ABC):
                     completion_ids,
                     completion_mask,
                     completion_logprobs,
-                ) = self.process_completion_format_vllm(
+                ) = process_completion_format_vllm(
                     prompt, completion, state, processing_class, mask_env_responses
                 )
             is_truncated = False

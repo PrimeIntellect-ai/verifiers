@@ -16,7 +16,7 @@ except ImportError:
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
-nltk.download = lambda *args, **kwargs: _original_nltk_download(
+nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore[invalid-assignment]
     *args, **{**kwargs, "quiet": True}
 )
 

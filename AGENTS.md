@@ -8,7 +8,7 @@ Other relevant `AGENTS.md` files:
 
 ## Setup
 
-We strongly recommend using `uv` for developing `verifiers`.
+We use `uv` for developing `verifiers`.
 ```bash
 # Install uv (first time)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -92,7 +92,6 @@ Environment APIs live in `verifiers/envs/`. Actual environment implementations g
 ```bash
 # Add verifiers
 uv add verifiers            # core
-uv add 'verifiers[dev]'     # + dev tools  
 uv add 'verifiers[all]'     # + training
 
 # Scaffold new environment

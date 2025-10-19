@@ -12,7 +12,8 @@ class ThinkParser(Parser):
         self.extract_fn = extract_fn
         self.logger.warning(
             "ThinkParser is intended for use with models which always include <think>...</think> tags but do NOT parse them automatically. "
-            "This will cause parsing failures if the model does not include <think>...</think> tags."
+            "This will cause parsing failures if the model does not include <think>...</think> tags, or if the chat template automatically removes <think>...</think> tags."
+            "In particular, you should NOT use this parser with Qwen3 or DeepSeek-R1 models."
         )
 
     def parse(self, text: str) -> str:

@@ -36,7 +36,7 @@ uv run vf-eval arc-agi-3 -n 1 -r 1
 
 ```bash
 uv run vf-eval arc-agi-3 \
-  -a '{"games": ["ls20", "meta"], "max_actions": 60}' \
+  -a '{"games": ["ls20-fa137e247ce6"], "max_actions": 60}' \
   -m gpt-4.1-mini -n 1 -r 1
 ```
 
@@ -51,7 +51,7 @@ Notes:
 
 | Arg              | Type                      | Default                  | Description |
 | ---------------- | ------------------------- | ------------------------ | ----------- |
-| `games`          | list[str \| dict]         | `["ls20"]`              | Game IDs (or dicts with `game_id`, optional `prompt`, `tags`). |
+| `games`          | list[str \| dict]         | `["ls20-fa137e247ce6"]` | Game IDs (or dicts with `game_id`, optional `prompt`, `tags`). Full game IDs like `ls20-fa137e247ce6` are required (see API docs). |
 | `base_url`       | str                       | `https://three.arcprize.org`       | ARC API root (`http(s)://host[:port]`). |
 | `api_key`        | str                       | `ARC_API_KEY` env        | Competition API token. Required to issue actions. |
 | `max_actions`    | int                       | `80`                     | Maximum number of action turns before forcing a summary. |
