@@ -8,9 +8,6 @@ from typing import (
 )
 
 from openai.types.chat.chat_completion import ChatCompletion
-from openai.types.chat.chat_completion_assistant_message_param import (
-    ChatCompletionAssistantMessageParam,
-)
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
 # openai types
@@ -28,13 +25,8 @@ from openai.types.shared_params import (  # noqa: F401
 )
 from pydantic import BaseModel, Field
 
-
-class ChatMessageAssistantMessageWithReasoning(ChatCompletionAssistantMessageParam):
-    reasoning: str
-
-
 # typing aliases
-ChatMessage = ChatCompletionMessageParam | ChatMessageAssistantMessageWithReasoning
+ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
 

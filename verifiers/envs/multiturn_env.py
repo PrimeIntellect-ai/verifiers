@@ -121,16 +121,6 @@ class MultiTurnEnv(Environment):
                     response_message["tool_calls"] = response.choices[  # type: ignore
                         0
                     ].message.tool_calls
-                reasoning = None
-                # some APIs use "reasoning_content" instead of "reasoning"
-                if hasattr(response.choices[0].message, "reasoning"):
-                    reasoning = getattr(response.choices[0].message, "reasoning")
-                    response_message["reasoning"] = reasoning  # type: ignore[attr-defined]
-                elif hasattr(response.choices[0].message, "reasoning_content"):
-                    reasoning = getattr(
-                        response.choices[0].message, "reasoning_content"
-                    )
-                    response_message["reasoning"] = reasoning  # type: ignore[attr-defined]
                 state["completion"].append(response_message)
             else:
                 assert isinstance(response, Completion)
