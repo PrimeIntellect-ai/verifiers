@@ -2,13 +2,17 @@ import random
 from copy import deepcopy
 from typing import Any, Callable
 
+from datasets import Dataset
+
+from verifiers import MultiTurnEnv, Rubric, XMLParser
+from verifiers.types import Messages, State
+
 try:
     import nltk  # type: ignore
 except ImportError:
     print("nltk is not installed. Please install it with `uv pip install nltk`.")
     exit(1)
 
-from datasets import Dataset
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
@@ -23,14 +27,6 @@ except ImportError:
         "textarena is not installed. Please install it with `uv pip install textarena`."
     )
     exit(1)
-
-from verifiers.envs.multiturn_env import MultiTurnEnv  # noqa: E402
-from verifiers.parsers.xml_parser import XMLParser  # noqa: E402
-from verifiers.rubrics.rubric import Rubric  # noqa: E402
-from verifiers.types import (  # noqa: E402
-    Messages,
-    State,
-)
 
 
 class TextArenaEnv(MultiTurnEnv):

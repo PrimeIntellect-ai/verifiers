@@ -35,6 +35,34 @@ Full documentation is available [here](https://verifiers.readthedocs.io/en/lates
 
 Verifiers is also the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub.
 
+## Quick Start
+
+Install the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli):
+```bash
+uv tool install prime
+``` 
+
+Install `verifiers` in your project:
+```bash
+uv add verifiers
+```
+
+Select an environment from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to install:
+```bash
+prime env install will/wordle
+```
+
+Run a quick evaluation with OpenAI models:
+```bash
+uv run vf-eval wordle -m gpt-5-nano
+```
+
+For training, do:
+```bash
+uv add 'verifiers[train]'
+uv run vf-setup # creates 
+```
+
 ## Setup
 
 We recommend using `verifiers` along with [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
@@ -245,8 +273,12 @@ For many applications involving tool use, you can use `ToolEnv` to leverage mode
 
 ## Training
 
+Verifiers is supported by a number of trainers, including:
+- `verifiers.RLTrainer` (included with `verifiers[train]`, `transformers`-based, ZeRO3 + vLLM)
+- `prime-rl`
+- `SkyRL`
 
-### GRPOTrainer
+### RL
 
 The included trainer (`vf.GRPOTrainer`) supports running GRPO-style RL training via Accelerate/DeepSpeed, and uses vLLM for inference. It supports both full-parameter finetuning, and is optimized for efficiently training dense transformer models on 2-16 GPUs.
 

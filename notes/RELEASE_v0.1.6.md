@@ -72,8 +72,9 @@ Key deprecations:
 - We have removed `epsilon_high` and `delta` in favor of a single `epsilon (=0.2)` for two-sided clipping.
 
 Other notable changes:
-- `vllm_importance_sampling` is now enabled by default.
+- `vllm_importance_sampling` is now enabled by default (and required).
 - LoRA is now enabled by default (`rank=8`), and the default learning rate is now 1e-5.
+- Training always uses async level 1 (`max)
 
 Going forward, the philosophy of `vf.RLTrainer` is to be minimal, opinionated, less configurable, more self-contained, and more hackable. We have removed `trl` as a trainer dependency, and import needed functionality directly from `transformers`, `peft`, `vllm`, `deepspeed`, and `accelerate`.
 

@@ -1,13 +1,21 @@
 from typing import List, Tuple
 
-import reasoning_gym as rg
 from datasets import Dataset
-from reasoning_gym.composite import DatasetSpec
-from reasoning_gym.dataset import ProceduralDataset
 
-from verifiers.envs.singleturn_env import SingleTurnEnv
-from verifiers.parsers.xml_parser import XMLParser
-from verifiers.rubrics.rubric import Rubric
+from verifiers import Parser, Rubric, SingleTurnEnv, XMLParser
+
+try:
+    import reasoning_gym as rg  # type: ignore
+    from reasoning_gym.composite import DatasetSpec
+    from reasoning_gym.dataset import ProceduralDataset
+    from reasoning_gym.utils import SYSTEM_PROMPTS
+
+    DEFAULT_SYSTEM_PROMPT = SYSTEM_PROMPTS["default"]
+except ImportError:
+    print(
+        "reasoning-gym is not installed. Please install it with `uv pip install reasoning-gym`."
+    )
+    exit(1)
 
 
 class ReasoningGymEnv(SingleTurnEnv):
@@ -16,6 +24,8 @@ class ReasoningGymEnv(SingleTurnEnv):
         gym: str | List[str | dict],
         num_train_examples: int = 1000,
         num_eval_examples: int = 100,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        parser: Parser | None = None,
         seed: int = 0,
     ):
         self.gym = gym
@@ -25,7 +35,7 @@ class ReasoningGymEnv(SingleTurnEnv):
         total_examples = num_train_examples + num_eval_examples
         self.rg_dataset = self.build_rg_dataset(gym, total_examples, seed=seed)
         dataset, eval_dataset = self.rg_to_hf(self.rg_dataset)
-        parser = XMLParser(fields=["think", "answer"])
+        parser = parser or XMLParser(fields=["answer"])
         rubric = Rubric(parser=parser)
 
         def check_answer_reward_func(completion, answer, **kwargs) -> float:
@@ -36,8 +46,7 @@ class ReasoningGymEnv(SingleTurnEnv):
             return reward
 
         rubric.add_reward_func(check_answer_reward_func)
-        rubric.add_reward_func(parser.get_format_reward_func(), weight=0.2)
-        system_prompt = rg.utils.SYSTEM_PROMPTS["DeepSeekZero"]  # type: ignore
+        rubric.add_reward_func(parser.get_format_reward_func(), weight=0.0)
         super().__init__(
             dataset=dataset,
             eval_dataset=eval_dataset,
