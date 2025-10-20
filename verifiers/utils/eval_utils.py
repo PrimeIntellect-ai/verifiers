@@ -136,11 +136,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         print_results(results)
     if config.save_results:
         save_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-        logger.info(f"Results saved to {results.metadata.path_to_save}")
-        if config.save_to_hf_hub:
-            logger.info(
-                f"Dataset saved to Hugging Face Hub: {config.hf_hub_dataset_name}"
-            )
     return results
 
 
@@ -165,13 +160,7 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def make_dataset(
-    results: GenerateOutputs,
-    push_to_hf_hub: bool = False,
-    hf_hub_dataset_name: str | None = None,
-    hf_hub_config_name: str | None = None,
-    **kwargs,
-) -> Dataset:
+def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
     clean_prompts = [messages_to_printable(p) for p in results.prompt]
     clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
     clean_completions = [messages_to_printable(c) for c in results.completion]
@@ -196,16 +185,7 @@ def make_dataset(
         v = results.metrics[k]
         results_dict[k] = v
 
-    dataset = Dataset.from_dict(results_dict)
-    if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
-        logger.info(f"Saving dataset to Hugging Face Hub: {dataset_name}")
-        if hf_hub_config_name is not None:
-            dataset.push_to_hub(dataset_name, hf_hub_config_name)
-        else:
-            dataset.push_to_hub(dataset_name)
-        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
-    return dataset
+    return Dataset.from_dict(results_dict)
 
 
 @contextmanager
@@ -224,13 +204,36 @@ def save_results(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
+    hf_hub_config_name: str | None = None,
 ):
     path_to_save = results.metadata.path_to_save
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    dataset = make_dataset(results, push_to_hf_hub, hf_hub_dataset_name)
-    if save_results:
-        with quiet_datasets():
-            dataset.to_json(path_to_save / "results.jsonl")
-        metadata_dict = sanitize_metadata(results.metadata)
-        with open(path_to_save / "metadata.json", "w") as f:
-            json.dump(metadata_dict, f)
+    dataset = make_dataset(results)
+    metadata_dict = sanitize_metadata(results.metadata)
+    save_to_disk(dataset, metadata_dict, path_to_save)
+    logger.info(f"Results saved to {path_to_save}")
+    if push_to_hf_hub:
+        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
+        push_to_hub(
+            dataset,
+            dataset_name,
+            hf_hub_config_name,
+        )
+        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
+
+
+def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
+    path_to_save.parent.mkdir(parents=True, exist_ok=True)
+    with quiet_datasets():
+        dataset.to_json(path_to_save / "results.jsonl")
+    with open(path_to_save / "metadata.json", "w") as f:
+        json.dump(metadata_dict, f)
+
+
+def push_to_hub(
+    dataset: Dataset, dataset_name: str, config_name: str | None = None
+) -> None:
+    if config_name is not None:
+        dataset.push_to_hub(dataset_name, config_name)
+    else:
+        dataset.push_to_hub(dataset_name)
