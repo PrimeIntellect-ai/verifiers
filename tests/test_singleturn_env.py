@@ -209,8 +209,7 @@ class TestSingleTurnEnv:
 
         # Check all expected state fields
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert state["answer"] == answer
         assert state["task"] == task
         assert state["info"] == info
@@ -227,6 +226,7 @@ class TestSingleTurnEnv:
                 [{"role": "user", "content": "What is 3+3?"}],
             ],
             "answer": ["4", "6"],
+            "example_id": [0, 1],
         }
 
         # Mock the rubric.score_rollouts method
@@ -273,7 +273,11 @@ class TestSingleTurnEnv:
     @pytest.mark.asyncio
     async def test_a_generate_no_scoring(self, mock_singleturn_env):
         """Test async generation without scoring rollouts."""
-        inputs = {"prompt": [[{"role": "user", "content": "Hello"}]], "answer": ["Hi"]}
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "example_id": [0],
+        }
 
         results = await mock_singleturn_env.a_generate(
             inputs,
@@ -293,6 +297,7 @@ class TestSingleTurnEnv:
             "prompt": [[{"role": "user", "content": "Hello"}]],
             "answer": ["Hi"],
             "info": [{}],
+            "example_id": [0],
         }
 
         # Mock the rubric.score_rollouts method
@@ -300,7 +305,7 @@ class TestSingleTurnEnv:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        results = mock_singleturn_env.generate(
+        results = mock_singleturn_env.generate_sync(
             inputs,
             client=mock_singleturn_env.client,
             model="test-model",

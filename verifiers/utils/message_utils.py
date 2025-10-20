@@ -45,7 +45,7 @@ def messages_to_printable(messages: Messages) -> Messages:
     """
     if isinstance(messages, str):
         return messages
-    return [message_to_printable(m) for m in messages]
+    return [message_to_printable(m) for m in messages or []]
 
 
 def cleanup_message(message: ChatMessage) -> ChatMessage:

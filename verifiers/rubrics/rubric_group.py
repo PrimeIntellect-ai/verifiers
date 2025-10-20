@@ -52,6 +52,7 @@ class RubricGroup(Rubric):
         state: State,
         task: str = "default",
         info: Info | None = None,
+        example_id: int | None = None,
         **kwargs,
     ) -> RolloutScore:
         total_reward = 0.0
@@ -64,6 +65,7 @@ class RubricGroup(Rubric):
                 state,
                 task,
                 info,
+                example_id,
                 **kwargs,
             )
             total_reward += score.reward
@@ -79,7 +81,9 @@ class RubricGroup(Rubric):
         states: list[State],
         tasks: list[str],
         infos: list[Info],
+        example_ids: list[int] | None = None,
         max_concurrent: int = -1,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> RolloutScores:
         """
@@ -87,6 +91,7 @@ class RubricGroup(Rubric):
 
         Reward functions with the same name are summed up.
         """
+        example_ids = example_ids or list(range(len(prompts)))
         all_scores = RolloutScores(
             reward=[],
             metrics={},
@@ -99,7 +104,9 @@ class RubricGroup(Rubric):
                 states,
                 tasks,
                 infos,
-                max_concurrent,
+                example_ids,
+                max_concurrent=max_concurrent,
+                use_tqdm=use_tqdm,
                 **kwargs,
             )
             # aggregate reward (element-wise sum across rubrics)

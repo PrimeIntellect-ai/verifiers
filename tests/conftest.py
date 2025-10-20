@@ -6,10 +6,12 @@ import pytest
 from datasets import Dataset
 
 from verifiers import (
+    Messages,
     MultiTurnEnv,
     Parser,
     Rubric,
     SingleTurnEnv,
+    State,
     StatefulToolEnv,
     ThinkParser,
     ToolEnv,
@@ -210,6 +212,7 @@ def sample_chat_dataset():
                 [{"role": "user", "content": "What is the capital of France?"}],
             ],
             "answer": ["4", "Paris"],
+            "example_id": [0, 1],
         }
     )
 
@@ -259,24 +262,28 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
         )
         self.env_response_count = 0
 
-    async def is_completed(self, messages, state, **kwargs):
+    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """Simple completion logic for testing."""
         if await self.max_turns_reached(state):
             return True
         if self.completion_condition == "answer":
             # Complete when assistant says "DONE"
+            assert isinstance(messages, list)
             if messages and messages[-1].get("role") == "assistant":
-                return "DONE" in messages[-1].get("content", "")
+                assert isinstance(messages, list)
+                return "DONE" in str(messages[-1].get("content", ""))
         elif self.completion_condition == "max_turns":
             # Never complete naturally (test max_turns)
             return False
         elif self.completion_condition == "error":
             # Complete on any error
+            assert isinstance(messages, list)
             if messages and messages[-1].get("role") == "assistant":
-                return messages[-1].get("content", "").startswith("[ERROR]")
+                assert isinstance(messages, list)
+                return str(messages[-1].get("content", "")).startswith("[ERROR]")
         return False
 
-    def env_response(self, messages, state, **kwargs):
+    async def env_response(self, messages, state, **kwargs) -> tuple[Messages, State]:
         """Simple environment response for testing."""
         self.env_response_count += 1
 

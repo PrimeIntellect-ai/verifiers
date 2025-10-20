@@ -1,1 +1,0 @@
-{"env": "wordle", "model": "gpt-4.1-mini", "num_examples": 5, "rollouts_per_example": 3, "max_tokens": 1024, "temperature": null, "date": "2025-08-22", "time": "22:02:48"}

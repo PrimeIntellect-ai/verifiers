@@ -1,17 +1,12 @@
 import verifiers as vf
 from verifiers.envs.textarena_env import TextArenaEnv
 
-### prompts
-THINK_GUESS_SYSTEM_PROMPT = """You are a competitive game player. \
+### prompt
+
+GUESS_SYSTEM_PROMPT = """You are a competitive game player. \
 Make sure you read the game instructions carefully, and always follow the required format.
 
-In each turn, think step-by-step inside <think>...</think> tags, \
-then follow the instructions inside <guess>...</guess> tags."""
-
-NOTHINK_GUESS_SYSTEM_PROMPT = """You are a competitive game player. \
-Make sure you read the game instructions carefully, and always follow the required format.
-
-In each turn, give only your guess inside <guess>...</guess> tags."""
+In each turn, think step-by-step, then give your guess inside <guess>...</guess> tags."""
 
 
 ### feedback functions
@@ -34,8 +29,11 @@ def count_turns_reward_func(parser, completion, answer, **kwargs) -> float:
     return is_correct / (num_turns + 1)
 
 
-def partial_credit_reward_func(parser, completion, **kwargs) -> float:
+def partial_credit_reward_func(parser, completion, answer, **kwargs) -> float:
     """Reward function that gives partial credit for the correct guess."""
+    guess = parser.parse_answer(completion)
+    if guess == f"[{answer}]":
+        return 0.0
     final_env_response = parser.get_user_messages(completion)[-1]["content"].strip()
     guess, scoring = final_env_response.split("\n")[:2]
     num_greens = scoring.count("G")
@@ -47,14 +45,9 @@ def partial_credit_reward_func(parser, completion, **kwargs) -> float:
 def load_environment(
     num_train_examples: int = 2000,
     num_eval_examples: int = 20,
-    use_think: bool = True,
 ):
-    if use_think:
-        system_prompt = THINK_GUESS_SYSTEM_PROMPT
-        parser = vf.XMLParser(fields=["think", "guess"], answer_field="guess")
-    else:
-        system_prompt = NOTHINK_GUESS_SYSTEM_PROMPT
-        parser = vf.XMLParser(fields=["guess"], answer_field="guess")
+    system_prompt = GUESS_SYSTEM_PROMPT
+    parser = vf.XMLParser(fields=["guess"], answer_field="guess")
 
     rubric = vf.Rubric(parser=parser)
     rubric.add_reward_func(check_answer_reward_func)

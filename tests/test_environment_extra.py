@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -20,7 +21,15 @@ from datasets import Dataset
 from verifiers.envs.environment import Environment
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import GenerateOutputs, Info, Messages, SamplingArgs
+from verifiers.types import (
+    GenerateMetadata,
+    GenerateOutputs,
+    Info,
+    Messages,
+    SamplingArgs,
+    State,
+)
+from verifiers.utils.eval_utils import make_dataset as build_dataset
 from verifiers.utils.message_utils import sanitize_tool_calls
 
 
@@ -31,9 +40,12 @@ class DummyEnvironment(Environment):
         client,
         model,
         prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
+        state: State | None = None,
         task: str = "default",
         info: Info | None = {},
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ):
@@ -41,20 +53,55 @@ class DummyEnvironment(Environment):
             prompt=prompt, client=client, model=model, sampling_args=sampling_args
         )
         assert response is not None
+        info = info or {}
+        if completion is None:
+            completion = await self.init_completion()
+        if state is None:
+            state = await self.init_state(
+                prompt=prompt,
+                completion=completion,
+                answer=answer,
+                task=task,
+                info=info,
+                example_id=example_id,
+            )
         if self.message_type == "chat":
-            completion = [
-                {"role": "assistant", "content": response.choices[0].message.content}
-            ]
-            state = {
-                "responses": [response],
-                "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
+            assert isinstance(completion, list)
+            state.setdefault("responses", [])
+            state["responses"].append(response)
+            message = {
+                "role": "assistant",
+                "content": response.choices[0].message.content,
             }
+            completion.append(message)
+            state["completion"] = completion
         else:
-            completion = response.choices[0].text
-            state = {
-                "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}
-            }
+            assert isinstance(completion, str)
+            state.setdefault("responses", [])
+            state["responses"].append(response)
+            completion = completion + (response.choices[0].text or "")
+            state["completion"] = completion
         return completion, state
+
+
+def _make_metadata(
+    num_examples: int, rollouts_per_example: int = 1
+) -> GenerateMetadata:
+    return GenerateMetadata(
+        env_id="dummy-env",
+        env_args={},
+        model="test-model",
+        base_url="http://localhost",
+        num_examples=num_examples,
+        rollouts_per_example=rollouts_per_example,
+        sampling_args={},
+        date="1970-01-01",
+        time_ms=0.0,
+        avg_reward=0.0,
+        avg_metrics={},
+        state_columns=[],
+        path_to_save=Path("test.jsonl"),
+    )
 
 
 def _make_env(
@@ -120,6 +167,7 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
         tasks=["default"] * 3,
         infos=[{}] * 3,
         max_concurrent=2,
+        example_ids=list(range(len(prompts))),
     )
     results: List = asyncio.run(coro)
     assert len(results) == 3
@@ -175,13 +223,15 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
 
     ds = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
     env = _make_env(mock_openai_client, dataset=ds)
-    res = env.evaluate(
-        client=mock_openai_client,
-        model="test-model",
-        num_examples=2,
-        rollouts_per_example=2,
-        score_rollouts=False,
-        interleave_scoring=False,
+    res = asyncio.run(
+        env.evaluate(
+            client=mock_openai_client,
+            model="test-model",
+            num_examples=2,
+            rollouts_per_example=2,
+            score_rollouts=False,
+            interleave_scoring=False,
+        )
     )
     # Expect n * r rollouts in outputs
     assert len(res.prompt) == 2 * 2
@@ -191,7 +241,11 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
 @pytest.mark.asyncio
 async def test_generate_inside_running_loop(mock_openai_client):
     env = _make_env(mock_openai_client)
-    inputs = {"prompt": [[{"role": "user", "content": "Hi"}]], "answer": [""]}
+    inputs = {
+        "prompt": [[{"role": "user", "content": "Hi"}]],
+        "answer": [""],
+        "example_id": [0],
+    }
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
     out = await env.a_generate(
         inputs, client=mock_openai_client, model="test-model", interleave_scoring=False
@@ -223,18 +277,27 @@ def test_sanitize_tool_calls_outputs_strings():
 
 
 def test_make_dataset_basic_without_tools(mock_openai_client):
-    env = _make_env(mock_openai_client)
     results = GenerateOutputs(
         prompt=[[{"role": "user", "content": "Hi"}]],
         completion=[[{"role": "assistant", "content": "Hello"}]],
         answer=[""],
-        state=[{}],
+        state=[
+            {
+                "timing": {
+                    "generation_ms": 0.0,
+                    "scoring_ms": 0.0,
+                    "total_ms": 0.0,
+                }
+            }
+        ],
         info=[{}],
         task=["default"],
         reward=[1.0],
         metrics={"foo": [0.1]},
+        example_id=[0],
+        metadata=_make_metadata(num_examples=1),
     )
-    ds = env.make_dataset(results)
+    ds = build_dataset(results)
     assert len(ds) == 1 and "foo" in ds.column_names
 
 
