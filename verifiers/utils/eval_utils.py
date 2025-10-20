@@ -169,6 +169,7 @@ def make_dataset(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
+    hf_hub_config_name: str | None = None,
     **kwargs,
 ) -> Dataset:
     clean_prompts = [messages_to_printable(p) for p in results.prompt]
@@ -199,7 +200,10 @@ def make_dataset(
     if push_to_hf_hub:
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
         logger.info(f"Saving dataset to Hugging Face Hub: {dataset_name}")
-        dataset.push_to_hub(dataset_name)
+        if hf_hub_config_name is not None:
+            dataset.push_to_hub(dataset_name, hf_hub_config_name)
+        else:
+            dataset.push_to_hub(dataset_name)
         logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
     return dataset
 
