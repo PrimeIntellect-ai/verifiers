@@ -1,11 +1,15 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "primeintellect/alphabet-sort"
+id = "alphabet-sort"
 
 [env.args]
-min_turns = 2
-max_turns = 2
+min_turns = 3
+max_turns = 3
+min_names_per_turn = 1
+max_names_per_turn = 4
+similarity_power = 8
+power_per_turn = false
 
 [inference]
 gpus = 1
@@ -18,10 +22,12 @@ gpus = 1
 
 [trainer.args]
 run_name = "alphabet-sort"
-micro_batch_size = 16
-rollouts_per_example = 16
+lora_rank = 32
+lora_alpha = 64
+micro_batch_size = 4
+rollouts_per_example = 8
 batch_size = 512
 max_steps = 100
 max_seq_len = 2048
-max_tokens = 512
-importance_sampling_level = "token"
+max_tokens = 768
+mask_truncated_completions = false

@@ -214,12 +214,12 @@ class RLTrainer(Trainer):
                 loss, summaries = self.compute_loss(
                     model,
                     mb_inputs,
-                    loss_denominator=loss_denominator,
                     num_items_in_batch=torch.tensor(self.batch_size, device=device),
                     return_outputs=True,
                 )
-            self.accelerator.backward(loss)
-            total_loss = total_loss + loss.detach()
+            scale = microbatch.items / loss_denominator
+            self.accelerator.backward(loss * scale)
+            total_loss = total_loss + (loss.detach() * scale)
             assert isinstance(summaries, dict)
             update_stat_tracker(ir_tracker, summaries["importance_sampling"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
@@ -253,7 +253,6 @@ class RLTrainer(Trainer):
         self,
         model: nn.Module,
         inputs: dict[str, torch.Tensor],
-        loss_denominator: torch.Tensor,
         return_outputs: bool = False,
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
@@ -289,20 +288,18 @@ class RLTrainer(Trainer):
                 (per_token_loss * attention_mask).sum(-1)
                 / attention_mask.sum(-1).clamp(min=1.0)
             ).mean()
-            loss = loss / loss_denominator
         elif self.loss_type == "bnpo":
             loss = (per_token_loss * attention_mask).sum() / attention_mask.sum().clamp(
                 min=1.0
             )
-            loss = loss / loss_denominator
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (
                 per_token_loss.size(0) * self.max_seq_len
             )
-            loss = loss / loss_denominator
         elif self.loss_type == "dapo":
-            normalizer = num_items_in_batch / self.accelerator.num_processes
-            loss = (per_token_loss * attention_mask).sum() / normalizer
+            loss = (per_token_loss * attention_mask).sum() / attention_mask.sum().clamp(
+                min=1.0
+            )
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 

@@ -22,6 +22,7 @@ class Microbatch(BaseModel):
     attention_mask: list[list[int]]
     sampling_logprobs: list[list[float]]
     advantages: list[float]
+    items: int
 
 
 class Batch(BaseModel):
@@ -354,13 +355,22 @@ class Generator:
                     for i in range(s, e)
                 ]
                 adv_chunk = [advantages[i] for i in range(s, e)]
+                if self.loss_type == "grpo":
+                    mb_items = e - s
+                elif self.loss_type == "dr_grpo":
+                    mb_items = (e - s) * self.max_seq_len
+                elif self.loss_type == "dapo" or self.loss_type == "bnpo":
+                    mb_items = sum(sum(mask) for mask in mask_chunk)
+                else:
+                    raise ValueError(f"Unknown loss type: {self.loss_type}")
                 microbatch = Microbatch(
                     input_ids=ids_chunk,
                     attention_mask=mask_chunk,
                     sampling_logprobs=slogp_chunk,
                     advantages=adv_chunk,
+                    items=mb_items,
                 )
-                proc_item_total += self.count_microbatch_items(microbatch)
+                proc_item_total += mb_items
                 proc_mbs.append(microbatch)
             microbatches.append(proc_mbs)
             items_per_process.append(proc_item_total)
@@ -378,13 +388,3 @@ class Generator:
             prompts=env_results.prompt,
             metrics_dict=metrics_dict,
         )
-
-    def count_microbatch_items(self, microbatch: Microbatch) -> int:
-        if self.loss_type == "grpo":
-            return len(microbatch.input_ids)
-        if self.loss_type == "dr_grpo":
-            return len(microbatch.input_ids) * self.max_seq_len
-        if self.loss_type == "dapo" or self.loss_type == "bnpo":
-            # sum of attention mask
-            return sum(sum(mask) for mask in microbatch.attention_mask)
-        raise ValueError(f"Unknown loss type: {self.loss_type}")
