@@ -200,11 +200,18 @@ def quiet_datasets():
         enable_progress_bar()
 
 
+def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
+    path_to_save.parent.mkdir(parents=True, exist_ok=True)
+    with quiet_datasets():
+        dataset.to_json(path_to_save / "results.jsonl")
+    with open(path_to_save / "metadata.json", "w") as f:
+        json.dump(metadata_dict, f)
+
+
 def save_results(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
-    hf_hub_config_name: str | None = None,
 ):
     path_to_save = results.metadata.path_to_save
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
@@ -214,26 +221,5 @@ def save_results(
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
-        push_to_hub(
-            dataset,
-            dataset_name,
-            hf_hub_config_name,
-        )
-        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
-
-
-def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    with quiet_datasets():
-        dataset.to_json(path_to_save / "results.jsonl")
-    with open(path_to_save / "metadata.json", "w") as f:
-        json.dump(metadata_dict, f)
-
-
-def push_to_hub(
-    dataset: Dataset, dataset_name: str, config_name: str | None = None
-) -> None:
-    if config_name is not None:
-        dataset.push_to_hub(dataset_name, config_name)
-    else:
         dataset.push_to_hub(dataset_name)
+        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
