@@ -1,21 +1,22 @@
-model = "willcb/Qwen2.5-0.5B-Reverse-SFT"
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [env]
 id = "reverse-text"
 
 [inference]
-gpus = 6
+gpus = 1
 
 [inference.args]
 enforce_eager = true
 
 [trainer]
-gpus = 2
+gpus = 1
 
 [trainer.args]
 run_name = "reverse-text"
 micro_batch_size = 16
 rollouts_per_example = 16
-batch_size = 512
-max_steps = 200
-max_seq_len = 4096
+batch_size = 128
+max_steps = 50
+max_tokens = 128
+max_seq_len = 512

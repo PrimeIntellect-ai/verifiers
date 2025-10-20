@@ -24,11 +24,12 @@ from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.generator import Generator
 from verifiers.rl.trainer.utils import (
+    entropy_from_logits,
     finalize_stat_tracker,
-    gather_logprobs_and_entropy,
     init_stat_tracker,
     pad,
     prepare_peft_model,
+    selective_log_softmax,
     summarize_values,
     update_stat_tracker,
 )
@@ -72,12 +73,14 @@ class RLTrainer(Trainer):
         assert self.processing_class.pad_token_id is not None
 
         # batch args
+        self.batch_size = args.batch_size
         self.max_steps = args.max_steps
         self.max_seq_len = args.max_seq_len
         self.temperature = args.temperature
 
         # loss args
-        self.epsilon = args.epsilon
+        self.epsilon_low = args.epsilon_low
+        self.epsilon_high = args.epsilon_high
         self.loss_type = args.loss_type
         self.importance_sampling_level = args.importance_sampling_level
         self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
@@ -96,14 +99,14 @@ class RLTrainer(Trainer):
                 client_base_url=vllm_base_url,
                 client_api_key="EMPTY",
                 client_limit=args.max_concurrent,
-                client_timeout=args.async_generation_timeout,
+                client_timeout=args.generation_timeout,
                 model_name=model_name,
                 sampling_args=dict(args.sampling_args),
                 rollouts_per_example=args.rollouts_per_example,
                 batch_size=args.batch_size,
                 micro_batch_size=args.micro_batch_size,
                 num_processes=self.accelerator.num_processes,
-                generation_timeout=args.async_generation_timeout,
+                generation_timeout=args.generation_timeout,
                 processing_class=self.processing_class,
                 mask_env_responses=args.mask_env_responses,
                 max_seq_len=self.max_seq_len,
@@ -162,7 +165,6 @@ class RLTrainer(Trainer):
         )
         entropy_tracker = init_stat_tracker(self.accelerator.device)
         ir_tracker = init_stat_tracker(self.accelerator.device)
-        tir_tracker = init_stat_tracker(self.accelerator.device)
 
         device = self.accelerator.device
         pad_token_id = getattr(self.processing_class, "pad_token_id", None)
@@ -178,46 +180,57 @@ class RLTrainer(Trainer):
                 [torch.tensor(x, device=device) for x in microbatch.attention_mask],
                 padding_side="right",
             )
-            sampling_logprobs = pad(
+            inference_logprobs = pad(
                 [torch.tensor(x, device=device) for x in microbatch.sampling_logprobs],
                 padding_value=0,
                 padding_side="right",
             )
-
             input_ids = input_ids[:, -self.max_seq_len :]
             attention_mask = attention_mask[:, -self.max_seq_len :]
-            sampling_logprobs = sampling_logprobs[:, -self.max_seq_len :]
-
+            inference_logprobs = inference_logprobs[:, -self.max_seq_len :]
+            logits_to_keep = attention_mask[:, 1:].size(1)
+            logits_to_keep = min(logits_to_keep, inference_logprobs.size(1))
+            attention_mask = attention_mask[:, -logits_to_keep:]
+            inference_logprobs = inference_logprobs[:, -logits_to_keep:]
+            trainer_logprobs, entropies = self.get_logprobs(
+                model, input_ids, attention_mask, logits_to_keep
+            )
+            trainer_ref_logprobs = trainer_logprobs.detach()
+            importance_sampling_ratio = torch.clamp(
+                torch.exp(trainer_ref_logprobs - inference_logprobs),
+                max=self.vllm_importance_sampling_cap,
+            ).detach()
             mb_inputs = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
-                "sampling_logprobs": sampling_logprobs,
+                "importance_sampling_ratio": importance_sampling_ratio,
+                "inference_logprobs": inference_logprobs,
+                "trainer_logprobs": trainer_logprobs,
+                "trainer_ref_logprobs": trainer_ref_logprobs,
+                "entropies": entropies,
                 "advantages": torch.tensor(microbatch.advantages, device=device),
             }
             with self.compute_loss_context_manager():
                 loss, summaries = self.compute_loss(
                     model,
                     mb_inputs,
-                    return_outputs=True,
                     loss_denominator=loss_denominator,
+                    num_items_in_batch=torch.tensor(self.batch_size, device=device),
+                    return_outputs=True,
                 )
             self.accelerator.backward(loss)
             total_loss = total_loss + loss.detach()
             assert isinstance(summaries, dict)
             update_stat_tracker(ir_tracker, summaries["importance_sampling"])
-            update_stat_tracker(tir_tracker, summaries["importance_sampling_truncated"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
 
         ir_mean = finalize_stat_tracker(ir_tracker, self.accelerator)
-        tir_mean = finalize_stat_tracker(tir_tracker, self.accelerator)
         entropy_mean = finalize_stat_tracker(entropy_tracker, self.accelerator)
         assert ir_mean is not None
-        assert tir_mean is not None
         assert entropy_mean is not None
 
         extra_metrics: dict[str, float] = {
-            "sampling/importance": ir_mean,
-            "sampling/importance_truncated": tir_mean,
+            "importance_ratio": ir_mean,
             "entropy": entropy_mean,
         }
 
@@ -235,6 +248,75 @@ class RLTrainer(Trainer):
 
         self.maybe_clear_cache()
         return total_loss
+
+    def compute_loss(
+        self,
+        model: nn.Module,
+        inputs: dict[str, torch.Tensor],
+        loss_denominator: torch.Tensor,
+        return_outputs: bool = False,
+        num_items_in_batch: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+        attention_mask = inputs["attention_mask"]
+        entropies = inputs["entropies"]
+        importance_sampling_ratio = inputs["importance_sampling_ratio"]
+        trainer_logprobs = inputs["trainer_logprobs"]
+        trainer_ref_logprobs = inputs["trainer_ref_logprobs"]
+        advantages = inputs["advantages"]
+        log_ratio = trainer_logprobs - trainer_ref_logprobs
+        if self.importance_sampling_level == "token":
+            log_importance_weights = log_ratio
+        elif self.importance_sampling_level == "sequence":
+            log_importance_weights = (log_ratio * attention_mask).sum(
+                -1
+            ) / attention_mask.sum(-1).clamp(min=1.0)
+            log_importance_weights = log_importance_weights.unsqueeze(-1)
+        else:
+            raise ValueError(
+                f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "
+                "and 'sequence'."
+            )
+
+        coef_1 = log_importance_weights
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        advantages = inputs["advantages"]
+        per_token_loss = per_token_loss * importance_sampling_ratio
+        if self.loss_type == "grpo":
+            loss = (
+                (per_token_loss * attention_mask).sum(-1)
+                / attention_mask.sum(-1).clamp(min=1.0)
+            ).mean()
+            loss = loss / loss_denominator
+        elif self.loss_type == "bnpo":
+            loss = (per_token_loss * attention_mask).sum() / attention_mask.sum().clamp(
+                min=1.0
+            )
+            loss = loss / loss_denominator
+        elif self.loss_type == "dr_grpo":
+            loss = (per_token_loss * attention_mask).sum() / (
+                per_token_loss.size(0) * self.max_seq_len
+            )
+            loss = loss / loss_denominator
+        elif self.loss_type == "dapo":
+            normalizer = num_items_in_batch / self.accelerator.num_processes
+            loss = (per_token_loss * attention_mask).sum() / normalizer
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
+
+        with torch.no_grad():
+            ir_summary = summarize_values(
+                importance_sampling_ratio[attention_mask.bool()]
+            )
+            entropy_summary = summarize_values(entropies[attention_mask.bool()])
+
+        summaries = {
+            "importance_sampling": ir_summary,
+            "entropy": entropy_summary,
+        }
+        return loss, summaries
 
     def get_logprobs(
         self,
@@ -261,7 +343,8 @@ class RLTrainer(Trainer):
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
-            logprobs, entropies = gather_logprobs_and_entropy(logits, input_ids_batch)
+            logprobs = selective_log_softmax(logits, input_ids_batch)
+            entropies = entropy_from_logits(logits)
             all_logprobs.append(logprobs)
             all_entropies.append(entropies)
         logprobs = torch.cat(all_logprobs, dim=0)
@@ -333,91 +416,6 @@ class RLTrainer(Trainer):
                     self.logger.info("Resetting prefix cache.")
 
         self.accelerator.wait_for_everyone()
-
-    def compute_loss(
-        self,
-        model: nn.Module,
-        inputs: dict[str, torch.Tensor],
-        return_outputs: bool = False,
-        num_items_in_batch: torch.Tensor | None = None,
-        loss_denominator: torch.Tensor | float | int | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
-        # trainer passes num_items_in_batch for gradient accumulation; scaling stays here
-        del num_items_in_batch
-        input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
-        completion_mask = attention_mask[:, 1:]  # prompt is at least 1 token
-        logits_to_keep = completion_mask.size(1)
-        sampling_logprobs = inputs["sampling_logprobs"]
-        logits_to_keep = min(logits_to_keep, sampling_logprobs.size(1))
-        completion_mask = completion_mask[:, -logits_to_keep:]
-        sampling_logprobs = sampling_logprobs[:, -logits_to_keep:]
-        model_logprobs, entropies = self.get_logprobs(
-            model, input_ids, attention_mask, logits_to_keep
-        )
-        old_logprobs = model_logprobs.detach()
-        log_ratio = model_logprobs - old_logprobs
-        if self.importance_sampling_level == "token":
-            log_importance_ratio = old_logprobs - sampling_logprobs
-        elif self.importance_sampling_level == "sequence":
-            log_importance_ratio = (
-                ((old_logprobs - sampling_logprobs) * completion_mask).sum(-1)
-                / completion_mask.sum(-1).clamp(min=1.0)
-            ).unsqueeze(-1)
-        else:
-            raise ValueError(
-                f"Unknown importance sampling level: {self.importance_sampling_level}"
-            )
-
-        importance_ratio = torch.exp(log_importance_ratio)
-        ratio = torch.exp(log_ratio)
-        truncated_importance_ratio = torch.clamp(
-            importance_ratio,
-            max=self.vllm_importance_sampling_cap,
-        )
-        coef_1 = ratio
-        coef_2 = torch.clamp(
-            coef_1,
-            min=1 - self.epsilon,
-            max=1 + self.epsilon,
-        )
-        advantages = inputs["advantages"]
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = (
-            -torch.min(per_token_loss1, per_token_loss2) * truncated_importance_ratio
-        )
-
-        denominator = torch.as_tensor(
-            loss_denominator,
-            device=per_token_loss.device,
-            dtype=per_token_loss.dtype,
-        )
-        tiny = torch.finfo(denominator.dtype).tiny  # tiny avoids divide-by-zero drift
-        denominator = torch.clamp_min(denominator, tiny)
-
-        masked_loss = per_token_loss * completion_mask
-        if self.loss_type == "grpo":
-            per_sequence_loss = masked_loss.sum(-1) / completion_mask.sum(-1).clamp(
-                min=1.0
-            )
-            loss = per_sequence_loss.sum() / denominator
-        elif self.loss_type == "dr_grpo":
-            loss = masked_loss.sum() / denominator
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
-        with torch.no_grad():
-            tir_summary = summarize_values(
-                truncated_importance_ratio[completion_mask.bool()]
-            )
-            ir_summary = summarize_values(importance_ratio[completion_mask.bool()])
-            entropy_summary = summarize_values(entropies[completion_mask.bool()])
-
-        summaries = {
-            "importance_sampling_truncated": tir_summary,
-            "importance_sampling": ir_summary,
-            "entropy": entropy_summary,
-        }
-        return loss, summaries
 
     def get_train_dataloader(self):
         class StepsDataset(Dataset):

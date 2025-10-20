@@ -88,9 +88,13 @@ class RLConfig(TrainingArguments):
             "`transformers.TrainingArguments`."
         },
     )
-    epsilon: float = field(
+    epsilon_low: float = field(
         default=0.2,
-        metadata={"help": "Epsilon value for clipping."},
+        metadata={"help": "Epsilon value for low clipping."},
+    )
+    epsilon_high: float = field(
+        default=0.28,
+        metadata={"help": "Epsilon value for high clipping."},
     )
     vllm_importance_sampling_cap: float = field(
         default=2.0,
@@ -100,7 +104,7 @@ class RLConfig(TrainingArguments):
         },
     )
     importance_sampling_level: str = field(
-        default="token",
+        default="sequence",
         metadata={
             "help": "Controls whether importance sampling ratios are computed at the `'token'` or `'sequence'` level. "
             "`'token'` keeps the raw per-token log-probability ratios (one weight per token).  `'sequence'` averages "
@@ -122,14 +126,22 @@ class RLConfig(TrainingArguments):
         },
     )
     loss_type: str = field(
-        default="dr_grpo",
+        default="dapo",
         metadata={
-            "help": "Specifies the loss formulation to use. Supported values are `grpo` and `dr_grpo`. "
-            "`'grpo'`: Aggregates token-level losses by normalizing over sequence length. Not recommended due to "
-            "length bias—this approach tends to prefer shorter completions with positive advantages and longer ones "
-            "with negative advantages. "
-            "`'dr_grpo'`: Aggregates token-level losses by normalizing with a global constant equal to "
-            "`max_completion_length`, eliminating the length bias described in the Dr. GRPO paper."
+            "help": "Specifies the loss formulation to use. Supported values are 'grpo', 'dapo', 'bnpo', and "
+            "'dr_grpo'. "
+            "'grpo': Aggregates token-level losses by normalizing over sequence length. Not recommended due to length "
+            "bias—this approach tends to prefer shorter completions with positive advantages and longer ones with "
+            "negative advantages. "
+            "'dapo' (default): Aggregates token-level losses by normalizing with the number of active token in the "
+            "global accumulated batch. This method was introduced in the DAPO paper to eliminate length bias. "
+            "'dr_grpo': Aggregates token-level losses by normalizing with a global constant. This method was "
+            "introduced in the Dr. GRPO paper to eliminate length bias. The value of the constant corresponds to "
+            "`max_seq_len`. "
+            "'bnpo': Aggregates token-level losses by normalizing with the number of active token in the local batch. "
+            "Note that normalization is performed over the local batch only, so results may slightly vary depending "
+            "on the local batch size, despite a constant effective batch size. When using "
+            "`per_device_train_batch_size==1`, the loss is equivalent to the GRPO loss."
         },
     )
     mask_env_responses: bool = field(
@@ -177,7 +189,7 @@ class RLConfig(TrainingArguments):
         },
     )
     min_p: Optional[float] = field(
-        default=None,
+        default=0.0,
         metadata={
             "help": "Minimum token probability, which will be scaled by the probability of the most likely token. It "
             "must be a value between 0.0 and 1.0. Typical values are in the 0.01-0.2 range."
