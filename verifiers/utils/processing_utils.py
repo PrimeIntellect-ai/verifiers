@@ -155,11 +155,16 @@ def process_chat_format_vllm(
             while j < len(zipped) and zipped[j][0]["role"] != "assistant":
                 consecutive_messages.append(zipped[j][0])
                 j += 1
+            # Tokenize conversation ending at last completed assistant response
             token_prefix: list[int] = processing_class.apply_chat_template(
-                conversation=messages_consumed  # type: ignore
+                conversation=messages_consumed,
+                add_generation_prompt=False,
             )
+            # Tokenize with new user/tool messages and assistant prompt for next generation
+            # Must include add_generation_prompt=True to match what vLLM sees
             token_prefix_with_turn: list[int] = processing_class.apply_chat_template(
-                conversation=messages_consumed + consecutive_messages,  # type: ignore
+                conversation=messages_consumed + consecutive_messages,
+                add_generation_prompt=True,
             )
             assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
                 f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
