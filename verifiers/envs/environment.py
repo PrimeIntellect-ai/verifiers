@@ -303,12 +303,12 @@ class Environment(ABC):
             if isinstance(e, BadRequestError):
                 error_text = e.response.text.lower()
                 context_length_phrases = [
-                    "This model's maximum context length is",
+                    "this model's maximum context length is",
                     "is longer than the model's context length",
                     "exceeds the model's context length",
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
-                    self.logger.debug("Caught overlong prompt.")
+                    self.logger.warning("Caught overlong prompt.")
                     return get_overlong_prompt_dummy_response(
                         message_type or self.message_type
                     )
