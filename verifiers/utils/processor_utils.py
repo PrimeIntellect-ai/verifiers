@@ -45,7 +45,7 @@ def encode_chat_with_processor(
             add_special_tokens=add_special_tokens,
         )
         input_ids_list = inputs["input_ids"][0].tolist()
-        image_grid_list = inputs["image_grid_thw"][0].tolist()
+        image_grid_list = inputs["image_grid_thw"].tolist()
         pixel_values_list = inputs["pixel_values"].tolist()
 
         return input_ids_list, image_grid_list, pixel_values_list
@@ -71,7 +71,7 @@ def encode_text_with_processor(
             return_tensors="pt",
         )
         input_ids = inputs["input_ids"][0].tolist()
-        image_grid = inputs.get("image_grid_thw", [None])[0].tolist()
+        image_grid = inputs.get("image_grid_thw", [None]).tolist()
         pixel_values = inputs.get("pixel_values", [None]).tolist()
         return input_ids, image_grid, pixel_values
     else:

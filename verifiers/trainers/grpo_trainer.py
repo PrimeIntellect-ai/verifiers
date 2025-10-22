@@ -800,7 +800,7 @@ class GRPOTrainer(Trainer):
             0
         )  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
-        
+
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
             attention_mask_batch = attention_mask[i : i + batch_size]
@@ -812,6 +812,7 @@ class GRPOTrainer(Trainer):
                 model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
                 model_inputs["image_grid_thw"]= image_grid_thw[i : i + batch_size]
                 model_inputs["pixel_values"] = torch.cat(model_inputs["pixel_values"], dim=0)
+                model_inputs["image_grid_thw"] = model_inputs["image_grid_thw"].reshape(-1, *model_inputs["image_grid_thw"].shape[2:])
             elif pixel_values is not None:
                 model_inputs["pixel_values"] = pixel_values[i : i + batch_size]
 
@@ -820,7 +821,6 @@ class GRPOTrainer(Trainer):
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
                 model_inputs["logits_to_keep"] = logits_to_keep + 1
 
-            print(model_inputs["pixel_values"].shape)
             logits = model(**model_inputs).logits
 
             # Exclude the last value: it corresponds to the next token pred
@@ -835,6 +835,7 @@ class GRPOTrainer(Trainer):
                 logits, input_ids_batch
             )  # compute logprobs for the input tokens
             all_logps.append(logps)
+
         return torch.cat(all_logps, dim=0)
 
     def _move_model_to_vllm(self):
