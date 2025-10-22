@@ -602,10 +602,10 @@ class Environment(ABC):
             # interleaved pipeline: separate semaphores for generation and scoring
             # pre-allocate metrics using known reward function names
             maybe_gen_sem = generation_semaphore or (
-                semaphore or await maybe_semaphore(gen_limit)
+                deepcopy(semaphore) or await maybe_semaphore(gen_limit)
             )
             maybe_score_sem = scoring_semaphore or (
-                semaphore or await maybe_semaphore(score_limit)
+                deepcopy(semaphore) or await maybe_semaphore(score_limit)
             )
             num_completed = 0
 
