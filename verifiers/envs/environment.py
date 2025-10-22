@@ -382,6 +382,7 @@ class Environment(ABC):
         example_ids: list[int] = [],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
+        semaphore: asyncio.Semaphore | None = None,
         use_tqdm: bool = True,
         **kwargs,
     ) -> list[tuple[Messages, State]]:
@@ -389,7 +390,7 @@ class Environment(ABC):
         Run rollouts for a given list of prompts and return the completions.
         """
 
-        maybe_sem = await maybe_semaphore(max_concurrent)
+        maybe_sem = semaphore or (await maybe_semaphore(max_concurrent))
         if not example_ids:
             example_ids = list(range(len(prompts)))
         if len(completions) == 0:
@@ -479,6 +480,9 @@ class Environment(ABC):
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
+        semaphore: asyncio.Semaphore | None = None,
+        generation_semaphore: asyncio.Semaphore | None = None,
+        scoring_semaphore: asyncio.Semaphore | None = None,
         interleave_scoring: bool = True,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
@@ -597,8 +601,8 @@ class Environment(ABC):
         if interleave_scoring and score_rollouts:
             # interleaved pipeline: separate semaphores for generation and scoring
             # pre-allocate metrics using known reward function names
-            maybe_gen_sem = await maybe_semaphore(gen_limit)
-            maybe_score_sem = await maybe_semaphore(score_limit)
+            maybe_gen_sem = generation_semaphore or (await maybe_semaphore(gen_limit))
+            maybe_score_sem = scoring_semaphore or (await maybe_semaphore(score_limit))
             num_completed = 0
 
             async def run_one(i: int) -> None:
