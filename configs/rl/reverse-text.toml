@@ -14,6 +14,7 @@ gpus = 1
 
 [trainer.args]
 run_name = "reverse-text"
+lora_target_modules = "all-linear"
 micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 128
