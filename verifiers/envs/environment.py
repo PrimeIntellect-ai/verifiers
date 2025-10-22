@@ -308,7 +308,7 @@ class Environment(ABC):
                     "exceeds the model's context length",
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
-                    self.logger.warning("Caught overlong prompt.")
+                    self.logger.debug("Caught overlong prompt.")
                     return get_overlong_prompt_dummy_response(
                         message_type or self.message_type
                     )
