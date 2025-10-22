@@ -8,7 +8,7 @@ Other relevant `AGENTS.md` files:
 
 ## Setup
 
-We strongly recommend using `uv` for developing `verifiers`.
+We use `uv` for developing `verifiers`.
 ```bash
 # Install uv (first time)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -40,7 +40,7 @@ git clone https://github.com/PrimeIntellect-ai/verifiers.git
 cd verifiers
 
 # CPU-only development:
-uv sync --extra dev
+uv sync
 
 # GPU-based trainer development:
 uv sync --all-extras && uv pip install flash-attn --no-build-isolation

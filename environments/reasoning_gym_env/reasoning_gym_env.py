@@ -29,7 +29,8 @@ class ReasoningGymEnv(SingleTurnEnv):
         rubric = Rubric(parser=parser)
 
         def check_answer_reward_func(completion, answer, **kwargs) -> float:
-            entry = self.rg_dataset[answer]
+            # rg_dataset expects an int index
+            entry = self.rg_dataset[int(answer)]
             response = str(parser.parse_answer(completion)).strip()
             reward = self.rg_dataset.score_answer(answer=response, entry=entry)
             return reward
@@ -73,7 +74,7 @@ class ReasoningGymEnv(SingleTurnEnv):
         for i, x in enumerate(rg_dataset):
             row = {
                 "question": x["question"],
-                "answer": i,
+                "answer": str(i),  # in verifiers, an answer must be a string
                 "task": x["metadata"]["source_dataset"],
             }
             if i < self.num_train_examples:

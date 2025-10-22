@@ -1,7 +1,6 @@
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
-from openai import APIError, RateLimitError, APITimeoutError
+from openai import APIError, APITimeoutError, AsyncOpenAI, OpenAI, RateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric

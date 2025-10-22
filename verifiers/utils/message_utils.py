@@ -1,7 +1,12 @@
 import json
 from typing import cast
 
-from verifiers.types import ChatMessage, Messages
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice
+from openai.types.completion import Completion
+from openai.types.completion_choice import CompletionChoice
+
+from verifiers.types import ChatMessage, Messages, MessageType, ModelResponse
 
 
 def message_to_printable(message: ChatMessage) -> ChatMessage:
@@ -122,3 +127,39 @@ def sanitize_tool_calls(messages: Messages):
         else:
             sanitized_messages.append(m)
     return sanitized_messages
+
+
+def get_overlong_prompt_dummy_response(message_type: MessageType) -> ModelResponse:
+    if message_type == "chat":
+        return ChatCompletion(
+            id="overlong-prompt",
+            created=0,
+            model="",
+            object="chat.completion",
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChatCompletionMessage(
+                        role="assistant",
+                        content="Prompt too long.",
+                    ),
+                    finish_reason="length",
+                )
+            ],
+        )
+    elif message_type == "completion":
+        return Completion(
+            id="overlong-prompt",
+            created=0,
+            model="",
+            object="text_completion",
+            choices=[
+                CompletionChoice(
+                    index=0,
+                    text="Prompt too long.",
+                    finish_reason="length",
+                )
+            ],
+        )
+    else:
+        raise ValueError(f"Invalid message type: {message_type}")
