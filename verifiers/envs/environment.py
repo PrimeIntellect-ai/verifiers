@@ -602,11 +602,12 @@ class Environment(ABC):
             # interleaved pipeline: separate semaphores for generation and scoring
             # pre-allocate metrics using known reward function names
             maybe_gen_sem = generation_semaphore or (
-                deepcopy(semaphore) or await maybe_semaphore(gen_limit)
+                semaphore or await maybe_semaphore(gen_limit)
             )
-            maybe_score_sem = scoring_semaphore or (
-                deepcopy(semaphore) or await maybe_semaphore(score_limit)
-            )
+            # TODO: If only a semaphore is provided, we do not have the "sharing" semaphores mechanism
+            # as with 'max_concurrent' because its not clear how to "duplicate" the semaphore properly across
+            # multiple generate calls. Right now, we just don't support this case.
+            maybe_score_sem = scoring_semaphore or (await maybe_semaphore(score_limit))
             num_completed = 0
 
             async def run_one(i: int) -> None:
