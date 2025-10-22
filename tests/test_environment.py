@@ -662,3 +662,42 @@ class TestEnvironmentBase:
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
         assert "custom_field" not in dataset.column_names
+
+    @pytest.mark.asyncio
+    async def test_generate_state_preserves_references(self, mock_openai_client):
+        """Test that generate creates state with preserved references instead of deep copying"""
+        env = SimpleEnvironment(
+            eval_dataset=Dataset.from_dict(
+                {"question": ["test question"], "answer": ["test answer"]}
+            ),
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        env.rubric.score_rollouts = AsyncMock( # type: ignore[attr-defined]
+            return_value=RolloutScores(reward=[1.0], metrics={})
+        )
+
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "info": [{"key": "value"}],
+            "example_id": [0],
+        }
+
+        results = await env.generate(
+            inputs,
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=True,
+            interleave_scoring=False,
+        )
+
+        assert len(results.state) == 1
+        state = results.state[0]
+
+        assert state["prompt"] is results.prompt[0]
+        assert state["completion"] is results.completion[0]
+        assert state["answer"] is results.answer[0]
+        assert state["info"] is results.info[0]
+        assert state["example_id"] is results.example_id[0]

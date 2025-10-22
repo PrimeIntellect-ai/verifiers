@@ -538,17 +538,7 @@ class Environment(ABC):
                 info["oai_tools"] = self.oai_tools
         if not results_dict.get("example_id"):
             results_dict["example_id"] = list(range(n))
-        results_dict["state"] = [
-            await self.init_state(
-                prompt=results_dict["prompt"][i],
-                completion=results_dict["completion"][i],
-                answer=results_dict["answer"][i],
-                task=results_dict["task"][i],
-                info=results_dict["info"][i],
-                example_id=results_dict["example_id"][i],
-            )
-            for i in range(n)
-        ]
+        results_dict["state"] = [{} for _ in range(n)]
 
         # prepare GenerateOutputs and run rollouts
         num_rollouts = len(results_dict)
@@ -585,7 +575,17 @@ class Environment(ABC):
             metrics={name: [0.0] * n for name in self.rubric.get_reward_func_names()},
             metadata=metadata,
         )
-
+        results.state = [
+            await self.init_state(
+                prompt=results.prompt[i],
+                completion=results.completion[i],
+                answer=results.answer[i],
+                task=results.task[i],
+                info=results.info[i],
+                example_id=results.example_id[i],
+            )
+            for i in range(n)
+        ]
         # resolve concurrency knobs
         gen_limit = max_concurrent_generation
         score_limit = max_concurrent_scoring
