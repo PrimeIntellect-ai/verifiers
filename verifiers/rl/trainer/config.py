@@ -31,7 +31,7 @@ class RLConfig(TrainingArguments):
         default=0.0,
         metadata={"help": "LoRA dropout."},
     )
-    lora_target_modules: List[str] | None = field(
+    lora_target_modules: List[str] | str | None = field(
         default=None,
         metadata={"help": "LoRA target modules."},
     )
@@ -258,7 +258,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Max gradient norm for clipping."},
     )
     gradient_checkpointing: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Enable gradient checkpointing to save memory."},
     )
     save_strategy: str = field(
