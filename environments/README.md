@@ -4,8 +4,8 @@ This folder contains installable example environments that showcase common usage
 
 ## Quick start
 
-- **Install an environment from this GitHub repo**: `vf-install vf-math-python --from-repo`
-- **Evaluate**: `vf-eval vf-math-python` (defaults to gpt-4.1-mini, small sample)
+- **Install an environment from this GitHub repo**: `vf-install math-python --from-repo`
+- **Evaluate**: `vf-eval math-python` (defaults to gpt-4.1-mini, small sample)
 
 ## Common usage patterns and examples
 
@@ -81,7 +81,7 @@ In-line usage:
 ```python
 import verifiers as vf
 from openai import AsyncOpenAI
-vf_env = vf.load_environment("vf-reverse-text")
+vf_env = vf.load_environment("reverse-text")
 results = vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_examples=25)
 ```
 

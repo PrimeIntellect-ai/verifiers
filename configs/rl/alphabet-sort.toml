@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "alphabet-sort"
+id = "kalomaze/alphabet-sort"
 
 [env.args]
 min_turns = 3
@@ -22,11 +22,11 @@ gpus = 1
 
 [trainer.args]
 run_name = "alphabet-sort"
-lora_rank = 32
-lora_alpha = 64
-micro_batch_size = 4
-rollouts_per_example = 8
+use_lora = true
+learning_rate = 1e-5
+micro_batch_size = 4 
+rollouts_per_example = 16
 batch_size = 512
 max_steps = 100
+max_tokens = 512
 max_seq_len = 2048
-max_tokens = 768

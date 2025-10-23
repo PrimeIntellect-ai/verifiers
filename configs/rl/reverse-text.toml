@@ -14,8 +14,8 @@ gpus = 1
 
 [trainer.args]
 run_name = "reverse-text"
-use_lora = false
-learning_rate = 3e-6
+use_lora = true
+learning_rate = 3e-5
 micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 128

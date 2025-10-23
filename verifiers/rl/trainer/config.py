@@ -54,7 +54,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Number of completions to generate for each example."},
     )
     batch_size: int = field(
-        default=1024,
+        default=512,
         metadata={"help": "Number of total rollouts to use per batch."},
     )
     micro_batch_size: int = field(
