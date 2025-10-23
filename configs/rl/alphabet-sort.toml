@@ -30,4 +30,3 @@ batch_size = 512
 max_steps = 100
 max_seq_len = 2048
 max_tokens = 768
-mask_truncated_completions = false
