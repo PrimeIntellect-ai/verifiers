@@ -24,7 +24,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "LoRA rank."},
     )
     lora_alpha: int = field(
-        default=64,
+        default=16,
         metadata={"help": "LoRA alpha."},
     )
     lora_dropout: float = field(
@@ -40,7 +40,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Full model modules to train (instead of LoRA modules)."},
     )
     lora_use_rslora: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to use RSLoRA."},
     )
     lora_config: Optional[LoraConfig] = field(
@@ -88,60 +88,34 @@ class RLConfig(TrainingArguments):
             "`transformers.TrainingArguments`."
         },
     )
-    epsilon_low: float = field(
-        default=0.2,
-        metadata={"help": "Epsilon value for low clipping."},
+    adam_beta1: float = field(
+        default=0.9,
+        metadata={"help": "Beta1 for `AdamW` optimizer."},
     )
-    epsilon_high: float = field(
-        default=0.28,
-        metadata={"help": "Epsilon value for high clipping."},
+    adam_beta2: float = field(
+        default=0.999,
+        metadata={"help": "Beta2 for `AdamW` optimizer."},
     )
-    vllm_importance_sampling_cap: float = field(
-        default=2.0,
-        metadata={
-            "help": "Upper bound applied to the importance sampling ratios derived from vLLM log "
-            "probabilities. Mirrors the ratio clipping used in prime-rl (default 8.0 there).",
-        },
+    weight_decay: float = field(
+        default=0.01,
+        metadata={"help": "Weight decay for `AdamW` optimizer."},
+    )
+    mask_ratio_low: float = field(
+        default=0.125,
+        metadata={"help": "Mask ratio for low clipping."},
+    )
+    mask_ratio_high: float = field(
+        default=8.0,
+        metadata={"help": "Mask ratio for high clipping."},
     )
     importance_sampling_level: str = field(
-        default="sequence",
+        default="token",
         metadata={
             "help": "Controls whether importance sampling ratios are computed at the `'token'` or `'sequence'` level. "
             "`'token'` keeps the raw per-token log-probability ratios (one weight per token).  `'sequence'` averages "
             "the log-probability ratios across valid tokens to produce a single ratio per sequence. The GSPO paper "
             "shows that sequence-level sampling often yields more stable training and better alignment with "
             "sequence-level rewards."
-        },
-    )
-    scale_rewards: str = field(
-        default="none",
-        metadata={
-            "help": "Specifies the scaling strategy for rewards. Supported values are: "
-            "`True` or `group'` (default): rewards are scaled by the standard deviation within each group, ensuring "
-            "unit variance within a group. "
-            "`'batch'`: rewards are scaled by the standard deviation across the entire batch, as recommended in the "
-            "PPO Lite paper. "
-            "`False` or `'none'`: no scaling is applied. The Dr. GRPO paper recommends not scaling rewards, as "
-            "scaling by the standard deviation introduces a question-level difficulty bias."
-        },
-    )
-    loss_type: str = field(
-        default="dapo",
-        metadata={
-            "help": "Specifies the loss formulation to use. Supported values are 'grpo', 'dapo', 'bnpo', and "
-            "'dr_grpo'. "
-            "'grpo': Aggregates token-level losses by normalizing over sequence length. Not recommended due to length "
-            "bias—this approach tends to prefer shorter completions with positive advantages and longer ones with "
-            "negative advantages. "
-            "'dapo' (default): Aggregates token-level losses by normalizing with the number of active token in the "
-            "global accumulated batch. This method was introduced in the DAPO paper to eliminate length bias. "
-            "'dr_grpo': Aggregates token-level losses by normalizing with a global constant. This method was "
-            "introduced in the Dr. GRPO paper to eliminate length bias. The value of the constant corresponds to "
-            "`max_seq_len`. "
-            "'bnpo': Aggregates token-level losses by normalizing with the number of active token in the local batch. "
-            "Note that normalization is performed over the local batch only, so results may slightly vary depending "
-            "on the local batch size, despite a constant effective batch size. When using "
-            "`per_device_train_batch_size==1`, the loss is equivalent to the GRPO loss."
         },
     )
     mask_env_responses: bool = field(
@@ -152,7 +126,7 @@ class RLConfig(TrainingArguments):
         },
     )
     mask_truncated_completions: bool = field(
-        default=True,
+        default=False,
         metadata={
             "help": "When enabled, truncated completions are excluded from the loss calculation, preventing them from "
             "being incorrectly penalized and introducing noise during training. According to the DAPO paper, this is "
@@ -160,7 +134,7 @@ class RLConfig(TrainingArguments):
         },
     )
     zero_truncated_completions: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to give zero reward to truncated completions."},
     )
     # sampling_args for generation
@@ -314,12 +288,10 @@ class RLConfig(TrainingArguments):
         if self.output_dir is None:
             self.output_dir = f"outputs/{self.run_name}"
 
-        if self.vllm_importance_sampling_cap <= 0:
-            raise ValueError("`vllm_importance_sampling_cap` must be a positive value.")
-
         # configure lora
         if not self.use_lora:
-            raise ValueError("RLTrainer is LoRA-only; set `use_lora=True`.")
+            self.lora_config = None
+            # raise ValueError("RLTrainer is LoRA-only; set `use_lora=True`.")
         else:
             if self.lora_target_modules is None:
                 self.lora_target_modules = [

@@ -79,11 +79,8 @@ class RLTrainer(Trainer):
         self.temperature = args.temperature
 
         # loss args
-        self.epsilon_low = args.epsilon_low
-        self.epsilon_high = args.epsilon_high
-        self.loss_type = args.loss_type
-        self.importance_sampling_level = args.importance_sampling_level
-        self.vllm_importance_sampling_cap = args.vllm_importance_sampling_cap
+        self.mask_ratio_low = args.mask_ratio_low
+        self.mask_ratio_high = args.mask_ratio_high
 
         # generator (main process only)
         if self.accelerator.is_main_process:
@@ -114,8 +111,6 @@ class RLTrainer(Trainer):
                 mask_truncated_completions=args.mask_truncated_completions,
                 zero_truncated_completions=args.zero_truncated_completions,
                 max_concurrent=args.max_concurrent,
-                scale_rewards=args.scale_rewards,
-                loss_type=self.loss_type,
             )
             self.generator.start()
             self.generator.submit_batch(0)
@@ -185,30 +180,24 @@ class RLTrainer(Trainer):
                 padding_value=0,
                 padding_side="right",
             )
-            input_ids = input_ids[:, -self.max_seq_len :]
-            attention_mask = attention_mask[:, -self.max_seq_len :]
-            inference_logprobs = inference_logprobs[:, -self.max_seq_len :]
-            logits_to_keep = attention_mask[:, 1:].size(1)
-            logits_to_keep = min(logits_to_keep, inference_logprobs.size(1))
-            attention_mask = attention_mask[:, -logits_to_keep:]
-            inference_logprobs = inference_logprobs[:, -logits_to_keep:]
-            trainer_logprobs, entropies = self.get_logprobs(
-                model, input_ids, attention_mask, logits_to_keep
+            advantages = pad(
+                [torch.tensor(x, device=device) for x in microbatch.advantages],
+                padding_value=0,
+                padding_side="right",
             )
-            trainer_ref_logprobs = trainer_logprobs.detach()
-            importance_sampling_ratio = torch.clamp(
-                torch.exp(trainer_ref_logprobs - inference_logprobs),
-                max=self.vllm_importance_sampling_cap,
-            ).detach()
+            trainer_logprobs, entropies = self.get_logprobs(
+                model, input_ids, attention_mask
+            )
+            attention_mask = attention_mask[:, 1:]
+            inference_logprobs = inference_logprobs[:, 1:]
+            advantages = advantages[:, 1:]
             mb_inputs = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
-                "importance_sampling_ratio": importance_sampling_ratio,
                 "inference_logprobs": inference_logprobs,
                 "trainer_logprobs": trainer_logprobs,
-                "trainer_ref_logprobs": trainer_ref_logprobs,
                 "entropies": entropies,
-                "advantages": torch.tensor(microbatch.advantages, device=device),
+                "advantages": advantages,
             }
             with self.compute_loss_context_manager():
                 loss, summaries = self.compute_loss(
@@ -256,58 +245,22 @@ class RLTrainer(Trainer):
         return_outputs: bool = False,
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
-        attention_mask = inputs["attention_mask"]
+        loss_mask = inputs["attention_mask"].bool()
         entropies = inputs["entropies"]
-        importance_sampling_ratio = inputs["importance_sampling_ratio"]
         trainer_logprobs = inputs["trainer_logprobs"]
-        trainer_ref_logprobs = inputs["trainer_ref_logprobs"]
+        inference_logprobs = inputs["inference_logprobs"]
         advantages = inputs["advantages"]
-        log_ratio = trainer_logprobs - trainer_ref_logprobs
-        if self.importance_sampling_level == "token":
-            log_importance_weights = log_ratio
-        elif self.importance_sampling_level == "sequence":
-            log_importance_weights = (log_ratio * attention_mask).sum(
-                -1
-            ) / attention_mask.sum(-1).clamp(min=1.0)
-            log_importance_weights = log_importance_weights.unsqueeze(-1)
-        else:
-            raise ValueError(
-                f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "
-                "and 'sequence'."
-            )
-
-        coef_1 = log_importance_weights
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
-        advantages = inputs["advantages"]
-        per_token_loss = per_token_loss * importance_sampling_ratio
-        if self.loss_type == "grpo":
-            loss = (
-                (per_token_loss * attention_mask).sum(-1)
-                / attention_mask.sum(-1).clamp(min=1.0)
-            ).mean()
-        elif self.loss_type == "bnpo":
-            loss = (per_token_loss * attention_mask).sum() / attention_mask.sum().clamp(
-                min=1.0
-            )
-        elif self.loss_type == "dr_grpo":
-            loss = (per_token_loss * attention_mask).sum() / (
-                per_token_loss.size(0) * self.max_seq_len
-            )
-        elif self.loss_type == "dapo":
-            loss = (per_token_loss * attention_mask).sum() / attention_mask.sum().clamp(
-                min=1.0
-            )
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
+        log_importance_ratio = trainer_logprobs - inference_logprobs
+        importance_ratio = torch.exp(log_importance_ratio)
+        is_masked_low = importance_ratio < self.mask_ratio_low
+        is_masked_high = importance_ratio > self.mask_ratio_high
+        is_masked = is_masked_low | is_masked_high
+        keep_mask = ~is_masked & loss_mask
+        loss = (-importance_ratio * advantages)[keep_mask].sum()
 
         with torch.no_grad():
-            ir_summary = summarize_values(
-                importance_sampling_ratio[attention_mask.bool()]
-            )
-            entropy_summary = summarize_values(entropies[attention_mask.bool()])
+            ir_summary = summarize_values(importance_ratio[loss_mask])
+            entropy_summary = summarize_values(entropies[loss_mask])
 
         summaries = {
             "importance_sampling": ir_summary,
@@ -320,7 +273,6 @@ class RLTrainer(Trainer):
         model,
         input_ids,
         attention_mask,
-        logits_to_keep,
         batch_size=None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size = batch_size or input_ids.size(0)  # chunking for memory peak
@@ -329,18 +281,18 @@ class RLTrainer(Trainer):
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
             attention_mask_batch = attention_mask[i : i + batch_size]
+            logits_to_keep = attention_mask_batch.size(1) + 1
             logits = model(
                 input_ids=input_ids_batch,
                 attention_mask=attention_mask_batch,
-                logits_to_keep=logits_to_keep + 1,
             ).logits
             logits = logits[
                 :, :-1, :
             ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            input_ids_batch = input_ids_batch[:, -logits_to_keep:]
+            targets = input_ids_batch[:, 1:]
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
-            logprobs = selective_log_softmax(logits, input_ids_batch)
+            logprobs = selective_log_softmax(logits, targets)
             entropies = entropy_from_logits(logits)
             all_logprobs.append(logprobs)
             all_entropies.append(entropies)

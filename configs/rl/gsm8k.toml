@@ -1,4 +1,4 @@
-model = "Qwen/Qwen2.5-Math-1.5B-Instruct"
+model = "Qwen/Qwen2.5-1.5B-Instruct"
 
 [env]
 id = "gsm8k"

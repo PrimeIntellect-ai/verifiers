@@ -1,7 +1,7 @@
 model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [env]
-id = "reverse-text"
+id = "primeintellect/reverse-text"
 
 [inference]
 gpus = 1
@@ -14,10 +14,11 @@ gpus = 1
 
 [trainer.args]
 run_name = "reverse-text"
-lora_target_modules = "all-linear"
+use_lora = false
+learning_rate = 3e-6
 micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 128
-max_steps = 50
+max_steps = 100
 max_tokens = 128
 max_seq_len = 512

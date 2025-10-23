@@ -21,7 +21,7 @@ class Microbatch(BaseModel):
     input_ids: list[list[int]]
     attention_mask: list[list[int]]
     sampling_logprobs: list[list[float]]
-    advantages: list[float]
+    advantages: list[list[float]]
     items: int
 
 
@@ -66,8 +66,6 @@ class Generator:
         mask_truncated_completions: bool,
         zero_truncated_completions: bool,
         max_concurrent: int,
-        scale_rewards: str,
-        loss_type: str,
     ):
         self.env = env
         self.client_base_url = client_base_url
@@ -89,8 +87,6 @@ class Generator:
         self.mask_truncated_completions = mask_truncated_completions
         self.zero_truncated_completions = zero_truncated_completions
         self.max_concurrent = max_concurrent
-        self.scale_rewards = scale_rewards
-        self.loss_type = loss_type
 
         # queues for communication
         self.request_queue = queue.Queue()
@@ -251,29 +247,19 @@ class Generator:
 
         rewards: list[float] = processed_results.rewards
         advantages: list[float] = [0.0] * len(rewards)
-        if self.scale_rewards == "batch":
-            mean_r = sum(rewards) / float(len(rewards))
-            for i, r in enumerate(rewards):
-                advantages[i] = r - mean_r
-        else:
-            prompts_in_batch = len(batch_ds)
-            if prompts_in_batch == 0:
-                self.logger.warning(
-                    "No prompts found in batch when computing advantages"
-                )
-            else:
-                for prompt_idx in range(prompts_in_batch):
-                    group_indices = [
-                        prompt_idx + k * prompts_in_batch
-                        for k in range(self.rollouts_per_example)
-                        if (prompt_idx + k * prompts_in_batch) < len(rewards)
-                    ]
-                    if not group_indices:
-                        continue
-                    group = [rewards[i] for i in group_indices]
-                    gmean = sum(group) / float(len(group))
-                    for idx, r in zip(group_indices, group):
-                        advantages[idx] = r - gmean
+        prompts_in_batch = len(batch_ds)
+        for prompt_idx in range(prompts_in_batch):
+            group_indices = [
+                prompt_idx + k * prompts_in_batch
+                for k in range(self.rollouts_per_example)
+                if (prompt_idx + k * prompts_in_batch) < len(rewards)
+            ]
+            if not group_indices:
+                continue
+            group = [rewards[i] for i in group_indices]
+            gmean = sum(group) / float(len(group))
+            for idx, r in zip(group_indices, group):
+                advantages[idx] = r - gmean
 
         metrics_dict = {}
         if rewards:
@@ -354,15 +340,12 @@ class Generator:
                     + processed_results.completion_logprobs[i]
                     for i in range(s, e)
                 ]
-                adv_chunk = [advantages[i] for i in range(s, e)]
-                if self.loss_type == "grpo":
-                    mb_items = e - s
-                elif self.loss_type == "dr_grpo":
-                    mb_items = (e - s) * self.max_seq_len
-                elif self.loss_type == "dapo" or self.loss_type == "bnpo":
-                    mb_items = sum(sum(mask) for mask in mask_chunk)
-                else:
-                    raise ValueError(f"Unknown loss type: {self.loss_type}")
+                lengths = [len(mask) for mask in mask_chunk]
+                adv_chunk = [
+                    [advantages[i]] * lengths[idx]
+                    for idx, i in enumerate(list(range(s, e)))
+                ]
+                mb_items = sum(sum(mask) for mask in mask_chunk)
                 microbatch = Microbatch(
                     input_ids=ids_chunk,
                     attention_mask=mask_chunk,
