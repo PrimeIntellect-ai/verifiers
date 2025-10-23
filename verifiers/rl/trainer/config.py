@@ -134,7 +134,7 @@ class RLConfig(TrainingArguments):
         },
     )
     zero_truncated_completions: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to give zero reward to truncated completions."},
     )
     # sampling_args for generation

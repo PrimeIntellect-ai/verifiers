@@ -19,7 +19,7 @@ class Microbatch(BaseModel):
     """Microbatch for batch generation"""
 
     input_ids: list[list[int]]
-    attention_mask: list[list[int]]
+    loss_mask: list[list[int]]
     sampling_logprobs: list[list[float]]
     advantages: list[list[float]]
     items: int
@@ -348,7 +348,7 @@ class Generator:
                 mb_items = sum(sum(mask) for mask in mask_chunk)
                 microbatch = Microbatch(
                     input_ids=ids_chunk,
-                    attention_mask=mask_chunk,
+                    loss_mask=mask_chunk,
                     sampling_logprobs=slogp_chunk,
                     advantages=adv_chunk,
                     items=mb_items,

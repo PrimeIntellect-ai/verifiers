@@ -153,14 +153,15 @@ class RLTrainer(Trainer):
 
         world_size = max(self.accelerator.num_processes, 1)
         # ddp/zero3 average gradients across ranks, so scale by per-rank items
-        loss_denominator = torch.tensor(
+        tokens_per_rank = torch.tensor(
             float(batch.global_item_count) / float(world_size),
             device=self.accelerator.device,
             dtype=torch.float32,
         )
-        entropy_tracker = init_stat_tracker(self.accelerator.device)
+        inv_tokens_per_rank = tokens_per_rank.reciprocal()
         ir_tracker = init_stat_tracker(self.accelerator.device)
-
+        entropy_tracker = init_stat_tracker(self.accelerator.device)
+        mismatch_kl_tracker = init_stat_tracker(self.accelerator.device)
         device = self.accelerator.device
         pad_token_id = getattr(self.processing_class, "pad_token_id", None)
         assert pad_token_id is not None
@@ -171,8 +172,8 @@ class RLTrainer(Trainer):
                 padding_value=pad_token_id,  # type: ignore :(
                 padding_side="right",
             )
-            attention_mask = pad(
-                [torch.tensor(x, device=device) for x in microbatch.attention_mask],
+            loss_mask = pad(
+                [torch.tensor(x, device=device) for x in microbatch.loss_mask],
                 padding_side="right",
             )
             inference_logprobs = pad(
@@ -185,15 +186,13 @@ class RLTrainer(Trainer):
                 padding_value=0,
                 padding_side="right",
             )
-            trainer_logprobs, entropies = self.get_logprobs(
-                model, input_ids, attention_mask
-            )
-            attention_mask = attention_mask[:, 1:]
+            attn_mask = input_ids.ne(pad_token_id).int()
+            trainer_logprobs, entropies = self.get_logprobs(model, input_ids, attn_mask)
+            loss_mask = loss_mask[:, 1:]
             inference_logprobs = inference_logprobs[:, 1:]
             advantages = advantages[:, 1:]
             mb_inputs = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
+                "loss_mask": loss_mask,
                 "inference_logprobs": inference_logprobs,
                 "trainer_logprobs": trainer_logprobs,
                 "entropies": entropies,
@@ -206,21 +205,24 @@ class RLTrainer(Trainer):
                     num_items_in_batch=torch.tensor(self.batch_size, device=device),
                     return_outputs=True,
                 )
-            scale = microbatch.items / loss_denominator
-            self.accelerator.backward(loss * scale)
-            total_loss = total_loss + (loss.detach() * scale)
+            self.accelerator.backward(loss * inv_tokens_per_rank)
+            total_loss = total_loss + (loss.detach() * inv_tokens_per_rank)
             assert isinstance(summaries, dict)
             update_stat_tracker(ir_tracker, summaries["importance_sampling"])
             update_stat_tracker(entropy_tracker, summaries["entropy"])
+            update_stat_tracker(mismatch_kl_tracker, summaries["mismatch_kl"])
 
         ir_mean = finalize_stat_tracker(ir_tracker, self.accelerator)
         entropy_mean = finalize_stat_tracker(entropy_tracker, self.accelerator)
+        mismatch_kl_mean = finalize_stat_tracker(mismatch_kl_tracker, self.accelerator)
         assert ir_mean is not None
         assert entropy_mean is not None
+        assert mismatch_kl_mean is not None
 
         extra_metrics: dict[str, float] = {
             "importance_ratio": ir_mean,
             "entropy": entropy_mean,
+            "mismatch_kl": mismatch_kl_mean,
         }
 
         if self.accelerator.is_main_process:
@@ -245,7 +247,7 @@ class RLTrainer(Trainer):
         return_outputs: bool = False,
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
-        loss_mask = inputs["attention_mask"].bool()
+        loss_mask = inputs["loss_mask"].bool()
         entropies = inputs["entropies"]
         trainer_logprobs = inputs["trainer_logprobs"]
         inference_logprobs = inputs["inference_logprobs"]
@@ -258,13 +260,17 @@ class RLTrainer(Trainer):
         keep_mask = ~is_masked & loss_mask
         loss = (-importance_ratio * advantages)[keep_mask].sum()
 
+        mismatch_kl = torch.exp(log_importance_ratio) - log_importance_ratio - 1
+
         with torch.no_grad():
             ir_summary = summarize_values(importance_ratio[loss_mask])
             entropy_summary = summarize_values(entropies[loss_mask])
+            mismatch_kl_summary = summarize_values(mismatch_kl[loss_mask])
 
         summaries = {
             "importance_sampling": ir_summary,
             "entropy": entropy_summary,
+            "mismatch_kl": mismatch_kl_summary,
         }
         return loss, summaries
 
