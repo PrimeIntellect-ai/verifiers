@@ -2,7 +2,7 @@
 
 Covers:
 - get_model_response chat tools vs. completion error
-- run_rollouts with semaphore
+- run_rollouts with concurrency limit (max_concurrent or semaphore)
 - process_env_results zero_truncated_completions path
 - evaluate fallback to train dataset and repeat behavior
 - generate called inside an existing event loop
@@ -155,7 +155,7 @@ async def test_get_model_response_completion_rejects_tools(mock_openai_client):
         )
 
 
-def test_run_rollouts_with_semaphore(mock_openai_client):
+def test_run_rollouts_with_max_concurrent(mock_openai_client):
     env = _make_env(mock_openai_client)
     prompts = [[{"role": "user", "content": "hi"}] for _ in range(3)]
     answers = ["", "", ""]
@@ -167,6 +167,24 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
         tasks=["default"] * 3,
         infos=[{}] * 3,
         max_concurrent=2,
+        example_ids=list(range(len(prompts))),
+    )
+    results: List = asyncio.run(coro)
+    assert len(results) == 3
+
+
+def test_run_rollouts_with_semaphore(mock_openai_client):
+    env = _make_env(mock_openai_client)
+    prompts = [[{"role": "user", "content": "hi"}] for _ in range(3)]
+    answers = ["", "", ""]
+    coro = env.run_rollouts(
+        client=mock_openai_client,
+        model="test-model",
+        prompts=prompts,
+        answers=answers,
+        tasks=["default"] * 3,
+        infos=[{}] * 3,
+        semaphore=asyncio.Semaphore(2),
         example_ids=list(range(len(prompts))),
     )
     results: List = asyncio.run(coro)
