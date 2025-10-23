@@ -75,6 +75,7 @@ __all__ = [
     "ToolRubric",
     "MathRubric",
     "TextArenaEnv",
+    "ReasoningGymEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -90,8 +91,9 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "get_model",
-    "get_tokenizer",
     "get_model_and_tokenizer",
+    "RLTrainer",
+    "RLConfig",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
@@ -99,16 +101,18 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
-    "get_model": "verifiers.utils.model_utils:get_model",
-    "get_model_and_tokenizer": "verifiers.utils.model_utils:get_model_and_tokenizer",
-    "get_tokenizer": "verifiers.utils.model_utils:get_tokenizer",
-    "GRPOConfig": "verifiers.trainers:GRPOConfig",
-    "GRPOTrainer": "verifiers.trainers:GRPOTrainer",
-    "grpo_defaults": "verifiers.trainers:grpo_defaults",
-    "lora_defaults": "verifiers.trainers:lora_defaults",
+    "get_model": "verifiers.rl.trainer.utils:get_model",
+    "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
+    "RLConfig": "verifiers.rl.trainer:RLConfig",
+    "RLTrainer": "verifiers.rl.trainer:RLTrainer",
+    "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
+    "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
+    "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
+    "lora_defaults": "verifiers.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
+    "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
 }
 
@@ -128,17 +132,19 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
+    from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
-    from .rubrics.math_rubric import MathRubric  # noqa: F401
-    from .trainers import (  # noqa: F401
+    from .rl.trainer import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,
+        RLConfig,
+        RLTrainer,
         grpo_defaults,
         lora_defaults,
     )
-    from .utils.model_utils import (  # noqa: F401
+    from .rl.trainer.utils import (  # noqa: F401
         get_model,
         get_model_and_tokenizer,
-        get_tokenizer,
     )
+    from .rubrics.math_rubric import MathRubric  # noqa: F401

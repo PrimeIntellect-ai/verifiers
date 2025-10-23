@@ -3,20 +3,23 @@ from datasets import load_dataset
 import verifiers as vf
 
 
-def load_environment(num_train_examples=2000, num_eval_examples=200, **kwargs):
-    dataset = load_dataset("agentlans/wikipedia-paragraphs", split="train").map(
-        lambda x: {"question": x["text"], "answer": x["text"][::-1]}
+def load_environment(
+    dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
+    dataset_split: str = "train",
+    system_prompt: str
+    | None = "Reverse the text character-by-character. Put your answer in <reversed_text> tags.",
+) -> vf.Environment:
+    train_dataset = load_dataset(dataset_name, split=dataset_split).map(
+        lambda x: {
+            "question": x["prompt"],
+            "answer": x["prompt"][::-1],
+            "info": {},
+            "task": "reverse-text",
+        }
     )
-    train_dataset = dataset.select(range(num_train_examples))  # type: ignore
-    eval_dataset = dataset.select(  # type: ignore
-        range(num_train_examples, num_train_examples + num_eval_examples)
-    )
+    train_dataset = train_dataset.remove_columns(["prompt"])
 
-    parser = vf.XMLParser(["think", "answer"], answer_field="answer")
-    system_prompt = f"""Reverse the given text.
-
-    Respond in the following format:
-    {parser.get_format_str()}"""
+    parser = vf.XMLParser(["reversed_text"], answer_field="reversed_text")
 
     def lcs_reward_func(completion, answer, **kwargs) -> float:
         """
@@ -35,17 +38,14 @@ def load_environment(num_train_examples=2000, num_eval_examples=200, **kwargs):
         return lcs_ratio(response, answer)
 
     rubric = vf.Rubric(
-        parser=parser,
         funcs=[
             lcs_reward_func,
-            parser.get_format_reward_func(),
         ],
-        weights=[1.0, 0.2],
+        weights=[1.0],
     )
 
     vf_env = vf.SingleTurnEnv(
-        dataset=train_dataset,  # type: ignore
-        eval_dataset=eval_dataset,  # type: ignore
+        dataset=train_dataset,
         system_prompt=system_prompt,
         parser=parser,
         rubric=rubric,

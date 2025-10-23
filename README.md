@@ -35,6 +35,34 @@ Full documentation is available [here](https://verifiers.readthedocs.io/en/lates
 
 Verifiers is also the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub.
 
+## Quick Start
+
+Install the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli):
+```bash
+uv tool install prime
+``` 
+
+Install `verifiers` in your project:
+```bash
+uv add verifiers
+```
+
+Select an environment from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to install:
+```bash
+prime env install will/wordle
+```
+
+Run a quick evaluation with OpenAI models:
+```bash
+uv run vf-eval wordle -m gpt-5-nano
+```
+
+For RL training, do:
+```bash
+uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main' # after 0.1.7 release, this will be: uv add 'verifiers[rl]'
+uv run vf-setup # creates default RL TOMLs under configs/
+```
+
 ## Setup
 
 We recommend using `verifiers` along with [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
@@ -50,14 +78,14 @@ For local (CPU) development and evaluation with API models, do:
 uv add verifiers
 ```
 
-For training on GPUs with `vf.GRPOTrainer`, do:
+For RL training on GPUs with the included trainer, do:
 ```bash
-uv add 'verifiers[train]' && uv pip install flash-attn --no-build-isolation
+uv add 'verifiers[rl]'
 ```
 
-To use the latest `main` branch, do:
+To use the latest `main` branch with RL extras, do:
 ```bash
-uv add verifiers@git+https://github.com/PrimeIntellect-ai/verifiers.git
+uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main'
 ```
 
 To use with `prime-rl`, see [here](https://github.com/PrimeIntellect-ai/prime-rl).
@@ -67,9 +95,9 @@ To install `verifiers` from source for core library development, install with:
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash
 ```
 
-If you want to dev with the trainer, do:
+If you want to develop with RL extras enabled in this repo, do:
 ```bash
-uv sync --all-extras && uv pip install flash-attn --no-build-isolation
+uv sync --extra rl
 ```
 
 In general, we recommend that you build and train Environments *with* `verifiers`, not *in* `verifiers`. If you find yourself needing to clone and modify the core library in order to implement key functionality for your project, we'd love for you to open an issue so that we can try and streamline the development experience. Our aim is for `verifiers` to be a reliable toolkit to build on top of, and to minimize the "fork proliferation" which often pervades the RL infrastructure ecosystem.
@@ -245,25 +273,49 @@ For many applications involving tool use, you can use `ToolEnv` to leverage mode
 
 ## Training
 
+Verifiers is supported by a number of trainers, including:
+- `verifiers.RLTrainer` (included with `verifiers[train]`, `transformers`-based, ZeRO3 + vLLM)
+- `prime-rl`
+- `SkyRL`
+- `tinker_cookbook` trainer
 
-### GRPOTrainer
+### RL
 
-The included trainer (`vf.GRPOTrainer`) supports running GRPO-style RL training via Accelerate/DeepSpeed, and uses vLLM for inference. It supports both full-parameter finetuning, and is optimized for efficiently training dense transformer models on 2-16 GPUs.
+Use `vf-rl` with a single TOML to orchestrate both inference (vLLM) and training panes inside tmux.
 
 ```bash
-# install environment
-vf-install wordle (-p /path/to/environments | --from-repo)
+# create or edit a config, e.g. configs/rl/wordle.toml
+# vf-rl will launch a tmux session with vLLM (top) and trainer (bottom)
+uv run vf-rl @ configs/rl/config.toml
+```
 
-# quick eval
-vf-eval wordle -m (model_name in configs/endpoints.py) -n NUM_EXAMPLES -r ROLLOUTS_PER_EXAMPLE
+Minimal TOML:
 
-# inference (shell 0)
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model willcb/Qwen3-1.7B-Wordle \
-    --data-parallel-size 7 --enforce-eager --disable-log-requests
+```toml
+model = "Qwen/Qwen3-4B-Instruct-2507"
 
-# training (shell 1)
-CUDA_VISIBLE_DEVICES=6,7 accelerate launch --num-processes 2 \
-    --config-file configs/zero3.yaml examples/grpo/train_wordle.py --size 1.7B
+[env]
+id = "kalomaze/alphabet-sort" # auto-installed from hub if given as user/env-id, or from local project if given as env-id
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "alphabet-sort"
+use_lora = true
+learning_rate = 1e-5
+micro_batch_size = 4
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 100
+max_tokens = 512
+max_seq_len = 2048
 ```
 
 Alternatively, you can train environments with the external `prime-rl` project (FSDP-first orchestration). See the `prime-rl` README for installation and examples. For example:

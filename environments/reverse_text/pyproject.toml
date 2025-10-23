@@ -1,11 +1,11 @@
 [project]
 name = "reverse-text"
-version = "0.1.0"
-description = "Reverse a given text"
-tags = ["reverse-text", "single-turn", "train", "eval"]
-requires-python = ">=3.11"
+version = "0.1.4"
+tags = ["text", "transformation", "single-turn", "xml"]
+license = "Apache-2.0"
+description = "Reverse a given text; evaluated by LCS similarity between the parsed answer and ground-truth reversal."
 dependencies = [
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.5.post0",
     "datasets",
 ]
 

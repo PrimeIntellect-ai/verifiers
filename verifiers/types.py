@@ -111,6 +111,7 @@ class ProcessedOutputs(BaseModel):
     completion_mask: list[list[int]]
     completion_logprobs: list[list[float]]
     rewards: list[float]
+    is_truncated: list[bool]
 
 
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})

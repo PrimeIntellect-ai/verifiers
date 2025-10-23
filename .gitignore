@@ -10,6 +10,7 @@ uv.lock
 .cursor/
 .ropeproject/
 .scratch/
+.chroma_db/
 
 # artifacts
 core.* 
@@ -41,16 +42,3 @@ scratch/
 .vscode/
 *.swp
 .DS_Store
-
-# WIPs
-verifiers/envs/multibranch_env.py
-wip/
-old/
-
-# Incomplete environments
-environments/aime2024/
-environments/vf_acebench/
-environments/vf_bfcl_v3/
-environments/vf_hotpotqa/
-environments/vf_truthful_qa/
-environments/vf_reverse_text_mini/

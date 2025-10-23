@@ -7,7 +7,6 @@ This directory contains source files for the `verifiers` documentation.
 ### Prerequisites
 
 ```bash
-# Or using uv
 uv add sphinx furo myst-parser
 ```
 

@@ -37,7 +37,9 @@ dependencies = [
     "rich",
     "textual",
     "pydantic>=2.11.9",
+    "tomli; python_version < '3.11'",
     "prime-sandboxes>=0.1.0",
+    "wget>=3.2",
 ]
 
 [dependency-groups]
@@ -50,15 +52,16 @@ dev = [
     "pytest-cov>=4.0.0",
     "ipykernel",
     "ipywidgets",
+    "reasoning-gym",
     "textarena",
     "nltk",
     "math-verify>=0.8.0",
 ]
 
 [project.optional-dependencies]
-train = [
-    "torch>=2.7.0",
-    "transformers",
+rl = [
+    "torch>=2.8.0",
+    "transformers>=4.56.2",
     "accelerate>=1.4.0",
     "requests",
     "peft",
@@ -66,24 +69,25 @@ train = [
     "trl>=0.17.0",
     "vllm>=0.9.2",
     "liger-kernel>=0.5.10",
-    "deepspeed",
+    "deepspeed>=0.17.6",
+    "flash-attn>=2.8.3",
 ]
 envs = [
     "math-verify>=0.8.0",
     "duckduckgo-search",
     "brave-search",
+    "reasoning-gym",
     "nltk",
     "textarena",
 ]
 all = [
-    "torch>=2.7.0",
+    "torch>=2.8.0",
     "transformers",
     "accelerate>=1.4.0",
     "requests",
     "peft",
     "wandb",
-    "trl>=0.17.0",
-    "vllm>=0.9.2",
+    "vllm>=0.10.2",
     "liger-kernel>=0.5.10",
     "deepspeed",
     "math-verify>=0.8.0",
@@ -98,12 +102,21 @@ docs = [
     "furo"
 ]
 
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
+vf-setup = "verifiers.scripts.setup:main"
+vf-rl = "verifiers.scripts.rl:main"
+vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.inference.vllm_server:main"
+vf-vllm = "verifiers.rl.inference.server:main"
 
 # hatchling configuration
 [tool.hatch.version]

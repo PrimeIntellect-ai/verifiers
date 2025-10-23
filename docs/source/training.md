@@ -1,13 +1,13 @@
 # Training
 
-This guide covers training models with Verifiers using GRPO (Group Relative Policy Optimization).
+This guide covers RL training with the included trainer and vLLM inference, orchestrated via a single TOML config.
 
 ## Training options
 
-You can train with the built-in `GRPOTrainer` or with the external `prime-rl` project.
+You can train with the included `RLTrainer` (via `vf-rl`) or with external projects like `prime-rl`.
 
-- Use `GRPOTrainer` when you want a lightweight Python training loop, LoRA/PEFT support, or small-to-mid scale runs (2–16 GPUs) using Accelerate/DeepSpeed.
-- Use `prime-rl` when you want an FSDP-first, higher-throughput setup with more configuration surface area and performance-oriented defaults.
+- Use the included trainer when you want a simple, hackable training loop and LoRA-first defaults.
+- Use `prime-rl` when you want FSDP-first orchestration and large-scale features.
 
 ### Summary of similarities and differences
 
@@ -16,75 +16,67 @@ You can train with the built-in `GRPOTrainer` or with the external `prime-rl` pr
   - One-step off-policy overlap by default (generate at step n-1 while training at step n)
 
 - Differences
-  - GRPOTrainer: Accelerate/DeepSpeed-based; optional LoRA/PEFT; easy to script and extend in Python
+- RLTrainer: Accelerate/DeepSpeed-based; optional LoRA/PEFT; easy to script and extend in Python
   - PRIME-RL: FSDP-first; `rl` entrypoint; strong checkpointing; extensive CLI/TOML configuration
 
-## Train with GRPOTrainer
+## Train with vf-rl (included trainer)
 
-The included `GRPOTrainer` supports GRPO-style training via Accelerate/DeepSpeed with vLLM inference. It's designed for:
-- LoRA and smaller setups (2–16 GPUs)
-- Full-parameter finetuning
-- Experimentation and prototyping
+The included trainer runs alongside a vLLM server, managed automatically by `vf-rl` inside a tmux session. Configure everything in a single TOML.
 
 ## Quick Start
 
-```python
-import verifiers as vf
-
-# 1. Create environment
-env = vf.load_environment("math-python")
-
-# 2. Load model
-model, tokenizer = vf.get_model_and_tokenizer("Qwen/Qwen2.5-1.5B-Instruct")
-
-# 3. Configure training  
-args = vf.grpo_defaults(run_name="my-experiment")
-
-# 4. Train
-trainer = vf.GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    env=env,
-    args=args,
-)
-trainer.train()
-```
-
-## Infrastructure Setup
-
-### vLLM Server
-
-Start a vLLM inference server for generation:
+Install RL extras and set up default configs:
 
 ```bash
-# Example: 6 GPUs for inference
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model Qwen/Qwen2.5-7B-Instruct \
-    --data-parallel-size 6 --enforce-eager --disable-log-requests
+uv add 'verifiers[rl]'
+uv run vf-setup
 ```
 
-### Training Launch
+Launch training from a TOML (tmux with vLLM + trainer panes):
 
 ```bash
-# Example: 2 GPUs for training
-CUDA_VISIBLE_DEVICES=6,7 accelerate launch --config-file configs/zero3.yaml \
-    --num-processes 2 your_training_script.py
+uv run vf-rl @ configs/rl/config.toml
+```
+
+## TOML Configuration
+
+Minimal TOML example:
+
+```toml
+model = "Qwen/Qwen3-4B-Instruct-2507"
+
+[env]
+id = "kalomaze/alphabet-sort" # auto-installed from hub if given as user/env-id, or from local project if given as env-id
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "alphabet-sort"
+use_lora = true
+learning_rate = 1e-5
+micro_batch_size = 4
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 100
+max_tokens = 512
+max_seq_len = 2048
 ```
 
 ## Key Hyperparameters
 
 ### Batch Configuration
 
-```python
-args = vf.grpo_defaults(run_name="experiment")
-
-# Core batch settings
-args.per_device_train_batch_size = 8    # Prompts per GPU per step
-args.num_generations = 16               # Completions per prompt (group size)
-args.gradient_accumulation_steps = 4    # Steps before optimizer update
-
-# Effective batch size = per_device_train_batch_size * num_processes * gradient_accumulation_steps
-# Must be divisible by num_generations
-```
+Key fields in `[trainer.args]`:
+- `rollouts_per_example`: completions per prompt (group size)
+- `micro_batch_size`: rollouts per GPU per step
+- `batch_size`: rollouts per global batch (must be divisible by `micro_batch_size * world_size`)
 
 **How to think about batch settings:**
 - `num_generations`: Larger groups (16-32) increase reward diversity but use more memory
@@ -93,18 +85,9 @@ args.gradient_accumulation_steps = 4    # Steps before optimizer update
 
 ### Generation Parameters
 
-```python
-# Sampling configuration
-args.max_tokens = 1024           # Max tokens per (turn-level) response 
-args.temperature = 1.0          # Higher = more diverse completions
-args.top_p = 1.0               # Nucleus sampling threshold
-args.top_k = None              # Top-k filtering (None = disabled)
-
-# Length limits
-args.max_prompt_length = 1024      # Truncate prompts (left-truncated)
-args.max_completion_length = 2048  # Truncate completions
-args.max_seq_len = 4096           # Model's context window
-```
+Specify in `[trainer.args]`:
+- `max_tokens` (per-turn), `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`
+- `max_prompt_len`, `max_seq_len`
 
 **Generation strategy:**
 - High temperature (0.8-1.0) increases diversity within groups
@@ -113,85 +96,24 @@ args.max_seq_len = 4096           # Model's context window
 
 ### Training Schedule
 
-```python
-# Optimization settings
-args.learning_rate = 1e-6              # Conservative default
-args.lr_scheduler_type = "constant_with_warmup"
-args.warmup_steps = 10                 # Gradual warmup
-args.max_steps = 500                   # Total training steps
-args.num_iterations = 1                # PPO-style updates per batch
-
-# Gradient control
-args.max_grad_norm = 0.01              # Aggressive clipping for stability
-```
-
-**Training dynamics:**
-- Start with default `learning_rate = 1e-6` for stability
-- `num_iterations > 1` does multiple updates per batch (more off-policy)
-- Lower `max_grad_norm` for more stable but slower training
-
-### GRPO-Specific Parameters
-
-```python
-# KL regularization
-args.beta = 0.001                      # KL penalty coefficient
-args.sync_ref_model = True             # Update reference model
-args.ref_model_sync_steps = 100        # How often to sync
-args.ref_model_mixup_alpha = 0.5       # Mix ratio for updates
-
-# Loss configuration
-args.loss_type = "dr_grpo"             # Recommended: no length bias
-args.epsilon = 0.2                     # Clipping bound (lower)
-args.delta = None                      # Optional upper clipping bound
-```
-
-**KL regularization:**
-- `beta = 0` removes reference model (faster, less stable)
-- `beta = 0.001` is conservative; some use 0.01-0.1
-- Sync reference model periodically for long runs
+Core fields in `[trainer.args]`:
+- `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`
+- `max_grad_norm`, `bf16`, `gradient_checkpointing`
 
 ### Async Generation
 
-```python
-# Overlapped training and inference
-args.num_batches_ahead = 1      # Batches to generate ahead
-args.async_generation_timeout = 300.0  # Timeout in seconds
-args.max_concurrent = 1024      # Max concurrent env requests
-```
-
-**How async generation works:**
-1. Maintains a pipeline of `num_batches_ahead` batches
-2. While training on batch N, generates batch N+1
-3. Overlaps compute-bound training with I/O-bound generation
-4. Set `num_batches_ahead = 0` for synchronous (debug) mode
+`RLTrainer` is asynchronous (one step off-policy) by default. Generation is controlled via `[trainer.args]` and the environment:
+- `generation_timeout`, `max_concurrent`
 
 ## Evaluation During Training
 
-```python
-# Add evaluation dataset
-args.eval_strategy = "steps"
-args.eval_steps = 100
-args.per_device_eval_batch_size = 16
-
-# The environment can provide an eval dataset
-env = vf.load_environment("math-python", eval_split="test")
-```
+Set `eval_strategy`/`eval_steps` in `[trainer.args]` and provide an eval split via your environment configuration if supported.
 
 ## Parameter-Efficient Training
 
-For large models or limited GPU memory:
+LoRA is enabled by default; configure via `[trainer.args]` fields like `use_lora`, `lora_rank`, `lora_alpha`, `lora_dropout`, and optionally `lora_target_modules`.
 
-```python
-trainer = vf.GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    env=env,
-    args=args,
-    peft_config=vf.lora_defaults(r=8, alpha=16)
-)
-```
-
-## GRPO Rules of Thumb
+## RL Rules of Thumb
 
 RL is notoriously sensitive to implementation details. Here's practical guidance:
 
@@ -233,7 +155,7 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 
 ### Common Issues
 
-**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn GRPO-style training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
 - Reduce `num_generations` or `per_device_train_batch_size`
