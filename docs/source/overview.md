@@ -259,17 +259,7 @@ results = asyncio.run(env.evaluate(client=async_client, model=model, num_example
 
 ### For Training
 
-```python
-# Environments provide rollout-level interfaces for RL
-completion, state = await env.rollout(
-    client, model, prompt, answer
-)
-rewards = await env.rubric.score_rollout(
-    prompt, completion, answer, state
-)
-# Or, process rollouts in batches for high throughput and configurable coordination
-outputs = await env.generate(inputs, client, model, sampling_args)  # use generate_sync(...) for blocking code
-```
+Run RL training via `vf-rl` using a single TOML to configure model, environment, inference, and trainer. See the training guide for a minimal example.
 
 ### For Custom Workflows
 

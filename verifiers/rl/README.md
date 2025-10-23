@@ -1,103 +1,108 @@
-### Verifiers Trainers
+## `RLTrainer`
 
-This directory contains the built-in RL trainer and configuration utilities for training with Verifiers environments.
-
-- **Modules**: `RLTrainer`, `RLConfig`, `rl_defaults`, `lora_defaults`
-- **Exports**: available directly from `verifiers` (lazy-imported as `vf.GRPOTrainer`)
-- **Features**: async vLLM rollouts, distributed loss scaling, aggregated reward metrics, LoRA/full-parameter support
+`RLTrainer` is the included RL trainer for `verifiers` environments, built on top of `transformers`, `accelerate` and `vllm`, and which supports both full-parameter finetuning and LoRA training. It is primarily intended for small-scale test runs on a single node with dense models. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the external `prime-rl` trainer; `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async RL with group-based advantages and ), and is a good starting point for beginners.
 
 ### Installation
 
-For GPU training with the bundled trainer:
+Install with RL extras:
 
 ```bash
-uv add 'verifiers[all]' && uv pip install flash-attn --no-build-isolation
+uv add 'verifiers[rl]'
 ```
 
-To use latest `main`:
+Install from GitHub main with RL extras:
 
 ```bash
-uv add verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git
+uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main'
 ```
 
-### Quick Start (Python)
-
-```python
-import verifiers as vf
-
-# 1) Load an installed Environment
-env = vf.load_environment("vf-math-python")
-
-# 2) Load a HF model + tokenizer
-model, tokenizer = vf.get_model_and_tokenizer("Qwen/Qwen2.5-1.5B-Instruct")
-
-# 3) Configure GRPO
-args = vf.grpo_defaults(run_name="my-experiment")
-
-# 4) Train
-trainer = vf.GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    env=env,
-    args=args,
-)
-trainer.train()
-```
-
-See `examples/grpo/` for end-to-end scripts.
-
-### Infrastructure
-
-- **vLLM server** (inference):
+If you already have the project set up and want to include the `rl` extra:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 vf-vllm --model Qwen/Qwen2.5-7B-Instruct \
-  --data-parallel-size 6 --enforce-eager --disable-log-requests
+uv sync --extra rl
 ```
 
-- **Training launcher** (Accelerate/DeepSpeed):
+### TOML configuration files
+
+`vf-rl` consumes a single TOML file that defines the model, environment, vLLM (inference) process, and trainer.
+
+- Required keys:
+  - `model` (string)
+  - `[env].id` (string; environment slug)
+  - `[inference].gpus` (int; number of GPUs for vLLM)
+  - `[trainer].gpus` (int; number of GPUs for training)
+- Optional `*.args` tables forward keyword arguments to their respective CLIs:
+  - `[inference.args]` → forwarded to `vf-vllm` (keys converted to `--kebab-case` flags)
+  - `[trainer.args]` → mapped to `RLConfig` (see Configuration below)
+
+Minimal example:
+
+```toml
+model = "Qwen/Qwen3-4B-Instruct-2507"
+
+[env]
+id = "kalomaze/alphabet-sort"
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "alphabet-sort"
+use_lora = true
+learning_rate = 1e-5
+micro_batch_size = 4
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 100
+max_tokens = 512
+max_seq_len = 2048
+```
+
+See more examples under `configs/rl/` (e.g., `reverse-text.toml`, `alphabet-sort.toml`).
+
+### Running with `vf-rl`
+
+`vf-rl` creates a tmux session with two panes: top runs `vf-vllm` (inference server), bottom runs `vf-train` (trainer). GPU assignment is contiguous: inference uses the first `inference.gpus` devices, trainer uses the next `trainer.gpus` devices.
+
+Usage:
 
 ```bash
-CUDA_VISIBLE_DEVICES=6,7 accelerate launch --config-file configs/zero3.yaml \
-  --num-processes 2 your_training_script.py
+uv run vf-rl @ configs/rl/config.toml -s session-name
 ```
 
-### Key Arguments (GRPO)
+- `-s/--session`: tmux session name (default: `vf-rl`)
+- Requires `tmux` in `PATH`
 
-- **Batching**: `per_device_train_batch_size`, `num_generations`, `gradient_accumulation_steps`
-- **Lengths**: `max_prompt_length`, `max_completion_length`, `max_seq_len`, `max_tokens`
-- **Optimization**: `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`, `max_grad_norm`, `num_iterations`
-- **KL/Ref**: `beta`, `sync_ref_model`, `ref_model_sync_steps`, `ref_model_mixup_alpha`, `loss_type`
-- **Async**: `num_batches_ahead`, `async_generation_timeout`, `max_concurrent`
+### Configuration
 
-Start from `vf.grpo_defaults(...)` and override as needed.
-
-### LoRA / PEFT
-
-```python
-trainer = vf.GRPOTrainer(
-    model=model,
-    processing_class=tokenizer,
-    env=env,
-    args=args,
-    peft_config=vf.lora_defaults(r=8, alpha=16),
-)
-```
-
-### PRIME-RL Option
-
-For FSDP-first, higher-throughput training (and richer orchestration), you can train the same Environments with `prime-rl`. See the `prime-rl` README for installation and `uv run rl ...` usage.
-
-### Troubleshooting
-
-- Configure `wandb` and `huggingface-cli` logins (or set `report_to=None`).
-- Ensure `OPENAI_API_KEY` is set (a dummy key is fine for vLLM).
-- For high concurrency, raise open files limit: `ulimit -n 4096`.
-- For NCCL/vLLM weight-sync issues, try toggling `NCCL_P2P_DISABLE=1`.
-
-### References
-
-- Top-level README: repository setup, environment install, eval CLI (`vf-eval`).
-- Docs: `docs/source/training.md` for deeper guidance on hyperparameters, stability trade-offs, and infra tips.
-
-
+We have removed a number of features from the previous `GRPOTrainer`, in favor of a more streamlined, opinionated, and hackable training recipe. The primary parameters most users will want to configure are:
+- LoRA configuration arguments:
+    - `use_lora`: whether to use LoRA training (default is `True`)
+    - `lora_rank`: the rank of the LoRA modules (default is `16`)
+    - `lora_alpha`: the alpha of the LoRA modules (default is `16`)
+    - `lora_dropout`: the dropout of the LoRA modules (default is `0.0`)
+    - `lora_target_modules`: the target modules for the LoRA modules (default is `["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]`)
+    - `lora_modules_to_save`: modules for full-parameter finetuning (instead of LoRA modules; default is `None`)
+    - `lora_use_rslora`: whether to use RSLoRA (default is `False`)
+- Training configuration arguments:
+  - `learning_rate`: the learning rate for the training (default is `1e-5`)
+  - `micro_batch_size`: rollouts per GPU per gradient accumulation step (default is `8`)
+  - `batch_size`: rollouts per global batch (default is `512`)
+  - `rollouts_per_example`: rollouts per example/prompt (default is `16`)
+  - `max_seq_len`: the maximum sequence length for the training (default is `2048`)
+  - `max_steps`: the maximum number of steps for the training (default is `500`)
+- Sampling configuration arguments:
+  - `max_tokens`: the maximum number of tokens per request (default is `None`)
+  - `temperature`: the temperature for the sampling (default is `0.7`)
+  - `top_p`: the top-p value for the sampling (default is `1.0`)
+  - `top_k`: the top-k value for the sampling (default is `None`)
+  - `min_p`: the minimum probability value for the sampling (default is `0.0`)
+  - `repetition_penalty`: the repetition penalty for the sampling (default is `1.0`)
+  - `presence_penalty`: the presence penalty for the sampling (default is `0.0`)
+  - `frequency_penalty`: the frequency penalty for the sampling (default is `0.0`)
