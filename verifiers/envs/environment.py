@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -598,6 +599,9 @@ class Environment(ABC):
         if score_limit is None:
             score_limit = max_concurrent
 
+        # track timing for metadata
+        start_time = time.time()
+
         if interleave_scoring and score_rollouts:
             # interleaved pipeline: separate semaphores for generation and scoring
             # pre-allocate metrics using known reward function names
@@ -670,7 +674,6 @@ class Environment(ABC):
                 )
             else:
                 await asyncio.gather(*tasks)
-            return results
         else:
             # non-interleaved: generate all then score all
             if save_every > 0:
@@ -718,7 +721,25 @@ class Environment(ABC):
             else:
                 results.reward = []
                 results.metrics = {}
-            return results
+
+        # update metadata with actual results
+        end_time = time.time()
+        elapsed_ms = (end_time - start_time) * 1000.0
+
+        avg_reward = 0.0
+        avg_metrics = {}
+        if score_rollouts and results.reward:
+            avg_reward = sum(results.reward) / len(results.reward)
+            avg_metrics = {
+                name: sum(values) / len(values) if values else 0.0
+                for name, values in results.metrics.items()
+            }
+
+        results.metadata.time_ms = elapsed_ms
+        results.metadata.avg_reward = avg_reward
+        results.metadata.avg_metrics = avg_metrics
+
+        return results
 
     # alias for backward compatibility
     a_generate = generate
