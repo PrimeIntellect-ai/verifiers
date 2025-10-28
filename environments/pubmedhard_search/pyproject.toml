@@ -1,0 +1,21 @@
+[project]
+name = "pubmedhard-search"
+description = "Agentic RAG over PubMed OA Markdown (PMC) using lightweight BM25 and judge scoring"
+tags = ["biomedical", "pmc", "agentic-search", "rag", "multi-turn", "judge"]
+requires-python = ">=3.11"
+version = "0.1.0"
+dependencies = [
+  "verifiers>=0.1.6.post0",
+  "datasets",
+  "openai",
+  "numpy",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["pubmedhard_search.py"]
+
+
