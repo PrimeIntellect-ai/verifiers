@@ -1,4 +1,3 @@
-import json
 from typing import Any, Callable, Tuple
 
 from datasets import Dataset
@@ -26,8 +25,12 @@ def art_tool_to_callable(tool_spec: dict) -> Callable:
         impl = _compile_lambda(implementation)
 
     # Build a strongly-typed function with explicit parameters (no **kwargs)
-    props: dict = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
-    required: list[str] = parameters.get("required", []) if isinstance(parameters, dict) else []
+    props: dict = (
+        parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+    )
+    required: list[str] = (
+        parameters.get("required", []) if isinstance(parameters, dict) else []
+    )
 
     def _map_type(t: str) -> str:
         return {
@@ -40,7 +43,9 @@ def art_tool_to_callable(tool_spec: dict) -> Callable:
         }.get(t, "Any")
 
     # Order params: required first, then optional (default=None)
-    ordered_keys = [k for k in required if k in props] + [k for k in props.keys() if k not in required]
+    ordered_keys = [k for k in required if k in props] + [
+        k for k in props.keys() if k not in required
+    ]
     annot_params: list[str] = []
     call_kwargs: list[str] = []
     for key in ordered_keys:
@@ -60,11 +65,15 @@ def art_tool_to_callable(tool_spec: dict) -> Callable:
     typed_fn = ns[name]
     typed_fn.__name__ = name
     typed_fn.__doc__ = description
-    setattr(typed_fn, "__art_schema__", {
-        "name": name,
-        "description": description,
-        "parameters": parameters,
-    })
+    setattr(
+        typed_fn,
+        "__art_schema__",
+        {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    )
     return typed_fn
 
 
@@ -97,14 +106,17 @@ def build_dataset_from_art_config(config: dict) -> Tuple[Dataset, Dataset]:
     for ex in examples:
         question = ex.get("question") or ex.get("prompt") or ""
         answer = str(ex.get("answer", ""))
-        rows.append({
-            "prompt": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": question}],
-            "answer": answer,
-        })
+        rows.append(
+            {
+                "prompt": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": question},
+                ],
+                "answer": answer,
+            }
+        )
     # split 2 train / 2 eval by default
-    split = max(1, min(2, len(rows)//2))
+    split = max(1, min(2, len(rows) // 2))
     train_rows = rows[:split]
-    eval_rows = rows[split:split*2] or rows[:split]
+    eval_rows = rows[split : split * 2] or rows[:split]
     return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
-
-

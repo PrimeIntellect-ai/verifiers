@@ -20,20 +20,23 @@ def export_verifiers_env(env: Any, path: str) -> None:
                 "description": getattr(tool, "__doc__", "") or "",
                 "parameters": {"type": "object", "properties": {}},
             }
-        tools.append({
-            "name": schema.get("name"),
-            "description": schema.get("description", ""),
-            "parameters": schema.get("parameters", {"type": "object", "properties": {}}),
-            "implementation": None,
-        })
+        tools.append(
+            {
+                "name": schema.get("name"),
+                "description": schema.get("description", ""),
+                "parameters": schema.get(
+                    "parameters", {"type": "object", "properties": {}}
+                ),
+                "implementation": None,
+            }
+        )
 
     config = {
         "name": getattr(env, "env_id", "verifiers_env"),
         "tools": tools,
         "completion_tool_name": "submit_answer",
-        "system_prompt": getattr(env, "system_prompt", None) or "Use tools to solve the task.",
+        "system_prompt": getattr(env, "system_prompt", None)
+        or "Use tools to solve the task.",
     }
     with open(path, "w") as f:
         json.dump(config, f, indent=2)
-
-

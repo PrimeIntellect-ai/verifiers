@@ -55,16 +55,27 @@ def test_art_tool_conversion_and_parser(tmp_path):
 
     # construct a fake completion that calls submit_answer
     completion = [
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "submit_answer", "arguments": json.dumps({"answer": "10"})}}
-        ]}
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": json.dumps({"answer": "10"}),
+                    },
+                }
+            ],
+        }
     ]
     parsed = env.parser.parse_answer(completion)
     assert parsed == "10"
 
     # reward should be 1.0 for matching answer
     prompt = [{"role": "user", "content": "What is 7+3?"}]
-    rs = env.rubric.score_rollout_sync(prompt=prompt, completion=completion, answer="10", state={})  # type: ignore[attr-defined]
+    rs = env.rubric.score_rollout_sync(
+        prompt=prompt, completion=completion, answer="10", state={}
+    )  # type: ignore[attr-defined]
     assert rs.reward == 1.0
-
-

@@ -674,7 +674,7 @@ class TestEnvironmentBase:
             rubric=Rubric(),
         )
 
-        env.rubric.score_rollouts = AsyncMock( # type: ignore[attr-defined]
+        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 

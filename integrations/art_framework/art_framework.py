@@ -82,10 +82,15 @@ def load_environment(
 
     parser = ARTParser(completion_tool_name=completion_tool_name)
     if use_llm_judge:
-        rubric = vf.JudgeRubric(parser=parser, judge_model=judge_model, judge_client=judge_client)
+        rubric = vf.JudgeRubric(
+            parser=parser, judge_model=judge_model, judge_client=judge_client
+        )
     else:
+
         class ExactMatchRubric(vf.Rubric):
-            async def correct_answer(self, parser: vf.Parser, completion: vf.Messages, answer: str, **_: Any) -> float:
+            async def correct_answer(
+                self, parser: vf.Parser, completion: vf.Messages, answer: str, **_: Any
+            ) -> float:
                 pred = parser.parse_answer(completion) or ""
                 return 1.0 if str(pred) == str(answer) and pred != "" else 0.0
 
@@ -115,5 +120,3 @@ __all__ = [
     "ARTParser",
     "export_verifiers_env",
 ]
-
-
