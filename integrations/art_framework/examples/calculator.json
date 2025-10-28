@@ -1,0 +1,36 @@
+{
+  "name": "calculator",
+  "system_prompt": "Use tools and return via submit_answer.",
+  "completion_tool_name": "submit_answer",
+  "tools": [
+    {
+      "name": "add",
+      "description": "Add two integers",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "a": {"type": "integer"},
+          "b": {"type": "integer"}
+        },
+        "required": ["a", "b"]
+      },
+      "implementation": "lambda a, b: a + b"
+    },
+    {
+      "name": "submit_answer",
+      "description": "Return final answer",
+      "parameters": {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"]
+      },
+      "implementation": "lambda answer: answer"
+    }
+  ],
+  "examples": [
+    {"question": "Add 2 and 3", "answer": "5"},
+    {"question": "Add 7 and 3", "answer": "10"},
+    {"question": "Add 1 and 9", "answer": "10"},
+    {"question": "Add 4 and 4", "answer": "8"}
+  ]
+}
