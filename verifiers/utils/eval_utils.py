@@ -185,6 +185,12 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         v = results.metrics[k]
         results_dict[k] = v
 
+    # Add selected state columns if specified
+    state_columns = results.metadata.state_columns
+    if state_columns:
+        for col in state_columns:
+            results_dict[col] = [s.get(col) for s in results.state]
+
     return Dataset.from_dict(results_dict)
 
 
