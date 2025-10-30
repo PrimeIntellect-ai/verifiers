@@ -1,13 +1,10 @@
 import os
-import re
-from typing import Callable, Dict, List
 import numpy as np
 
 import verifiers as vf
 from datasets import load_dataset
 from openai import OpenAI
-from verifiers.parsers.think_parser import ThinkParser
-from sympy import symbols, sympify, simplify, SympifyError, latex
+from sympy import simplify, latex
 from sympy.parsing.latex import parse_latex
 
 
