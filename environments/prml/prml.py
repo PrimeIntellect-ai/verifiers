@@ -3,9 +3,11 @@ import numpy as np
 
 import verifiers as vf
 from datasets import load_dataset
-from openai import OpenAI
+
 from sympy import simplify, latex
 from sympy.parsing.latex import parse_latex
+
+from openai import OpenAI
 
 
 def sympy_simplify_expression(expr_latex: str) -> str:
