@@ -1,7 +1,7 @@
 from math_verify import parse, verify  # type: ignore[unresolved-import]
 
+from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
-from verifiers.parsers.think_parser import MaybeThinkParser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, RewardFunc
 from verifiers.utils.data_utils import extract_boxed_answer
