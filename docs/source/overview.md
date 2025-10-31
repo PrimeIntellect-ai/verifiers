@@ -13,7 +13,7 @@ Verifiers allows defining arbitrary interaction patterns between models and envi
 
 ```
 Environment (orchestration layer)
-    ├── Defines interaction protocol (what to observe respond, how to respond, when to terminate)
+    ├── Defines interaction protocol (what to observe, how to respond, when to terminate)
     ├── Manages conversation state
     ├── Integrates tools and external resources
     └── Evaluates performance via Rubrics
