@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "wiki-search"
+id = "will/wiki-search"
 
 [env.args]
 max_turns = 8
@@ -21,7 +21,7 @@ gpus = 1
 run_name = "wiki-search"
 micro_batch_size = 2
 rollouts_per_example = 16
-batch_size = 512
+batch_size = 256
 max_steps = 500
 max_tokens = 512
 max_seq_len = 4192
