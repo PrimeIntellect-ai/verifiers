@@ -214,7 +214,7 @@ def load_environment(
         read_section,
     ]
     parser = vf.Parser()
-    dataset = load_dataset("willcb/wiki-trivia-questions", split="train")
+    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
     tool_rubric = vf.ToolRubric(tools=tools)
     judge_client = AsyncOpenAI(
         base_url=judge_base_url, api_key=os.getenv(judge_api_key_var)
@@ -230,7 +230,7 @@ def load_environment(
         else:
             return 0.0
 
-    system_prompt = "Use the provided Wikipediasearch tools to help answer questions."
+    system_prompt = "Use the provided Wikipedia search tools to help answer questions."
     judge_rubric.add_reward_func(judge_reward_func, weight=1.0)
     rubric = vf.RubricGroup(rubrics=[tool_rubric, judge_rubric])
     vf_env = vf.ToolEnv(
