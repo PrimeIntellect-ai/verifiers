@@ -1,17 +1,33 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from verifiers.envs.sandbox_env import SandboxEnv
+
+import pytest
 from datasets import Dataset
+
+from verifiers.envs.sandbox_env import SandboxEnv
 
 
 @pytest.fixture
 def sandbox_env():
     """Fixture to create a SandboxEnv instance with mocked dataset."""
     mock_dataset = Dataset.from_dict({"question": ["mock question"], "info": [{}]})
-    env = SandboxEnv(dataset=mock_dataset)
-    env.logger = MagicMock()
-    env.active_sandboxes = {"sandbox1", "sandbox2", "sandbox3"}
-    return env
+
+    mock_async_client_patcher = patch("verifiers.envs.sandbox_env.AsyncSandboxClient")
+    mock_request_patcher = patch("verifiers.envs.sandbox_env.CreateSandboxRequest")
+
+    mock_async_client = mock_async_client_patcher.start()
+    mock_request_patcher.start()
+
+    mock_async_client_instance = MagicMock()
+    mock_async_client.return_value = mock_async_client_instance
+
+    try:
+        env = SandboxEnv(dataset=mock_dataset)
+        env.logger = MagicMock()
+        env.active_sandboxes = {"sandbox1", "sandbox2", "sandbox3"}
+        yield env
+    finally:
+        mock_async_client_patcher.stop()
+        mock_request_patcher.stop()
 
 
 @patch("verifiers.envs.sandbox_env.SandboxClient")
@@ -35,7 +51,10 @@ def test_bulk_delete_sandboxes(mock_api_client, mock_sandbox_client, sandbox_env
 
 def test_bulk_delete_sandboxes_failure(sandbox_env):
     """Test the bulk_delete_sandboxes method when an exception occurs."""
-    with patch("verifiers.envs.sandbox_env.SandboxClient") as mock_sandbox_client:
+    with (
+        patch("verifiers.envs.sandbox_env.SandboxClient") as mock_sandbox_client,
+        patch("verifiers.envs.sandbox_env.APIClient"),
+    ):
         mock_client_instance = mock_sandbox_client.return_value
         mock_client_instance.bulk_delete.side_effect = Exception("Deletion failed")
 
