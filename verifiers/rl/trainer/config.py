@@ -97,7 +97,7 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Beta2 for `AdamW` optimizer."},
     )
     weight_decay: float = field(
-        default=0.01,
+        default=0.0,
         metadata={"help": "Weight decay for `AdamW` optimizer."},
     )
     mask_ratio_low: float = field(
