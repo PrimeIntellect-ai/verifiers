@@ -1,7 +1,8 @@
 """Tests for the tool_utils module."""
 
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from typing import Optional
+
+from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
 class TestToolUtils:
@@ -53,7 +54,6 @@ class TestToolUtils:
                     "required": ["param1", "param2", "param3"],
                     "title": "test_func_args",
                 },
-                "strict": True,
             },
         }
 
@@ -88,7 +88,6 @@ class TestToolUtils:
                     "required": ["param1", "param2", "param3"],
                     "title": "test_func_args",
                 },
-                "strict": True,
             },
         }
 
@@ -119,7 +118,6 @@ class TestToolUtils:
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }
 
@@ -148,7 +146,6 @@ class TestToolUtils:
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }
 
@@ -174,6 +171,5 @@ class TestToolUtils:
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }
