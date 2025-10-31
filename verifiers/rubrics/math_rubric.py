@@ -1,7 +1,7 @@
 from math_verify import parse, verify  # type: ignore[unresolved-import]
 
+from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
-from verifiers.parsers.think_parser import ThinkParser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, RewardFunc
 from verifiers.utils.data_utils import extract_boxed_answer
@@ -14,7 +14,7 @@ class MathRubric(Rubric):
         weights: list[float] | None = None,
         parser: Parser | None = None,
     ):
-        parser = parser or ThinkParser(extract_fn=extract_boxed_answer)
+        parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer_reward_func)
 

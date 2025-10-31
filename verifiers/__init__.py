@@ -12,6 +12,7 @@ from .envs.multiturn_env import MultiTurnEnv
 from .envs.singleturn_env import SingleTurnEnv
 from .envs.stateful_tool_env import StatefulToolEnv
 from .envs.tool_env import ToolEnv
+from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.parser import Parser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
@@ -68,6 +69,7 @@ setup_logging()
 __all__ = [
     "Parser",
     "ThinkParser",
+    "MaybeThinkParser",
     "XMLParser",
     "Rubric",
     "JudgeRubric",
