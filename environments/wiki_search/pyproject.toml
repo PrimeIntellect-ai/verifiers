@@ -16,4 +16,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["wiki_search.py"]
+include = ["wiki_search.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 10
+rollouts_per_example = 2

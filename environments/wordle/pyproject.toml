@@ -15,3 +15,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["wordle.py"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 1

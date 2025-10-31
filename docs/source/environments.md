@@ -77,6 +77,50 @@ dependencies = [
     "verifiers",
     "sympy",  # For symbolic math
 ]
+
+[tool.hatch.build]
+include = ["my_math_env.py", "pyproject.toml"]
+```
+
+### Default Evaluation Configuration
+
+You can specify default evaluation parameters in your `pyproject.toml` to customize the default behavior when users run `vf-eval` without explicit arguments:
+
+```toml
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 5
+```
+
+These defaults are automatically read from the installed package's `pyproject.toml` and used when:
+- Users don't provide `-n` / `--num-examples` or `-r` / `--rollouts-per-example` flags
+- The package is installed and `pyproject.toml` is included in the package distribution
+
+**Important**: Ensure `pyproject.toml` is included in your package by adding it to the `[tool.hatch.build]` section:
+
+```toml
+[tool.hatch.build]
+include = ["my_math_env.py", "pyproject.toml"]
+```
+
+CLI arguments always take precedence over these defaults—if a user explicitly passes `-n 10`, that value will be used regardless of what's in `pyproject.toml`.
+
+Third-party libraries can also access these defaults programmatically:
+
+```python
+import importlib.resources
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib
+
+package_ref = importlib.resources.files("my_math_env")
+pyproject_file = package_ref / "pyproject.toml"
+with pyproject_file.open("rb") as f:
+    pyproject_data = tomllib.load(f)
+    
+eval_config = pyproject_data.get("tool", {}).get("verifiers", {}).get("eval", {})
+num_examples = eval_config.get("num_examples", 5)  # fallback to 5 if not specified
 ```
 
 ## Development Workflow
