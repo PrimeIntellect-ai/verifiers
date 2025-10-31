@@ -98,7 +98,7 @@ def _make_metadata(
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=[],
+        state_columns=["custom_field"],
         path_to_save=Path("test.jsonl"),
     )
 
@@ -652,7 +652,7 @@ class TestEnvironmentBase:
             metadata=_make_metadata(num_examples=1),
         )
 
-        dataset = build_dataset(results, state_columns=["custom_field"])
+        dataset = build_dataset(results)
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
@@ -661,7 +661,7 @@ class TestEnvironmentBase:
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
-        assert "custom_field" not in dataset.column_names
+        assert "custom_field" in dataset.column_names
 
     @pytest.mark.asyncio
     async def test_generate_state_preserves_references(self, mock_openai_client):
@@ -674,7 +674,7 @@ class TestEnvironmentBase:
             rubric=Rubric(),
         )
 
-        env.rubric.score_rollouts = AsyncMock( # type: ignore[attr-defined]
+        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 

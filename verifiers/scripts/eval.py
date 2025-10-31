@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         "--state-columns",
         "-C",
-        type=list[str],
+        nargs="+",
         default=[],
         help="List of state columns to save",
     )
