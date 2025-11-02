@@ -33,7 +33,7 @@ class RLConfig(TrainingArguments):
     )
     lora_target_modules: List[str] | str | None = field(
         default=None,
-        metadata={"help": "LoRA target modules."},
+        metadata={"help": "LoRA target modules (all linear layers by default)."},
     )
     lora_modules_to_save: Optional[List[str]] = field(
         default=None,

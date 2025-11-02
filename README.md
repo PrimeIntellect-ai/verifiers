@@ -53,7 +53,7 @@ uv add verifiers
 
 Select an environment from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to install:
 ```bash
-prime env install will/wordle
+prime env install will/wiki-search
 ```
 
 Run a quick evaluation with OpenAI models:
@@ -61,12 +61,16 @@ Run a quick evaluation with OpenAI models:
 uv run vf-eval wordle -m gpt-5-nano
 ```
 
-For RL training, do:
-```bash
-uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main' # after 0.1.7 release, this will be: uv add 'verifiers[rl]'
-uv run vf-setup # creates default RL TOMLs under configs/
-```
+For advanced evaluation configurations with the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli), see [here](https://docs.primeintellect.ai/tutorials-environments/evaluating)
 
+## RL Training
+
+
+
+Other supported trainers include:
+
+- [SkyRL]
+- [Tinker]() 
 ## Setup
 
 We recommend using `verifiers` along with [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
