@@ -20,9 +20,15 @@ logger = logging.getLogger(__name__)
 
 
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = -1, **kwargs):
+    def __init__(
+        self,
+        max_turns: int = -1,
+        exclude_think: bool = False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.exclude_think = exclude_think
 
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
@@ -49,8 +55,45 @@ class MultiTurnEnv(Environment):
         """
         pass
 
+    @staticmethod
+    def _process_assistant_message(msg: ChatMessage) -> ChatMessage:
+        import re
+
+        def _strip_prefix_up_to_close(text: str) -> str:
+            return re.sub(r"(?s)^.*</think>", "", text).lstrip()
+
+        new_msg: ChatMessage = {"role": msg.get("role", "assistant")}
+        if "tool_calls" in msg:
+            new_msg["tool_calls"] = msg["tool_calls"]
+
+        content = msg.get("content")
+        if content is None:
+            new_msg["content"] = ""
+            return new_msg
+
+        if "</think>" in content:
+            new_msg["content"] = _strip_prefix_up_to_close(content)
+        else:
+            new_msg["content"] = content
+
+        return new_msg
+
     async def get_context_messages(self, state: State) -> Messages:
-        return state["prompt"] + state["completion"]
+        if not self.exclude_think:
+            return state["prompt"] + state["completion"]
+
+        prompt_msgs = state["prompt"]
+        completion_msgs = state["completion"]
+
+        processed_completion: list[ChatMessage] = []
+        for m in completion_msgs:
+            role = m.get("role")
+            if role == "assistant":
+                processed_completion.append(self._process_assistant_message(m))
+            else:
+                processed_completion.append(m)
+
+        return prompt_msgs + processed_completion
 
     async def rollout(
         self,
