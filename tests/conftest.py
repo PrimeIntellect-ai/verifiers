@@ -6,6 +6,7 @@ import pytest
 from datasets import Dataset
 
 from verifiers import (
+    MaybeThinkParser,
     Messages,
     MultiTurnEnv,
     Parser,
@@ -35,6 +36,12 @@ def xml_parser():
 def xml_parser_with_alternatives():
     """Return an XMLParser instance with alternative field names."""
     return XMLParser(fields=["reasoning", ("code", "answer")], answer_field="answer")
+
+
+@pytest.fixture
+def maybe_think_parser():
+    """Return a MaybeThinkParser instance."""
+    return MaybeThinkParser()
 
 
 @pytest.fixture

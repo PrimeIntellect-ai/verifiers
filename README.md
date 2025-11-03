@@ -26,6 +26,10 @@ Verifiers: Environments for LLM Reinforcement Learning
   </a>
 </p>
 
+## News & Updates
+
+- [10/28/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
+- [10/27/25] A new iteration of the Prime Intellect [Environments Program]() is live!  
 
 ## Overview
 

@@ -15,7 +15,7 @@
 - [ ] New tests have been added to cover the changes
 
 ## Checklist
-- [ ] My code follows the style guidelines of this project as outlined in [AGENTS.md](/AGENTS.md)
+- [ ] My code follows the style guidelines of this project as outlined in [AGENTS.md](https://github.com/PrimeIntellect-ai/verifiers/blob/main/AGENTS.md)
 - [ ] I have performed a self-review of my own code
 - [ ] I have commented my code, particularly in hard-to-understand areas
 - [ ] I have made corresponding changes to the documentation

@@ -35,6 +35,7 @@ from verifiers.rl.trainer.utils import (
 )
 from verifiers.types import Messages
 from verifiers.utils.logging_utils import print_prompt_completions_sample
+from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 
 
 class RLTrainer(Trainer):
@@ -419,11 +420,30 @@ class RLTrainer(Trainer):
             ):
                 import pandas as pd
 
+                def role_content_only(messages):
+                    if isinstance(messages, str):
+                        return messages
+                    return [
+                        {
+                            "role": m.get("role", ""),
+                            "content": m.get("content", ""),
+                        }
+                        for m in messages
+                    ]
+
+                prompts_clean = [
+                    role_content_only(sanitize_tool_calls(messages_to_printable(p)))
+                    for p in self._textual_logs["prompt"]
+                ]
+                completions_clean = [
+                    role_content_only(sanitize_tool_calls(messages_to_printable(c)))
+                    for c in self._textual_logs["completion"]
+                ]
                 table = {
                     "step": [str(self.state.global_step)]
                     * len(self._textual_logs["prompt"]),
-                    "prompt": list(self._textual_logs["prompt"]),
-                    "completion": list(self._textual_logs["completion"]),
+                    "prompt": prompts_clean,
+                    "completion": completions_clean,
                     **{k: list(v) for k, v in self._textual_logs["rewards"].items()},
                 }
                 df = pd.DataFrame(table)

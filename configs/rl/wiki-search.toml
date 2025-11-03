@@ -1,21 +1,27 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "primeintellect/wiki-search"
+id = "will/wiki-search"
+
+[env.args]
+max_turns = 8
 
 [inference]
-gpus = 6
+gpus = 7
 
 [inference.args]
 enforce_eager = true
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
 
 [trainer]
-gpus = 2
+gpus = 1
 
 [trainer.args]
 run_name = "wiki-search"
-micro_batch_size = 8
+micro_batch_size = 4
 rollouts_per_example = 16
-batch_size = 512
+batch_size = 1024
 max_steps = 500
-max_seq_len = 4096
+max_tokens = 512
+max_seq_len = 4192

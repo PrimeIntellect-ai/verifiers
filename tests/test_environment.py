@@ -98,7 +98,7 @@ def _make_metadata(
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=[],
+        state_columns=["custom_field"],
         path_to_save=Path("test.jsonl"),
     )
 
@@ -652,7 +652,7 @@ class TestEnvironmentBase:
             metadata=_make_metadata(num_examples=1),
         )
 
-        dataset = build_dataset(results, state_columns=["custom_field"])
+        dataset = build_dataset(results)
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
@@ -661,4 +661,105 @@ class TestEnvironmentBase:
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
-        assert "custom_field" not in dataset.column_names
+        assert "custom_field" in dataset.column_names
+
+    @pytest.mark.asyncio
+    async def test_generate_state_preserves_references(self, mock_openai_client):
+        """Test that generate creates state with preserved references instead of deep copying"""
+        env = SimpleEnvironment(
+            eval_dataset=Dataset.from_dict(
+                {"question": ["test question"], "answer": ["test answer"]}
+            ),
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
+            return_value=RolloutScores(reward=[1.0], metrics={})
+        )
+
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "info": [{"key": "value"}],
+            "example_id": [0],
+        }
+
+        results = await env.generate(
+            inputs,
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=True,
+            interleave_scoring=False,
+        )
+
+        assert len(results.state) == 1
+        state = results.state[0]
+
+        assert state["prompt"] is results.prompt[0]
+        assert state["completion"] is results.completion[0]
+        assert state["answer"] is results.answer[0]
+        assert state["info"] is results.info[0]
+        assert state["example_id"] is results.example_id[0]
+
+    @pytest.mark.asyncio
+    async def test_generate_updates_metadata(self, mock_openai_client):
+        """Test that metadata fields are updated after generate() completes."""
+        dataset = Dataset.from_dict(
+            {
+                "question": ["What is 2+2?", "What is 3+3?"],
+                "answer": ["4", "6"],
+            }
+        )
+
+        def reward_a(**kwargs):
+            return 1.0
+
+        def reward_b(**kwargs):
+            return 0.5
+
+        env = SimpleEnvironment(
+            dataset=dataset,
+            rubric=Rubric(
+                funcs=[reward_a, reward_b],
+                weights=[0.5, 0.5],
+            ),
+        )
+
+        results = await env.generate(
+            inputs=env.get_dataset(n=2),
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=True,
+        )
+
+        assert results.metadata.time_ms > 0.0
+        assert results.metadata.avg_reward == 0.75
+        assert len(results.metadata.avg_metrics) == 2
+        assert "reward_a" in results.metadata.avg_metrics
+        assert "reward_b" in results.metadata.avg_metrics
+        assert results.metadata.avg_metrics["reward_a"] == 1.0
+        assert results.metadata.avg_metrics["reward_b"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_generate_metadata_without_scoring(self, mock_openai_client):
+        """Test that metadata handles score_rollouts=False correctly."""
+        dataset = Dataset.from_dict(
+            {
+                "question": ["What is 2+2?"],
+                "answer": ["4"],
+            }
+        )
+
+        env = SimpleEnvironment(dataset=dataset, rubric=Rubric())
+
+        results = await env.generate(
+            inputs=env.get_dataset(n=1),
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=False,
+        )
+
+        assert results.metadata.time_ms > 0.0
+        assert results.metadata.avg_reward == 0.0
+        assert results.metadata.avg_metrics == {}

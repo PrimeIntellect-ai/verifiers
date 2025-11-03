@@ -22,11 +22,9 @@ gpus = 1
 
 [trainer.args]
 run_name = "alphabet-sort"
-use_lora = true
-learning_rate = 1e-5
-micro_batch_size = 8
+micro_batch_size = 16
 rollouts_per_example = 16
 batch_size = 512
 max_steps = 100
 max_tokens = 512
-max_seq_len = 2048
+max_seq_len = 1024
