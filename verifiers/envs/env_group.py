@@ -123,17 +123,12 @@ class EnvGroup(Environment):
                 return example
 
             env_dataset = env.get_dataset()
-            if env_dataset is not None and "task" not in env_dataset.column_names:
-                env_dataset = env_dataset.map(add_task)
             if env_dataset is not None:
+                env_dataset = env_dataset.map(add_task)
                 datasets.append(env_dataset)
             env_eval_dataset = env.get_eval_dataset()
-            if (
-                env_eval_dataset is not None
-                and "task" not in env_eval_dataset.column_names
-            ):
-                env_eval_dataset = env_eval_dataset.map(add_task)
             if env_eval_dataset is not None:
+                env_eval_dataset = env_eval_dataset.map(add_task)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
