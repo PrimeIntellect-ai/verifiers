@@ -187,7 +187,10 @@ To test sparse metrics with ProfBench:
    cd prime-environments
    ```
 
-2. **Pull this verifiers PR with sparse metrics implementation**
+2. **Pull this verifiers fork / pr with sparse metrics implementation:**
+   ```bash
+   git clone https://github.com/vxnuaj/verifiers.git -b vxnuaj/dynamic-sparse-rewards
+   ```
 
 3. **Install verifiers in editable mode:**
    ```bash
