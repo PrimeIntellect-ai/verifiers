@@ -1,0 +1,4 @@
+Relay diagnostics
+Paths: /json/ledger.json, /json/pointers.json
+Password: BRIDGE-NODE-7
+Checksum taps: 4

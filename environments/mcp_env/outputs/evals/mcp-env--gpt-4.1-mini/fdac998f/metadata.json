@@ -1,1 +1,0 @@
-{"env": "mcp-env", "model": "gpt-4.1-mini", "num_examples": 1, "rollouts_per_example": 3, "sampling_args": {"max_tokens": null}, "date": "2025-09-18 23:20:15", "time_ms": 3256.3068866729736, "avg_reward": 1.0, "avg_judge_reward": 1.0}

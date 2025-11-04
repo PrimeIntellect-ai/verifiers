@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 from .types import *  # noqa # isort: skip
 from .envs.env_group import EnvGroup
 from .envs.environment import Environment
+from .envs.mcp_env import MCPEnv
 from .envs.multiturn_env import MultiTurnEnv
 from .envs.singleturn_env import SingleTurnEnv
 from .envs.stateful_tool_env import StatefulToolEnv
@@ -78,6 +79,7 @@ __all__ = [
     "MathRubric",
     "TextArenaEnv",
     "ReasoningGymEnv",
+    "MCPEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",

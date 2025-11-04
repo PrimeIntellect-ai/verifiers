@@ -1,0 +1,12 @@
+{
+  "paths": {
+    "ember": "/text/ember.txt",
+    "relay": "/text/relay.txt",
+    "sequence": "/text/sequence.txt",
+    "directive": "/text/directive.txt"
+  },
+  "extras": {
+    "manifest": "/html/manifest.html",
+    "checksum": "/json/checksum_hints.json"
+  }
+}

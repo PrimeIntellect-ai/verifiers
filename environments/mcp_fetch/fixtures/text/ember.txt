@@ -1,0 +1,4 @@
+Ember log
+Line 1: Sparks coil beneath the relay mesh.
+Line 2: Guidance phrase = stay patient.
+Line 3: Final token: glow-lantern.

@@ -1,0 +1,4 @@
+Directive 7b:
+1. Consult extras.manifest inside /json/pointers.json.
+2. Request that HTML and read the text of <code data-role="final">.
+3. Respond only with that code in uppercase letters.

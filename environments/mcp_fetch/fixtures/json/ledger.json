@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {"id": "A1", "type": "expense", "amount": 12, "tags": ["ops", "night"]},
+    {"id": "A2", "type": "expense", "amount": 9, "tags": ["ops"]},
+    {"id": "A3", "type": "refund", "amount": 4, "tags": ["ops", "delta"]},
+    {"id": "A4", "type": "expense", "amount": 15, "tags": ["delta"]},
+    {"id": "A5", "type": "income", "amount": 40, "tags": ["ops", "spot"]},
+    {"id": "A6", "type": "expense", "amount": 7, "tags": ["night"]},
+    {"id": "A7", "type": "expense", "amount": 3, "tags": ["ops", "delta"]},
+    {"id": "A8", "type": "income", "amount": 18, "tags": ["delta"]}
+  ]
+}

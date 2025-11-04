@@ -1,3 +1,7 @@
+"""Async helper for managing a single MCP stdio server connection."""
+
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Dict, Optional
@@ -10,6 +14,8 @@ from .models import MCPServerConfig
 
 
 class MCPServerConnection:
+    """Maintains a background connection to a single MCP stdio server."""
+
     def __init__(self, config: MCPServerConfig, logger: logging.Logger):
         self.config = config
         self.logger = logger
@@ -21,10 +27,11 @@ class MCPServerConnection:
         self._error: Optional[Exception] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
-    async def connect(self):
-        # Record the loop this connection is bound to
+    async def connect(self) -> Dict[str, Tool]:
+        """Launch the MCP server and wait for a registered tool list."""
+
         self.loop = asyncio.get_running_loop()
-        self._connection_task = asyncio.create_task(self._get_connection())
+        self._connection_task = asyncio.create_task(self._run())
 
         await self._ready.wait()
 
@@ -33,7 +40,7 @@ class MCPServerConnection:
 
         return self.tools
 
-    async def _get_connection(self):
+    async def _run(self) -> None:
         try:
             server_params = StdioServerParameters(
                 command=self.config.command,
@@ -59,16 +66,19 @@ class MCPServerConnection:
 
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            self._error = e
+        except Exception as exc:  # noqa: BLE001
+            self._error = exc
             self._ready.set()
         finally:
             self.session = None
             self.tools = {}
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
+        """Invoke a tool exposed by the connected MCP server."""
+
         assert self.session is not None, f"Server '{self.config.name}' not connected"
         assert self.loop is not None, "Connection loop not initialized"
+
         fut = asyncio.run_coroutine_threadsafe(
             self.session.call_tool(tool_name, arguments=arguments), self.loop
         )
@@ -77,10 +87,9 @@ class MCPServerConnection:
         if result.content:
             text_parts = []
             for content_item in result.content:
-                if hasattr(content_item, "text"):
-                    assert isinstance(content_item, TextContent)
+                if isinstance(content_item, TextContent):
                     text_parts.append(content_item.text)
-                elif hasattr(content_item, "type") and content_item.type == "text":
+                elif getattr(content_item, "type", None) == "text":
                     text_parts.append(getattr(content_item, "text", str(content_item)))
                 else:
                     text_parts.append(str(content_item))
@@ -89,11 +98,13 @@ class MCPServerConnection:
 
         return "No result returned from tool"
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
+        """Terminate the background MCP connection."""
+
         assert self._connection_task is not None
         self._connection_task.cancel()
         try:
             await self._connection_task
         except asyncio.CancelledError:
             pass
-        self.logger.info(f"MCP server '{self.config.name}' terminated")
+        self.logger.info("MCP server '%s' terminated", self.config.name)

@@ -1,11 +1,17 @@
+"""Wrapper that adapts MCP tool schemas to ToolEnv callables."""
+
+from __future__ import annotations
+
 from typing import Any
 
 from mcp.types import Tool
 
-from .mcp_server_connection import MCPServerConnection
+from .server_connection import MCPServerConnection
 
 
 class MCPToolWrapper:
+    """Callable shim that ToolEnv can treat like a native function tool."""
+
     def __init__(
         self, server_name: str, tool: Tool, server_connection: MCPServerConnection
     ):
