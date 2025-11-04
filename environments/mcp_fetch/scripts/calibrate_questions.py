@@ -475,6 +475,8 @@ def main() -> None:
 
     REPORTS_DIR.mkdir(exist_ok=True, parents=True)
 
+    summaries: list[dict[str, Any]] = []
+
     for model in args.model:
         results = []
         correct = 0
@@ -539,7 +541,24 @@ def main() -> None:
         }
         report_path = REPORTS_DIR / f"question_quality_{sanitize_filename(model)}.json"
         report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        summary_record = {
+            "model": model,
+            "correct": correct,
+            "total": len(tasks),
+            "accuracy": accuracy,
+            "report_path": str(report_path),
+        }
+        summaries.append(summary_record)
         print(f"\nModel {model}: {correct}/{len(tasks)} correct ({accuracy:.1%}). Report: {report_path}\n")
+
+    if summaries:
+        print("\n=== Calibration Summary ===")
+        for record in summaries:
+            print(
+                f"- {record['model']}: {record['correct']}/{record['total']} "
+                f"({record['accuracy']:.1%}) -> {record['report_path']}"
+            )
+        print("==========================\n")
 
 
 if __name__ == "__main__":
