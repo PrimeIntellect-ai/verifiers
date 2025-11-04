@@ -58,13 +58,13 @@ class MultiTurnEnv(Environment):
     @staticmethod
     def _process_assistant_message(msg: ChatMessage) -> ChatMessage:
         import re
+        from copy import deepcopy
 
         def _strip_prefix_up_to_close(text: str) -> str:
             return re.sub(r"(?s)^.*</think>", "", text).lstrip()
 
-        new_msg: ChatMessage = {"role": msg.get("role", "assistant")}
-        if "tool_calls" in msg:
-            new_msg["tool_calls"] = msg["tool_calls"]
+        new_msg: ChatMessage = deepcopy(msg)
+        new_msg["role"] = msg.get("role", "assistant")
 
         content = msg.get("content")
         if content is None:
