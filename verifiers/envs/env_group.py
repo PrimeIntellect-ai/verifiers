@@ -92,7 +92,11 @@ class EnvGroup(Environment):
     """
 
     def __init__(
-        self, envs: list[Environment], env_names: list[str] | None = None, **kwargs
+        self,
+        envs: list[Environment],
+        env_names: list[str] | None = None,
+        map_kwargs: dict = {},
+        **kwargs,
     ):
         """
         Initialize EnvGroup with a list of environments.
@@ -126,11 +130,11 @@ class EnvGroup(Environment):
 
             env_dataset = env.get_dataset()
             if env_dataset is not None:
-                env_dataset = env_dataset.map(add_task)
+                env_dataset = env_dataset.map(add_task, **map_kwargs)
                 datasets.append(env_dataset)
             env_eval_dataset = env.get_eval_dataset()
             if env_eval_dataset is not None:
-                env_eval_dataset = env_eval_dataset.map(add_task)
+                env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
