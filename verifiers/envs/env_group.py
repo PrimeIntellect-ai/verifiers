@@ -1,6 +1,6 @@
 from typing import Mapping
 
-from datasets import concatenate_datasets
+from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
 
 from verifiers import (
@@ -154,6 +154,27 @@ class EnvGroup(Environment):
         self.logger.info(
             f"Initialized EnvGroup with {len(envs)} environments: {self.env_names}"
         )
+
+    def format_dataset(
+        self,
+        dataset: Dataset,
+        system_prompt: str | None = None,
+        few_shot: list[ChatMessage] | None = None,
+        question_key: str = "question",
+        answer_key: str = "answer",
+    ) -> Dataset:
+        """
+        Forceully creates `example_id` and `prompt` columns if not present.
+        """
+
+        # Remove the example_id column present in the individual env datasets and add global ids
+        if "example_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["example_id"])
+        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+
+        assert "example_id" in dataset.column_names
+        assert "prompt" in dataset.column_names
+        return dataset
 
     async def init_state(
         self,
