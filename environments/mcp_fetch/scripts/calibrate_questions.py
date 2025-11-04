@@ -89,6 +89,13 @@ def _model_requires_responses(model: str) -> bool:
     return lowered.startswith("gpt-5") or lowered.startswith("o3")
 
 
+def _supports_temperature(model: str) -> bool:
+    lowered = model.lower()
+    if lowered.startswith("gpt-5"):
+        return False
+    return True
+
+
 def _convert_text_block(role: str, text: str) -> Dict[str, str]:
     block_type = "text"
     if role == "user":
@@ -215,15 +222,16 @@ def _create_completion(
         kwargs: Dict[str, Any] = {
             "model": model,
             "input": _format_messages_for_responses(messages),
-            "temperature": temperature,
         }
+        if temperature and _supports_temperature(model):
+            kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
         return _responses_to_chat_choice(client.responses.create(**kwargs))
     return client.chat.completions.create(
         model=model,
-        temperature=temperature,
+        temperature=temperature if _supports_temperature(model) else 0,
         messages=messages,
         tools=tools,
     )
@@ -519,7 +527,14 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY is not set (load it in .env or environment).")
 
     client = OpenAI()
-    judge_model = args.judge_model or (args.model[0] if args.model else None)
+    judge_model = args.judge_model
+    if not judge_model:
+        for candidate in args.model:
+            if not _model_requires_responses(candidate):
+                judge_model = candidate
+                break
+        if not judge_model and args.model:
+            judge_model = args.model[0]
     if args.include_judge and not judge_model:
         raise SystemExit("Judge model must be provided when including judge tasks.")
     start_fixture_server(args.port)
