@@ -42,20 +42,14 @@ class ToolRubric(Rubric):
         async def tool_call_count_func(completion: Messages) -> float:
             """Count calls to {tool_name} tool."""
             count = 0
-
             # Find tool calls in assistant messages
             assert isinstance(completion, list)
             for msg in completion:
                 if msg.get("role") == "assistant" and "tool_calls" in msg:
                     tool_calls = msg.get("tool_calls", [])
-                    if not isinstance(tool_calls, list):
-                        continue
-
                     for tool_call in tool_calls:
-                        if hasattr(tool_call, "function"):
-                            assert hasattr(getattr(tool_call, "function"), "name")
-                            if getattr(tool_call, "function").name == tool_name:
-                                count += 1
+                        if tool_call.get("function", {}).get("name") == tool_name:
+                            count += 1
 
             return float(count)
 

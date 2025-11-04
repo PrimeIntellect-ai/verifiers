@@ -2,7 +2,7 @@ import json
 from typing import Any, Callable
 
 from verifiers.envs.multiturn_env import MultiTurnEnv
-from verifiers.types import ChatCompletionMessageToolCall, Message, Messages, State
+from verifiers.types import Message, Messages, State
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
@@ -77,16 +77,11 @@ class ToolEnv(MultiTurnEnv):
         assert "tool_calls" in messages[-1]
         tool_messages = []
         for tool_call in messages[-1]["tool_calls"]:
-            match tool_call:
-                case ChatCompletionMessageToolCall():
-                    tool_name: str = tool_call.function.name
-                    tool_args: dict = json.loads(tool_call.function.arguments)
-                    tool_call_id: str = tool_call.id or ""
-                case _:
-                    assert "function" in tool_call
-                    tool_name: str = tool_call["function"]["name"]
-                    tool_args: dict = json.loads(tool_call["function"]["arguments"])
-                    tool_call_id: str = tool_call["id"]
+            tool_name: str = tool_call.get("function", {}).get("name", "")
+            tool_args: dict = json.loads(
+                tool_call.get("function", {}).get("arguments", "")
+            )
+            tool_call_id: str = tool_call.get("id", "")
             tool_message: Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
             )

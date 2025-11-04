@@ -12,6 +12,14 @@ import verifiers as vf
 from verifiers.rubrics.judge_rubric import JudgeRubric
 
 CHROMA_DB_DIR = ".chroma_db"
+_chroma_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_chroma_semaphore() -> asyncio.Semaphore:
+    global _chroma_semaphore
+    if _chroma_semaphore is None:
+        _chroma_semaphore = asyncio.Semaphore(100)
+    return _chroma_semaphore
 
 
 def load_environment(
@@ -71,7 +79,6 @@ def load_environment(
                 metadatas.append({"title": title})
             bs = 100
             for i in range(0, len(missing), bs):
-                print(f"Upserting {len(missing[i : i + bs])} pages")
                 collection.upsert(
                     ids=missing[i : i + bs],
                     documents=documents[i : i + bs],
@@ -101,9 +108,10 @@ def load_environment(
         example:
             "basketball" -> [{"page_id": "basketball", "title": "Basketball"}, {"page_id": "basketball_rules", "title": "Basketball Rules"}, ...]
         """
-        results = await asyncio.to_thread(
-            collection.query, query_texts=[query], n_results=10
-        )
+        async with _get_chroma_semaphore():
+            results = await asyncio.to_thread(
+                collection.query, query_texts=[query], n_results=10
+            )
         if not results:
             raise ValueError(f"No results found for query: {query}")
         if not results["metadatas"]:
@@ -177,7 +185,6 @@ def load_environment(
             raise ValueError(
                 "Invalid section_id format. Expected: page_id:section_name"
             )
-
         page_id, section_name_id = section_id.split(":", 1)
 
         # get Markdown content
@@ -214,13 +221,39 @@ def load_environment(
         read_section,
     ]
     parser = vf.Parser()
-    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+    dataset = load_dataset("willcb/wiki-trivia-questions", split="train")
     tool_rubric = vf.ToolRubric(tools=tools)
+
+    JUDGE_PROMPT = """Given a ground truth answer \
+    and a response, determine if the response is both correct and coherent.
+
+    Question:
+    ```
+    {question}
+    ```
+
+    Ground truth answer:
+    ```
+    {answer}
+    ```
+
+    Response:
+    ```
+    {response}
+    ```
+
+    Respond either "yes" or "no" only.
+    
+    If a response contains incoherent text, respond with "no" even if the correct answer is also present.
+    """
     judge_client = AsyncOpenAI(
         base_url=judge_base_url, api_key=os.getenv(judge_api_key_var)
     )
     judge_rubric = JudgeRubric(
-        judge_client=judge_client, judge_model=judge_model, parser=parser
+        judge_client=judge_client,
+        judge_model=judge_model,
+        parser=parser,
+        judge_prompt=JUDGE_PROMPT,
     )
 
     async def judge_reward_func(judge, prompt, completion, answer, state) -> float:

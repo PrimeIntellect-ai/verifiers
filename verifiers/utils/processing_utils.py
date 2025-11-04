@@ -1,4 +1,3 @@
-import json
 from typing import TYPE_CHECKING
 
 from verifiers.types import ChatCompletion, ChatMessage, Completion, State
@@ -91,9 +90,12 @@ def process_chat_format_vllm(
             zipped.append((turn, None))
     assert len(responses) == responses_idx, "Responses not fully consumed"
     assert len(zipped) == len(completion), "Length mismatch"
+    # get tools from state["info"]["oai_tools"]
+    oai_tools = state.get("info", {}).get("oai_tools", []) or []
     prompt_ids: list[int] = processing_class.apply_chat_template(
         conversation=prompt,  # type: ignore
         add_generation_prompt=True,
+        tools=oai_tools,
     )
     messages_consumed: list[ChatMessage | dict] = [m for m in prompt]
     prompt_mask: list[int] = [0] * len(prompt_ids)
@@ -103,37 +105,6 @@ def process_chat_format_vllm(
     i = 0
     while i < len(zipped):
         message, response = zipped[i]
-
-        def deserialize_tool_calls(message: dict) -> dict:
-            """
-            Deserialize tool calls in messages, if any are present. Iterates
-            over all messages in a message list and tries to find
-            "tool_calls" key. If found, assumes it is a OAI format and has
-            key "function" with "arguments" key which is stringified. It
-            will then deserialize the argument so that chat tmeplates like
-            Qwen3's can be used.
-            """
-
-            def deserialize_tool_call(tool_call) -> dict:
-                tool_call = dict(tool_call)
-                function = dict(tool_call["function"])
-                return {
-                    **tool_call,
-                    "function": {
-                        **function,
-                        "arguments": json.loads(function["arguments"]),
-                    },
-                }
-
-            return {
-                **message,
-                "tool_calls": [
-                    deserialize_tool_call(tool_call)
-                    for tool_call in message.get("tool_calls", []) or []
-                ],
-            }
-
-        message = deserialize_tool_calls(message)
 
         # assistant case -- use response
         if message["role"] == "assistant":
@@ -157,15 +128,17 @@ def process_chat_format_vllm(
                 j += 1
             # Tokenize conversation ending at last completed assistant response
             token_prefix: list[int] = processing_class.apply_chat_template(
-                conversation=messages_consumed,
+                conversation=messages_consumed,  # type: ignore
                 add_generation_prompt=False,
-            )
+                tools=oai_tools,
+            )  # type: ignore
             # Tokenize with new user/tool messages and assistant prompt for next generation
             # Must include add_generation_prompt=True to match what vLLM sees
             token_prefix_with_turn: list[int] = processing_class.apply_chat_template(
-                conversation=messages_consumed + consecutive_messages,
+                conversation=messages_consumed + consecutive_messages,  # type: ignore
                 add_generation_prompt=True,
-            )
+                tools=oai_tools,
+            )  # type: ignore
             assert token_prefix_with_turn[: len(token_prefix)] == token_prefix, (
                 f"Token prefix mismatch. Token prefix: {token_prefix}, token prefix with turn: {token_prefix_with_turn}"
             )

@@ -291,7 +291,7 @@ class TestEnvironmentBase:
         # Create a mock tokenizer
         mock_tokenizer = Mock()
 
-        def apply_template(conversation, add_generation_prompt=True):
+        def apply_template(conversation, add_generation_prompt=True, tools=None):
             # Return deterministic token ids ensuring prefix property
             return list(range(10 if add_generation_prompt else 14))
 
@@ -388,7 +388,7 @@ class TestEnvironmentBase:
 
         # Track the conversation state
         def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
+            conversation, tokenize=False, add_generation_prompt=True, tools=None
         ):
             # Return token id list; size scales with number of messages
             return list(range(len(conversation) * 5))
@@ -445,7 +445,7 @@ class TestEnvironmentBase:
 
         # Track the conversation state
         def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
+            conversation, tokenize=False, add_generation_prompt=True, tools=None
         ):
             # Return deterministic token ids based on number of messages
             # Ensures prefix property when conversation grows
