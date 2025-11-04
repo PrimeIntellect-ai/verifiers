@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 from verifiers import (
     ChatMessage,
     Info,
+    Messages,
     SamplingArgs,
     State,
 )
@@ -242,20 +243,37 @@ class EnvGroup(Environment):
             f"Initialized EnvGroup with {len(envs)} environments: {self.env_names}"
         )
 
+    async def init_state(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: str,
+        task: str,
+        info: Info,
+        example_id: int,
+        **kwargs,
+    ) -> State:
+        """
+        Initialize state for a rollout.
+        """
+        return await super().init_state(
+            prompt, completion, answer, task, info, example_id
+        )
+
     async def rollout(
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: str | list[ChatMessage],
-        completion: str | list[ChatMessage] | None = None,
+        prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
-        state: State | None = None,
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
         example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[str | list[ChatMessage], State]:
+    ) -> tuple[Messages, State]:
         """
         Route rollout to the appropriate sub-environment based on task.
 
@@ -266,8 +284,6 @@ class EnvGroup(Environment):
         """
         info = info or {}
         sampling_args = sampling_args or {}
-        if state is None:
-            state = {}
 
         # Route to appropriate environment
         env = self.env_map[task]
