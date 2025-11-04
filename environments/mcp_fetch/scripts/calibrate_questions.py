@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from types import SimpleNamespace
 
 from openai import OpenAI
 
@@ -82,6 +83,95 @@ FETCH_TOOL_SPEC = [
         },
     }
 ]
+
+def _model_requires_responses(model: str) -> bool:
+    lowered = model.lower()
+    return lowered.startswith("gpt-5") or lowered.startswith("o3")
+
+
+def _format_messages_for_responses(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    formatted: List[Dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            formatted.append(msg)
+        else:
+            formatted.append({"role": msg["role"], "content": content})
+    return formatted
+
+
+def _responses_to_chat_choice(response) -> SimpleNamespace:
+    """Convert Responses API output to a chat-completion-like object."""
+
+    data = response.model_dump()
+    outputs = data.get("output", [])
+    tool_calls = []
+    text_parts: List[str] = []
+    finish_reason: Optional[str] = None
+
+    for item in outputs:
+        item_type = item.get("type")
+        if item_type == "tool_call":
+            func_name = item.get("name") or item.get("function_name") or "tool"
+            arguments = item.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments or {})
+            call_id = item.get("id") or item.get("tool_call_id") or f"call_{len(tool_calls)}"
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": func_name, "arguments": arguments},
+                }
+            )
+            finish_reason = "tool_calls"
+        elif item_type == "message":
+            for chunk in item.get("content", []):
+                chunk_type = chunk.get("type")
+                if chunk_type in {"output_text", "text", "input_text"}:
+                    text_parts.append(chunk.get("text", ""))
+            finish_reason = (
+                item.get("metadata", {}).get("finish_reason")
+                or item.get("status")
+                or finish_reason
+                or "stop"
+            )
+
+    message_obj = SimpleNamespace(
+        role="assistant",
+        content="\n".join(part for part in text_parts if part).strip() or None,
+        tool_calls=[SimpleNamespace(**call) for call in tool_calls] if tool_calls else None,
+    )
+    choice_obj = SimpleNamespace(
+        message=message_obj,
+        finish_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
+    )
+    return SimpleNamespace(choices=[choice_obj])
+
+
+def _create_completion(
+    client: OpenAI,
+    *,
+    model: str,
+    messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    temperature: float = 0.0,
+):
+    if _model_requires_responses(model):
+        return _responses_to_chat_choice(
+            client.responses.create(
+                model=model,
+                input=_format_messages_for_responses(messages),
+                tools=tools or None,
+                temperature=temperature,
+            )
+        )
+    return client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=messages,
+        tools=tools,
+    )
 
 SYSTEM_PROMPT = """\
 You are a calibration assistant for the Fetch MCP environment.
@@ -255,7 +345,8 @@ def evaluate_judge_completion(
 ) -> Dict[str, Any]:
     prompt = get_judge_prompt(rubric_id)
     user_prompt = f"{prompt.strip()}\n\nSubmission:\n{submission.strip() or '(empty)'}"
-    response = client.chat.completions.create(
+    response = _create_completion(
+        client,
         model=judge_model,
         temperature=0,
         messages=[{"role": "user", "content": user_prompt}],
@@ -279,7 +370,8 @@ def evaluate_task(
     transcript: List[Dict[str, Any]] = []
 
     for _ in range(max_turns):
-        completion = client.chat.completions.create(
+        completion = _create_completion(
+            client,
             model=model,
             temperature=0,
             messages=messages,
