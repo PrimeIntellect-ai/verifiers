@@ -162,6 +162,7 @@ class EnvGroup(Environment):
         few_shot: list[ChatMessage] | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
+        map_kwargs: dict = {},
     ) -> Dataset:
         """
         Forceully creates `example_id` and `prompt` columns if not present.
