@@ -89,46 +89,85 @@ def _model_requires_responses(model: str) -> bool:
     return lowered.startswith("gpt-5") or lowered.startswith("o3")
 
 
+def _convert_text_block(role: str, text: str) -> Dict[str, str]:
+    block_type = "text"
+    if role == "user":
+        block_type = "input_text"
+    elif role == "assistant":
+        block_type = "output_text"
+    return {"type": block_type, "text": text}
+
+
 def _format_messages_for_responses(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     formatted: List[Dict[str, Any]] = []
     for msg in messages:
+        role = msg.get("role", "user")
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            blocks = []
+            for call in tool_calls:
+                func = call.get("function", {})
+                blocks.append(
+                    {
+                        "type": "tool_call",
+                        "id": call.get("id") or f"call_{len(blocks)}",
+                        "name": func.get("name", "tool"),
+                        "arguments": func.get("arguments", "{}"),
+                    }
+                )
+            formatted.append({"role": "assistant", "content": blocks})
+            continue
+
+        if role == "tool":
+            formatted.append(
+                {
+                    "role": "tool",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": msg.get("tool_call_id") or "",
+                            "output": str(msg.get("content", "")),
+                            "is_error": False,
+                        }
+                    ],
+                }
+            )
+            continue
+
         content = msg.get("content")
         if isinstance(content, list):
-            formatted.append(msg)
-        else:
-            formatted.append({"role": msg["role"], "content": content})
+            text_parts: List[str] = []
+            for chunk in content:
+                if isinstance(chunk, dict) and "text" in chunk:
+                    text_parts.append(str(chunk["text"]))
+                elif isinstance(chunk, str):
+                    text_parts.append(chunk)
+            content = "\n".join(text_parts) if text_parts else ""
+        if content is None:
+            content = ""
+        blocks = [_convert_text_block(role, str(content))]
+        formatted.append({"role": role, "content": blocks})
     return formatted
 
 
 def _responses_to_chat_choice(response) -> SimpleNamespace:
     """Convert Responses API output to a chat-completion-like object."""
 
-    data = response.model_dump()
-    outputs = data.get("output", [])
+    outputs = getattr(response, "output", None)
+    if outputs is None and hasattr(response, "model_dump"):
+        outputs = response.model_dump().get("output", [])
+
     tool_calls = []
     text_parts: List[str] = []
     finish_reason: Optional[str] = None
 
-    for item in outputs:
+    for raw_item in outputs or []:
+        item = raw_item.model_dump() if hasattr(raw_item, "model_dump") else raw_item
         item_type = item.get("type")
-        if item_type == "tool_call":
-            func_name = item.get("name") or item.get("function_name") or "tool"
-            arguments = item.get("arguments")
-            if not isinstance(arguments, str):
-                arguments = json.dumps(arguments or {})
-            call_id = item.get("id") or item.get("tool_call_id") or f"call_{len(tool_calls)}"
-            tool_calls.append(
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": func_name, "arguments": arguments},
-                }
-            )
-            finish_reason = "tool_calls"
-        elif item_type == "message":
+        if item_type == "message":
             for chunk in item.get("content", []):
                 chunk_type = chunk.get("type")
-                if chunk_type in {"output_text", "text", "input_text"}:
+                if chunk_type in {"output_text", "text"}:
                     text_parts.append(chunk.get("text", ""))
             finish_reason = (
                 item.get("metadata", {}).get("finish_reason")
@@ -136,6 +175,21 @@ def _responses_to_chat_choice(response) -> SimpleNamespace:
                 or finish_reason
                 or "stop"
             )
+        elif item_type == "tool_call":
+            arguments = item.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments or {})
+            tool_calls.append(
+                {
+                    "id": item.get("id") or item.get("tool_call_id") or f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name") or item.get("function_name") or "tool",
+                        "arguments": arguments,
+                    },
+                }
+            )
+            finish_reason = "tool_calls"
 
     message_obj = SimpleNamespace(
         role="assistant",
@@ -158,14 +212,15 @@ def _create_completion(
     temperature: float = 0.0,
 ):
     if _model_requires_responses(model):
-        return _responses_to_chat_choice(
-            client.responses.create(
-                model=model,
-                input=_format_messages_for_responses(messages),
-                tools=tools or None,
-                temperature=temperature,
-            )
-        )
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": _format_messages_for_responses(messages),
+            "temperature": temperature,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        return _responses_to_chat_choice(client.responses.create(**kwargs))
     return client.chat.completions.create(
         model=model,
         temperature=temperature,
