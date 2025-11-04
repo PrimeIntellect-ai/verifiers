@@ -118,9 +118,10 @@ class MultiTurnEnv(Environment):
                     and response.choices[0].message
                     and response.choices[0].message.tool_calls
                 ):
-                    response_message["tool_calls"] = response.choices[  # type: ignore
-                        0
-                    ].message.tool_calls
+                    tool_calls = response.choices[0].message.tool_calls
+                    response_message["tool_calls"] = [  # type: ignore
+                        tool_call.model_dump() for tool_call in tool_calls
+                    ]
                 state["completion"].append(response_message)
             else:
                 assert isinstance(response, Completion)

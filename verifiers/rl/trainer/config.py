@@ -82,7 +82,7 @@ class RLConfig(TrainingArguments):
 
     # Parameters that control the training
     learning_rate: float = field(
-        default=3e-5,
+        default=1e-5,
         metadata={
             "help": "Initial learning rate for `AdamW` optimizer. The default value replaces that of "
             "`transformers.TrainingArguments`."

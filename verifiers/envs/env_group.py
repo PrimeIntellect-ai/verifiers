@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 from verifiers import (
     ChatMessage,
     Info,
+    Messages,
     SamplingArgs,
     State,
 )
@@ -45,6 +46,7 @@ class EnvGroupRubric(Rubric):
         state: State | None = None,
         task: str = "default",
         info: dict | None = None,
+        example_id: int | None = None,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -68,7 +70,7 @@ class EnvGroupRubric(Rubric):
 
         # Score with the environment's rubric
         env_results = await env.rubric.score_rollout(
-            prompt, completion, answer, state, task, info, **kwargs
+            prompt, completion, answer, state, task, info, example_id, **kwargs
         )
 
         # Update metrics with individual metric scores from the environment
@@ -123,26 +125,27 @@ class EnvGroup(Environment):
                 return example
 
             env_dataset = env.get_dataset()
-            if env_dataset is not None and "task" not in env_dataset.column_names:
-                env_dataset = env_dataset.map(add_task)
             if env_dataset is not None:
+                env_dataset = env_dataset.map(add_task)
                 datasets.append(env_dataset)
             env_eval_dataset = env.get_eval_dataset()
-            if (
-                env_eval_dataset is not None
-                and "task" not in env_eval_dataset.column_names
-            ):
-                env_eval_dataset = env_eval_dataset.map(add_task)
             if env_eval_dataset is not None:
+                env_eval_dataset = env_eval_dataset.map(add_task)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
         # wrap rubrics
         rubric = EnvGroupRubric(self.env_map)
 
+        # Don't set oai_tools at the group level since different sub-environments
+        # may have different tools. Instead, set them per-task in rollout().
         # initialize parent Environment
         super().__init__(
-            dataset=dataset, eval_dataset=eval_dataset, rubric=rubric, **kwargs
+            dataset=dataset,
+            eval_dataset=eval_dataset,
+            rubric=rubric,
+            oai_tools=None,
+            **kwargs,
         )
         self.logger.info(
             f"Initialized EnvGroup with {len(envs)} environments: {self.env_names}"
@@ -169,20 +172,37 @@ class EnvGroup(Environment):
         assert "prompt" in dataset.column_names
         return dataset
 
+    async def init_state(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: str,
+        task: str,
+        info: Info,
+        example_id: int,
+        **kwargs,
+    ) -> State:
+        """
+        Initialize state for a rollout.
+        """
+        return await super().init_state(
+            prompt, completion, answer, task, info, example_id
+        )
+
     async def rollout(
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: str | list[ChatMessage],
-        completion: str | list[ChatMessage] | None = None,
+        prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
-        state: State | None = None,
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
         example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[str | list[ChatMessage], State]:
+    ) -> tuple[Messages, State]:
         """
         Route rollout to the appropriate sub-environment based on task.
 
@@ -193,11 +213,13 @@ class EnvGroup(Environment):
         """
         info = info or {}
         sampling_args = sampling_args or {}
-        if state is None:
-            state = {}
 
         # Route to appropriate environment
         env = self.env_map[task]
+
+        # Set tools for this task's environment if not already set in info
+        if "oai_tools" not in info and hasattr(env, "oai_tools") and env.oai_tools:
+            info["oai_tools"] = env.oai_tools
 
         # Pass through all arguments
         return await env.rollout(
