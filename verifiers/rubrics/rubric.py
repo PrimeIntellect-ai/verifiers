@@ -262,11 +262,47 @@ class Rubric:
             return RolloutScores(
                 reward=[],
                 metrics={name: [] for name in reward_func_names},
+                # return sparse tracking only if needed (this is backwrds compatible)
+                sparse_metrics={name: [] for name in reward_func_names}
+                if any(r.sparse_metrics for r in rewards if r.sparse_metrics)
+                else None,
             )
+
+        # collect all possible metric keys across all rollouts
+        # this handles cases where different rollouts may have different metrics
+        # (e.g., multi-domain environments where some metrics don't apply to all tasks)
+        all_metric_keys = set()
+        for reward in rewards:
+            all_metric_keys.update(reward.metrics.keys())
+
+        # build unified metrics dict with sparse tracking
+        # ensures all metric keys are present in all rollout results, filling missing
+        # values with 0.0 and marking them as sparse (excluded from averaging)
+        metrics = {}
+        sparse_flags = {}
+        for k in all_metric_keys:
+            metrics[k] = []
+            sparse_flags[k] = []
+
+            for reward in rewards:
+                if k in reward.metrics:
+                    # metric computed for this rollout - include the actual value
+                    metrics[k].append(reward.metrics[k])
+                    # check if rubric marked this metric as sparse for this rollout
+                    is_sparse = reward.sparse_metrics and k in reward.sparse_metrics
+                    sparse_flags[k].append(is_sparse)
+                else:
+                    # metric not computed for this rollout - fill with sparse 0.0
+                    # this handles domain-specific metrics that don't apply to all tasks
+                    metrics[k].append(0.0)
+                    sparse_flags[k].append(True)
 
         return RolloutScores(
             reward=[reward.reward for reward in rewards],
-            metrics={
-                k: [item.metrics[k] for item in rewards] for k in rewards[0].metrics
-            },
+            metrics=metrics,
+            # only include sparse_metrics if at least one metric has sparse values
+            # this maintains backwards compatibility - environments without sparse metrics get None
+            sparse_metrics=sparse_flags
+            if any(any(flags) for flags in sparse_flags.values())
+            else None,
         )

@@ -86,6 +86,13 @@ class GenerateOutputs(BaseModel):
     reward: list[float]
     metrics: dict[str, list[float]] = Field(default_factory=dict)
     metadata: GenerateMetadata
+    sparse_metrics: dict[str, list[bool]] | None = Field(default=None)
+    # ^^ pptional sparse tracking for multi-domain environments
+    # When present, sparse_metrics[metric_name] indicates which rollout values should be
+    # excluded from averaging (e.g., domain-specific metrics evaluated on irrelevant tasks).
+    # True = sparse (exclude from average), False = relevant (include in average)
+    # Example: chemistry_reward=[50.0, 0.0, 75.0] with sparse_metrics={"chemistry_reward": [False, True, False]}
+    # would average to 62.5 instead of 41.7, excluding the irrelevant 0.0 score.
 
 
 class RolloutScore(BaseModel):
@@ -93,6 +100,10 @@ class RolloutScore(BaseModel):
 
     reward: float
     metrics: dict[str, float] = Field(default_factory=dict)
+    sparse_metrics: set[str] | None = Field(default=None)
+    # ^^ set of metric names that should be excluded from averaging for this rollout
+    # Used by rubrics to mark domain-specific metrics as irrelevant for certain tasks
+    # Example: {"chemistry_reward", "physics_reward"} when evaluating a finance task
 
 
 class RolloutScores(BaseModel):
@@ -100,6 +111,10 @@ class RolloutScores(BaseModel):
 
     reward: list[float]
     metrics: dict[str, list[float]] = Field(default_factory=dict)
+    sparse_metrics: dict[str, list[bool]] | None = Field(default=None)
+    # ^^ per-rollout exclusion flags for batch scoring
+    # Maps metric names to lists of boolean flags (True = sparse, False = relevant)
+    # Length matches the rollout lists in reward/metrics. Aggregated from individual RolloutScore.sparse_metrics
 
 
 class ProcessedOutputs(BaseModel):
