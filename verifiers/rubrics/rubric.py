@@ -263,7 +263,9 @@ class Rubric:
                 reward=[],
                 metrics={name: [] for name in reward_func_names},
                 # return sparse tracking only if needed (this is backwrds compatible)
-                sparse_metrics={name: [] for name in reward_func_names} if any(r.sparse_metrics for r in rewards if r.sparse_metrics) else None
+                sparse_metrics={name: [] for name in reward_func_names}
+                if any(r.sparse_metrics for r in rewards if r.sparse_metrics)
+                else None,
             )
 
         # collect all possible metric keys across all rollouts
@@ -281,7 +283,7 @@ class Rubric:
         for k in all_metric_keys:
             metrics[k] = []
             sparse_flags[k] = []
-            
+
             for reward in rewards:
                 if k in reward.metrics:
                     # metric computed for this rollout - include the actual value
@@ -300,5 +302,7 @@ class Rubric:
             metrics=metrics,
             # only include sparse_metrics if at least one metric has sparse values
             # this maintains backwards compatibility - environments without sparse metrics get None
-            sparse_metrics=sparse_flags if any(any(flags) for flags in sparse_flags.values()) else None
+            sparse_metrics=sparse_flags
+            if any(any(flags) for flags in sparse_flags.values())
+            else None,
         )

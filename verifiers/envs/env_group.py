@@ -87,20 +87,20 @@ class EnvGroupRubric(Rubric):
 class EnvGroupSparseRubric(EnvGroupRubric):
     """
     enhanced EnvGroup rubric with domain-specific sparse tracking.
-    
+
     this rubric extends EnvGroupRubric to support sparse metrics for multi-domain environments.
-    when routing scoring to domain-specific environments, it automatically marks metrics 
+    when routing scoring to domain-specific environments, it automatically marks metrics
     that weren't computed by the target environment as sparse (excluded from averaging).
-    
+
     Key differences from standard EnvGroupRubric:
     - marks uncomputed domain metrics as sparse (e.g., chemistry_reward=0.0 becomes sparse)
     - enables mathematically correct domain averaging by excluding irrelevant zeros
     - Only used when EnvGroup is initialized with enable_sparse_metrics=True
-    
+
     Example: For a chemistry task in ProfBench, physics/finance/consulting rewards are marked
     sparse, ensuring chemistry_reward averages only over actual chemistry evaluations.
     """
-    
+
     async def score_rollout(
         self,
         prompt: str | list[ChatMessage],
@@ -114,13 +114,13 @@ class EnvGroupSparseRubric(EnvGroupRubric):
     ) -> RolloutScore:
         """
         Route scoring with sparse metrics support for multi-domain environments.
-        
+
         This method handles scoring by:
         1. Routing the task to the appropriate domain-specific environment
-        2. Computing metrics using that environment's rubric  
+        2. Computing metrics using that environment's rubric
         3. Filling uncomputed metrics with 0.0 and marking them as sparse
         4. Returning results with sparse flags for proper averaging
-        
+
         Only used when EnvGroup has enable_sparse_metrics=True.
         """
         state = state or {}
@@ -153,16 +153,16 @@ class EnvGroupSparseRubric(EnvGroupRubric):
         # mark uncomputed metrics as sparse for exclusion from averaging
         # example: for chemistry task, physics/finance/consulting rewards marked sparse
         # this enables mathematically correct domain averaging
-        uncomputed_metrics = set(self.all_reward_names) - set(env_results.metrics.keys())
+        uncomputed_metrics = set(self.all_reward_names) - set(
+            env_results.metrics.keys()
+        )
         sparse_metrics = uncomputed_metrics if uncomputed_metrics else None
 
         # Overall reward comes from the domain environment
         reward = env_results.reward
 
         return RolloutScore(
-            reward=reward, 
-            metrics=metrics,
-            sparse_metrics=sparse_metrics
+            reward=reward, metrics=metrics, sparse_metrics=sparse_metrics
         )
 
 
@@ -174,8 +174,11 @@ class EnvGroup(Environment):
     """
 
     def __init__(
-        self, envs: list[Environment], env_names: list[str] | None = None, 
-        enable_sparse_metrics: bool = False, **kwargs
+        self,
+        envs: list[Environment],
+        env_names: list[str] | None = None,
+        enable_sparse_metrics: bool = False,
+        **kwargs,
     ):
         """
         Initialize EnvGroup with a list of environments.

@@ -89,16 +89,22 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
         print(out)
     for k in results.metrics:
         v = results.metrics[k]
-        
-        # selective averaging that excludes sparse values  
+
+        # selective averaging that excludes sparse values
         # only average over relevant (non-sparse) values
         # instead of including misleading zeros in the calculation
-        if hasattr(results, 'sparse_metrics') and results.sparse_metrics and k in results.sparse_metrics:
+        if (
+            hasattr(results, "sparse_metrics")
+            and results.sparse_metrics
+            and k in results.sparse_metrics
+        ):
             # filter out sparse values from averaging calculation
             # sparse_flags[i] = True means exclude rollout i from averaging
             sparse_flags = results.sparse_metrics[k]
-            relevant_values = [val for val, is_sparse in zip(v, sparse_flags) if not is_sparse]
-            
+            relevant_values = [
+                val for val, is_sparse in zip(v, sparse_flags) if not is_sparse
+            ]
+
             if relevant_values:
                 # calculate statistics over only the relevant (non-sparse) values
                 # this gives mathematically correct domain-specific averages
@@ -113,12 +119,16 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             # standard averaging for non-sparse metrics (backwards compatible)
             # this preserves existing behavior for environments without sparse metrics
             print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
-        
+
         # enhanced rollout display that shows sparsity clearly
         # Instead of showing misleading 0.0 values, display "-" for sparse metrics
         # This makes it immediately obvious which rollouts are relevant vs excluded
         for i in range(r):
-            if hasattr(results, 'sparse_metrics') and results.sparse_metrics and k in results.sparse_metrics:
+            if (
+                hasattr(results, "sparse_metrics")
+                and results.sparse_metrics
+                and k in results.sparse_metrics
+            ):
                 # For sparse metrics: "-" indicates sparse (irrelevant), numbers show actual values
                 # This visual distinction prevents confusion about which values contribute to averages
                 sparse_flags = results.sparse_metrics[k]
@@ -127,10 +137,10 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
                     idx = (i * n) + j
                     if sparse_flags[idx]:
                         # sparse value - show "-" instead of 0.0 to indicate exclusion from averaging
-                        trials.append("-")  
+                        trials.append("-")
                     else:
                         # non-sparse value - show actual computed score
-                        trials.append(round(v[idx], 3))  
+                        trials.append(round(v[idx], 3))
             else:
                 # standard rollout printing for non-sparse metrics (backwards compatible)
                 # all values shown as numbers since none are excluded from averaging

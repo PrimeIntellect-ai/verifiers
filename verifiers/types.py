@@ -88,7 +88,7 @@ class GenerateOutputs(BaseModel):
     metadata: GenerateMetadata
     sparse_metrics: dict[str, list[bool]] | None = Field(default=None)
     # ^^ pptional sparse tracking for multi-domain environments
-    # When present, sparse_metrics[metric_name] indicates which rollout values should be 
+    # When present, sparse_metrics[metric_name] indicates which rollout values should be
     # excluded from averaging (e.g., domain-specific metrics evaluated on irrelevant tasks).
     # True = sparse (exclude from average), False = relevant (include in average)
     # Example: chemistry_reward=[50.0, 0.0, 75.0] with sparse_metrics={"chemistry_reward": [False, True, False]}

@@ -606,7 +606,9 @@ class Environment(ABC):
             # interleaved pipeline: separate semaphores for generation and scoring
             # pre-allocate metrics using known reward function names
             reward_func_names = self.rubric.get_reward_func_names()
-            sparse_flags: dict[str, list[bool]] = {name: [False] * n for name in reward_func_names}
+            sparse_flags: dict[str, list[bool]] = {
+                name: [False] * n for name in reward_func_names
+            }
             # ^^ initialize sparse tracking flags for each metric
             # sparse_flags tracks which rollout values should be excluded from averaging
             # Initially all values are marked as relevant (False = not sparse)
@@ -664,10 +666,10 @@ class Environment(ABC):
                     # ensure key exists in case of EnvGroup/RubricGroup
                     if k not in results.metrics:
                         results.metrics[k] = [0.0] * n
-                        sparse_flags[k] = [False] * n  
+                        sparse_flags[k] = [False] * n
                         # ^^ initialize sparse flags for dynamically discovered metrics
                     results.metrics[k][i] = v
-                    
+
                 # process sparse metric flags from rubric scoring
                 # when a rubric marks certain metrics as sparse for this rollout,
                 # we set the corresponding sparse flags to True to exclude them from averaging
@@ -737,7 +739,10 @@ class Environment(ABC):
                 results.reward = rollout_scores.reward
                 results.metrics = rollout_scores.metrics
                 # pass through sparse_metrics if present
-                if hasattr(rollout_scores, 'sparse_metrics') and rollout_scores.sparse_metrics:
+                if (
+                    hasattr(rollout_scores, "sparse_metrics")
+                    and rollout_scores.sparse_metrics
+                ):
                     results.sparse_metrics = rollout_scores.sparse_metrics
             else:
                 results.reward = []
@@ -763,10 +768,14 @@ class Environment(ABC):
         # conditionally add sparse tracking to results
         # only include sparse_metrics if:
         # 1. We're using interleaved scoring (where sparse tracking occurs)
-        # 2. Score rollouts is enabled (metrics are being computed)  
+        # 2. Score rollouts is enabled (metrics are being computed)
         # 3. At least one metric has sparse values (maintains backwards compatibility)
         # this ensures existing environments without sparse metrics remain unchanged
-        if interleave_scoring and score_rollouts and any(any(flags) for flags in sparse_flags.values()):
+        if (
+            interleave_scoring
+            and score_rollouts
+            and any(any(flags) for flags in sparse_flags.values())
+        ):
             results.sparse_metrics = sparse_flags
 
         return results
