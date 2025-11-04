@@ -84,6 +84,36 @@ FETCH_TOOL_SPEC = [
     }
 ]
 
+RESPONSES_FETCH_TOOL_SPEC = [
+    {
+        "type": "function",
+        "name": "fetch",
+        "description": "Fetch a URL from the deterministic mini site (http://127.0.0.1:31415).",
+        "parameters": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {"type": "string"},
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "HEAD", "get", "head"],
+                    "default": "GET",
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "params": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "timeout_s": {"type": "number", "default": 8.0},
+                "max_bytes": {"type": "integer", "default": 200_000},
+            },
+        },
+    }
+]
+
 def _model_requires_responses(model: str) -> bool:
     lowered = model.lower()
     return lowered.startswith("gpt-5") or lowered.startswith("o3")
@@ -225,15 +255,16 @@ def _create_completion(
         }
         if temperature and _supports_temperature(model):
             kwargs["temperature"] = temperature
-        if tools:
-            kwargs["tools"] = tools
+        tool_spec = tools or RESPONSES_FETCH_TOOL_SPEC
+        if tool_spec:
+            kwargs["tools"] = tool_spec
             kwargs["tool_choice"] = "auto"
         return _responses_to_chat_choice(client.responses.create(**kwargs))
     return client.chat.completions.create(
         model=model,
         temperature=temperature if _supports_temperature(model) else 0,
         messages=messages,
-        tools=tools,
+        tools=tools or FETCH_TOOL_SPEC,
     )
 
 SYSTEM_PROMPT = """\
@@ -386,6 +417,26 @@ def _invoke_fetch_tool(call: Any) -> Dict[str, Any]:
     return result
 
 
+def _invoke_fetch_from_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    url = args.get("url")
+    if not url:
+        return {"error": "url is required"}
+    try:
+        result = asyncio.run(
+            fetch_url_async(
+                url,
+                method=args.get("method", "GET"),
+                headers=args.get("headers"),
+                params=args.get("params"),
+                timeout_s=float(args.get("timeout_s", 8.0)),
+                max_bytes=int(args.get("max_bytes", 200_000)),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+    return result
+
+
 def extract_answer(output_text: str) -> str:
     if not output_text:
         return ""
@@ -432,6 +483,15 @@ def evaluate_task(
     tool_calls = 0
     transcript: List[Dict[str, Any]] = []
 
+    if _model_requires_responses(model):
+        return _evaluate_task_responses(
+            client,
+            model,
+            messages,
+            task,
+            max_turns=max_turns,
+        )
+
     for _ in range(max_turns):
         completion = _create_completion(
             client,
@@ -467,6 +527,101 @@ def evaluate_task(
             "tool_calls": tool_calls,
             "transcript": transcript,
         }
+
+    return {
+        "answer": "",
+        "raw_output": "",
+        "tool_calls": tool_calls,
+        "transcript": transcript,
+        "error": "max turns exceeded",
+    }
+
+
+def _evaluate_task_responses(
+    client: OpenAI,
+    model: str,
+    messages: List[Dict[str, Any]],
+    task: Task,
+    *,
+    max_turns: int,
+) -> Dict[str, Any]:
+    response_inputs = _format_messages_for_responses(messages)
+    transcript: List[Dict[str, Any]] = []
+    tool_calls = 0
+
+    for _ in range(max_turns):
+        resp = client.responses.create(
+            model=model,
+            input=response_inputs,
+            tools=RESPONSES_FETCH_TOOL_SPEC,
+            tool_choice="auto",
+            reasoning={"effort": "medium", "summary": "auto"},
+        )
+        resp_dict = resp.model_dump()
+        outputs = resp_dict.get("output", [])
+        response_inputs.extend(outputs)
+
+        pending_tool = False
+        final_text: Optional[str] = None
+
+        for item in outputs:
+            item_type = item.get("type")
+            if item_type == "tool_call":
+                pending_tool = True
+                tool_calls += 1
+                call_id = item.get("id") or item.get("tool_call_id") or f"call_{tool_calls}"
+                func_name = item.get("name") or item.get("function_name") or "fetch"
+                arguments = item.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        args_dict = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        args_dict = {}
+                else:
+                    args_dict = arguments or {}
+                if func_name == "fetch":
+                    payload = _invoke_fetch_from_args(args_dict)
+                else:
+                    payload = {"error": f"unknown tool {func_name}"}
+
+                response_inputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(payload),
+                    }
+                )
+                transcript.append(
+                    {
+                        "role": "assistant",
+                        "content": json.dumps({"tool_call": {"name": func_name, "args": args_dict}}),
+                    }
+                )
+                transcript.append(
+                    {
+                        "role": "tool",
+                        "content": json.dumps(payload),
+                        "tool_call_id": call_id,
+                    }
+                )
+            elif item_type == "message":
+                text_parts: List[str] = []
+                for chunk in item.get("content", []):
+                    if chunk.get("type") in {"text", "output_text"}:
+                        text_parts.append(chunk.get("text", ""))
+                final_text = "\n".join(part for part in text_parts if part).strip()
+                if final_text:
+                    transcript.append({"role": "assistant", "content": final_text})
+
+        if pending_tool:
+            continue
+        if final_text:
+            return {
+                "answer": extract_answer(final_text),
+                "raw_output": final_text,
+                "tool_calls": tool_calls,
+                "transcript": transcript,
+            }
 
     return {
         "answer": "",
