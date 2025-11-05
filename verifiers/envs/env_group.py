@@ -162,6 +162,7 @@ class EnvGroup(Environment):
         few_shot: list[ChatMessage] | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
+        map_kwargs: dict = {},
     ) -> Dataset:
         """
         Ensures that the (eval) dataset of an env group has unique example ids.
