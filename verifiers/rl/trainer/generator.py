@@ -287,6 +287,8 @@ class Generator:
             all_completion_logprobs: list[list[float]] = []
             all_returns: list[float] = []
             item_meta: list[tuple[int, int]] = []  # (prompt_idx, step_idx)
+            # rollout-level rewards for logging only (one per rollout)
+            rollout_rewards_for_logging: list[float] = []
 
             # iterate in the same order as env_results arrays
             for i, (prompt, completion, state) in enumerate(
@@ -413,6 +415,8 @@ class Generator:
                         raise RuntimeError("Per-turn scores missing in state for stepwise advantage computation")
 
                     returns: list[float] = self._compute_stepwise_returns(step_rewards)
+                    # For logging: rollout-level reward is the return at first assistant turn
+                    rollout_rewards_for_logging.append(float(returns[0]) if returns else 0.0)
 
                 else:
                     assert isinstance(prompt, str) and isinstance(completion, str)
@@ -441,6 +445,8 @@ class Generator:
                             step_rewards.append(float(rs.reward))
 
                     returns: list[float] = self._compute_stepwise_returns(step_rewards)
+                    # For logging: rollout-level reward is the return at first assistant turn
+                    rollout_rewards_for_logging.append(float(returns[0]) if returns else 0.0)
 
                 for step_idx, item in enumerate(step_items):
                     p_ids, p_mask, c_ids, c_mask, c_logps = item
@@ -490,7 +496,10 @@ class Generator:
 
             # mimic ProcessedOutputs for downstream use
             processed_results = _Proc()
-            rewards_dict = {"reward": all_returns}
+            # For logging, include one reward per rollout to align with prompts/completions
+            rewards_dict = {"reward": rollout_rewards_for_logging}
+            for k in env_results.metrics:
+                rewards_dict[k] = env_results.metrics[k]
 
             rewards = all_returns
             # Compute stepwise group baseline across all m×n samples for each prompt
