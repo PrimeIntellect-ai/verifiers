@@ -1,7 +1,7 @@
 from collections import defaultdict
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping
 
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset, concatenate_datasets, interleave_datasets
 from openai import AsyncOpenAI
 
 from verifiers import (
@@ -99,6 +99,9 @@ class EnvGroup(Environment):
         self,
         envs: list[Environment],
         env_names: list[str] | None = None,
+        probabilities: list[float] | None = None,
+        env_mix_strategy: Literal["interleave", "concatenate"] = "concatenate",
+        env_mix_kwargs: dict = {},
         map_kwargs: dict = {},
         **kwargs,
     ):
@@ -140,8 +143,15 @@ class EnvGroup(Environment):
             if env_eval_dataset is not None:
                 env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
-        dataset = concatenate_datasets(datasets) if datasets else None
-        eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
+        mix_datasets = (
+            interleave_datasets
+            if env_mix_strategy == "interleave"
+            else concatenate_datasets
+        )
+        dataset = mix_datasets(datasets, **env_mix_kwargs) if datasets else None
+        eval_dataset = (
+            mix_datasets(eval_datasets, **env_mix_kwargs) if eval_datasets else None
+        )
         # wrap rubrics
         rubric = EnvGroupRubric(self.env_map)
 
