@@ -178,7 +178,7 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         "total_ms": [s["timing"]["total_ms"] for s in results.state],
     }
     if save_info:
-        results_dict["info"] = results.info
+        results_dict["info"] = [json.dumps(info) for info in results.info]
     if save_answer:
         results_dict["answer"] = results.answer
     for k in results.metrics:
