@@ -4,13 +4,12 @@ model = "Qwen/Qwen3-4B-Instruct-2507"
 id = "will/wiki-search"
 
 [env.args]
-max_turns = 8
+max_turns = 10
 
 [inference]
 gpus = 1
 
 [inference.args]
-enforce_eager = true
 enable_auto_tool_choice = true
 tool_call_parser = "hermes"
 
@@ -20,8 +19,8 @@ gpus = 1
 [trainer.args]
 run_name = "wiki-search"
 micro_batch_size = 2
-rollouts_per_example = 8
-batch_size = 64
+rollouts_per_example = 16
+batch_size = 512
 max_steps = 500
 max_tokens = 512
-max_seq_len = 4192
+max_seq_len = 4096

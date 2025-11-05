@@ -1,1 +1,0 @@
-{"env": "wiki-search", "model": "gpt-5-nano", "num_examples": 50, "rollouts_per_example": 1, "sampling_args": {"max_tokens": null}, "date": "2025-10-10 18:50:32", "time_ms": 56357.60998725891, "avg_reward": 0.82, "avg_judge_reward_func": 0.82}
