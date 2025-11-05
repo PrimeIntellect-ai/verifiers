@@ -1,1 +1,0 @@
-{"env": "wiki-search", "model": "qwen/qwen3-30b-a3b-instruct-2507", "num_examples": 50, "rollouts_per_example": 1, "sampling_args": {"max_tokens": null}, "date": "2025-10-10 18:49:12", "time_ms": 66272.91011810303, "avg_reward": 0.68, "avg_judge_reward_func": 0.68}

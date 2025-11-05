@@ -1,17 +1,22 @@
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
+from collections import defaultdict
 from datasets import concatenate_datasets
 from openai import AsyncOpenAI
 
 from verifiers import (
     ChatMessage,
     Info,
+    Messages,
     SamplingArgs,
     State,
 )
 from verifiers.envs.environment import Environment
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import RolloutScore
+from verifiers.types import MessageType, ProcessedOutputs, RolloutScore
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
 class EnvGroupRubric(Rubric):
@@ -45,6 +50,7 @@ class EnvGroupRubric(Rubric):
         state: State | None = None,
         task: str = "default",
         info: dict | None = None,
+        example_id: int | None = None,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -68,7 +74,7 @@ class EnvGroupRubric(Rubric):
 
         # Score with the environment's rubric
         env_results = await env.rubric.score_rollout(
-            prompt, completion, answer, state, task, info, **kwargs
+            prompt, completion, answer, state, task, info, example_id, **kwargs
         )
 
         # Update metrics with individual metric scores from the environment
@@ -90,7 +96,11 @@ class EnvGroup(Environment):
     """
 
     def __init__(
-        self, envs: list[Environment], env_names: list[str] | None = None, **kwargs
+        self,
+        envs: list[Environment],
+        env_names: list[str] | None = None,
+        map_kwargs: dict = {},
+        **kwargs,
     ):
         """
         Initialize EnvGroup with a list of environments.
@@ -123,45 +133,63 @@ class EnvGroup(Environment):
                 return example
 
             env_dataset = env.get_dataset()
-            if env_dataset is not None and "task" not in env_dataset.column_names:
-                env_dataset = env_dataset.map(add_task)
             if env_dataset is not None:
+                env_dataset = env_dataset.map(add_task, **map_kwargs)
                 datasets.append(env_dataset)
             env_eval_dataset = env.get_eval_dataset()
-            if (
-                env_eval_dataset is not None
-                and "task" not in env_eval_dataset.column_names
-            ):
-                env_eval_dataset = env_eval_dataset.map(add_task)
             if env_eval_dataset is not None:
+                env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
         dataset = concatenate_datasets(datasets) if datasets else None
         eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
         # wrap rubrics
         rubric = EnvGroupRubric(self.env_map)
 
+        # Don't set oai_tools at the group level since different sub-environments
+        # may have different tools. Instead, set them per-task in rollout().
         # initialize parent Environment
         super().__init__(
-            dataset=dataset, eval_dataset=eval_dataset, rubric=rubric, **kwargs
+            dataset=dataset,
+            eval_dataset=eval_dataset,
+            rubric=rubric,
+            oai_tools=None,
+            **kwargs,
         )
         self.logger.info(
             f"Initialized EnvGroup with {len(envs)} environments: {self.env_names}"
+        )
+
+    async def init_state(
+        self,
+        prompt: Messages,
+        completion: Messages,
+        answer: str,
+        task: str,
+        info: Info,
+        example_id: int,
+        **kwargs,
+    ) -> State:
+        """
+        Initialize state for a rollout.
+        """
+        return await super().init_state(
+            prompt, completion, answer, task, info, example_id
         )
 
     async def rollout(
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: str | list[ChatMessage],
-        completion: str | list[ChatMessage] | None = None,
+        prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
-        state: State | None = None,
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
-        id: int = 0,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[str | list[ChatMessage], State]:
+    ) -> tuple[Messages, State]:
         """
         Route rollout to the appropriate sub-environment based on task.
 
@@ -172,11 +200,13 @@ class EnvGroup(Environment):
         """
         info = info or {}
         sampling_args = sampling_args or {}
-        if state is None:
-            state = {}
 
         # Route to appropriate environment
         env = self.env_map[task]
+
+        # Set tools for this task's environment if not already set in info
+        if "oai_tools" not in info and hasattr(env, "oai_tools") and env.oai_tools:
+            info["oai_tools"] = env.oai_tools
 
         # Pass through all arguments
         return await env.rollout(
@@ -188,9 +218,87 @@ class EnvGroup(Environment):
             state,
             task,
             info,
-            id,
+            example_id,
             sampling_args,
             **kwargs,
+        )
+
+    def process_env_results_vllm(
+        self,
+        prompts: list[Messages],
+        completions: list[Messages],
+        states: list[State],
+        rewards: list[float],
+        processing_class: "PreTrainedTokenizerBase",
+        max_seq_len: int = -1,
+        mask_env_responses: bool = False,
+        mask_truncated_completions: bool = False,
+        zero_truncated_completions: bool = False,
+        message_type: MessageType | None = "chat",
+    ) -> ProcessedOutputs:
+        """Route vLLM result processing to the appropriate sub-environment."""
+        num_samples = len(prompts)
+        assert (
+            len(completions) == num_samples
+            and len(states) == num_samples
+            and len(rewards) == num_samples
+        ), (
+            f"Mismatch in lengths of prompts, completions, states, or rewards: {len(prompts)}, {len(completions)}, {len(states)}, {len(rewards)}"
+        )
+        all_prompt_ids = [[] for _ in range(num_samples)]
+        all_prompt_masks = [[] for _ in range(num_samples)]
+        all_completion_ids = [[] for _ in range(num_samples)]
+        all_completion_masks = [[] for _ in range(num_samples)]
+        all_completion_logprobs = [[] for _ in range(num_samples)]
+        all_rewards = [0.0] * num_samples
+        all_is_truncated = [False] * num_samples
+
+        # keep track of indices for each task by grouping indices by task
+        env_indices = defaultdict(list)
+        for idx, state in enumerate(states):
+            task = state.get("task")
+            env_indices[task].append(idx)
+
+        # process results for each task
+        for task, indices in env_indices.items():
+            env = self.get_env_for_task(task)
+            env_processed_outputs = env.process_env_results_vllm(
+                [prompts[i] for i in indices],
+                [completions[i] for i in indices],
+                [states[i] for i in indices],
+                [rewards[i] for i in indices],
+                processing_class,
+                max_seq_len=max_seq_len,
+                mask_env_responses=mask_env_responses,
+                mask_truncated_completions=mask_truncated_completions,
+                zero_truncated_completions=zero_truncated_completions,
+                message_type=message_type,
+            )
+            # map processed outputs back to original indices
+            for i, original_idx in enumerate(indices):
+                all_prompt_ids[original_idx] = env_processed_outputs.prompt_ids[i]
+                all_prompt_masks[original_idx] = env_processed_outputs.prompt_mask[i]
+                all_completion_ids[original_idx] = env_processed_outputs.completion_ids[
+                    i
+                ]
+                all_completion_masks[original_idx] = (
+                    env_processed_outputs.completion_mask[i]
+                )
+                all_completion_logprobs[original_idx] = (
+                    env_processed_outputs.completion_logprobs[i]
+                )
+                all_rewards[original_idx] = env_processed_outputs.rewards[i]
+                all_is_truncated[original_idx] = (
+                    env_processed_outputs.is_truncated[i]
+                )
+        return ProcessedOutputs(
+            prompt_ids=all_prompt_ids,
+            prompt_mask=all_prompt_masks,
+            completion_ids=all_completion_ids,
+            completion_mask=all_completion_masks,
+            completion_logprobs=all_completion_logprobs,
+            rewards=all_rewards,
+            is_truncated=all_is_truncated,
         )
 
     def get_env_for_task(self, task: str) -> Environment:
