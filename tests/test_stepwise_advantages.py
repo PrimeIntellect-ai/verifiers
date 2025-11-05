@@ -268,13 +268,19 @@ async def test_stepwise_chat_precomputed_returns_and_metrics_with_advantage_chec
     result = await g.generate_batch(batch_id=0)
 
     all_step_rewards = [s["step_scores"] for _p, _c, s in prepared]
-    expected = [
+    # For logging: one reward per rollout (return at first assistant turn)
+    expected_log_rewards = [
+        (compute_discounted_returns(rewards, gamma, aggregation)[0] if rewards else 0.0)
+        for rewards in all_step_rewards
+    ]
+    # For metrics: mean over per-step returns remains unchanged
+    expected_all_returns = [
         r for rewards in all_step_rewards for r in compute_discounted_returns(rewards, gamma, aggregation)
     ]
 
-    assert np.allclose(result.rewards_dict["reward"], expected)
+    assert np.allclose(result.rewards_dict["reward"], expected_log_rewards)
 
-    assert pytest.approx(result.metrics_dict["reward"], rel=1e-6) == float(np.mean(expected))
+    assert pytest.approx(result.metrics_dict["reward"], rel=1e-6) == float(np.mean(expected_all_returns))
     assert pytest.approx(result.metrics_dict["stepwise/turns_per_rollout"], rel=1e-6) == 2.0
     assert pytest.approx(result.metrics_dict["stepwise/rollout_length"], rel=1e-6) == 2.0
 
@@ -380,12 +386,15 @@ async def test_stepwise_chat_returns_precomputed_by_math_rubric(
     # Expected immediate rewards derived from MathRubric correctness on each step
     # A1: [0,1], B1: [1,1], A2: [1,0], B2: [0,1]
     step_rewards = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]
-    expected = [
+    expected_log = [
+        compute_discounted_returns(rewards, gamma, aggregation)[0] for rewards in step_rewards
+    ]
+    expected_all = [
         r for rewards in step_rewards for r in compute_discounted_returns(rewards, gamma, aggregation)
     ]
 
-    assert np.allclose(result.rewards_dict["reward"], expected)
-    assert pytest.approx(result.metrics_dict["reward"], rel=1e-6) == float(np.mean(expected))
+    assert np.allclose(result.rewards_dict["reward"], expected_log)
+    assert pytest.approx(result.metrics_dict["reward"], rel=1e-6) == float(np.mean(expected_all))
     assert pytest.approx(result.metrics_dict["stepwise/rollout_length"], rel=1e-6) == 2.0
     assert pytest.approx(result.metrics_dict["stepwise/turns_per_rollout"], rel=1e-6) == 2.0
 
@@ -462,15 +471,10 @@ async def test_stepwise_chat_truncation_zero_reward(monkeypatch: pytest.MonkeyPa
 
     result = await g.generate_batch(batch_id=0)
 
-    # Without truncation, each rollout [1,1] with gamma=1 → returns [2,1]
-    expected_naive = [2.0, 1.0] * 4
+    # With step scores [1,1] and gamma=1, rollout-level reward is 2.0 for each rollout
     rewards = list(result.rewards_dict["reward"])
-
-    # Only the very first step (A1 step 1) should be truncated → set to 0.0
-    expected = expected_naive[:]
-    expected[0] = 0.0
-
-    assert np.allclose(rewards, expected)
+    expected_log = [2.0, 2.0, 2.0, 2.0]
+    assert np.allclose(rewards, expected_log)
 
     # masking should be nonzero due to truncation
     assert "tokens/masked_fraction" in result.metrics_dict
