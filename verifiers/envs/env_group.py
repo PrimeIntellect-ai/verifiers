@@ -178,7 +178,12 @@ class EnvGroup(Environment):
         # Remove the example_id column present in the individual env datasets and add global ids
         if "example_id" in dataset.column_names:
             dataset = dataset.remove_columns(["example_id"])
-        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+
+        def add_example_id(example, i):
+            example["example_id"] = i
+            return example
+
+        dataset = dataset.map(add_example_id, with_indices=True, **map_kwargs)
 
         assert "example_id" in dataset.column_names
         assert "prompt" in dataset.column_names
