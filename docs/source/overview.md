@@ -72,11 +72,13 @@ Tools may be sync or async. Keep them pure: the environment ends when the assist
 
 For straightforward Q&A tasks without interaction:
 
+```python
 env = vf.SingleTurnEnv(
     dataset=dataset,
     system_prompt="Answer the question.",
     rubric=rubric,
 )
+```
 
 ## Key Components
 
