@@ -160,7 +160,14 @@ class EnvGroup(Environment):
         answer_key: str = "answer",
     ) -> Dataset:
         """
-        Forceully creates `example_id` and `prompt` columns if not present.
+        Ensures that the (eval) dataset of an env group has unique example ids.
+
+        Explanation: Each individual env creates example id column unique to the
+        env upon init. However, these are not unique across splits (e.g. they
+        will have an example id `0`) Upon initting the env group, this method is
+        called (via super().__init__) and forcefully removes the example id
+        column in the concatenated dataset and replaces it with a new one with
+        globally unique example ids.
         """
 
         # Remove the example_id column present in the individual env datasets and add global ids
