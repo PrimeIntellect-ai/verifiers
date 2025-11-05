@@ -163,6 +163,7 @@ class EnvGroup(Environment):
             eval_dataset=eval_dataset,
             rubric=rubric,
             oai_tools=None,
+            map_kwargs=map_kwargs,
             **kwargs,
         )
         self.logger.info(
