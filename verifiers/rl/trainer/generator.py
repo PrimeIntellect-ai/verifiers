@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import queue
 import threading
@@ -13,6 +14,12 @@ from pydantic import BaseModel, Field
 from transformers import PreTrainedTokenizerBase
 
 from verifiers import Environment
+from verifiers.utils.processing_utils import (
+    parse_chat_completion_logprobs,
+    parse_chat_completion_tokens,
+    parse_completion_logprobs,
+    parse_completion_tokens,
+)
 
 
 class Microbatch(BaseModel):
@@ -66,6 +73,9 @@ class Generator:
         mask_truncated_completions: bool,
         zero_truncated_completions: bool,
         max_concurrent: int,
+        use_stepwise_advantage: bool,
+        stepwise_gamma: float,
+        stepwise_aggregation: str,
     ):
         self.env = env
         self.client_base_url = client_base_url
@@ -87,6 +97,9 @@ class Generator:
         self.mask_truncated_completions = mask_truncated_completions
         self.zero_truncated_completions = zero_truncated_completions
         self.max_concurrent = max_concurrent
+        self.use_stepwise_advantage = use_stepwise_advantage
+        self.stepwise_gamma = float(stepwise_gamma)
+        self.stepwise_aggregation = stepwise_aggregation
 
         # queues for communication
         self.request_queue = queue.Queue()
@@ -225,47 +238,283 @@ class Generator:
             sampling_args=self.sampling_args,
             score_rollouts=True,
             max_concurrent=self.max_concurrent,
+            track_step_scores=self.use_stepwise_advantage,
         )
         self.is_generating = False
         wall_clock_s = time.time() - start_time
 
-        processed_results = self.env.process_env_results_vllm(
-            prompts=env_results.prompt,
-            completions=env_results.completion,
-            states=env_results.state,
-            rewards=env_results.reward,
-            processing_class=self.processing_class,
-            max_seq_len=self.max_seq_len,
-            mask_env_responses=self.mask_env_responses,
-            mask_truncated_completions=self.mask_truncated_completions,
-            zero_truncated_completions=self.zero_truncated_completions,
-        )
+        if not self.use_stepwise_advantage:
+            processed_results = self.env.process_env_results_vllm(
+                prompts=env_results.prompt,
+                completions=env_results.completion,
+                states=env_results.state,
+                rewards=env_results.reward,
+                processing_class=self.processing_class,
+                max_seq_len=self.max_seq_len,
+                mask_env_responses=self.mask_env_responses,
+                mask_truncated_completions=self.mask_truncated_completions,
+                zero_truncated_completions=self.zero_truncated_completions,
+            )
 
-        rewards_dict = {"reward": processed_results.rewards}
-        for k in env_results.metrics:
-            rewards_dict[k] = env_results.metrics[k]
+            rewards_dict = {"reward": processed_results.rewards}
+            for k in env_results.metrics:
+                rewards_dict[k] = env_results.metrics[k]
 
-        rewards: list[float] = processed_results.rewards
-        advantages: list[float] = [0.0] * len(rewards)
-        prompts_in_batch = len(batch_ds)
-        for prompt_idx in range(prompts_in_batch):
-            group_indices = [
-                prompt_idx + k * prompts_in_batch
-                for k in range(self.rollouts_per_example)
-                if (prompt_idx + k * prompts_in_batch) < len(rewards)
-            ]
-            if not group_indices:
-                continue
-            group = [rewards[i] for i in group_indices]
-            gmean = sum(group) / float(len(group))
-            for idx, r in zip(group_indices, group):
-                advantages[idx] = r - gmean
+            rewards: list[float] = processed_results.rewards
+            advantages: list[float] = [0.0] * len(rewards)
+            prompts_in_batch = len(batch_ds)
+            for prompt_idx in range(prompts_in_batch):
+                group_indices = [
+                    prompt_idx + k * prompts_in_batch
+                    for k in range(self.rollouts_per_example)
+                    if (prompt_idx + k * prompts_in_batch) < len(rewards)
+                ]
+                if not group_indices:
+                    continue
+                group = [rewards[i] for i in group_indices]
+                gmean = sum(group) / float(len(group))
+                for idx, r in zip(group_indices, group):
+                    advantages[idx] = r - gmean
+        else:
+            # Expand each rollout into per-step training samples and compute
+            # discounted MC returns per step.
+            # Reference: https://arxiv.org/abs/2507.11948
+            msg_type = getattr(self.env, "message_type", "chat")
+            all_prompt_ids: list[list[int]] = []
+            all_prompt_masks: list[list[int]] = []
+            all_completion_ids: list[list[int]] = []
+            all_completion_masks: list[list[int]] = []
+            all_completion_logprobs: list[list[float]] = []
+            all_returns: list[float] = []
+            item_meta: list[tuple[int, int]] = []  # (prompt_idx, step_idx)
+
+            # iterate in the same order as env_results arrays
+            for i, (prompt, completion, state) in enumerate(
+                zip(env_results.prompt, env_results.completion, env_results.state)
+            ):
+                # determine prompt index within this batch
+                prompt_idx = i % len(batch_ds)
+                # build per-step tokenization
+                step_items: list[tuple[list[int], list[int], list[int], list[int], list[float]]]
+                if msg_type == "chat":
+                    assert isinstance(prompt, list) and isinstance(completion, list)
+                    step_items = []
+                    # Build context for tokenization similar to process_chat_format_vllm
+                    responses = state["responses"]
+                    responses_idx = 0
+                    zipped_steps = []
+                    for turn in completion:
+                        if turn.get("role") == "assistant":
+                            zipped_steps.append((turn, responses[responses_idx]))
+                            responses_idx += 1
+                        else:
+                            zipped_steps.append((turn, None))
+                    assert responses_idx == len(responses)
+
+                    # utility to deserialize tool_calls for templates that expect JSON args
+                    def _deserialize_tool_calls(message: dict) -> dict:
+                        def _deserialize(tc) -> dict:
+                            tc = dict(tc)
+                            if (
+                                "function" in tc
+                                and isinstance(tc["function"], dict)
+                                and "arguments" in tc["function"]
+                            ):
+                                args = tc["function"]["arguments"]
+                                if isinstance(args, str):
+                                    try:
+                                        args = json.loads(args)
+                                    except Exception:
+                                        pass
+                                tc["function"] = {**tc["function"], "arguments": args}
+                            return tc
+
+                        return {
+                            **message,
+                            "tool_calls": [
+                                _deserialize(tc)
+                                for tc in (message.get("tool_calls", []) or [])
+                            ],
+                        }
+                    
+                    def _maybe_strip_think(msg: dict) -> dict:
+                        if getattr(self.env, "exclude_think", False) and hasattr(self.env, "_process_assistant_message"):
+                            if msg.get("role") == "assistant":
+                                return self.env._process_assistant_message(msg)
+                        return msg
+
+                    messages_consumed: list[dict] = [_maybe_strip_think(dict(m)) for m in prompt]
+                    si = 0
+                    j = 0
+                    while j < len(zipped_steps):
+                        message, response = zipped_steps[j]
+                        message = _deserialize_tool_calls(message)
+                        if message.get("role") == "assistant":
+                            assert response is not None
+                            prompt_text = self.processing_class.apply_chat_template(
+                                conversation=messages_consumed,
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
+                            prompt_ids = self.processing_class.encode(prompt_text)
+                            prompt_mask = [0] * len(prompt_ids)
+                            completion_ids = parse_chat_completion_tokens(response)
+                            completion_mask = [1] * len(completion_ids)
+                            completion_logprobs = parse_chat_completion_logprobs(response)
+                            step_items.append(
+                                (
+                                    prompt_ids,
+                                    prompt_mask,
+                                    completion_ids,
+                                    completion_mask,
+                                    completion_logprobs,
+                                )
+                            )
+                            messages_consumed.append(_maybe_strip_think(message))
+                            si += 1
+                            j += 1
+                        else:
+                            messages_consumed.append(_maybe_strip_think(message))
+                            j += 1
+                else:
+                    assert isinstance(prompt, str) and isinstance(completion, str)
+                    responses = state.get("responses", [])
+                    starts = state.get("responses_start_idx", [])
+                    assert len(responses) == len(starts)
+                    step_items = []
+                    for ridx in range(len(responses)):
+                        start_i = starts[ridx]
+                        context_prefix = prompt + completion[:start_i]
+                        prompt_ids = self.processing_class.encode(context_prefix)
+                        prompt_mask = [0] * len(prompt_ids)
+                        resp = responses[ridx]
+                        completion_ids = parse_completion_tokens(resp)
+                        completion_mask = [1] * len(completion_ids)
+                        completion_logprobs = parse_completion_logprobs(resp)
+                        step_items.append(
+                            (
+                                prompt_ids,
+                                prompt_mask,
+                                completion_ids,
+                                completion_mask,
+                                completion_logprobs,
+                            )
+                        )
+
+                # compute immediate rewards per step and MC returns
+                if msg_type == "chat":
+                    assert isinstance(prompt, list) and isinstance(completion, list)
+                    # Prefer precomputed per-turn scores from rollout if available
+                    step_rewards: list[float] = []
+                    pre_scores = state.get("step_scores", None)
+                    if isinstance(pre_scores, list) and pre_scores:
+                        step_rewards = [float(x) for x in pre_scores]
+                    else:
+                        raise RuntimeError("Per-turn scores missing in state for stepwise advantage computation")
+
+                    returns: list[float] = self._compute_stepwise_returns(step_rewards)
+
+                else:
+                    assert isinstance(prompt, str) and isinstance(completion, str)
+                    responses = state.get("responses", [])
+                    starts = state.get("responses_start_idx", [])
+                    step_rewards = []
+                    assert len(responses) == len(starts)
+                    pre_scores = state.get("step_scores", None)
+                    if isinstance(pre_scores, list) and pre_scores:
+                        step_rewards = [float(x) for x in pre_scores]
+                        step_rewards = step_rewards[: len(starts)]
+                    else:
+                        for ridx, start in enumerate(starts):
+                            # Include env feedback after this assistant response
+                            end_i = starts[ridx + 1] if (ridx + 1) < len(starts) else len(completion)
+                            partial_text = completion[:end_i]
+                            rs = await self.env.rubric.score_rollout(
+                                prompt=prompt,
+                                completion=partial_text,
+                                answer=state.get("answer", ""),
+                                state=state,
+                                task=state.get("task", "default"),
+                                info=state.get("info", {}),
+                                example_id=state.get("example_id", i),
+                            )
+                            step_rewards.append(float(rs.reward))
+
+                    returns: list[float] = self._compute_stepwise_returns(step_rewards)
+
+                for step_idx, item in enumerate(step_items):
+                    p_ids, p_mask, c_ids, c_mask, c_logps = item
+                    completion_truncated = False
+                    if self.max_seq_len > 0:
+                        max_c_possible = min(len(c_ids), self.max_seq_len)
+                        keep_p = self.max_seq_len - max_c_possible
+                        if keep_p < len(p_ids):
+                            if keep_p <= 0:
+                                p_ids, p_mask = [], []
+                            else:
+                                p_ids = p_ids[-keep_p:]
+                                p_mask = p_mask[-keep_p:]
+
+                        max_c_len = self.max_seq_len - len(p_ids)
+                        if len(c_ids) > max_c_len:
+                            completion_truncated = True
+                            c_ids   = c_ids[:max_c_len] if max_c_len > 0 else []
+                            c_mask  = c_mask[:max_c_len] if max_c_len > 0 else []
+                            c_logps = c_logps[:max_c_len] if max_c_len > 0 else []
+
+                    effective_c_mask = c_mask
+                    if completion_truncated and self.mask_truncated_completions:
+                        effective_c_mask = [0] * len(c_ids)
+
+                    ret = float(returns[step_idx])
+                    if completion_truncated and self.zero_truncated_completions:
+                        ret = 0.0
+
+                    all_prompt_ids.append(p_ids)
+                    all_prompt_masks.append(p_mask)
+                    all_completion_ids.append(c_ids)
+                    all_completion_masks.append(effective_c_mask)
+                    all_completion_logprobs.append(c_logps)
+                    all_returns.append(ret)
+                    item_meta.append((prompt_idx, step_idx))
+
+
+            class _Proc:
+                def __init__(self):
+                    self.prompt_ids = all_prompt_ids
+                    self.prompt_mask = all_prompt_masks
+                    self.completion_ids = all_completion_ids
+                    self.completion_mask = all_completion_masks
+                    self.completion_logprobs = all_completion_logprobs
+                    self.rewards = all_returns
+
+            # mimic ProcessedOutputs for downstream use
+            processed_results = _Proc()
+            rewards_dict = {"reward": all_returns}
+
+            rewards = all_returns
+            # Compute stepwise group baseline across all m×n samples for each prompt
+            advantages: list[float] = [0.0] * len(rewards)
+            prompts_in_batch = len(batch_ds)
+            for prompt_idx in range(prompts_in_batch):
+                group = [j for j, (p, _s) in enumerate(item_meta) if p == prompt_idx]
+                if not group:
+                    continue
+                group_vals = [rewards[j] for j in group]
+                gmean = float(np.mean(group_vals))
+                gstd = float(np.std(group_vals)) + 1e-8  # prevent div by zero
+                for j in group:
+                    advantages[j] = (rewards[j] - gmean) / gstd
 
         metrics_dict = {}
         if rewards:
             rewards_arr = np.asarray(rewards, dtype=np.float32)
             metrics_dict["reward"] = float(rewards_arr.mean())
             metrics_dict["reward/std"] = float(rewards_arr.std())
+
+        if self.use_stepwise_advantage:
+            metrics_dict["stepwise/turns_per_rollout"] = float(np.mean([len(s.get("step_scores", [])) for s in env_results.state]))
+            metrics_dict["stepwise/rollout_length"] = float(np.mean([len(s.get("responses", [])) for s in env_results.state]))
 
         if advantages:
             adv_arr = np.asarray(advantages, dtype=np.float32)
@@ -315,48 +564,85 @@ class Generator:
 
         # build per-process microbatches
         N = len(processed_results.rewards)
-        per_proc = N // self.num_processes
         microbatches: list[list[Microbatch]] = []
         items_per_process: list[int] = []
-        for proc in range(self.num_processes):
-            ps = proc * per_proc
-            pe = ps + per_proc
-            proc_mbs: list[Microbatch] = []
-            proc_item_total = 0
-            for s in range(ps, pe, self.micro_batch_size):
-                e = min(s + self.micro_batch_size, pe)
-                ids_chunk = [
-                    processed_results.prompt_ids[i]
-                    + processed_results.completion_ids[i]
-                    for i in range(s, e)
-                ]
-                mask_chunk = [
-                    processed_results.prompt_mask[i]
-                    + processed_results.completion_mask[i]
-                    for i in range(s, e)
-                ]
-                slogp_chunk = [
-                    [0.0] * len(processed_results.prompt_mask[i])
-                    + processed_results.completion_logprobs[i]
-                    for i in range(s, e)
-                ]
-                lengths = [len(mask) for mask in mask_chunk]
-                adv_chunk = [
-                    [advantages[i]] * lengths[idx]
-                    for idx, i in enumerate(list(range(s, e)))
-                ]
-                mb_items = sum(sum(mask) for mask in mask_chunk)
-                microbatch = Microbatch(
-                    input_ids=ids_chunk,
-                    loss_mask=mask_chunk,
-                    sampling_logprobs=slogp_chunk,
-                    advantages=adv_chunk,
-                    items=mb_items,
-                )
-                proc_item_total += mb_items
-                proc_mbs.append(microbatch)
-            microbatches.append(proc_mbs)
-            items_per_process.append(proc_item_total)
+        if not self.use_stepwise_advantage:
+            per_proc = N // self.num_processes
+            for proc in range(self.num_processes):
+                ps = proc * per_proc
+                pe = ps + per_proc
+                proc_mbs: list[Microbatch] = []
+                proc_item_total = 0
+                for s in range(ps, pe, self.micro_batch_size):
+                    e = min(s + self.micro_batch_size, pe)
+                    ids_chunk = [
+                        processed_results.prompt_ids[i]
+                        + processed_results.completion_ids[i]
+                        for i in range(s, e)
+                    ]
+                    mask_chunk = [
+                        processed_results.prompt_mask[i]
+                        + processed_results.completion_mask[i]
+                        for i in range(s, e)
+                    ]
+                    slogp_chunk = [
+                        [0.0] * len(processed_results.prompt_mask[i])
+                        + processed_results.completion_logprobs[i]
+                        for i in range(s, e)
+                    ]
+                    lengths = [len(mask) for mask in mask_chunk]
+                    adv_chunk = [
+                        [advantages[i]] * lengths[idx]
+                        for idx, i in enumerate(list(range(s, e)))
+                    ]
+                    mb_items = sum(sum(mask) for mask in mask_chunk)
+                    microbatch = Microbatch(
+                        input_ids=ids_chunk,
+                        loss_mask=mask_chunk,
+                        sampling_logprobs=slogp_chunk,
+                        advantages=adv_chunk,
+                        items=mb_items,
+                    )
+                    proc_item_total += mb_items
+                    proc_mbs.append(microbatch)
+                microbatches.append(proc_mbs)
+                items_per_process.append(proc_item_total)
+        else:
+            for proc in range(self.num_processes):
+                indices = list(range(proc, N, self.num_processes))
+                proc_mbs: list[Microbatch] = []
+                proc_item_total = 0
+                for start in range(0, len(indices), self.micro_batch_size):
+                    idxs = indices[start : start + self.micro_batch_size]
+                    ids_chunk = [
+                        processed_results.prompt_ids[i]
+                        + processed_results.completion_ids[i]
+                        for i in idxs
+                    ]
+                    mask_chunk = [
+                        processed_results.prompt_mask[i]
+                        + processed_results.completion_mask[i]
+                        for i in idxs
+                    ]
+                    slogp_chunk = [
+                        [0.0] * len(processed_results.prompt_mask[i])
+                        + processed_results.completion_logprobs[i]
+                        for i in idxs
+                    ]
+                    lengths = [len(mask) for mask in mask_chunk]
+                    adv_chunk = [[advantages[i]] * lengths[k] for k, i in enumerate(idxs)]
+                    mb_items = sum(sum(mask) for mask in mask_chunk)
+                    microbatch = Microbatch(
+                        input_ids=ids_chunk,
+                        loss_mask=mask_chunk,
+                        sampling_logprobs=slogp_chunk,
+                        advantages=adv_chunk,
+                        items=mb_items,
+                    )
+                    proc_item_total += mb_items
+                    proc_mbs.append(microbatch)
+                microbatches.append(proc_mbs)
+                items_per_process.append(proc_item_total)
 
         global_item_count = sum(items_per_process)
 
@@ -371,3 +657,29 @@ class Generator:
             prompts=env_results.prompt,
             metrics_dict=metrics_dict,
         )
+    
+    def _compute_stepwise_returns(self, step_rewards: list[float]) -> list[float]:
+        if not step_rewards:
+            return []
+
+        g = float(self.stepwise_gamma)
+        if self.stepwise_aggregation == "sum":
+            # R_t=\sum_{i=t}^{T}{\gamma^{i-t} r_i}
+            G = 0.0
+            out = [0.0] * len(step_rewards)
+            for t in range(len(step_rewards) - 1, -1, -1):
+                G = float(step_rewards[t]) + g * G
+                out[t] = G
+            return out
+    
+        elif self.stepwise_aggregation == "max":
+            # R_t=\max_{i=t..T}{\gamma^{i-t} r_i}
+            out = [0.0] * len(step_rewards)
+            R_next: float | None = None
+            for t in range(len(step_rewards) - 1, -1, -1):
+                r = float(step_rewards[t])
+                cand_future = (g * R_next) if (R_next is not None) else None
+                R_t = r if cand_future is None else max(r, cand_future)
+                out[t] = R_t
+                R_next = R_t
+            return out

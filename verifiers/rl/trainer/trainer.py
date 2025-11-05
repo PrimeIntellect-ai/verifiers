@@ -112,6 +112,9 @@ class RLTrainer(Trainer):
                 mask_truncated_completions=args.mask_truncated_completions,
                 zero_truncated_completions=args.zero_truncated_completions,
                 max_concurrent=args.max_concurrent,
+                use_stepwise_advantage=args.use_stepwise_advantage,
+                stepwise_gamma=args.stepwise_gamma,
+                stepwise_aggregation=args.stepwise_aggregation,
             )
             self.generator.start()
             self.generator.submit_batch(0)

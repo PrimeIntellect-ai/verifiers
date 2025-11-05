@@ -58,13 +58,13 @@ class MultiTurnEnv(Environment):
     @staticmethod
     def _process_assistant_message(msg: ChatMessage) -> ChatMessage:
         import re
+        from copy import deepcopy
 
         def _strip_prefix_up_to_close(text: str) -> str:
             return re.sub(r"(?s)^.*</think>", "", text).lstrip()
 
-        new_msg: ChatMessage = {"role": msg.get("role", "assistant")}
-        if "tool_calls" in msg:
-            new_msg["tool_calls"] = msg["tool_calls"]
+        new_msg: ChatMessage = deepcopy(msg)
+        new_msg["role"] = msg.get("role", "assistant")
 
         content = msg.get("content")
         if content is None:
@@ -102,7 +102,7 @@ class MultiTurnEnv(Environment):
         prompt: Messages,
         completion: Messages | None = None,
         answer: str = "",
-        state: State = {},
+        state: State | None = None,
         task: str = "default",
         info: Info | None = None,
         example_id: int = 0,
@@ -118,6 +118,9 @@ class MultiTurnEnv(Environment):
         state = state or await self.init_state(
             prompt, completion, answer, task, info, example_id
         )
+        track_step_scores: bool = bool(kwargs.get("track_step_scores", False))
+        if track_step_scores and "step_scores" not in state:
+            state["step_scores"] = []
         start_time = time.time()
         state = await maybe_await(self.setup_state, state, **kwargs)
         if self.message_type == "chat":
@@ -128,10 +131,13 @@ class MultiTurnEnv(Environment):
             assert isinstance(state["completion"], str)
             state["responses_start_idx"] = []
         while not is_completed:
+            # 1. Build current context and check early termination
             context_messages = await self.get_context_messages(state)
             if await maybe_await(self.is_completed, context_messages, state, **kwargs):
                 is_completed = True
                 break
+
+            # 2. Model response for this turn
             response = await self.get_model_response(
                 client,
                 model,
@@ -146,6 +152,8 @@ class MultiTurnEnv(Environment):
                 state["prompt_too_long"] = True
                 break
             state["responses"].append(response)
+
+            # 2a. Append assistant message to completion
             response_text: str = ""
             if self.message_type == "chat":
                 assert isinstance(context_messages, list)
@@ -161,31 +169,55 @@ class MultiTurnEnv(Environment):
                     and response.choices[0].message
                     and response.choices[0].message.tool_calls
                 ):
-                    response_message["tool_calls"] = response.choices[  # type: ignore
-                        0
-                    ].message.tool_calls
+                    response_message["tool_calls"] = response.choices[0].message.tool_calls  # type: ignore
                 state["completion"].append(response_message)
             else:
                 assert isinstance(response, Completion)
-                state["responses_start_idx"].append(len(completion))
+                # track where this assistant response starts in the running text
+                state["responses_start_idx"].append(len(state["completion"]))
                 if response.choices and response.choices[0]:
                     response_text = response.choices[0].text or ""
                 state["completion"] += response_text
+
+            # 3) Environment feedback for THIS turn
+            #    Use latest context that includes the assistant message
             context_messages = await self.get_context_messages(state)
+            env_msgs, state = await maybe_await(
+                self.env_response, context_messages, state, **kwargs
+            )
+            if self.message_type == "chat":
+                assert isinstance(env_msgs, list)
+                state["completion"] += env_msgs
+            else:
+                assert isinstance(env_msgs, str)
+                state["completion"] += env_msgs
+
+            # 4) Now compute per-turn score after env feedback is appended
+            if track_step_scores:
+                try:
+                    rs = await self.rubric.score_rollout(
+                        prompt=state["prompt"],
+                        completion=state["completion"],
+                        answer=state.get("answer", ""),
+                        state=state,
+                        task=state.get("task", "default"),
+                        info=state.get("info", {}),
+                        example_id=state.get("example_id", example_id),
+                        **kwargs,
+                    )
+                    state.setdefault("step_scores", []).append(float(rs.reward))
+                except Exception as e:
+                    logger.error(f"Error computing step score: {e}")
+                    # state.setdefault("step_scores", []).append(0.0)
+                    raise RuntimeError(f"Step score computation failed: {e}")
+
+            # 5) Prepare for next turn
             state["turn"] += 1
+            context_messages = await self.get_context_messages(state)
             if await maybe_await(self.is_completed, context_messages, state, **kwargs):
                 is_completed = True
                 end_time = time.time()
                 state["timing"]["generation_ms"] = (end_time - start_time) * 1000
                 state["timing"]["total_ms"] = (end_time - start_time) * 1000
-            else:
-                env_msgs, state = await maybe_await(
-                    self.env_response, context_messages, state, **kwargs
-                )
-                if self.message_type == "chat":
-                    assert isinstance(env_msgs, list)
-                    state["completion"] += env_msgs
-                else:
-                    assert isinstance(env_msgs, str)
-                    state["completion"] += env_msgs
+                break
         return state["completion"], state
