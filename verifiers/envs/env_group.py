@@ -1,6 +1,6 @@
+from collections import defaultdict
 from typing import TYPE_CHECKING, Mapping
 
-from collections import defaultdict
 from datasets import concatenate_datasets
 from openai import AsyncOpenAI
 
@@ -153,6 +153,7 @@ class EnvGroup(Environment):
             eval_dataset=eval_dataset,
             rubric=rubric,
             oai_tools=None,
+            map_kwargs=map_kwargs,
             **kwargs,
         )
         self.logger.info(
@@ -288,9 +289,7 @@ class EnvGroup(Environment):
                     env_processed_outputs.completion_logprobs[i]
                 )
                 all_rewards[original_idx] = env_processed_outputs.rewards[i]
-                all_is_truncated[original_idx] = (
-                    env_processed_outputs.is_truncated[i]
-                )
+                all_is_truncated[original_idx] = env_processed_outputs.is_truncated[i]
         return ProcessedOutputs(
             prompt_ids=all_prompt_ids,
             prompt_mask=all_prompt_masks,
