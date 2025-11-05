@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from peft import LoraConfig
 from transformers import TrainingArguments
@@ -127,6 +127,33 @@ class RLConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to give zero reward to truncated completions."},
     )
+
+    # stepwise returns / advantage configuration
+    use_stepwise_advantage: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, treat each assistant turn as its own training sample and use a discounted MC return per step."
+            )
+        },
+    )
+    stepwise_aggregation: Literal["sum", "max"] = field(
+        default="sum",
+        metadata={
+            "help": (
+                "How to compute discounted per-step return R_t from future rewards."
+            )
+        },
+    )
+    stepwise_gamma: float = field(
+        default=0.4,
+        metadata={
+            "help": (
+                "Discount factor gamma for stepwise MC return. Must be in [0, 1]."
+            )
+        },
+    )
+
     # sampling_args for generation
     max_tokens: Optional[int] = field(
         default=None,
@@ -332,4 +359,12 @@ class RLConfig(TrainingArguments):
 
         assert self.rollouts_per_example > 1, (
             "2 or more rollouts per example are required."
+        )
+
+        assert 0.0 <= self.stepwise_gamma <= 1.0, (
+            "stepwise_gamma must be between 0.0 and 1.0."
+        )
+
+        assert self.stepwise_aggregation in ["sum", "max"], (
+            "stepwise_aggregation must be either 'sum' or 'max'."
         )

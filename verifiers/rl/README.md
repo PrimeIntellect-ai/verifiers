@@ -97,6 +97,9 @@ We have removed a number of features from the previous `GRPOTrainer`, in favor o
   - `rollouts_per_example`: rollouts per example/prompt (default is `16`)
   - `max_seq_len`: the maximum sequence length for the training (default is `2048`)
   - `max_steps`: the maximum number of steps for the training (default is `500`)
+  - `use_stepwise_advantage`: if `True`, each assistant turn becomes its own training sample and advantages are computed from a discounted per-step return (default `False`)
+  - `stepwise_aggregation`: aggregation for stepwise returns: `"sum"` (default) or `"max"`.
+  - `stepwise_gamma`: discount factor `gamma` for stepwise returns (default `0.4`). With `stepwise_aggregation="sum"`, `R_t=\sum_{i=t}^{T}{\gamma^{i-t} r_i}`; with `stepwise_aggregation="max"`, `R_t=\max_{i=t..T}{\gamma^{i-t} r_i}`.
 - Sampling configuration arguments:
   - `max_tokens`: the maximum number of tokens per request (default is `None`)
   - `temperature`: the temperature for the sampling (default is `0.7`)
