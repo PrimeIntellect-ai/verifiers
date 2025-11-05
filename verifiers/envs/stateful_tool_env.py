@@ -5,7 +5,7 @@ from typing import Callable
 from openai.types.chat import ChatCompletionFunctionToolParam
 
 from verifiers.envs.tool_env import ToolEnv
-from verifiers.types import ChatCompletionMessageToolCall, Message, Messages, State
+from verifiers.types import Message, Messages, State
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
@@ -110,10 +110,11 @@ class StatefulToolEnv(ToolEnv):
         assert "tool_calls" in messages[-1]
         tool_messages = []
         for tool_call in messages[-1]["tool_calls"]:
-            assert isinstance(tool_call, ChatCompletionMessageToolCall)
-            tool_name: str = tool_call.function.name
-            tool_args: dict = json.loads(tool_call.function.arguments)
-            tool_call_id: str = tool_call.id or ""
+            tool_name: str = tool_call.get("function", {}).get("name", "")
+            tool_args: dict = json.loads(
+                tool_call.get("function", {}).get("arguments", "")
+            )
+            tool_call_id: str = tool_call.get("id", "")
             tool_args = self.update_tool_args(
                 tool_name, tool_args, messages, state, **kwargs
             )
