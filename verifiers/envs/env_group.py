@@ -294,8 +294,8 @@ class EnvGroup(Environment):
         all_completion_ids = [[] for _ in range(num_samples)]
         all_completion_masks = [[] for _ in range(num_samples)]
         all_completion_logprobs = [[] for _ in range(num_samples)]
-        all_processed_rewards = [0.0] * num_samples
-        all_is_truncated_flags = [False] * num_samples
+        all_rewards = [0.0] * num_samples
+        all_is_truncated = [False] * num_samples
 
         # keep track of indices for each task by grouping indices by task
         env_indices = defaultdict(list)
@@ -331,18 +331,16 @@ class EnvGroup(Environment):
                 all_completion_logprobs[original_idx] = (
                     env_processed_outputs.completion_logprobs[i]
                 )
-                all_processed_rewards[original_idx] = env_processed_outputs.rewards[i]
-                all_is_truncated_flags[original_idx] = (
-                    env_processed_outputs.is_truncated[i]
-                )
+                all_rewards[original_idx] = env_processed_outputs.rewards[i]
+                all_is_truncated[original_idx] = env_processed_outputs.is_truncated[i]
         return ProcessedOutputs(
             prompt_ids=all_prompt_ids,
             prompt_mask=all_prompt_masks,
             completion_ids=all_completion_ids,
             completion_mask=all_completion_masks,
             completion_logprobs=all_completion_logprobs,
-            rewards=all_processed_rewards,
-            is_truncated=all_is_truncated_flags,
+            rewards=all_rewards,
+            is_truncated=all_is_truncated,
         )
 
     def get_env_for_task(self, task: str) -> Environment:
