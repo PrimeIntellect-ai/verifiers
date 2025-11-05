@@ -139,6 +139,27 @@ class TestEnvGroup:
         assert env_group.env_map["env_0"] == env1
         assert env_group.env_map["env_1"] == env2
 
+    def test_env_group_unique_example_ids(self, mock_openai_client):
+        """Test EnvGroup initialization with multiple environments."""
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        env_group = EnvGroup(envs=[env1, env2])
+        dataset = env_group.get_dataset()
+        assert "example_id" in dataset.column_names
+        assert len(set(dataset["example_id"])) == len(dataset)
+
     def test_env_group_with_custom_names(self, mock_openai_client):
         """Test EnvGroup with custom environment names."""
         env1 = SingleTurnEnv(
