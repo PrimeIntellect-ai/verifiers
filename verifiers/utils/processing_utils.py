@@ -91,7 +91,8 @@ def process_chat_format_vllm(
     assert len(responses) == responses_idx, "Responses not fully consumed"
     assert len(zipped) == len(completion), "Length mismatch"
     # get tools from state["info"]["oai_tools"]
-    oai_tools = state.get("info", {}).get("oai_tools", []) or []
+    print(state["info"]["oai_tools"])
+    oai_tools = state["info"]["oai_tools"] or []
     prompt_ids: list[int] = processing_class.apply_chat_template(
         conversation=prompt,  # type: ignore
         add_generation_prompt=True,

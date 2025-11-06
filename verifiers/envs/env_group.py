@@ -242,7 +242,7 @@ class EnvGroup(Environment):
 
         # Route to appropriate environment
         env = self.env_map[task]
-
+        print(env.oai_tools)
         # Set tools for this task's environment if not already set in info
         if "oai_tools" not in info and hasattr(env, "oai_tools") and env.oai_tools:
             info["oai_tools"] = env.oai_tools
