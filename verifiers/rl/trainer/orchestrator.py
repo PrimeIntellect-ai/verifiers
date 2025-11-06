@@ -40,7 +40,7 @@ class Batch(BaseModel):
     rewards_dict: dict[str, list[float]] = Field(default_factory=dict)
 
 
-class Generator:
+class Orchestrator:
     """
     Manages asynchronous batch generation in parallel with RL training.
     """

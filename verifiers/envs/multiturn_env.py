@@ -70,7 +70,7 @@ class MultiTurnEnv(Environment):
         Generate a multi-turn rollout with the environment (messages, state).
         """
         completion = completion or await self.init_completion()
-        info = info or {}
+        info = info if info is not None else {}
         is_completed = False
         state = state or await self.init_state(
             prompt, completion, answer, task, info, example_id

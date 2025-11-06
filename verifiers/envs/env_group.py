@@ -60,7 +60,7 @@ class EnvGroupRubric(Rubric):
         not applicable to this sample's environment.
         """
         state = state or {}
-        info = info or {}
+        info = info if info is not None else {}
 
         # Initialize metrics with all reward names set to 0.0
         metrics = {name: 0.0 for name in self.all_reward_names}
@@ -217,6 +217,10 @@ class EnvGroup(Environment):
         """
         Initialize state for a rollout.
         """
+        env = self.env_map.get(task)
+        if env and hasattr(env, "oai_tools") and env.oai_tools:
+            if "oai_tools" not in info:
+                info["oai_tools"] = env.oai_tools
         return await super().init_state(
             prompt, completion, answer, task, info, example_id
         )
@@ -243,7 +247,7 @@ class EnvGroup(Environment):
         2. info['task']
         3. First environment name (default)
         """
-        info = info or {}
+        info = info if info is not None else {}
         sampling_args = sampling_args or {}
 
         # Route to appropriate environment
@@ -252,9 +256,10 @@ class EnvGroup(Environment):
         # Set tools for this task's environment if not already set in info
         if "oai_tools" not in info and hasattr(env, "oai_tools") and env.oai_tools:
             info["oai_tools"] = env.oai_tools
+            state["info"]["oai_tools"] = env.oai_tools
 
         # Pass through all arguments
-        return await env.rollout(
+        completion, state = await env.rollout(
             client,
             model,
             prompt,
@@ -267,6 +272,8 @@ class EnvGroup(Environment):
             sampling_args,
             **kwargs,
         )
+
+        return completion, state
 
     def process_env_results_vllm(
         self,

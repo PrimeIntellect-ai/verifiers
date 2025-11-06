@@ -171,6 +171,8 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
     "ignore::UserWarning:transformers.*",
+    "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
+    "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]
