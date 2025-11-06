@@ -22,7 +22,7 @@ import verifiers as vf
 import wandb
 from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
-from verifiers.rl.trainer.generator import Generator
+from verifiers.rl.trainer.orchestrator import Orchestrator
 from verifiers.rl.trainer.utils import (
     entropy_from_logits,
     finalize_stat_tracker,
@@ -83,7 +83,7 @@ class RLTrainer(Trainer):
         self.mask_ratio_low = args.mask_ratio_low
         self.mask_ratio_high = args.mask_ratio_high
 
-        # generator (main process only)
+        # orchestrator (main process only)
         if self.accelerator.is_main_process:
             host = args.vllm_server_host
             port = args.vllm_server_port
@@ -92,7 +92,7 @@ class RLTrainer(Trainer):
             )
             self.client.init_communicator()
             vllm_base_url = f"http://{host}:{port}/v1"
-            self.generator = Generator(
+            self.orchestrator = Orchestrator(
                 env=env,
                 client_base_url=vllm_base_url,
                 client_api_key="EMPTY",
@@ -113,10 +113,10 @@ class RLTrainer(Trainer):
                 zero_truncated_completions=args.zero_truncated_completions,
                 max_concurrent=args.max_concurrent,
             )
-            self.generator.start()
-            self.generator.submit_batch(0)
+            self.orchestrator.start()
+            self.orchestrator.submit_batch(0)
         else:
-            self.generator = None
+            self.orchestrator = None
             self.client = None
 
         # metrics
@@ -135,12 +135,12 @@ class RLTrainer(Trainer):
         **kwargs,
     ) -> torch.Tensor:
         self.update_vllm()
-        if self.generator:
-            self.generator.submit_batch(self.state.global_step + 1)
+        if self.orchestrator:
+            self.orchestrator.submit_batch(self.state.global_step + 1)
 
         broadcast_list = [None]
-        if self.generator:
-            broadcast_list = [self.generator.get_batch(self.state.global_step)]
+        if self.orchestrator:
+            broadcast_list = [self.orchestrator.get_batch(self.state.global_step)]
         broadcast_object_list(broadcast_list)
         assert broadcast_list[0] is not None
         batch = broadcast_list[0]
@@ -310,8 +310,8 @@ class RLTrainer(Trainer):
     def update_vllm(self):
         assert self.model is not None
         is_generating = False
-        if self.generator:
-            is_generating = self.generator.is_generating
+        if self.orchestrator:
+            is_generating = self.orchestrator.is_generating
         is_generating_list = [is_generating]
         broadcast_object_list(is_generating_list, from_process=0)
         is_generating = is_generating_list[0]
@@ -322,8 +322,8 @@ class RLTrainer(Trainer):
             waits += 1
             if waits % 10 == 0:
                 self.logger.info("Waiting for generation to finish before syncing.")
-            if self.generator:
-                is_generating = self.generator.is_generating
+            if self.orchestrator:
+                is_generating = self.orchestrator.is_generating
             is_generating_list = [is_generating]
             broadcast_object_list(is_generating_list, from_process=0)
             is_generating = is_generating_list[0]
@@ -387,13 +387,13 @@ class RLTrainer(Trainer):
         return DataLoader(StepsDataset(self.max_steps))
 
     def _inner_training_loop(self, *args, **kwargs):
-        """Override to ensure async generator is stopped when training ends"""
+        """Override to ensure async orchestrator is stopped when training ends"""
         try:
             return super()._inner_training_loop(*args, **kwargs)
         finally:
             # cleanup
-            if self.generator:
-                self.generator.stop()
+            if self.orchestrator:
+                self.orchestrator.stop()
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
         mode = "train" if self.model is not None and self.model.training else "eval"

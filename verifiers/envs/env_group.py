@@ -207,6 +207,10 @@ class EnvGroup(Environment):
         """
         Initialize state for a rollout.
         """
+        env = self.env_map.get(task)
+        if env and hasattr(env, "oai_tools") and env.oai_tools:
+            if "oai_tools" not in info:
+                info["oai_tools"] = env.oai_tools
         return await super().init_state(
             prompt, completion, answer, task, info, example_id
         )
@@ -244,7 +248,7 @@ class EnvGroup(Environment):
             info["oai_tools"] = env.oai_tools
 
         # Pass through all arguments
-        return await env.rollout(
+        completion, state = await env.rollout(
             client,
             model,
             prompt,
@@ -257,6 +261,8 @@ class EnvGroup(Environment):
             sampling_args,
             **kwargs,
         )
+
+        return completion, state
 
     def process_env_results_vllm(
         self,
