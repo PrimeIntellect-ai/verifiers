@@ -155,3 +155,41 @@ def get_overlong_prompt_dummy_response(message_type: MessageType) -> ModelRespon
         )
     else:
         raise ValueError(f"Invalid message type: {message_type}")
+
+
+def extract_system_message(messages: list) -> tuple[str | None, list]:
+    """Extract system message as instructions for Responses API."""
+    instructions = None
+    remaining = []
+
+    for msg in messages:
+        if msg.get("role") == "system":
+            if instructions is None:
+                instructions = msg.get("content")
+        else:
+            remaining.append(msg)
+
+    return instructions, remaining
+
+
+def adapt_tools_for_responses_api(chat_tools: list | None) -> list | None:
+    """Convert Chat Completions tool format to Responses API format."""
+    if not chat_tools:
+        return None
+
+    adapted = []
+    for tool in chat_tools:
+        if tool.get("type") == "function":
+            func = tool.get("function", {})
+            adapted.append(
+                {
+                    "type": "function",
+                    "name": func.get("name"),
+                    "description": func.get("description"),
+                    "parameters": func.get("parameters"),
+                }
+            )
+        else:
+            adapted.append(tool)
+
+    return adapted
