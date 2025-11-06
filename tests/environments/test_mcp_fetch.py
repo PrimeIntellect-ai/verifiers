@@ -86,13 +86,15 @@ async def test_fetch_tool_verifiers_cover_core_cases(fixture_server):
     tasks = _load_tasks()
     base_url = f"http://127.0.0.1:{DEFAULT_FIXTURE_PORT}"
     shard_cases = [
-        ("fetch_014", {"path": "/text/poem.txt", "method": "GET"}),
-        ("fetch_006", {"path": "/html/about.html", "method": "HEAD"}),
-        ("fetch_009", {"path": "/query?category=fruits&limit=2"}),
-        ("fetch_011", {"path": "/auth", "headers": {"X-Token": "opensesame"}}),
-        ("fetch_018", {"path": "/json/data_large.jsonl"}),
-        ("fetch_027", {"path": "/json/data_large.jsonl"}),
-        ("fetch_030", {"path": "/json/ledger.json"}),
+        ("fetch_001", {"path": "/text/poem.txt", "method": "GET"}),  # char_count
+        ("fetch_011", {"path": "/json/pointers.json"}),  # json_key
+        ("fetch_023", {"path": "/notfound", "method": "HEAD"}),  # status (HEAD)
+        ("fetch_024", {"path": "/query?category=shapes&limit=5"}),  # query json_key
+        ("fetch_018", {"path": "/json/data_large.jsonl"}),  # hash
+        ("fetch_019", {"path": "/json/data_large.jsonl", "max_bytes": 64}),  # field_bool
+        ("fetch_020", {"path": "/json/data_large.jsonl", "max_bytes": 64}),  # field_number
+        ("fetch_027", {"path": "/json/data_large.jsonl"}),  # hash_digit_sum
+        ("fetch_044", {"path": "/html/matrix.html"}),  # contains
     ]
     for task_id, request in shard_cases:
         req = dict(request)
