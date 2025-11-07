@@ -224,7 +224,7 @@ def test_process_env_results_zero_truncated_reward_vllm(mock_openai_client):
         completions,
         states,
         rewards,
-        Tok(),
+        Tok(),  # type: ignore[arg-type]
         max_seq_len=10,  # force truncation (6 + 8 > 10)
         mask_truncated_completions=True,
         zero_truncated_completions=True,
@@ -348,7 +348,7 @@ def test_truncation_masks_completion_format_vllm(mock_openai_client):
         completions,
         [{"responses": [mock_completion2], "responses_start_idx": [0]}],
         [1.0],
-        Tok(),
+        Tok(),  # type: ignore[arg-type]
         max_seq_len=10,
         mask_truncated_completions=True,
         zero_truncated_completions=True,

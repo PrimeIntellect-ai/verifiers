@@ -11,7 +11,7 @@ class ToolRubric(Rubric):
     def __init__(self, tools: list[Callable] | None = None):
         self.tools = tools or []
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
-        self.tool_names = [tool.__name__ for tool in self.tools]
+        self.tool_names = [tool.__name__ for tool in self.tools]  # type: ignore[union-attr]
 
         # Build initial reward functions and weights
         reward_funcs = []

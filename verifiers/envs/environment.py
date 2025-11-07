@@ -110,7 +110,7 @@ class Environment(ABC):
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
             # merge extra_body if provided
-            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))
+            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))  # type: ignore[union-attr]
             # copy other keys
             for key, value in sampling_args.items():
                 if key != "extra_body":
