@@ -117,6 +117,7 @@ vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.rl.inference.server:main"
+prime-rl = "verifiers.scripts.prime_rl:main"
 
 # hatchling configuration
 [tool.hatch.version]

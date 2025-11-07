@@ -89,7 +89,7 @@ Coming soon.
 
 **[Components](components.md)** — Advanced rubrics, tools, parsers, with practical examples. Covers judge rubrics, tool design, and complex workflows.
 
-**[Training](training.md)** — GRPO training and hyperparameter tuning. Read this when you're ready to train models with your environments.
+**[Training](training.md)** — RL training and hyperparameter tuning. Read this when you're ready to train models with your environments.
 
 ### Reference
 

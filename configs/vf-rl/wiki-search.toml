@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "will/wiki-search"
+id = "primeintellect/wiki-search"
 
 [env.args]
 max_turns = 10
