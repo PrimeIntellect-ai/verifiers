@@ -38,7 +38,7 @@ dependencies = [
     "textual",
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
-    "prime-sandboxes>=0.1.0",
+    "prime-sandboxes>=0.2.2",
     "wget>=3.2",
 ]
 
