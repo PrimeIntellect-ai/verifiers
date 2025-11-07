@@ -20,6 +20,14 @@
 
 ### Quickstart
 
+**Prerequisites:**
+
+Export your OpenAI API key for the judge LLM:
+
+```bash
+export OPENAI_API_KEY=your_api_key_here
+```
+
 Run an evaluation with default settings:
 
 ```bash
