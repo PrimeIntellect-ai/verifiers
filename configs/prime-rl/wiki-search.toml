@@ -1,0 +1,50 @@
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 500
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "wiki-search"
+name = "wiki-search-4b"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[trainer.model.experimental.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 4096
+mask_truncated_completions = false
+zero_truncated_completions = true
+
+[orchestrator.sampling]
+max_tokens = 512
+
+[orchestrator.buffer]
+type = "online-difficulty"
+oversampling_factor = 2.0
+
+[[orchestrator.env]]
+id = "primeintellect/wiki-search"
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"

@@ -1,72 +1,143 @@
 # Training
 
-This guide covers RL training with the included trainer and vLLM inference, orchestrated via a single TOML config.
+This guide covers RL training with `prime-rl` as well as the included `vf.RLTrainer`, both of which can be orchestrated via a single TOML config.
 
-## Training options
+If your primary goal is to train a model on a Verifiers Environment, we recommend using `prime-rl`, which distills the best practices from our research team's experience and the broader community into a stable, easy-to-use recipe. If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with the same core algorithm as `prime-rl`).
 
-You can train with the included `RLTrainer` (via `vf-rl`) or with external projects like `prime-rl`.
 
-- Use the included trainer when you want a simple, hackable training loop and LoRA-first defaults.
-- Use `prime-rl` when you want FSDP-first orchestration and large-scale features.
+## `prime-rl`
 
-### Summary of similarities and differences
+We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer, and provide a basic setup guide below. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
 
-- Similarities
-  - OpenAI-compatible inference (vLLM) and async rollouts
-  - One-step off-policy overlap by default (generate at step n-1 while training at step n)
-
-- Differences
-- RLTrainer: Accelerate/DeepSpeed-based; optional LoRA/PEFT; easy to script and extend in Python
-  - PRIME-RL: FSDP-first; `rl` entrypoint; strong checkpointing; extensive CLI/TOML configuration
-
-## Train with vf-rl (included trainer)
-
-The included trainer runs alongside a vLLM server, managed automatically by `vf-rl` inside a tmux session. Configure everything in a single TOML.
-
-## Quick Start
-
-Install RL extras and set up default configs:
+To get started, do: 
 
 ```bash
-uv add 'verifiers[rl]'
 uv run vf-setup
 ```
 
-Launch training from a TOML (tmux with vLLM + trainer panes):
+This will clone and install the `prime-rl` trainer and its dependencies, and set up a default configuration for training with the included `wiki-search` Environment.
+
+Then, you can start training with:
 
 ```bash
-uv run vf-rl @ configs/rl/config.toml
+uv run prime-rl @ configs/prime-rl/wiki-search.toml
 ```
 
-## TOML Configuration
+This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server.
 
-Minimal TOML example:
+### Configuration
+
+`prime-rl` can be used with a single TOML file via its native `rl.py` script, which is used by the `uv run prime-rl` command from verifiers. 
+
+Example configuration file for the `primeintellect/wiki-search` Environment with `Qwen/Qwen3-4B-Instruct-2507`:
+
+```toml
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+max_steps = 500
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "wiki-search"
+name = "wiki-search-4b"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[trainer.model.experimental.lora]
+rank = 8
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+seq_len = 4096
+mask_truncated_completions = false
+zero_truncated_completions = true
+
+[orchestrator.sampling]
+max_tokens = 512
+
+[orchestrator.buffer]
+type = "online-difficulty"
+oversampling_factor = 2.0
+
+[[orchestrator.env]]
+id = "primeintellect/wiki-search"
+
+[inference.model]
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
+```
+
+For multi-node training, you will need to use separate configs for the trainer, orchestrator, and inference server, and launch processes separately. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
+
+## vf.RLTrainer
+
+The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `verifiers/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
+
+The feature set is intentionally kept minimal and focused. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the `prime-rl` trainer. 
+
+To use `vf.RLTrainer` in your own project, install with RL extras:
+```bash
+uv add 'verifiers[rl]'
+```
+
+Then, create a training configuration file, e.g. `configs/vf-rl/wiki-search.toml`, and do:
+
+```bash
+uv run vf-rl @ configs/vf-rl/wiki-search.toml
+```
+
+Example configuration files can be created in your project by running `uv run vf-setup`.
+
+### Configuration
+
+`vf-rl` can be used with a single TOML file, largely mirroring the configuration options for `prime-rl` but with some key differences in organization and feature sets.
+
+Example configuration file for the `primeintellect/wiki-search` Environment with `Qwen/Qwen3-4B-Instruct-2507`:
 
 ```toml
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "kalomaze/alphabet-sort" # auto-installed from hub if given as user/env-id, or from local project if given as env-id
+id = "primeintellect/wiki-search"
+
+[env.args]
+max_turns = 10
 
 [inference]
 gpus = 1
 
 [inference.args]
-enforce_eager = true
+enable_auto_tool_choice = true
+tool_call_parser = "hermes"
 
 [trainer]
 gpus = 1
 
 [trainer.args]
-run_name = "alphabet-sort"
-use_lora = true
-learning_rate = 1e-5
+run_name = "wiki-search"
 micro_batch_size = 4
 rollouts_per_example = 16
-batch_size = 512
-max_steps = 100
+batch_size = 1024
+max_steps = 500
 max_tokens = 512
-max_seq_len = 2048
+max_seq_len = 4096
 ```
 
 ## Key Hyperparameters
@@ -79,20 +150,21 @@ Key fields in `[trainer.args]`:
 - `batch_size`: rollouts per global batch (must be divisible by `micro_batch_size * world_size`)
 
 **How to think about batch settings:**
-- `num_generations`: Larger groups (16-32) increase reward diversity but use more memory
-- `per_device_train_batch_size`: Limited by GPU memory after model weights
-- `gradient_accumulation_steps`: Use to achieve larger effective batch sizes
+- `rollouts_per_example`: Larger groups (16-32) increase reward diversity but increase training time and memory usage
+- `micro_batch_size`: Limited by GPU memory after model weights
+- `batch_size`: Total rollouts per global batch (must be divisible by `micro_batch_size` and `rollouts_per_example`)
 
 ### Generation Parameters
 
-Specify in `[trainer.args]`:
-- `max_tokens` (per-turn), `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`
-- `max_prompt_len`, `max_seq_len`
+Both `prime-rl` and `vf-rl` support configurable generation parameters, including:
+- `max_tokens`: maximum number of tokens to generate per turn
+- `temperature`: temperature for sampling
+- `top_p`: top-p sampling
+- `top_k`: top-k sampling
+- `min_p`: minimum probability for sampling
+- `repetition_penalty`: repetition penalty for sampling
 
-**Generation strategy:**
-- High temperature (0.8-1.0) increases diversity within groups
-- Consider your model's context window when setting lengths
-- Longer completions allow more complex reasoning but increase memory usage
+In `prime-rl`, these parameters are configured in the `[orchestrator.sampling]` section, and in `vf-rl`, they are configured in the `[trainer.args]` section.
 
 ### Training Schedule
 
@@ -100,18 +172,11 @@ Core fields in `[trainer.args]`:
 - `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`
 - `max_grad_norm`, `bf16`, `gradient_checkpointing`
 
-### Async Generation
 
-`RLTrainer` is asynchronous (one step off-policy) by default. Generation is controlled via `[trainer.args]` and the environment:
-- `generation_timeout`, `max_concurrent`
+## LoRA Training
 
-## Evaluation During Training
+LoRA training is supported in both `prime-rl` and `vf-rl`. In `prime-rl`, it can be configured via the `[trainer.model.experimental.lora]` section. In `vf-rl` it is enabled by default, and can be configured via the `[trainer.args]` section.
 
-Set `eval_strategy`/`eval_steps` in `[trainer.args]` and provide an eval split via your environment configuration if supported.
-
-## Parameter-Efficient Training
-
-LoRA is enabled by default; configure via `[trainer.args]` fields like `use_lora`, `lora_rank`, `lora_alpha`, `lora_dropout`, and optionally `lora_target_modules`.
 
 ## RL Rules of Thumb
 
@@ -126,30 +191,15 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 ### Stability vs Performance Trade-offs
 
 **For more aggressive training** (higher risk of collapse):
-- Set `beta = 0` (no KL penalty)
-- Increase learning rate (2e-6 to 5e-6)
-- Increase `num_iterations` (2-4)
+- Increase learning rate (3e-5 to 1e-4 for LoRA, 3e-6 to 1e-5 for full finetuning)
+- Decrease `rollouts_per_example` and `batch_size` for faster generation
 
 **For more stable training** (slower progress):
-- Increase `num_generations` (32-64)
-- Increase batch size via `gradient_accumulation_steps`
-- Decrease `max_grad_norm` (0.001-0.005)
+- Increase `rollouts_per_example` (16-32)
+- Increase `batch_size` (512-1024)
 - Use larger models (14B+)
-- Keep `num_iterations = 1` (stay on-policy)
 
-### Best Practices
-
-**Likely beneficial:**
-- Learning rate warmup (10-20 steps minimum)
-- Periodic reference model updates for 500+ step runs
-- One-step off-policy training (`num_batches_ahead = 1`)
-
-**Context-dependent:**
-- High `beta` values (0.1+) - more conservative
-- Overlong filtering - depends on task
-- Tool response masking - useful for multi-turn
-
-**Key insight**: The best way to improve training is ensuring appropriate task difficulty for your model - not too easy, not too hard.
+However, the best way to improve training is ensuring appropriate task difficulty for your model - not too easy, not too hard.
 
 ## Troubleshooting
 
@@ -158,103 +208,20 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 **Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
-- Reduce `num_generations` or `per_device_train_batch_size`
+- Reduce `rollouts_per_example` or `micro_batch_size`
 - Use LoRA instead of full finetuning
 - Check vLLM server has sufficient memory
 
 **Training instability:**
-- Reduce learning rate
-- Decrease `max_grad_norm`
-- Increase `beta` for stronger KL regularization
+- Decrease learning rate
+- Increase `rollouts_per_example`
+- Increase `batch_size`
 
-**Poor reward diversity:**
-- Increase temperature
-- Check if task difficulty matches model capability
-- Ensure your rubric differentiates quality levels
-
-### Infrastructure
-- Ensure `huggingface` and `wandb` logins are configured
-- Set `OPENAI_API_KEY` (can be dummy for vLLM)
-- Increase ulimit for high concurrency: `ulimit -n 4096`
-- For NCCL issues: try `NCCL_P2P_DISABLE=1`
-
-## Advanced Configuration
-
-### Custom Sampling
-
-```python
-# Fine-grained generation control
-args.repetition_penalty = 1.1   # Reduce repetition
-args.top_k = 50                # Limit vocabulary
-args.min_p = 0.05              # Min probability threshold
-```
-
-### Resource Optimization
-
-```python
-# Memory-constrained settings
-args.gradient_checkpointing = True
-args.ds3_gather_for_generation = False  # For very large models
-args.generation_batch_size = 16  # Control generation batch size
-```
-
-### Monitoring
-
-```python
-# Logging configuration
-args.logging_steps = 1
-args.log_completions = True
-args.report_to = "wandb"  # or "none" to disable
-args.num_completions_to_print = 5  # Sample size to log
-```
-
-## Train with PRIME-RL
-
-If you prefer an FSDP-first setup with higher throughput, you can train the same `verifiers` Environments using `prime-rl`.
-
-- Install `prime-rl` (see its README for CUDA requirements):
-
-```bash
-curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
-```
-
-- Create or install a Verifiers Environment module (inside your `prime-rl` checkout if developing there):
-
-```bash
-# create a new Environment template
-uv run vf-init vf-custom-environment
-
-# OR install an existing Environment from this repo
-uv run vf-install vf-math-python --from-repo
-```
-
-- Configure the orchestrator to use your Environment. In your orchestrator TOML (e.g. `configs/my_exp/orch.toml`):
-
-```toml
-[environment]
-id = "vf-math-python"  # or your custom environment ID
-
-[environment.args]
-# Example args forwarded to the Environment
-split = "train"
-rollouts_per_example = 8
-max_concurrent = 512
-```
-
-- Launch a single-node run (adjust GPU split to your hardware):
-
-```bash
-uv run rl \
-  --trainer @ configs/my_exp/train.toml \
-  --orchestrator @ configs/my_exp/orch.toml \
-  --inference @ configs/my_exp/infer.toml \
-  --trainer-gpus 2 --inference-gpus 6
-```
-
-Tips:
-- Use `bash scripts/tmux.sh` in `prime-rl` to open a panes layout for trainer/orchestrator/inference logs.
-- Log to W&B by adding `--wandb.project <proj> --wandb.name <run>` on `uv run rl` (shared to trainer + orchestrator).
-- For checkpointing/resume, see the `prime-rl` README (supports step-tagged checkpoints across trainer/orchestrator).
+**Slow training:**
+- Increase learning rate
+- Leverage continuous rewards
+- Use online difficulty filtering
+- Calibrate difficulty appropriately via smarter models, easier tasks
 
 
 ## Next Steps

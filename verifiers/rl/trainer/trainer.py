@@ -407,9 +407,9 @@ class RLTrainer(Trainer):
 
         if self.accelerator.is_main_process:
             print_prompt_completions_sample(
-                self._textual_logs["prompt"],
-                self._textual_logs["completion"],
-                self._textual_logs["rewards"]["reward"],
+                list(self._textual_logs["prompt"]),  # type: ignore[arg-type]
+                list(self._textual_logs["completion"]),  # type: ignore[arg-type]
+                list(self._textual_logs["rewards"]["reward"]),  # type: ignore[arg-type]
                 self.state.global_step,
             )
 
@@ -444,7 +444,7 @@ class RLTrainer(Trainer):
                     * len(self._textual_logs["prompt"]),
                     "prompt": prompts_clean,
                     "completion": completions_clean,
-                    **{k: list(v) for k, v in self._textual_logs["rewards"].items()},
+                    **{k: list(v) for k, v in self._textual_logs["rewards"].items()},  # type: ignore[union-attr]
                 }
                 df = pd.DataFrame(table)
                 wandb.log({"completions": wandb.Table(dataframe=df)})
@@ -461,11 +461,11 @@ class RLTrainer(Trainer):
         completions: List[Messages],
         rewards_dict: Dict[str, Any],
     ) -> None:
-        self._textual_logs["prompt"].extend(prompts)
-        self._textual_logs["completion"].extend(completions)
+        self._textual_logs["prompt"].extend(prompts)  # type: ignore[union-attr]
+        self._textual_logs["completion"].extend(completions)  # type: ignore[union-attr]
         for reward_key in rewards_dict:
             reward_values = rewards_dict[reward_key]
-            self._textual_logs["rewards"][reward_key].extend(reward_values)
+            self._textual_logs["rewards"][reward_key].extend(reward_values)  # type: ignore[union-attr]
 
     def log_metrics(
         self,

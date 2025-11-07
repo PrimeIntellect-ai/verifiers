@@ -92,7 +92,7 @@ def process_chat_format_vllm(
     assert len(zipped) == len(completion), "Length mismatch"
     # get tools from state["info"]["oai_tools"]
     oai_tools = state.get("info", {}).get("oai_tools", []) or []
-    prompt_ids: list[int] = processing_class.apply_chat_template(
+    prompt_ids: list[int] = processing_class.apply_chat_template(  # type: ignore[assignment]
         conversation=prompt,  # type: ignore
         add_generation_prompt=True,
         tools=oai_tools,
@@ -127,14 +127,14 @@ def process_chat_format_vllm(
                 consecutive_messages.append(zipped[j][0])
                 j += 1
             # Tokenize conversation ending at last completed assistant response
-            token_prefix: list[int] = processing_class.apply_chat_template(
+            token_prefix: list[int] = processing_class.apply_chat_template(  # type: ignore[assignment]
                 conversation=messages_consumed,  # type: ignore
                 add_generation_prompt=False,
                 tools=oai_tools,
             )  # type: ignore
             # Tokenize with new user/tool messages and assistant prompt for next generation
             # Must include add_generation_prompt=True to match what vLLM sees
-            token_prefix_with_turn: list[int] = processing_class.apply_chat_template(
+            token_prefix_with_turn: list[int] = processing_class.apply_chat_template(  # type: ignore[assignment]
                 conversation=messages_consumed + consecutive_messages,  # type: ignore
                 add_generation_prompt=True,
                 tools=oai_tools,

@@ -60,6 +60,34 @@ def create_tmux_with_commands(
         split_cmd += ["-c", str(cwd)]
     run(split_cmd)
 
+    # Pane titles
+    run(["tmux", "select-pane", "-t", f"{session}:0.0", "-T", "Inference"])
+    run(["tmux", "select-pane", "-t", f"{session}:0.1", "-T", "Trainer"])
+
+    # Pane title styling
+    run(["tmux", "set-option", "-t", session, "-g", "pane-border-status", "top"])
+    run(
+        [
+            "tmux",
+            "set-option",
+            "-t",
+            session,
+            "-g",
+            "pane-border-format",
+            " #{pane_title} ",
+        ]
+    )
+    run(
+        [
+            "tmux",
+            "set-window-option",
+            "-t",
+            f"{session}:0",
+            "pane-border-status",
+            "top",
+        ]
+    )
+
     # Send commands to top (pane 0) and bottom (pane 1)
     run(["tmux", "select-pane", "-t", f"{session}:0.0"])  # focus top
     run(["tmux", "send-keys", "-t", f"{session}:0.0", cmd_top, "C-m"])  # enter
