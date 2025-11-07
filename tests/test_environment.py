@@ -291,7 +291,7 @@ class TestEnvironmentBase:
         # Create a mock tokenizer
         mock_tokenizer = Mock()
 
-        def apply_template(conversation, add_generation_prompt=True):
+        def apply_template(conversation, add_generation_prompt=True, tools=None):
             # Return deterministic token ids ensuring prefix property
             return list(range(10 if add_generation_prompt else 14))
 
@@ -388,7 +388,7 @@ class TestEnvironmentBase:
 
         # Track the conversation state
         def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
+            conversation, tokenize=False, add_generation_prompt=True, tools=None
         ):
             # Return token id list; size scales with number of messages
             return list(range(len(conversation) * 5))
@@ -445,7 +445,7 @@ class TestEnvironmentBase:
 
         # Track the conversation state
         def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
+            conversation, tokenize=False, add_generation_prompt=True, tools=None
         ):
             # Return deterministic token ids based on number of messages
             # Ensures prefix property when conversation grows
@@ -701,3 +701,65 @@ class TestEnvironmentBase:
         assert state["answer"] is results.answer[0]
         assert state["info"] is results.info[0]
         assert state["example_id"] is results.example_id[0]
+
+    @pytest.mark.asyncio
+    async def test_generate_updates_metadata(self, mock_openai_client):
+        """Test that metadata fields are updated after generate() completes."""
+        dataset = Dataset.from_dict(
+            {
+                "question": ["What is 2+2?", "What is 3+3?"],
+                "answer": ["4", "6"],
+            }
+        )
+
+        def reward_a(**kwargs):
+            return 1.0
+
+        def reward_b(**kwargs):
+            return 0.5
+
+        env = SimpleEnvironment(
+            dataset=dataset,
+            rubric=Rubric(
+                funcs=[reward_a, reward_b],
+                weights=[0.5, 0.5],
+            ),
+        )
+
+        results = await env.generate(
+            inputs=env.get_dataset(n=2),
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=True,
+        )
+
+        assert results.metadata.time_ms > 0.0
+        assert results.metadata.avg_reward == 0.75
+        assert len(results.metadata.avg_metrics) == 2
+        assert "reward_a" in results.metadata.avg_metrics
+        assert "reward_b" in results.metadata.avg_metrics
+        assert results.metadata.avg_metrics["reward_a"] == 1.0
+        assert results.metadata.avg_metrics["reward_b"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_generate_metadata_without_scoring(self, mock_openai_client):
+        """Test that metadata handles score_rollouts=False correctly."""
+        dataset = Dataset.from_dict(
+            {
+                "question": ["What is 2+2?"],
+                "answer": ["4"],
+            }
+        )
+
+        env = SimpleEnvironment(dataset=dataset, rubric=Rubric())
+
+        results = await env.generate(
+            inputs=env.get_dataset(n=1),
+            client=mock_openai_client,
+            model="test-model",
+            score_rollouts=False,
+        )
+
+        assert results.metadata.time_ms > 0.0
+        assert results.metadata.avg_reward == 0.0
+        assert results.metadata.avg_metrics == {}

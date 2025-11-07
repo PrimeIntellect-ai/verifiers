@@ -111,7 +111,7 @@ def sanitize_tool_calls(messages: Messages):
                 "role": m["role"],
                 "content": m.get("content", ""),
                 "tool_calls": [
-                    json.dumps(tc.model_dump())  # type: ignore
+                    json.dumps(tc if isinstance(tc, dict) else tc.model_dump())
                     for tc in m.get("tool_calls", [])
                 ],
             }

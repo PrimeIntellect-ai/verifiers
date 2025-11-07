@@ -70,7 +70,7 @@ class MultiTurnEnv(Environment):
         Generate a multi-turn rollout with the environment (messages, state).
         """
         completion = completion or await self.init_completion()
-        info = info or {}
+        info = info if info is not None else {}
         is_completed = False
         state = state or await self.init_state(
             prompt, completion, answer, task, info, example_id
@@ -118,9 +118,10 @@ class MultiTurnEnv(Environment):
                     and response.choices[0].message
                     and response.choices[0].message.tool_calls
                 ):
-                    response_message["tool_calls"] = response.choices[  # type: ignore
-                        0
-                    ].message.tool_calls
+                    tool_calls = response.choices[0].message.tool_calls
+                    response_message["tool_calls"] = [  # type: ignore
+                        tool_call.model_dump() for tool_call in tool_calls
+                    ]
                 state["completion"].append(response_message)
             else:
                 assert isinstance(response, Completion)

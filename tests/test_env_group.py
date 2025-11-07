@@ -1,14 +1,14 @@
 """Tests for the EnvGroup class."""
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from datasets import Dataset
 
 from verifiers import EnvGroup, Rubric, SingleTurnEnv
 from verifiers.envs.env_group import EnvGroupRubric
-from verifiers.types import RolloutScores
+from verifiers.types import ProcessedOutputs, RolloutScores
 
 
 class TestEnvGroupRubric:
@@ -138,6 +138,27 @@ class TestEnvGroup:
         assert env_group.env_names == ["env_0", "env_1"]
         assert env_group.env_map["env_0"] == env1
         assert env_group.env_map["env_1"] == env2
+
+    def test_env_group_unique_example_ids(self, mock_openai_client):
+        """Test EnvGroup initialization with multiple environments."""
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+
+        env_group = EnvGroup(envs=[env1, env2])
+        dataset = env_group.get_dataset()
+        assert "example_id" in dataset.column_names
+        assert len(set(dataset["example_id"])) == len(dataset)
 
     def test_env_group_with_custom_names(self, mock_openai_client):
         """Test EnvGroup with custom environment names."""
@@ -392,3 +413,96 @@ class TestEnvGroup:
         assert len(eval_dataset) == 2
         assert eval_dataset["task"][0] == "task1"
         assert eval_dataset["task"][1] == "task2"
+
+    def test_process_env_results_vllm_routing(self, mock_openai_client):
+        """Process results should be routed to the matching sub-environment."""
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q2"], "answer": ["a2"]}),
+            rubric=Rubric(),
+        )
+        env_group = EnvGroup(envs=[env1, env2], env_names=["math", "code"])
+
+        env1_outputs = ProcessedOutputs(
+            prompt_ids=[[10], [20]],
+            prompt_mask=[[1], [1]],
+            completion_ids=[[30], [40]],
+            completion_mask=[[1], [1]],
+            completion_logprobs=[[0.1], [0.2]],
+            rewards=[0.5, 0.6],
+            is_truncated=[False, True],
+        )
+        env2_outputs = ProcessedOutputs(
+            prompt_ids=[[11]],
+            prompt_mask=[[1]],
+            completion_ids=[[31]],
+            completion_mask=[[1]],
+            completion_logprobs=[[0.3]],
+            rewards=[0.7],
+            is_truncated=[False],
+        )
+        env1.process_env_results_vllm = Mock(return_value=env1_outputs)  # type: ignore[assignment]
+        env2.process_env_results_vllm = Mock(return_value=env2_outputs)  # type: ignore[assignment]
+
+        prompts = [
+            [{"role": "user", "content": "math q"}],
+            [{"role": "user", "content": "code q"}],
+            [{"role": "user", "content": "math follow-up"}],
+        ]
+        completions = [
+            [{"role": "assistant", "content": "math a"}],
+            [{"role": "assistant", "content": "code a"}],
+            [{"role": "assistant", "content": "math a2"}],
+        ]
+        states = [
+            {"task": "math"},
+            {"task": "code"},
+            {"task": "math"},
+        ]
+        rewards = [1.0, 2.0, 3.0]
+
+        processing_class = Mock(name="tokenizer")
+        processed = env_group.process_env_results_vllm(
+            prompts=prompts,
+            completions=completions,
+            states=states,
+            rewards=rewards,
+            processing_class=processing_class,
+        )
+
+        env1.process_env_results_vllm.assert_called_once_with(  # type: ignore[attr-defined]
+            [prompts[0], prompts[2]],
+            [completions[0], completions[2]],
+            [states[0], states[2]],
+            [rewards[0], rewards[2]],
+            processing_class,
+            max_seq_len=-1,
+            mask_env_responses=False,
+            mask_truncated_completions=False,
+            zero_truncated_completions=False,
+            message_type="chat",
+        )
+        env2.process_env_results_vllm.assert_called_once_with(  # type: ignore[attr-defined]
+            [prompts[1]],
+            [completions[1]],
+            [states[1]],
+            [rewards[1]],
+            processing_class,
+            max_seq_len=-1,
+            mask_env_responses=False,
+            mask_truncated_completions=False,
+            zero_truncated_completions=False,
+            message_type="chat",
+        )
+
+        assert processed.prompt_ids == [[10], [11], [20]]
+        assert processed.completion_logprobs == [[0.1], [0.3], [0.2]]
+        assert processed.rewards == [0.5, 0.7, 0.6]
+        assert processed.is_truncated == [False, False, True]
