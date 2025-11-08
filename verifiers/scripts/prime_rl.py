@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Wrapper script to run prime-rl rl command from the verifiers project root.
+Wrapper script to run prime-rl rl command from the current working directory.
 
 Usage:
     uv run prime-rl @ configs/prime-rl/config.toml
@@ -35,14 +35,24 @@ def tmux_exists() -> bool:
         return False
 
 
-def ensure_no_session(session: str) -> None:
+def session_exists(session: str) -> bool:
     proc = subprocess.run(
         ["tmux", "has-session", "-t", session],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    if proc.returncode == 0:
-        run(["tmux", "kill-session", "-t", session])
+    return proc.returncode == 0
+
+
+def find_available_session_name(base_name: str) -> str:
+    if not session_exists(base_name):
+        return base_name
+    index = 2
+    while True:
+        candidate = f"{base_name}-{index}"
+        if not session_exists(candidate):
+            return candidate
+        index += 1
 
 
 def create_tmux_session(session: str, output_dir: str, cmd: str, cwd: Path) -> None:
@@ -161,14 +171,16 @@ def main():
     if args.at != "@":
         raise SystemExit("Usage: prime-rl @ path/to/file.toml")
 
-    verifiers_root = Path(__file__).parent.parent.parent.resolve()
-    prime_rl_dir = verifiers_root / "prime-rl"
+    cwd = Path.cwd()
+    prime_rl_dir = cwd / "prime-rl"
     if not prime_rl_dir.exists():
         raise SystemExit(
             "Error: prime-rl directory not found. Run 'uv run vf-setup' first."
         )
 
     config_path = Path(args.config_path)
+    if not config_path.is_absolute():
+        config_path = cwd / config_path
     if not config_path.exists():
         raise SystemExit(f"TOML config not found: {config_path}")
 
@@ -179,8 +191,7 @@ def main():
 
     cmd = f"uv run rl @ {config_path_rel_to_prime_rl}"
 
-    session = args.session
-    ensure_no_session(session)
+    session = find_available_session_name(args.session)
 
     output_dir = str((prime_rl_dir / args.output_dir).resolve())
     create_tmux_session(session, output_dir, cmd, prime_rl_dir.resolve())
