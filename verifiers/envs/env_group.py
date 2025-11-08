@@ -130,7 +130,6 @@ class EnvGroup(vf.Environment):
         self,
         envs: list[vf.Environment],
         env_names: list[str] | None = None,
-        probabilities: list[float] | None = None,
         env_mix_strategy: Literal["interleave", "concatenate"] = "concatenate",
         env_mix_kwargs: dict = {},
         map_kwargs: dict = {},
