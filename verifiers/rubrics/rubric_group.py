@@ -14,11 +14,19 @@ class RubricGroup(Rubric):
     Class for aggregating multiple rubrics.
     """
 
-    def __init__(self, rubrics: list[Rubric], **kwargs):
+    def __init__(
+        self, rubrics: list[Rubric], weights: list[float] | None = None, **kwargs
+    ):
         if not rubrics:
             raise ValueError("RubricGroup must have at least one rubric")
+        if weights is not None and len(weights) != len(rubrics):
+            raise ValueError(
+                f"Number of weights must match number of rubrics: "
+                f"got {len(weights)} weights for {len(rubrics)} rubrics"
+            )
         super().__init__(**kwargs)
         self.rubrics = rubrics
+        self.rubric_weights = weights if weights is not None else [1.0] * len(rubrics)
         self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
 
     def get_reward_func_names(self) -> list[str]:
@@ -39,6 +47,9 @@ class RubricGroup(Rubric):
             weights.extend(rubric.get_reward_weights())
         return weights
 
+    def get_rubric_weights(self) -> list[float]:
+        return self.rubric_weights
+
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
         assert len(self.rubrics) > 0, "RubricGroup must have at least one rubric"
         self.logger.warning("Adding reward function to the first rubric in the group.")
@@ -57,7 +68,7 @@ class RubricGroup(Rubric):
     ) -> RolloutScore:
         total_reward = 0.0
         aggregated_metrics: dict[str, float] = {}
-        for rubric in self.rubrics:
+        for rubric, weight in zip(self.rubrics, self.rubric_weights):
             score = await rubric.score_rollout(
                 prompt,
                 completion,
@@ -68,9 +79,11 @@ class RubricGroup(Rubric):
                 example_id,
                 **kwargs,
             )
-            total_reward += score.reward
+            total_reward += score.reward * weight
             for key, value in score.metrics.items():
-                aggregated_metrics[key] = aggregated_metrics.get(key, 0.0) + value
+                aggregated_metrics[key] = (
+                    aggregated_metrics.get(key, 0.0) + value * weight
+                )
         return RolloutScore(reward=total_reward, metrics=aggregated_metrics)
 
     async def score_rollouts(
@@ -96,7 +109,7 @@ class RubricGroup(Rubric):
             reward=[],
             metrics={},
         )
-        for rubric in self.rubrics:
+        for rubric, weight in zip(self.rubrics, self.rubric_weights):
             rubric_scores = await rubric.score_rollouts(
                 prompts,
                 completions,
@@ -109,19 +122,20 @@ class RubricGroup(Rubric):
                 use_tqdm=use_tqdm,
                 **kwargs,
             )
-            # aggregate reward (element-wise sum across rubrics)
+            # aggregate reward (element-wise weighted sum across rubrics)
             if not all_scores.reward:
-                all_scores.reward = rubric_scores.reward
+                all_scores.reward = [r * weight for r in rubric_scores.reward]
             else:
                 all_scores.reward = [
-                    a + b for a, b in zip(all_scores.reward, rubric_scores.reward)
+                    a + b * weight
+                    for a, b in zip(all_scores.reward, rubric_scores.reward)
                 ]
             for key, value in rubric_scores.metrics.items():
                 if key in all_scores.metrics:
-                    # element-wise sum
+                    # element-wise weighted sum
                     all_scores.metrics[key] = [
-                        a + b for a, b in zip(all_scores.metrics[key], value)
+                        a + b * weight for a, b in zip(all_scores.metrics[key], value)
                     ]
                 else:
-                    all_scores.metrics[key] = value
+                    all_scores.metrics[key] = [v * weight for v in value]
         return all_scores
