@@ -2,7 +2,7 @@ from typing import List, Tuple
 
 from datasets import Dataset
 
-from verifiers import Parser, Rubric, SingleTurnEnv, XMLParser
+import verifiers as vf
 
 try:
     import reasoning_gym as rg  # type: ignore
@@ -18,14 +18,14 @@ except ImportError:
     exit(1)
 
 
-class ReasoningGymEnv(SingleTurnEnv):
+class ReasoningGymEnv(vf.SingleTurnEnv):
     def __init__(
         self,
         gym: str | List[str | dict],
         num_train_examples: int = 1000,
         num_eval_examples: int = 100,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-        parser: Parser | None = None,
+        parser: vf.Parser | None = None,
         seed: int = 0,
     ):
         self.gym = gym
@@ -35,10 +35,12 @@ class ReasoningGymEnv(SingleTurnEnv):
         total_examples = num_train_examples + num_eval_examples
         self.rg_dataset = self.build_rg_dataset(gym, total_examples, seed=seed)
         dataset, eval_dataset = self.rg_to_hf(self.rg_dataset)
-        parser = parser or XMLParser(fields=["answer"])
-        rubric = Rubric(parser=parser)
+        parser = parser or vf.XMLParser(fields=["answer"])
+        rubric = vf.Rubric(parser=parser)
 
-        def check_answer_reward_func(completion, answer, **kwargs) -> float:
+        async def check_answer_reward_func(
+            completion: vf.Messages, answer: str, **kwargs
+        ) -> float:
             # rg_dataset expects an int index
             entry = self.rg_dataset[int(answer)]
             response = str(parser.parse_answer(completion)).strip()
@@ -93,18 +95,3 @@ class ReasoningGymEnv(SingleTurnEnv):
         dataset = Dataset.from_list(train_dataset_rows)
         eval_dataset = Dataset.from_list(eval_dataset_rows)
         return dataset, eval_dataset
-
-
-def load_environment(
-    gym: str | List[str | dict] = "arc_1d",
-    num_train_examples: int = 2000,
-    num_eval_examples: int = 2000,
-    seed: int = 0,
-):
-    vf_env = ReasoningGymEnv(
-        gym=gym,
-        num_train_examples=num_train_examples,
-        num_eval_examples=num_eval_examples,
-        seed=seed,
-    )
-    return vf_env

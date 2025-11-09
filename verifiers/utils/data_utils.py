@@ -5,6 +5,8 @@ from typing import Any, Callable, cast
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
+from verifiers.types import ChatMessage
+
 ### PROMPTS ###
 
 THINK_BOXED_SYSTEM_PROMPT = "Think step-by-step inside <think>...</think> tags. \
@@ -15,6 +17,56 @@ BOXED_SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 ###############
+
+
+def format_dataset(
+    dataset: Dataset,
+    system_prompt: str | None = None,
+    few_shot: list[ChatMessage] | None = None,
+    question_key: str = "question",
+    answer_key: str = "answer",
+    map_kwargs: dict = {},
+) -> Dataset:
+    """
+    Create `example_id` and `prompt` columns if not present.
+    """
+    # if "id" column is present and not int, rename it to "src_id"
+    if "example_id" in dataset.column_names and not isinstance(
+        dataset["example_id"][0], int
+    ):
+        dataset = dataset.rename_column("example_id", "src_id")
+    if "example_id" not in dataset.column_names:
+        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+
+    # extract format_prompt as a standalone function to avoid capturing self
+    def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if few_shot:
+            messages.extend(few_shot)
+        messages.append({"role": "user", "content": prompt_str})
+        return messages
+
+    if "prompt" not in dataset.column_names:
+        if answer_key == "answer":
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": format_prompt_fn(x[question_key]),
+                },
+                **map_kwargs,
+            )
+        else:
+            dataset = dataset.map(
+                lambda x: {
+                    "prompt": format_prompt_fn(x[question_key]),
+                    "answer": x[answer_key],
+                },
+                **map_kwargs,
+            )
+    assert "example_id" in dataset.column_names
+    assert "prompt" in dataset.column_names
+    return dataset
 
 
 def extract_boxed_answer(text: str) -> str:

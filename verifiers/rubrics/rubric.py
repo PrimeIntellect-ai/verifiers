@@ -2,18 +2,16 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import AsyncContextManager
+from typing import AsyncContextManager, cast
 
-from verifiers.parsers.parser import Parser
+import verifiers as vf
 from verifiers.types import (
-    Info,
-    Messages,
+    GroupRewardFunc,
     RewardFunc,
     RolloutScore,
-    RolloutScores,
     State,
 )
-from verifiers.utils.async_utils import maybe_await, maybe_semaphore
+from verifiers.utils.async_utils import maybe_await
 
 
 class Rubric:
@@ -33,52 +31,78 @@ class Rubric:
 
     def __init__(
         self,
-        funcs: list[RewardFunc] | None = None,
+        funcs: list[RewardFunc | GroupRewardFunc] | None = None,
         weights: list[float] | None = None,
-        parser: Parser | None = None,
-        parallelize_scoring: bool = True,
-        **kwargs,
+        parser: vf.Parser | None = None,
     ):
         self.logger = logging.getLogger(f"verifiers.rubrics.{self.__class__.__name__}")
 
-        self.reward_funcs = funcs or []
-        self.reward_weights = weights or []
-        self.parser = parser or Parser()
+        self.funcs = funcs or []
+        self.weights = weights or []
+        if not self.weights:
+            self.weights = [1.0] * len(self.funcs)
+        elif len(self.weights) != len(self.funcs):
+            raise ValueError(
+                f"Number of weights ({len(self.weights)}) must match number of functions ({len(self.funcs)})"
+            )
 
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-        if not self.reward_weights:
-            self.reward_weights = [1.0] * len(self.reward_funcs)
-        self.parallelize_scoring = parallelize_scoring
+        self.parser = parser or vf.Parser()
+
         # class objects for reward functions
         self.class_objects = {}
         if self.parser:
             self.class_objects["parser"] = self.parser
 
-    def get_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.reward_funcs]
-
-    def get_reward_funcs(self) -> list[RewardFunc]:
-        return self.reward_funcs  # type: ignore
-
-    def get_reward_weights(self) -> list[float]:
-        return self.reward_weights  # type: ignore
-
+    # public helpers
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
-        self.reward_funcs.append(func)
-        self.reward_weights.append(weight)
+        self.funcs.append(func)
+        self.weights.append(weight)
 
-    async def call_reward_func(
+    # private helpers
+    def _get_reward_func_names(self) -> list[str]:
+        return [func.__name__ for func in self.funcs]
+
+    def _get_reward_funcs(self) -> list[RewardFunc]:
+        return [func for func in self.funcs]
+
+    def _get_reward_weights(self) -> list[float]:
+        return self.weights
+
+    def _is_group_func(self, func: RewardFunc) -> bool:
+        """Check if a function is a GroupRewardFunc by inspecting its signature."""
+        sig = inspect.signature(func)
+        # GroupRewardFunc has plural parameters: states, prompts, completions, etc.
+        param_names = set(sig.parameters.keys())
+        group_indicators = {
+            "states",
+            "prompts",
+            "completions",
+            "answers",
+            "tasks",
+            "infos",
+        }
+        returns_list = inspect.signature(func).return_annotation is list
+        return bool(param_names & group_indicators) or returns_list
+
+    # individual-level reward helpers
+    def _get_individual_reward_func_names(self) -> list[str]:
+        return [func.__name__ for func in self.funcs if not self._is_group_func(func)]
+
+    def _get_individual_reward_funcs(self) -> list[RewardFunc]:
+        return [func for func in self.funcs if not self._is_group_func(func)]  # type: ignore
+
+    def _get_individual_reward_weights(self) -> list[float]:
+        return [
+            weight
+            for func, weight in zip(self.funcs, self.weights)
+            if not self._is_group_func(func)
+        ]
+
+    async def _call_individual_reward_func(
         self,
         func: RewardFunc,
-        prompt: Messages,
-        completion: Messages,
-        answer: str,
         state: State,
-        task: str = "default",
-        info: Info | None = None,
-        example_id: int | None = None,
-        **kwargs,
+        score_sem: AsyncContextManager,
     ) -> float:
         """
         Invoke `func` with only the required arguments.
@@ -89,184 +113,199 @@ class Rubric:
             ...
         ``
         """
-        info = info or {}
-        sig = inspect.signature(func)
 
-        common = dict(
-            prompt=prompt,
-            completion=completion,
-            answer=answer,
-            state=state,
-            task=task,
-            info=info,
-            example_id=example_id,
-        )
-        common.update(self.class_objects)
-        merged = {**common, **kwargs}
-        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-            try:
-                ans = float(await maybe_await(func, **merged))
-            except Exception as e:
-                self.logger.error(f"Error calling reward function {func.__name__}: {e}")
-                ans = 0.0
-        else:
-            allowed = {k: v for k, v in merged.items() if k in sig.parameters}
-            try:
-                ans = float(await maybe_await(func, **allowed))
-            except Exception as e:
-                self.logger.error(f"Error calling reward function {func.__name__}: {e}")
-                ans = 0.0
-        return ans
+        async def _call():
+            sig = inspect.signature(func)
 
-    async def score_rollout(
+            merged = dict(
+                prompt=state["prompt"],
+                completion=state["completion"],
+                answer=state.get("answer", ""),
+                state=state,
+                task=state["task"],
+                info=state.get("info", {}),
+            )
+            merged.update(self.class_objects)
+            if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                try:
+                    ans = float(await maybe_await(func, **merged))
+                except Exception as e:
+                    self.logger.error(
+                        f"Error calling reward function {func.__name__}: {e}"
+                    )
+                    ans = 0.0
+            else:
+                allowed = {k: v for k, v in merged.items() if k in sig.parameters}
+                try:
+                    ans = float(await maybe_await(func, **allowed))
+                except Exception as e:
+                    self.logger.error(
+                        f"Error calling reward function {func.__name__}: {e}"
+                    )
+                    ans = 0.0
+            return ans
+
+        async with score_sem:
+            return await _call()
+
+    # group-level reward helpers
+    def _get_group_reward_func_names(self) -> list[str]:
+        return [func.__name__ for func in self.funcs if self._is_group_func(func)]
+
+    def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
+        return [func for func in self.funcs if self._is_group_func(func)]  # type: ignore
+
+    def _get_group_reward_weights(self) -> list[float]:
+        return [
+            weight
+            for func, weight in zip(self.funcs, self.weights)
+            if self._is_group_func(func)
+        ]
+
+    async def _call_group_reward_func(
         self,
-        prompt: Messages,
-        completion: Messages,
-        answer: str,
-        state: State,
-        task: str = "default",
-        info: Info | None = None,
-        example_id: int | None = None,
-        **kwargs,
-    ) -> RolloutScore:
+        func: GroupRewardFunc,
+        states: list[State],
+        score_sem: AsyncContextManager,
+    ) -> list[float]:
         """
-        Evaluate all reward functions asynchronously for a single rollout.
+        Invoke `func` with only the required arguments.
         """
-        # start timer
+
+        async def _call():
+            sig = inspect.signature(func)
+            merged = dict(
+                prompts=[state["prompt"] for state in states],
+                completions=[state["completion"] for state in states],
+                answers=[state["answer"] for state in states],
+                states=states,
+                tasks=[state["task"] for state in states],
+                infos=[state.get("info", {}) for state in states],
+            )
+            merged.update(self.class_objects)
+            if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                try:
+                    ans = await maybe_await(func, **merged)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error calling group reward function {func.__name__}: {e}"
+                    )
+                    ans = [0.0] * len(states)
+            else:
+                allowed = {k: v for k, v in merged.items() if k in sig.parameters}
+                try:
+                    ans = await maybe_await(func, **allowed)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error calling group reward function {func.__name__}: {e}"
+                    )
+                    ans = [0.0] * len(states)
+            return ans
+
+        async with score_sem:
+            return await _call()
+
+    async def score_rollout(self, state: State, score_sem: AsyncContextManager):
+        """
+        Evaluate all reward functions for a single rollout.
+        """
+        reward_funcs = self._get_individual_reward_funcs()
+        group_reward_funcs = self._get_group_reward_funcs()
+        assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
+            "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
+        )
         start_time = time.time()
-        if self.parallelize_scoring:
-            score_tasks = [
-                self.call_reward_func(
+        reward_scores = []
+        for func in reward_funcs:
+            reward_scores.append(
+                await self._call_individual_reward_func(
                     func=func,
-                    prompt=prompt,
-                    completion=completion,
-                    answer=answer,
                     state=state,
-                    task=task,
-                    info=info,
-                    example_id=example_id,
-                    **kwargs,
+                    score_sem=score_sem,
                 )
-                for func in self.get_reward_funcs()
-            ]
-            reward_scores = await asyncio.gather(*score_tasks)
-        else:
-            reward_scores = []
-            for func in self.get_reward_funcs():
-                score = await self.call_reward_func(
-                    func=func,
-                    prompt=prompt,
-                    completion=completion,
-                    answer=answer,
-                    state=state,
-                    task=task,
-                    info=info,
-                    example_id=example_id,
-                    **kwargs,
-                )
-                reward_scores.append(score)
+            )
         rewards = RolloutScore(
             metrics={
                 func.__name__: reward
-                for func, reward in zip(self.get_reward_funcs(), reward_scores)
+                for func, reward in zip(reward_funcs, reward_scores)
             },
             reward=sum(
                 [
                     reward * weight
-                    for reward, weight in zip(reward_scores, self.get_reward_weights())
+                    for reward, weight in zip(
+                        reward_scores, self._get_individual_reward_weights()
+                    )
                 ]
             ),
         )
         end_time = time.time()
         state["timing"]["scoring_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
-        return rewards
+        state["reward"] = rewards["reward"]
+        state["metrics"] = rewards["metrics"]
 
-    async def run_score_rollout(
-        self,
-        sem: AsyncContextManager[None],
-        *args,
-        **kwargs,
-    ) -> RolloutScore:
+    async def score_group(self, states: list[State], score_sem: AsyncContextManager):
         """
-        Score a rollout with a semaphore.
+        Score a group of rollouts together.
+
+        All reward functions are executed in order, parallelizing across states.
         """
-        async with sem:
-            return await self.score_rollout(*args, **kwargs)
+        start_time = time.time()
+        num_states = len(states)
+        if num_states == 0:
+            self.logger.warning("No states to score")
+            return
+        aggregated_rewards = [0.0] * num_states
+        aggregated_metrics: dict[str, list[float]] = {}
 
-    async def score_group(self, states: list[State], **kwargs):
-        """
-        Override for group-level comparisons. Store results with in-place per-rollout state.
-        """
-        return
+        # process functions in order
+        for func, weight in zip(self.funcs, self.weights):
+            is_group = self._is_group_func(func)
+            if is_group:
+                # GroupRewardFunc: score all states together
+                group_func = cast(GroupRewardFunc, func)
+                scores = await self._call_group_reward_func(
+                    group_func, states, score_sem=score_sem
+                )
+                func_name = func.__name__
+                if func_name not in aggregated_metrics:
+                    aggregated_metrics[func_name] = [0.0] * num_states
+                for i in range(num_states):
+                    score_value = scores[i]
+                    aggregated_rewards[i] += score_value * weight
+                    aggregated_metrics[func_name][i] = score_value
+            else:
+                reward_func = cast(RewardFunc, func)
+                score_tasks = [
+                    self._call_individual_reward_func(
+                        reward_func, state, score_sem=score_sem
+                    )
+                    for state in states
+                ]
+                scores = await asyncio.gather(*score_tasks)
 
-    async def score_rollouts(
-        self,
-        prompts: list[Messages],
-        completions: list[Messages],
-        answers: list[str],
-        states: list[State],
-        tasks: list[str],
-        infos: list[Info],
-        example_ids: list[int] | None = None,
-        max_concurrent: int = -1,
-        use_tqdm: bool = True,
-        **kwargs,
-    ) -> RolloutScores:
-        """
-        Compute reward scores for a group of rollouts.
+                func_name = func.__name__
+                if func_name not in aggregated_metrics:
+                    aggregated_metrics[func_name] = [0.0] * num_states
+                for i in range(num_states):
+                    score_value = scores[i]
+                    aggregated_rewards[i] += score_value * weight
+                    aggregated_metrics[func_name][i] = score_value
 
-        Default behavior:
-        - evaluate each rollout asynchronously
-        - return list of dictionaries of reward function names and their scores
-
-        Potential overrides:
-        - inter-group comparisons (voting, ranking, Elo, etc.)
-        - scores computed using global state stored in Rubric class
-        """
-
-        # set example_ids if not present
-        example_ids = example_ids or list(range(len(prompts)))
-        await self.score_group(
-            states,
-            prompts=prompts,
-            completions=completions,
-            answers=answers,
-            tasks=tasks,
-            infos=infos,
-            example_ids=example_ids,
-            **kwargs,
-        )
-
-        maybe_sem = await maybe_semaphore(max_concurrent)
-        score_tasks = [
-            self.run_score_rollout(maybe_sem, *pcastie, **kwargs)
-            for pcastie in zip(
-                prompts, completions, answers, states, tasks, infos, example_ids
-            )
-        ]
-
-        if use_tqdm:
-            from tqdm.asyncio import tqdm_asyncio
-
-            rewards = await tqdm_asyncio.gather(
-                *score_tasks,
-                total=len(prompts),
-                desc=f"Evaluating {len(prompts)} rollouts",
-            )
-        else:
-            rewards = await asyncio.gather(*score_tasks)
-
-        if not rewards:
-            reward_func_names = self.get_reward_func_names()
-            return RolloutScores(
-                reward=[],
-                metrics={name: [] for name in reward_func_names},
-            )
-
-        return RolloutScores(
-            reward=[reward.reward for reward in rewards],
-            metrics={
-                k: [item.metrics[k] for item in rewards] for k in rewards[0].metrics
-            },
-        )
+        # update states with aggregated results
+        end_time = time.time()
+        scoring_ms = (end_time - start_time) * 1000
+        avg_reward = sum(aggregated_rewards) / num_states
+        for i, state in enumerate(states):
+            state["reward"] = aggregated_rewards[i]
+            state["advantage"] = aggregated_rewards[i] - avg_reward
+            for t in state["trajectory"]:
+                if t["advantage"] is None:
+                    t["advantage"] = state["advantage"]
+                if t["reward"] is None:
+                    t["reward"] = state["reward"]
+            state["metrics"] = {
+                func_name: values[i] for func_name, values in aggregated_metrics.items()
+            }
+            state["timing"]["scoring_ms"] = scoring_ms
+            state["timing"]["total_ms"] += state["timing"]["scoring_ms"]

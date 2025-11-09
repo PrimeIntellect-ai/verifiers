@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,7 +39,7 @@ def test_bulk_delete_sandboxes(mock_api_client, mock_sandbox_client, sandbox_env
     mock_client_instance.bulk_delete = MagicMock()
 
     global_ids_to_delete = ["sandbox1", "sandbox3"]
-    sandbox_env.bulk_delete_sandboxes(global_ids_to_delete)
+    asyncio.run(sandbox_env.bulk_delete_sandboxes(global_ids_to_delete))
 
     # Assertions
     mock_sandbox_client.assert_called_once_with(mock_api_client.return_value)
@@ -59,7 +60,7 @@ def test_bulk_delete_sandboxes_failure(sandbox_env):
         mock_client_instance.bulk_delete.side_effect = Exception("Deletion failed")
 
         global_ids_to_delete = ["sandbox1", "sandbox3"]
-        sandbox_env.bulk_delete_sandboxes(global_ids_to_delete)
+        asyncio.run(sandbox_env.bulk_delete_sandboxes(global_ids_to_delete))
 
         sandbox_env.logger.error.assert_called_once_with(
             f"Failed to bulk delete sandboxes {global_ids_to_delete}: Deletion failed"
