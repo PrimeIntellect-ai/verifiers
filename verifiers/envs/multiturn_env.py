@@ -43,7 +43,7 @@ class MultiTurnEnv(vf.Environment):
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
         """
-        Generate a response from the environment (messages, state).
+        Generate a response from the environment.
         """
         pass
 

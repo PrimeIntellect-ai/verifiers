@@ -2,7 +2,6 @@ import time
 from typing import Any
 
 import verifiers as vf
-from verifiers.utils.decorators import cleanup, teardown
 
 try:
     from prime_sandboxes import (
@@ -83,7 +82,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         """
         pass
 
-    @cleanup
+    @vf.cleanup
     async def destroy_sandbox(self, state: vf.State):
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
@@ -129,14 +128,12 @@ class SandboxEnv(vf.StatefulToolEnv):
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
-    @teardown
-    async def cleanup_sandboxes(self):
+    @vf.teardown                            # type: ignore
+    async def teardown_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:
             return
-        self.logger.info(
-            f"Cleaning up {len(self.active_sandboxes)} remaining sandboxes"
-        )
+        self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
         sandbox_client = SandboxClient(APIClient())
         # TODO: Use the SandboxClient.bulk_delete method once it is more stable and faster
         while self.active_sandboxes:
