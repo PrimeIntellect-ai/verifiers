@@ -128,12 +128,6 @@ class State(dict):
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 
-class GenerateInputs(BaseModel):
-    """Pydantic model for generation inputs."""
-
-    inputs: list[RolloutInput]
-
-
 class GenerateMetadata(TypedDict):
     """Pydantic model for generation metadata."""
 
