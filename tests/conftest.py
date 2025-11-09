@@ -187,8 +187,8 @@ class MockAsyncOpenAI:
         # Create a simplified representation for hashing
         key_parts = []
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+            role = msg["role"]
+            content = msg["content"]
             key_parts.append(f"{role}:{content}")
         return tuple(key_parts)
 
