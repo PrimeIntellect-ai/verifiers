@@ -37,11 +37,8 @@ class JudgeRubric(Rubric):
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
-        **kwargs,
     ):
-        super().__init__(
-            parser=parser, parallelize_scoring=parallelize_scoring, **kwargs
-        )
+        super().__init__(parser=parser)
         self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
@@ -61,7 +58,6 @@ class JudgeRubric(Rubric):
         completion: Messages,
         answer: str,
         state: State,
-        **kwargs,
     ) -> str:
         if isinstance(prompt, list):
             last_msg = prompt[-1]

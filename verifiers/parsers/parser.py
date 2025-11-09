@@ -24,19 +24,19 @@ class Parser:
         self, completion: list[ChatMessage]
     ) -> list[ChatMessage]:
         """Helper function to extract assistant messages from a completion."""
-        return [msg for msg in completion if msg["role"] == "assistant"]
+        return [msg for msg in completion if msg.get("role") == "assistant"]
 
     def get_system_messages(self, completion: list[ChatMessage]) -> list[ChatMessage]:
         """Helper function to extract system messages from a completion."""
-        return [msg for msg in completion if msg["role"] == "system"]
+        return [msg for msg in completion if msg.get("role") == "system"]
 
     def get_user_messages(self, completion: list[ChatMessage]) -> list[ChatMessage]:
         """Helper function to extract user messages from a completion."""
-        return [msg for msg in completion if msg["role"] == "user"]
+        return [msg for msg in completion if msg.get("role") == "user"]
 
     def get_tool_messages(self, completion: list[ChatMessage]) -> list[ChatMessage]:
         """Helper function to extract tool messages from a completion."""
-        return [msg for msg in completion if msg["role"] == "tool"]
+        return [msg for msg in completion if msg.get("role") == "tool"]
 
     def parse_answer(self, completion: Messages) -> str | None:
         if isinstance(completion, str):

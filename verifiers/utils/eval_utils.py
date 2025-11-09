@@ -57,38 +57,38 @@ def load_endpoints(endpoints_path: str):
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
-    assert results.metadata is not None
+    assert results["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {results.metadata.env_id}")
-    print(f"Model: {results.metadata.model}")
-    print(f"Provider: {results.metadata.base_url}")
-    print(f"Examples: {results.metadata.num_examples}")
-    print(f"Rollouts per example: {results.metadata.rollouts_per_example}")
+    print(f"Environment: {results['metadata']['env_id']}")
+    print(f"Model: {results['metadata']['model']}")
+    print(f"Provider: {results['metadata']['base_url']}")
+    print(f"Examples: {results['metadata']['num_examples']}")
+    print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(p) for p in results.prompt]
-    printable_completions = [messages_to_printable(c) for c in results.completion]
+    printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
+    printable_completions = [messages_to_printable(c) for c in results["completion"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
-        results.reward,
+        results["reward"],
         step=0,
         num_samples=num_samples,
     )
     print("--- All ---")
     print("Rewards:")
     print(
-        f"reward: avg - {sum(results.reward) / len(results.reward):.3f}, std - {np.std(results.reward):.3f}"
+        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
     )
-    r = results.metadata.rollouts_per_example
-    n = len(results.reward) // r
+    r = results["metadata"]["rollouts_per_example"]
+    n = len(results["reward"]) // r
     for i in range(r):
         # rounded to 3 decimal places
-        trials = [round(results.reward[(i * n) + j], 3) for j in range(n)]
+        trials = [round(results["reward"][(i * n) + j], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
-    for k in results.metrics:
-        v = results.metrics[k]
+    for k in results["metrics"]:
+        v = results["metrics"][k]
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
             # rounded to 3 decimal places
@@ -125,9 +125,9 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         max_concurrent=config.max_concurrent,
         max_concurrent_generation=config.max_concurrent_generation,
         max_concurrent_scoring=config.max_concurrent_scoring,
-        interleave_scoring=config.interleave_scoring,
         results_path=results_path,
         state_columns=config.state_columns,
+        save_results=config.save_results,
         save_every=config.save_every,
     )
     end_time = time.time()
@@ -135,12 +135,12 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     if config.print_results:
         print_results(results)
     if config.save_results:
-        save_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
     return results
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    metadata_dict = metadata.model_dump()
+    metadata_dict = dict(metadata)
     metadata_dict.pop("path_to_save")
     metadata_dict.pop("date")
 
@@ -148,48 +148,49 @@ def sanitize_metadata(metadata: GenerateMetadata) -> dict:
 
 
 def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
+    metadata = results["metadata"]
     dataset_name = (
-        results.metadata.env_id
+        metadata["env_id"]
         + "_"
-        + results.metadata.model.replace("/", "_")
+        + metadata["model"].replace("/", "_")
         + "_n"
-        + str(results.metadata.num_examples)
+        + str(metadata["num_examples"])
         + "_r"
-        + str(results.metadata.rollouts_per_example)
+        + str(metadata["rollouts_per_example"])
     )
     return dataset_name
 
 
 def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results.prompt]
+    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
     clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results.completion]
+    clean_completions = [messages_to_printable(c) for c in results["completion"]]
     clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results.info)
-    save_answer = any(answer != "" for answer in results.answer)
+    save_info = any(info != {} for info in results["info"])
+    save_answer = any(answer != "" for answer in results["answer"])
     results_dict = {
-        "example_id": results.example_id,
+        "example_id": results["example_id"],
         "prompt": clean_prompts,
         "completion": clean_completions,
-        "task": results.task,
-        "reward": results.reward,
-        "generation_ms": [s["timing"]["generation_ms"] for s in results.state],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results.state],
-        "total_ms": [s["timing"]["total_ms"] for s in results.state],
+        "task": results["task"],
+        "reward": results["reward"],
+        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
+        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
+        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
     }
     if save_info:
-        results_dict["info"] = results.info
+        results_dict["info"] = results["info"]
     if save_answer:
-        results_dict["answer"] = results.answer
-    for k in results.metrics:
-        v = results.metrics[k]
+        results_dict["answer"] = results["answer"]
+    for k in results["metrics"]:
+        v = results["metrics"][k]
         results_dict[k] = v
 
     # Add selected state columns if specified
-    state_columns = results.metadata.state_columns
+    state_columns = results["metadata"]["state_columns"]
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results.state]
+            results_dict[col] = [s.get(col) for s in results["state"]]
 
     return Dataset.from_dict(results_dict)
 
@@ -214,15 +215,15 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
         json.dump(metadata_dict, f)
 
 
-def save_results(
+def save_rollout_results(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
 ):
-    path_to_save = results.metadata.path_to_save
+    path_to_save = results["metadata"]["path_to_save"]
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
     dataset = make_dataset(results)
-    metadata_dict = sanitize_metadata(results.metadata)
+    metadata_dict = sanitize_metadata(results["metadata"])
     save_to_disk(dataset, metadata_dict, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
