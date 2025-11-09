@@ -53,6 +53,8 @@ class TrajectoryStepTokens(TypedDict):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    overlong_prompt: bool
+    is_truncated: bool
 
 
 class TrajectoryStep(TypedDict):
@@ -62,6 +64,7 @@ class TrajectoryStep(TypedDict):
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
+    is_truncated: bool
     extras: dict[str, Any]
 
 

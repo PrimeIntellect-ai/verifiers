@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 async def parse_response_tokens(
-    response: ModelResponse, message_type: MessageType
+    response: ModelResponse, message_type: MessageType, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
@@ -39,14 +39,6 @@ async def parse_response_tokens(
         completion_logprobs = [
             token.logprob for token in response.choices[0].logprobs.content
         ]
-
-        return TrajectoryStepTokens(
-            prompt_ids=prompt_ids,
-            prompt_mask=prompt_mask,
-            completion_ids=completion_ids,
-            completion_mask=completion_mask,
-            completion_logprobs=completion_logprobs,
-        )
     elif message_type == "completion":
         assert isinstance(response, Completion)
         if not hasattr(response.choices[0], "prompt_token_ids"):
@@ -64,15 +56,36 @@ async def parse_response_tokens(
         completion_ids = getattr(response.choices[0], "token_ids")
         completion_mask = [1] * len(completion_ids)
         completion_logprobs = getattr(response.choices[0].logprobs, "token_logprobs")
-
-        return TrajectoryStepTokens(
-            prompt_ids=prompt_ids,
-            prompt_mask=prompt_mask,
-            completion_ids=completion_ids,
-            completion_mask=completion_mask,
-            completion_logprobs=completion_logprobs,
-        )
-    return None
+    if max_seq_len is not None:
+        prompt_len = len(prompt_ids)
+        completion_len = len(completion_ids)
+        overlong_prompt = prompt_len > max_seq_len
+        if overlong_prompt:
+            is_truncated = True
+            prompt_ids = prompt_ids[:max_seq_len]
+            prompt_mask = prompt_mask[:max_seq_len]
+            completion_ids = []
+            completion_mask = []
+            completion_logprobs = []
+        elif prompt_len + completion_len > max_seq_len:
+            is_truncated = True
+            completion_ids = completion_ids[: max_seq_len - prompt_len]
+            completion_mask = completion_mask[: max_seq_len - prompt_len]
+            completion_logprobs = completion_logprobs[: max_seq_len - prompt_len]
+        else:
+            is_truncated = False
+    else:
+        overlong_prompt = False
+        is_truncated = False
+    return TrajectoryStepTokens(
+        prompt_ids=prompt_ids,
+        prompt_mask=prompt_mask,
+        completion_ids=completion_ids,
+        completion_mask=completion_mask,
+        completion_logprobs=completion_logprobs,
+        overlong_prompt=overlong_prompt,
+        is_truncated=is_truncated,
+    )
 
 
 async def parse_response_messages(

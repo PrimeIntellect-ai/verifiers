@@ -67,7 +67,9 @@ class MultiTurnEnv(vf.Environment):
             state["prompt_too_long"] = True
             return
         completion_messages = await parse_response_messages(response, self.message_type)
-        tokens = await parse_response_tokens(response, self.message_type)
+        tokens = await parse_response_tokens(
+            response, self.message_type, self.max_seq_len
+        )
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
@@ -77,6 +79,7 @@ class MultiTurnEnv(vf.Environment):
             advantage=None,
             extras={},
         )
+        trajectory_step["completion"] = completion_messages
         state["trajectory"].append(trajectory_step)
 
     async def rollout(

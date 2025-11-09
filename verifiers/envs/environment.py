@@ -70,6 +70,7 @@ class Environment(ABC):
         env_id: str | None = None,
         env_args: dict | None = None,
         map_kwargs: dict = {},
+        max_seq_len: int | None = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -86,7 +87,7 @@ class Environment(ABC):
 
         self.env_id = env_id or ""
         self.env_args = env_args or {}
-
+        self.max_seq_len = max_seq_len
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
