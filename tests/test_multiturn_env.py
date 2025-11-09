@@ -276,7 +276,7 @@ class TestMultiTurnEnv:
             response="Response DONE",
         )
 
-        state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
             input=RolloutInput(
                 prompt=original_prompt,
                 answer="test_answer",
@@ -300,7 +300,7 @@ class TestMultiTurnEnv:
         prompt = [{"role": "user", "content": "Test sampling"}]
         sampling_args = {"temperature": 0.8, "max_tokens": 50}
 
-        state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
             input=RolloutInput(
                 prompt=prompt,
                 answer="test_answer",

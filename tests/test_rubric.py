@@ -319,11 +319,10 @@ class TestRubric:
             return 1.0
 
         rubric = Rubric(funcs=[test_func], weights=[1.0])
+        score_sem = NullAsyncContext()
 
         # score_group with empty list should handle gracefully
-        # But it currently has a division by zero bug, so skip for now
-        # TODO: Fix score_group to handle empty states list
-        pass
+        await rubric.score_group([], score_sem)
 
     @pytest.mark.asyncio
     async def test_score_rollouts_with_default_infos(self):

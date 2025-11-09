@@ -38,6 +38,7 @@ dependencies = [
     "textual",
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
+    "typing_extensions; python_version < '3.12'",
     "prime-sandboxes>=0.1.0",
     "wget>=3.2",
 ]
@@ -174,6 +175,7 @@ filterwarnings = [
     "ignore::UserWarning:transformers.*",
     "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
     "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
+    "ignore::SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]

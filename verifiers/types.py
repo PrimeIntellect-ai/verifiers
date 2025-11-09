@@ -1,11 +1,16 @@
+import sys
 from pathlib import Path
 from typing import (
     Any,
     Awaitable,
     Callable,
     Literal,
-    TypedDict,
 )
+
+if sys.version_info < (3, 12):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
