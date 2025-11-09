@@ -252,6 +252,9 @@ class Rubric:
         """
         start_time = time.time()
         num_states = len(states)
+        if num_states == 0:
+            self.logger.warning("No states to score")
+            return
         aggregated_rewards = [0.0] * num_states
         aggregated_metrics: dict[str, list[float]] = {}
 

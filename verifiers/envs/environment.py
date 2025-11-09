@@ -379,7 +379,6 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        **kwargs,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -393,7 +392,7 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))
+        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -438,16 +437,16 @@ class Environment(ABC):
         Clean up rollout resources.
         """
         for handler in self._cleanup_handlers:
-            await handler(self, state)
+            await handler(state)
 
     async def _teardown(self):
         """
         Tear down environment resources.
         """
         for handler in self._teardown_handlers:
-            await handler(self)
+            await handler()
 
-    async def _render_stop(self, state: State, condition):
+    async def _render_stop(self, state: State, condition) -> bool:
         if await condition(state):
             state["is_completed"] = True
             state["stop_condition"] = condition.__name__
@@ -607,10 +606,6 @@ class Environment(ABC):
         """
         Generate rollouts for a set of inputs by group.
         """
-        gen_sampling_args = deepcopy(self.sampling_args)
-        if sampling_args is not None:
-            gen_sampling_args.update(sampling_args)
-
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
@@ -636,6 +631,11 @@ class Environment(ABC):
         # set up semaphores
         gen_sem = await maybe_semaphore(gen_limit)
         score_sem = await maybe_semaphore(score_limit)
+
+        # set up sampling args
+        gen_sampling_args = deepcopy(self.sampling_args)
+        if sampling_args is not None:
+            gen_sampling_args.update(sampling_args)
 
         # create tasks for all groups
         start_time = time.time()
@@ -836,6 +836,6 @@ class Environment(ABC):
 
 
 _EnvT = TypeVar("_EnvT", bound=Environment)
-StopCondition = Callable[[_EnvT, State], Awaitable[bool]]
-RolloutCleanup = Callable[[_EnvT, State], Awaitable[None]]
-EnvironmentTeardown = Callable[[_EnvT], Awaitable[None]]
+StopCondition = Callable[[State], Awaitable[bool]]
+RolloutCleanup = Callable[[State], Awaitable[None]]
+EnvironmentTeardown = Callable[[], Awaitable[None]]

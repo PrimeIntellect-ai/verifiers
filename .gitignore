@@ -29,7 +29,7 @@ docs/build/
 *.pyc
 
 # libraries
-prime-rl/
+prime-rl
 
 # outputs
 wandb/

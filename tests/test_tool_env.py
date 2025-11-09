@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import faulty_tool
 from verifiers.envs.tool_env import ToolEnv
+from verifiers.types import RolloutInput
 
 
 def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
@@ -46,16 +47,22 @@ class TestToolEnv:
             response="Done",
         )
 
-        completion, state = await mock_tool_env.rollout(
+        state = await mock_tool_env.rollout(
+            input=RolloutInput(
+                prompt=[user_message],
+                answer="",
+                example_id=0,
+            ),
             client=mock_openai_client,
             model="test-model",
-            prompt=[user_message],
-            answer="",
         )
+        completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and tool_messages[0]["content"] == "16"
-        assert state["responses"][0].choices[0].message.tool_calls is not None
+        assert (
+            state["trajectory"][0]["response"].choices[0].message.tool_calls is not None
+        )
 
     @pytest.mark.asyncio
     async def test_tool_env_completion_without_tool_calls(
@@ -66,17 +73,20 @@ class TestToolEnv:
             response="Hi",
         )
 
-        completion, state = await mock_tool_env.rollout(
+        state = await mock_tool_env.rollout(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "Hello"}],
+                answer="",
+                example_id=0,
+            ),
             client=mock_openai_client,
             model="test-model",
-            prompt=[{"role": "user", "content": "Hello"}],
-            answer="",
         )
+        completion = state["completion"]
 
-        assert len(state["responses"]) == 1
+        assert len(state["trajectory"]) == 1
         assert completion[-1]["role"] == "assistant"
         assert completion[-1]["content"] == "Hi"
-        assert state["turn"] == 1
 
     @pytest.mark.asyncio
     async def test_tool_env_error_handling(
@@ -100,12 +110,16 @@ class TestToolEnv:
             tool_calls=[tool_call],
         )
 
-        completion, _ = await env.rollout(
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "Invoke"}],
+                answer="",
+                example_id=0,
+            ),
             client=mock_openai_client,
             model="test-model",
-            prompt=[{"role": "user", "content": "Invoke"}],
-            answer="",
         )
+        completion = state["completion"]
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and "failure" in tool_messages[0]["content"]

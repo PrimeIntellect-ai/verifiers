@@ -235,32 +235,12 @@ class EnvGroup(vf.Environment):
     async def init_state(
         self,
         input: RolloutInput,
-        **kwargs,
     ) -> vf.State:
-        """
-        Route to task-specific environment and initialize state.
-        """
-        task = input.get("task", self.env_names[0] if self.env_names else "default")
-        env = self.env_map.get(task)
-        if env is None:
-            self.logger.warning(
-                f"No environment found for task '{task}', using first environment"
-            )
-            env = self.envs[0]
-            task = self.env_names[0]
-            input = {**input, "task": task}
-        return await env.init_state(input, **kwargs)
+        env = self.get_env_for_task(input["task"])
+        return await env.init_state(input)
 
     async def setup_state(self, state: vf.State) -> vf.State:
-        task = state.get("task", self.env_names[0] if self.env_names else "default")
-        env = self.env_map.get(task)
-        if env is None:
-            self.logger.warning(
-                f"No environment found for task '{task}', using first environment"
-            )
-            env = self.envs[0]
-            task = self.env_names[0]
-            state["task"] = task
+        env = self.get_env_for_task(state["task"])
         return await env.setup_state(state)
 
     async def rollout(
@@ -270,20 +250,8 @@ class EnvGroup(vf.Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
-        """
-        Route to task-specific environment and run rollout.
-        """
-        task = input.get("task", self.env_names[0] if self.env_names else "default")
-        env = self.env_map.get(task)
-        if env is None:
-            self.logger.warning(
-                f"No environment found for task '{task}', using first environment"
-            )
-            env = self.envs[0]
-            task = self.env_names[0]
-            input = {**input, "task": task}
+        env = self.get_env_for_task(input["task"])
         return await env.rollout(input, client, model, sampling_args)
 
     def get_env_for_task(self, task: str) -> vf.Environment:
-        """Get the environment instance for a given task name."""
         return self.env_map.get(task, self.envs[0])

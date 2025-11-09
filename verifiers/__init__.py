@@ -111,7 +111,6 @@ __all__ = [
     "cleanup",
     "stop",
     "teardown",
-    "concat",
 ]
 
 _LAZY_IMPORTS = {
