@@ -311,7 +311,7 @@ class RLConfig(TrainingArguments):
             "n": 1,
             "presence_penalty": self.presence_penalty,
             "frequency_penalty": self.frequency_penalty,
-            "logprobs": 1,
+            "logprobs": True,
             "extra_body": {
                 "top_k": self.top_k,
                 "min_p": self.min_p,
@@ -321,7 +321,7 @@ class RLConfig(TrainingArguments):
                 "include_stop_str_in_output": False,
                 "return_tokens_as_token_ids": True,
                 "return_token_ids": True,
-                "prompt_logprobs": 1,
+                "prompt_logprobs": True,
             },
         }
         self.gradient_accumulation_steps = 1
