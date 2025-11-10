@@ -24,7 +24,7 @@ class Parser:
         self, completion: list[ChatMessage]
     ) -> list[ChatMessage]:
         """Helper function to extract assistant messages from a completion."""
-        return [msg for msg in completion if msg.get("role") == "assistant"]
+        return [msg for msg in completion if msg["role"] == "assistant"]
 
     def get_system_messages(self, completion: list[ChatMessage]) -> list[ChatMessage]:
         """Helper function to extract system messages from a completion."""
