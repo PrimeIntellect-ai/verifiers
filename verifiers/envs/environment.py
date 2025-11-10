@@ -143,7 +143,7 @@ class Environment(ABC):
             if hasattr(method, "stop") and callable(method)
         ]
         self._stop_conditions.sort(
-            key=lambda m: (getattr(m, "stop_rank", 0), m.__name__)
+            key=lambda m: (-getattr(m, "stop_priority", 0), m.__name__)
         )
 
         self._cleanup_handlers = [
@@ -152,7 +152,7 @@ class Environment(ABC):
             if hasattr(method, "cleanup") and callable(method)
         ]
         self._cleanup_handlers.sort(
-            key=lambda m: (getattr(m, "cleanup_rank", 0), m.__name__)
+            key=lambda m: (-getattr(m, "cleanup_priority", 0), m.__name__)
         )
 
         self._teardown_handlers = [
@@ -161,7 +161,7 @@ class Environment(ABC):
             if hasattr(method, "teardown") and callable(method)
         ]
         self._teardown_handlers.sort(
-            key=lambda m: (getattr(m, "teardown_rank", 0), m.__name__)
+            key=lambda m: (-getattr(m, "teardown_priority", 0), m.__name__)
         )
 
         def _sync_teardown():

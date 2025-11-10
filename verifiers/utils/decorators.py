@@ -2,7 +2,7 @@ from typing import Awaitable, Callable
 
 
 def stop(
-    func: Callable[..., Awaitable[bool]] | None = None, *, rank: int = 0
+    func: Callable[..., Awaitable[bool]] | None = None, *, priority: int = 0
 ) -> (
     Callable[..., Awaitable[bool]]
     | Callable[[Callable[..., Awaitable[bool]]], Callable[..., Awaitable[bool]]]
@@ -15,8 +15,8 @@ def stop(
 
     Args:
         func: The function to decorate (when used as @stop)
-        rank: Optional rank to control execution order. Defaults to 0.
-            Lower ranks run first. Use negative ranks to run earlier, positive to run later.
+        priority: Optional priority to control execution order. Defaults to 0.
+            Higher priorities run first. Use higher numbers to run earlier, lower numbers to run later.
             Ties are broken alphabetically by function name.
 
     Examples:
@@ -24,18 +24,18 @@ def stop(
         async def my_stop_condition(self, state: State) -> bool:
             ...
 
-        @vf.stop(rank=-1)
+        @vf.stop(priority=10)
         async def early_check(self, state: State) -> bool:
             ...
 
-        @vf.stop(rank=2)
+        @vf.stop(priority=-5)
         async def late_check(self, state: State) -> bool:
             ...
     """
 
     def decorator(f: Callable[..., Awaitable[bool]]) -> Callable[..., Awaitable[bool]]:
         setattr(f, "stop", True)
-        setattr(f, "stop_rank", rank)
+        setattr(f, "stop_priority", priority)
         return f
 
     if func is None:
@@ -45,7 +45,7 @@ def stop(
 
 
 def cleanup(
-    func: Callable[..., Awaitable[None]] | None = None, *, rank: int = 0
+    func: Callable[..., Awaitable[None]] | None = None, *, priority: int = 0
 ) -> (
     Callable[..., Awaitable[None]]
     | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
@@ -58,8 +58,8 @@ def cleanup(
 
     Args:
         func: The function to decorate (when used as @cleanup)
-        rank: Optional rank to control execution order. Defaults to 0.
-            Lower ranks run first. Use negative ranks to run earlier, positive to run later.
+        priority: Optional priority to control execution order. Defaults to 0.
+            Higher priorities run first. Use higher numbers to run earlier, lower numbers to run later.
             Ties are broken alphabetically by function name.
 
     Examples:
@@ -67,18 +67,18 @@ def cleanup(
         async def my_cleanup(self, state: State):
             ...
 
-        @vf.cleanup(rank=-1)
+        @vf.cleanup(priority=10)
         async def early_cleanup(self, state: State):
             ...
 
-        @vf.cleanup(rank=2)
+        @vf.cleanup(priority=-5)
         async def late_cleanup(self, state: State):
             ...
     """
 
     def decorator(f: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
         setattr(f, "cleanup", True)
-        setattr(f, "cleanup_rank", rank)
+        setattr(f, "cleanup_priority", priority)
         return f
 
     if func is None:
@@ -88,7 +88,7 @@ def cleanup(
 
 
 def teardown(
-    func: Callable[..., Awaitable[None]] | None = None, *, rank: int = 0
+    func: Callable[..., Awaitable[None]] | None = None, *, priority: int = 0
 ) -> (
     Callable[..., Awaitable[None]]
     | Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]]
@@ -101,8 +101,8 @@ def teardown(
 
     Args:
         func: The function to decorate (when used as @teardown)
-        rank: Optional rank to control execution order. Defaults to 0.
-            Lower ranks run first. Use negative ranks to run earlier, positive to run later.
+        priority: Optional priority to control execution order. Defaults to 0.
+            Higher priorities run first. Use higher numbers to run earlier, lower numbers to run later.
             Ties are broken alphabetically by function name.
 
     Examples:
@@ -110,18 +110,18 @@ def teardown(
         async def my_teardown(self):
             ...
 
-        @vf.teardown(rank=-1)
+        @vf.teardown(priority=10)
         async def early_teardown(self):
             ...
 
-        @vf.teardown(rank=2)
+        @vf.teardown(priority=-5)
         async def late_teardown(self):
             ...
     """
 
     def decorator(f: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
         setattr(f, "teardown", True)
-        setattr(f, "teardown_rank", rank)
+        setattr(f, "teardown_priority", priority)
         return f
 
     if func is None:
