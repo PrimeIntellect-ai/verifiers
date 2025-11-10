@@ -142,16 +142,27 @@ class Environment(ABC):
             for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
             if hasattr(method, "stop") and callable(method)
         ]
+        self._stop_conditions.sort(
+            key=lambda m: (getattr(m, "stop_rank", 0), m.__name__)
+        )
+
         self._cleanup_handlers = [
             method
             for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
             if hasattr(method, "cleanup") and callable(method)
         ]
+        self._cleanup_handlers.sort(
+            key=lambda m: (getattr(m, "cleanup_rank", 0), m.__name__)
+        )
+
         self._teardown_handlers = [
             method
             for _, method in inspect.getmembers(self, predicate=inspect.ismethod)
             if hasattr(method, "teardown") and callable(method)
         ]
+        self._teardown_handlers.sort(
+            key=lambda m: (getattr(m, "teardown_rank", 0), m.__name__)
+        )
 
         def _sync_teardown():
             try:
