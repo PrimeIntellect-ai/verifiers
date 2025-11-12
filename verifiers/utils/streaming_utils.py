@@ -14,19 +14,21 @@ class StreamingHandler:
         results_path: Path,
         total_rollouts: int,
         state_columns: list[str] | None = None,
+        show_total: bool = True,
     ):
         self.results_path = results_path
         self.total_rollouts = total_rollouts
         self.state_columns = state_columns or []
+        self.show_total = show_total
         self.completed_count = 0
         self.running_reward_sum = 0.0
         self.running_metrics_sum: dict[str, float] = {}
+        self.sample_rollout_count: dict[int, int] = {}
 
         self.results_path.parent.mkdir(parents=True, exist_ok=True)
 
     def log_rollout(
         self,
-        index: int,
         example_id: int,
         reward: float,
         metrics: dict[str, float],
@@ -40,12 +42,21 @@ class StreamingHandler:
             self.running_metrics_sum[k] = self.running_metrics_sum.get(k, 0.0) + v
 
         avg_reward = self.running_reward_sum / self.completed_count
-
         total_time = timing.get("total_ms", 0) / 1000.0
 
+        self.sample_rollout_count[example_id] = (
+            self.sample_rollout_count.get(example_id, 0) + 1
+        )
+        rollout_num = self.sample_rollout_count[example_id]
+
+        if self.total_rollouts > 0:
+            progress = f"[{self.completed_count}/{self.total_rollouts}]"
+        else:
+            progress = f"[{self.completed_count}]"
+
         print(
-            f"✓ [{self.completed_count}/{self.total_rollouts}] "
-            f"Example #{example_id} | "
+            f"✓ {progress} "
+            f"r{rollout_num}.s{example_id} | "
             f"reward: {reward:.3f} | "
             f"time: {total_time:.1f}s | "
             f"avg: {avg_reward:.3f}"
@@ -58,7 +69,6 @@ class StreamingHandler:
 
     async def write_rollout_jsonl(
         self,
-        index: int,
         example_id: int,
         prompt: Messages,
         completion: Messages,
@@ -75,7 +85,6 @@ class StreamingHandler:
         clean_completion = sanitize_tool_calls(clean_completion)
 
         rollout_data: dict[str, Any] = {
-            "index": index,
             "example_id": example_id,
             "prompt": clean_prompt,
             "completion": clean_completion,

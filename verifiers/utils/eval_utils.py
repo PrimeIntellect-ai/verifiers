@@ -135,6 +135,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
             results_path=results_jsonl_path,
             total_rollouts=total_rollouts,
             state_columns=config.state_columns,
+            show_total=True,
         )
         logger.info(f"Streaming output enabled: {results_jsonl_path}")
 
@@ -151,9 +152,8 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
             info: Info,
         ) -> None:
             timing = state.get("timing", {})
-            streaming_handler.log_rollout(index, example_id, reward, metrics, timing)
+            streaming_handler.log_rollout(example_id, reward, metrics, timing)
             await streaming_handler.write_rollout_jsonl(
-                index,
                 example_id,
                 prompt,
                 completion,
