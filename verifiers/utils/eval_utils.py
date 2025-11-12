@@ -189,7 +189,12 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
     state_columns = results.metadata.state_columns
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results.state]
+            if col == "responses":
+                results_dict[col] = [
+                    [r.model_dump() for r in s.get(col, [])] for s in results.state
+                ]
+            else:
+                results_dict[col] = [s.get(col) for s in results.state]
 
     return Dataset.from_dict(results_dict)
 
