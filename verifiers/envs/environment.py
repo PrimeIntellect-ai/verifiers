@@ -672,7 +672,6 @@ class Environment(ABC):
 
                 if on_rollout_complete is not None:
                     await on_rollout_complete(
-                        i,
                         example_id_i,
                         prompt_i,
                         comp_i,

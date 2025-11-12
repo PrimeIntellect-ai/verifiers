@@ -40,7 +40,7 @@ State = dict[str, Any]
 SamplingArgs = dict[str, Any]
 RewardFunc = Callable[..., float | Awaitable[float]]
 RolloutCallback = Callable[
-    [int, int, Messages, Messages, str, float, dict[str, float], State, str, Info],
+    [int, Messages, Messages, str, float, dict[str, float], State, str, Info],
     Awaitable[None],
 ]
 

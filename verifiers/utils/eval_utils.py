@@ -140,7 +140,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         logger.info(f"Streaming output enabled: {results_jsonl_path}")
 
         async def rollout_callback(
-            index: int,
             example_id: int,
             prompt: Messages,
             completion: Messages,
