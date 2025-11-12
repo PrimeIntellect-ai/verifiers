@@ -106,7 +106,9 @@ class MultiTurnEnv(Environment):
             response_text: str = ""
             if self.message_type == "chat":
                 assert isinstance(context_messages, list)
-                assert isinstance(response, ChatCompletion)
+                assert isinstance(response, ChatCompletion) or hasattr(
+                    response, "choices"
+                )
                 if response.choices and response.choices[0].message:
                     response_text = response.choices[0].message.content or ""
                 response_message: ChatMessage = {

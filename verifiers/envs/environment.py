@@ -32,9 +32,12 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.eval_utils import make_dataset, save_results
 from verifiers.utils.message_utils import (
+    adapt_tools_for_responses_api,
     cleanup_messages,
+    extract_system_message,
     get_overlong_prompt_dummy_response,
 )
+from verifiers.utils.responses_api_adapter import ResponsesAPIAdapter
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.processing_utils import (
     process_chat_format_vllm,
@@ -67,6 +70,7 @@ class Environment(ABC):
         env_id: str | None = None,
         env_args: dict | None = None,
         map_kwargs: dict = {},
+        use_responses_api: bool = False,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -75,6 +79,7 @@ class Environment(ABC):
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
+        self.use_responses_api = use_responses_api
         self.rubric = rubric or Rubric()
         if self.parser.__class__ != self.rubric.parser.__class__:
             self.logger.warning(
@@ -281,20 +286,53 @@ class Environment(ABC):
                         "modalities": ["text"],
                     }
 
-                if oai_tools:
-                    response = await client.chat.completions.create(
+                if self.use_responses_api:
+                    instructions, input_messages = extract_system_message(prompt)
+                    adapted_tools = adapt_tools_for_responses_api(oai_tools)
+                    if len(input_messages) == 1:
+                        api_input = input_messages[0].get("content", "")
+                    else:
+                        api_input = input_messages
+                    unsupported_params = {
+                        "n",
+                        "presence_penalty",
+                        "frequency_penalty",
+                        "logprobs",
+                        "top_logprobs",
+                        "logit_bias",
+                        "stream",
+                        "stream_options",
+                        "user",
+                        "temperature",
+                    }
+                    responses_sampling_args = {
+                        k: v
+                        for k, v in clean_sampling_args.items()
+                        if k not in unsupported_params
+                    }
+                    response = await client.responses.create(
                         model=model,
-                        messages=prompt,  # type: ignore
-                        tools=oai_tools,
-                        **clean_sampling_args,
+                        instructions=instructions,
+                        input=api_input,
+                        tools=adapted_tools,
+                        **responses_sampling_args,
                     )
+                    return ResponsesAPIAdapter(response)
                 else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,  # type: ignore
-                        **clean_sampling_args,
-                    )
-                return response
+                    if oai_tools:
+                        response = await client.chat.completions.create(
+                            model=model,
+                            messages=prompt,  # type: ignore
+                            tools=oai_tools,
+                            **clean_sampling_args,
+                        )
+                    else:
+                        response = await client.chat.completions.create(
+                            model=model,
+                            messages=prompt,  # type: ignore
+                            **clean_sampling_args,
+                        )
+                    return response
             elif message_type == "completion":
                 if oai_tools:
                     raise ValueError(
