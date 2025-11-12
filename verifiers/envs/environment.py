@@ -26,6 +26,7 @@ from verifiers.types import (
     ModelResponse,
     ProcessedOutputs,
     RewardFunc,
+    RolloutCallback,
     SamplingArgs,
     State,
 )
@@ -496,6 +497,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_every: int = -1,
         use_tqdm: bool = True,
+        on_rollout_complete: RolloutCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -667,6 +669,21 @@ class Environment(ABC):
                         results.metrics[k] = [0.0] * n
                     results.metrics[k][i] = v
                 num_completed += 1
+
+                if on_rollout_complete is not None:
+                    await on_rollout_complete(
+                        i,
+                        example_id_i,
+                        prompt_i,
+                        comp_i,
+                        answer_i,
+                        rs.reward,
+                        rs.metrics,
+                        state_i,
+                        task_i,
+                        info_i,
+                    )
+
                 if save_every > 0 and num_completed % save_every == 0:
                     self.logger.debug(f"Saving results to {results_path}")
                     save_results(results)
@@ -689,6 +706,11 @@ class Environment(ABC):
                         "Intermediate saving is not supported for non-interleaved rollouts. "
                         f"save_every={save_every} will be ignored."
                     )
+                )
+            if on_rollout_complete is not None:
+                self.logger.warning(
+                    "Streaming output is not supported for non-interleaved rollouts. "
+                    "on_rollout_complete callback will be ignored."
                 )
             rollouts = await self.run_rollouts(
                 client=client,
@@ -770,6 +792,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_every: int = -1,
+        on_rollout_complete: RolloutCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -792,6 +815,7 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_every=save_every,
+            on_rollout_complete=on_rollout_complete,
             **kwargs,
         )
         # check if we're in existing event loop (e.g. Jupyter)
@@ -847,6 +871,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_every: int = -1,
+        on_rollout_complete: RolloutCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -867,6 +892,7 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_every=save_every,
+            on_rollout_complete=on_rollout_complete,
             **kwargs,
         )
 
@@ -885,6 +911,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_every: int = -1,
+        on_rollout_complete: RolloutCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -896,6 +923,7 @@ class Environment(ABC):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            rollouts_per_example=rollouts_per_example,
             score_rollouts=score_rollouts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
@@ -904,6 +932,7 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_every=save_every,
+            on_rollout_complete=on_rollout_complete,
             **kwargs,
         )
 

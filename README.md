@@ -171,6 +171,32 @@ uv run vf-eval environment-name -s # run and save eval results locally
 # vf-eval -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts for each
 ```
 
+#### Streaming Results
+
+For real-time monitoring of long-running evaluations, use the `--stream` flag to output results as they complete:
+
+```bash
+uv run vf-eval environment-name --stream -n 100 -r 5
+```
+
+With streaming enabled:
+- **Human-readable progress** is printed to stdout as each rollout completes:
+  ```
+  ✓ [15/500] Example #42 | reward: 0.85 | time: 1.2s | avg: 0.82
+  ```
+- **Structured JSONL output** is written incrementally to `{results_path}/results.jsonl`, with one complete rollout per line as it completes
+- Each JSONL entry includes: `index`, `example_id`, `prompt`, `completion`, `task`, `reward`, all metrics, timing info, and optionally `answer`, `info`, and requested state columns
+- The results file is append-only and survives interruptions - monitor progress with `tail -f results.jsonl`
+
+Streaming works with `--save-every` for periodic full dataset snapshots:
+```bash
+# Stream individual rollouts + save full dataset every 50 rollouts
+uv run vf-eval environment-name --stream --save-every 50 -n 100 -r 5
+```
+
+**Note**: Streaming requires `interleave_scoring=True` (the default). With `--no-interleave-scoring`, a warning is logged and streaming is disabled.
+
+
 If you're using Prime Intellect infrastructure, the [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) provides first-class commands for working with Verifiers environments through the [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments). Install it with `uv tool install prime`, authenticate via `prime login`, then use `prime env push` to publish your package and `prime env install owner/name` (optionally pinning a version) to consume it from pods or local machines.
 
 The core elements of Environments are:

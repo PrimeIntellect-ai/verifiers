@@ -204,6 +204,12 @@ def main():
         help="Save dataset every n rollouts",
     )
     parser.add_argument(
+        "--stream",
+        default=False,
+        action="store_true",
+        help="Stream results as they complete (per rollout)",
+    )
+    parser.add_argument(
         "--save-to-hf-hub",
         "-H",
         default=False,
@@ -314,6 +320,7 @@ def main():
         save_every=args.save_every,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
+        stream_output=args.stream,
     )
     logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
     asyncio.run(run_evaluation(eval_config))
