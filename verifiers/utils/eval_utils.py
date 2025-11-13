@@ -279,10 +279,3 @@ def save_rollout_results(
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
         dataset.push_to_hub(dataset_name)
         logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
-
-
-if __name__ == "__main__":
-    path_to_load = Path("outputs/evals/math500--gpt-5-nano/89e29bdf")
-    dataset, metadata_dict = load_from_disk(path_to_load)
-    print(dataset)
-    print(metadata_dict)
