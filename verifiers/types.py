@@ -127,10 +127,7 @@ class State(dict):
             return default
 
 
-RolloutCallback = Callable[
-    [int, Messages, Messages, str, float, dict[str, float], State, str, Info],
-    Awaitable[None],
-]
+RolloutCallback = Callable[[State], Awaitable[None]]
 
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]

@@ -685,32 +685,17 @@ class Environment(ABC):
         try:
             for coro in asyncio.as_completed(group_tasks.keys()):
                 group_states = await coro
+                all_states.extend(group_states)
+                groups_completed += 1
 
                 if on_rollout_complete is not None:
                     for state in group_states:
                         rollout_count += 1
                         running_reward_sum += state.get("reward", 0.0)
-
-                        await on_rollout_complete(
-                            state.get("example_id", 0),
-                            state.get("prompt", ""),
-                            state.get("completion", ""),
-                            state.get("answer", ""),
-                            state.get("reward", 0.0),
-                            state.get("metrics", {}),
-                            state,
-                            state.get("task", ""),
-                            state.get("info", {}),
-                        )
-                        all_states.append(state)
-                else:
-                    all_states.extend(group_states)
-
-                groups_completed += 1
+                        await on_rollout_complete(state)
 
                 if pbar is not None:
                     pbar.update(1)
-                    # If streaming is enabled, show rolling average in postfix
                     if on_rollout_complete is not None and rollout_count > 0:
                         avg_reward = running_reward_sum / rollout_count
                         pbar.set_postfix(

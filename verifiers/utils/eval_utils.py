@@ -16,8 +16,6 @@ from verifiers.types import (
     EvalConfig,
     GenerateMetadata,
     GenerateOutputs,
-    Info,
-    Messages,
     State,
 )
 from verifiers.utils.client_utils import setup_client
@@ -138,29 +136,23 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
             state_columns=config.state_columns,
         )
 
-        async def rollout_callback(
-            example_id: int,
-            prompt: Messages,
-            completion: Messages,
-            answer: str,
-            reward: float,
-            metrics: dict[str, float],
-            state: State,
-            task: str,
-            info: Info,
-        ) -> None:
+        async def rollout_callback(state: State) -> None:
+            example_id = state.get("example_id", 0)
+            reward = state.get("reward", 0.0)
+            metrics = state.get("metrics", {})
             timing = state.get("timing", {})
+
             streaming_handler.log_rollout(example_id, reward, metrics, timing)
             await streaming_handler.write_rollout_jsonl(
                 example_id,
-                prompt,
-                completion,
-                answer,
+                state.get("prompt", ""),
+                state.get("completion", ""),
+                state.get("answer", ""),
                 reward,
                 metrics,
                 state,
-                task,
-                info,
+                state.get("task", ""),
+                state.get("info", {}),
             )
 
     start_time = time.time()
@@ -186,10 +178,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         print_results(results)
 
     if config.save_results:
-        stats = streaming_handler.get_running_stats()
-        logger.info(
-            f"Streamed {stats.get('completed', 0)}/{stats.get('total', 0)} rollouts"
-        )
         metadata_dict = sanitize_metadata(results["metadata"])
         with open(results_path / "metadata.json", "w") as f:
             json.dump(metadata_dict, f)
