@@ -48,6 +48,7 @@ def _run_cli(monkeypatch, overrides):
         "state_columns": [],
         "save_results": False,
         "save_every": -1,
+        "resume_from_path": None,
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
     }
