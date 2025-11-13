@@ -560,7 +560,6 @@ class Environment(ABC):
         tasks = [state.get("task", "default") for state in all_states]
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]
-        rollout_ids = [state.get("rollout_id", 0) for state in all_states]
         rewards = [state.get("reward", 0.0) for state in all_states]
 
         metrics: dict[str, list[float]] = {}
@@ -603,7 +602,6 @@ class Environment(ABC):
             task=tasks,
             info=infos,
             example_id=example_ids,
-            rollout_id=rollout_ids,
             reward=rewards,
             metrics=metrics,
             metadata=metadata,
@@ -783,8 +781,6 @@ class Environment(ABC):
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
-        rollout_ids = list(range(len(inputs)))
-        inputs = inputs.add_column("rollout_id", rollout_ids)  # type: ignore (weird datasets thing)
         return inputs.to_list()
 
     async def evaluate(
@@ -814,10 +810,10 @@ class Environment(ABC):
                     f"Resume path does not exist: {resume_from_path}"
                 )
             finished_rollouts, _ = load_from_disk(resume_from_path)
-            finished_rollout_ids = list(finished_rollouts["rollout_id"])
-            inputs = [i for i in inputs if i["rollout_id"] not in finished_rollout_ids]
+            finished_example_ids = list(finished_rollouts["example_id"])
+            inputs = [i for i in inputs if i["example_id"] not in finished_example_ids]
             self.logger.info(
-                f"Found {len(finished_rollout_ids)} finished rollouts, skipping them"
+                f"Found {len(finished_example_ids)} finished groups, skipping them"
             )
         return await self.generate(
             inputs,

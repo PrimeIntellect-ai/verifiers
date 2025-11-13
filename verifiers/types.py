@@ -71,12 +71,11 @@ class TrajectoryStep(TypedDict):
 class BaseRolloutInput(TypedDict):
     prompt: Messages
     example_id: int
-    rollout_id: int
     task: str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
-    # required: prompt, example_id, rollout_id, task
+    # required: prompt, example_id, task
     # optional: answer, info
     answer: str
     info: Info
@@ -90,7 +89,7 @@ class RolloutTiming(TypedDict, total=False):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id", "rollout_id"]
+    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # required
     input: RolloutInput
     # created during rollout
@@ -160,7 +159,6 @@ class GenerateOutputs(TypedDict):
     task: list[str]
     info: list[Info]
     example_id: list[int]
-    rollout_id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]]
     metadata: GenerateMetadata
