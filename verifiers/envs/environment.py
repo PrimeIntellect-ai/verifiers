@@ -557,6 +557,7 @@ class Environment(ABC):
         tasks = [state.get("task", "default") for state in all_states]
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]
+        rollout_ids = [state.get("rollout_id", 0) for state in all_states]
         rewards = [state.get("reward", 0.0) for state in all_states]
 
         metrics: dict[str, list[float]] = {}
@@ -599,6 +600,7 @@ class Environment(ABC):
             task=tasks,
             info=infos,
             example_id=example_ids,
+            rollout_id=rollout_ids,
             reward=rewards,
             metrics=metrics,
             metadata=metadata,
