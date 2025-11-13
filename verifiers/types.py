@@ -127,6 +127,11 @@ class State(dict):
             return default
 
 
+RolloutCallback = Callable[
+    [int, Messages, Messages, str, float, dict[str, float], State, str, Info],
+    Awaitable[None],
+]
+
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
@@ -231,3 +236,4 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+    stream_output: bool = False

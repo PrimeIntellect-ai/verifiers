@@ -33,6 +33,7 @@ from verifiers.types import (
     Messages,
     MessageType,
     ModelResponse,
+    RolloutCallback,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
@@ -614,6 +615,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         use_tqdm: bool = True,
+        on_rollout_complete: RolloutCallback | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs by group.
@@ -677,14 +679,46 @@ class Environment(ABC):
 
         groups_completed = 0
         all_states: list[State] = []
+        rollout_count = 0
+        running_reward_sum = 0.0
+
         try:
             for coro in asyncio.as_completed(group_tasks.keys()):
                 group_states = await coro
-                all_states.extend(group_states)
+
+                if on_rollout_complete is not None:
+                    for state in group_states:
+                        rollout_count += 1
+                        running_reward_sum += state.get("reward", 0.0)
+
+                        await on_rollout_complete(
+                            state.get("example_id", 0),
+                            state.get("prompt", ""),
+                            state.get("completion", ""),
+                            state.get("answer", ""),
+                            state.get("reward", 0.0),
+                            state.get("metrics", {}),
+                            state,
+                            state.get("task", ""),
+                            state.get("info", {}),
+                        )
+                        all_states.append(state)
+                else:
+                    all_states.extend(group_states)
+
                 groups_completed += 1
 
                 if pbar is not None:
                     pbar.update(1)
+                    # If streaming is enabled, show rolling average in postfix
+                    if on_rollout_complete is not None and rollout_count > 0:
+                        avg_reward = running_reward_sum / rollout_count
+                        pbar.set_postfix(
+                            {
+                                "avg_reward": f"{avg_reward:.3f}",
+                                "rollouts": rollout_count,
+                            }
+                        )
 
                 # save intermediate results
                 if (
@@ -790,6 +824,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        on_rollout_complete: RolloutCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -808,6 +843,7 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            on_rollout_complete=on_rollout_complete,
             **kwargs,
         )
 

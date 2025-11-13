@@ -11,11 +11,20 @@ from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    Info,
+    Messages,
+    State,
+)
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.streaming_utils import StreamingHandler
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +124,45 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
+
+    # Setup streaming if enabled
+    streaming_handler = None
+    rollout_callback = None
+
+    if config.stream_output:
+        total_rollouts = config.num_examples * config.rollouts_per_example
+        results_jsonl_path = results_path / "results.jsonl"
+        streaming_handler = StreamingHandler(
+            results_path=results_jsonl_path,
+            total_rollouts=total_rollouts,
+            state_columns=config.state_columns,
+        )
+
+        async def rollout_callback(
+            example_id: int,
+            prompt: Messages,
+            completion: Messages,
+            answer: str,
+            reward: float,
+            metrics: dict[str, float],
+            state: State,
+            task: str,
+            info: Info,
+        ) -> None:
+            timing = state.get("timing", {})
+            streaming_handler.log_rollout(example_id, reward, metrics, timing)
+            await streaming_handler.write_rollout_jsonl(
+                example_id,
+                prompt,
+                completion,
+                answer,
+                reward,
+                metrics,
+                state,
+                task,
+                info,
+            )
+
     start_time = time.time()
     results = await vf_env.evaluate(
         client=client,
@@ -129,13 +177,27 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        on_rollout_complete=rollout_callback,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+
+    if streaming_handler:
+        stats = streaming_handler.get_running_stats()
+        logger.info(
+            f"Streamed {stats.get('completed', 0)}/{stats.get('total', 0)} rollouts"
+        )
+
     if config.print_results:
         print_results(results)
-    if config.save_results:
+    if config.save_results and not config.stream_output:
         save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+    elif config.save_results and config.stream_output:
+        # When streaming, results are already saved to jsonl, just save metadata
+        metadata_dict = sanitize_metadata(results["metadata"])
+        with open(results_path / "metadata.json", "w") as f:
+            json.dump(metadata_dict, f)
+        logger.info(f"Metadata saved to {results_path / 'metadata.json'}")
     return results
 
 
