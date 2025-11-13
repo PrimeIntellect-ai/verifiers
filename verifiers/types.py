@@ -83,6 +83,7 @@ class GenerateOutputs(BaseModel):
     task: list[str]
     info: list[Info]
     example_id: list[int]
+    rollout_id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]] = Field(default_factory=dict)
     metadata: GenerateMetadata
@@ -154,5 +155,6 @@ class EvalConfig(BaseModel):
     state_columns: list[str] | None = None
     save_results: bool = False
     save_every: int = -1
+    resume_from_path: str | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None

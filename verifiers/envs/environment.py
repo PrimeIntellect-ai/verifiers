@@ -30,7 +30,7 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
-from verifiers.utils.eval_utils import make_dataset, save_results
+from verifiers.utils.eval_utils import load_from_disk, make_dataset, save_results
 from verifiers.utils.message_utils import (
     cleanup_messages,
     get_overlong_prompt_dummy_response,
@@ -847,12 +847,24 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_every: int = -1,
+        resume_from_path: Path | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset.
         """
         inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        if resume_from_path is not None:
+            if not resume_from_path.exists():
+                raise FileNotFoundError(
+                    f"Resume path does not exist: {resume_from_path}"
+                )
+            finished_rollouts, _ = load_from_disk(resume_from_path)
+            finished_rollout_ids = list(finished_rollouts["rollout_id"])
+            inputs = [i for i in inputs if i["rollout_id"] not in finished_rollout_ids]
+            self.logger.info(
+                f"Found {len(finished_rollout_ids)} finished rollouts, skipping them"
+            )
         return await self.generate(
             inputs,
             client=client,

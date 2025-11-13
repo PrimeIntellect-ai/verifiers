@@ -204,6 +204,13 @@ def main():
         help="Save dataset every n rollouts",
     )
     parser.add_argument(
+        "--resume-from-path",
+        "-R",
+        type=str,
+        default=None,
+        help="Path to resume evaluation from (to be used in conjunction with -f)",
+    )
+    parser.add_argument(
         "--save-to-hf-hub",
         "-H",
         default=False,
@@ -312,6 +319,7 @@ def main():
         state_columns=args.state_columns,
         save_results=args.save_results,
         save_every=args.save_every,
+        resume_from_path=args.resume_from_path,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
     )
