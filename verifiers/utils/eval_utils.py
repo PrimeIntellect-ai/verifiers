@@ -182,7 +182,6 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
     save_answer = any(answer != "" for answer in results["answer"])
     results_dict = {
         "example_id": results["example_id"],
-        "rollout_id": results["rollout_id"],
         "prompt": clean_prompts,
         "completion": clean_completions,
         "task": results["task"],
