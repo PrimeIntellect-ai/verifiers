@@ -39,7 +39,11 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
-from verifiers.utils.eval_utils import make_dataset, save_rollout_results
+from verifiers.utils.eval_utils import (
+    load_from_disk,
+    make_dataset,
+    save_rollout_results,
+)
 from verifiers.utils.message_utils import (
     concat_messages,
     get_overlong_prompt_dummy_response,
@@ -774,6 +778,8 @@ class Environment(ABC):
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
+        rollout_ids = list(range(len(inputs)))
+        inputs = inputs.add_column("rollout_id", rollout_ids)  # type: ignore (weird datasets thing)
         return inputs.to_list()
 
     async def evaluate(
@@ -790,12 +796,24 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        resume_from_path: Path | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset.
         """
         inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        if resume_from_path is not None:
+            if not resume_from_path.exists():
+                raise FileNotFoundError(
+                    f"Resume path does not exist: {resume_from_path}"
+                )
+            finished_rollouts, _ = load_from_disk(resume_from_path)
+            finished_rollout_ids = list(finished_rollouts["rollout_id"])
+            inputs = [i for i in inputs if i["rollout_id"] not in finished_rollout_ids]
+            self.logger.info(
+                f"Found {len(finished_rollout_ids)} finished rollouts, skipping them"
+            )
         return await self.generate(
             inputs,
             client=client,
