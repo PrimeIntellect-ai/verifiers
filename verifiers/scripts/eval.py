@@ -217,12 +217,6 @@ def main():
         default="",
         help="Name of dataset to save to Hugging Face Hub",
     )
-    parser.add_argument(
-        "--stream",
-        default=False,
-        action="store_true",
-        help="Stream rollout results as they complete (saves incrementally to jsonl)",
-    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else "INFO")
@@ -319,7 +313,6 @@ def main():
         save_every=args.save_every,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
-        stream_output=args.stream,
     )
     logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
     asyncio.run(run_evaluation(eval_config))

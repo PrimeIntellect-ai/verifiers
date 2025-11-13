@@ -125,11 +125,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
 
-    # Setup streaming if enabled
+    # Setup streaming handler for incremental saving
     streaming_handler = None
     rollout_callback = None
 
-    if config.stream_output:
+    if config.save_results:
         total_rollouts = config.num_examples * config.rollouts_per_example
         results_jsonl_path = results_path / "results.jsonl"
         streaming_handler = StreamingHandler(
@@ -182,22 +182,27 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
-    if streaming_handler:
+    if config.print_results:
+        print_results(results)
+
+    if config.save_results:
         stats = streaming_handler.get_running_stats()
         logger.info(
             f"Streamed {stats.get('completed', 0)}/{stats.get('total', 0)} rollouts"
         )
-
-    if config.print_results:
-        print_results(results)
-    if config.save_results and not config.stream_output:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-    elif config.save_results and config.stream_output:
-        # When streaming, results are already saved to jsonl, just save metadata
         metadata_dict = sanitize_metadata(results["metadata"])
         with open(results_path / "metadata.json", "w") as f:
             json.dump(metadata_dict, f)
         logger.info(f"Metadata saved to {results_path / 'metadata.json'}")
+
+        if config.save_to_hf_hub:
+            dataset = Dataset.from_json(str(results_path / "results.jsonl"))
+            dataset_name = config.hf_hub_dataset_name or get_hf_hub_dataset_name(
+                results
+            )
+            dataset.push_to_hub(dataset_name)
+            logger.info(f"Dataset pushed to Hugging Face Hub: {dataset_name}")
+
     return results
 
 
