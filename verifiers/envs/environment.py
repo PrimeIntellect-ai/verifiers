@@ -704,7 +704,7 @@ class Environment(ABC):
                         pbar.set_postfix(
                             {
                                 "avg_reward": f"{avg_reward:.3f}",
-                                "current_rollouts": rollout_count,
+                                "saved_rollouts": rollout_count,
                             }
                         )
 
