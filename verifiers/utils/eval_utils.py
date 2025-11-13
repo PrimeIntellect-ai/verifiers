@@ -110,8 +110,14 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
     # run evaluation
-    results_path = get_eval_results_path(config)
-    logger.info(f"Starting evaluation with model: {config.model}")
+    if not config.resume_from_path:
+        results_path = get_eval_results_path(config)
+        resume_from_path = None
+        logger.info(f"Starting evaluation with model: {config.model}")
+    else:
+        results_path = Path(config.resume_from_path)
+        resume_from_path = results_path
+        logger.info(f"Resuming evaluation from {results_path}")
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
@@ -129,6 +135,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        resume_from_path=resume_from_path,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
@@ -215,6 +222,16 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
         json.dump(metadata_dict, f)
 
 
+def load_from_disk(path_to_load: Path) -> tuple[Dataset, dict]:
+    with quiet_datasets():
+        dataset = cast(
+            Dataset, Dataset.from_json((path_to_load / "results.jsonl").as_posix())
+        )
+    with open(path_to_load / "metadata.json", "r") as f:
+        metadata_dict = json.load(f)
+    return dataset, metadata_dict
+
+
 def save_rollout_results(
     results: GenerateOutputs,
     push_to_hf_hub: bool = False,
@@ -230,3 +247,10 @@ def save_rollout_results(
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
         dataset.push_to_hub(dataset_name)
         logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
+
+
+if __name__ == "__main__":
+    path_to_load = Path("outputs/evals/math500--gpt-5-nano/89e29bdf")
+    dataset, metadata_dict = load_from_disk(path_to_load)
+    print(dataset)
+    print(metadata_dict)
