@@ -2,9 +2,10 @@ import importlib.util
 import json
 import logging
 import time
+from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import cast, Any
 
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
@@ -137,23 +138,8 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         )
 
         async def rollout_callback(state: State) -> None:
-            example_id = state.get("example_id", 0)
-            reward = state.get("reward", 0.0)
-            metrics = state.get("metrics", {})
-            timing = state.get("timing", {})
-
-            streaming_handler.log_rollout(example_id, reward, metrics, timing)
-            await streaming_handler.write_rollout_jsonl(
-                example_id,
-                state.get("prompt", ""),
-                state.get("completion", ""),
-                state.get("answer", ""),
-                reward,
-                metrics,
-                state,
-                state.get("task", ""),
-                state.get("info", {}),
-            )
+            streaming_handler.log_rollout(state)
+            await streaming_handler.write_rollout_jsonl(state)
 
     start_time = time.time()
     results = await vf_env.evaluate(
@@ -216,36 +202,72 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results["completion"]]
-    clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results["info"])
-    save_answer = any(answer != "" for answer in results["answer"])
-    results_dict = {
-        "example_id": results["example_id"],
-        "prompt": clean_prompts,
-        "completion": clean_completions,
-        "task": results["task"],
-        "reward": results["reward"],
-        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
-        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
-    }
-    if save_info:
-        results_dict["info"] = results["info"]
-    if save_answer:
-        results_dict["answer"] = results["answer"]
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        results_dict[k] = v
+def serialize_rollout(
+    state: State,
+    state_columns: list[str] | None = None,
+    include_timestamp: bool = False,
+) -> dict:
+    prompt = state.get("prompt", "")
+    completion = state.get("completion", "")
+    clean_prompt = sanitize_tool_calls(messages_to_printable(prompt))
+    clean_completion = sanitize_tool_calls(messages_to_printable(completion))
 
-    # Add selected state columns if specified
-    state_columns = results["metadata"]["state_columns"]
+    rollout_data: dict[str, Any] = {
+        "example_id": state.get("example_id", 0),
+        "prompt": clean_prompt,
+        "completion": clean_completion,
+        "task": state.get("task", ""),
+        "reward": state.get("reward", 0.0),
+    }
+
+    if include_timestamp:
+        rollout_data["timestamp"] = datetime.now().isoformat()
+
+    timing = state.get("timing", {})
+    if timing:
+        rollout_data["generation_ms"] = timing.get("generation_ms", 0.0)
+        rollout_data["scoring_ms"] = timing.get("scoring_ms", 0.0)
+        rollout_data["total_ms"] = timing.get("total_ms", 0.0)
+
+    metrics = state.get("metrics", {})
+    for k, v in metrics.items():
+        rollout_data[k] = v
+
+    answer = state.get("answer", "")
+    if answer:
+        rollout_data["answer"] = answer
+
+    info = state.get("info", {})
+    if info:
+        rollout_data["info"] = info
+
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results["state"]]
+            if col in state:
+                if col == "responses":
+                    rollout_data[col] = [r.model_dump() for r in state[col]]
+                else:
+                    rollout_data[col] = state[col]
+
+    return rollout_data
+
+
+def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
+    state_columns = results["metadata"]["state_columns"]
+
+    serialized_rollouts = [
+        serialize_rollout(state, state_columns=state_columns, include_timestamp=False)
+        for state in results["state"]
+    ]
+
+    if not serialized_rollouts:
+        return Dataset.from_dict({})
+
+    all_keys = {key for rollout in serialized_rollouts for key in rollout.keys()}
+
+    results_dict = {
+        key: [rollout.get(key) for rollout in serialized_rollouts] for key in all_keys
+    }
 
     return Dataset.from_dict(results_dict)
 
