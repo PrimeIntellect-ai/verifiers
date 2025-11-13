@@ -670,11 +670,14 @@ class Environment(ABC):
         # process groups as they complete
         pbar = None
         if use_tqdm:
-            from tqdm import tqdm
+            from tqdm.asyncio import tqdm
 
             pbar = tqdm(
                 total=len(group_list),
                 desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+                leave=True,
+                position=0,
+                dynamic_ncols=True,
             )
 
         groups_completed = 0

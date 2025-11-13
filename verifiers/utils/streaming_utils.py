@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from verifiers.types import State
-from verifiers.utils.eval_utils import serialize_rollout
+from verifiers.utils.rollout_utils import serialize_rollout
 
 
 class StreamingHandler:

@@ -2,10 +2,9 @@ import importlib.util
 import json
 import logging
 import time
-from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast, Any
+from typing import cast
 
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
@@ -21,8 +20,9 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.rollout_utils import serialize_rollout
 from verifiers.utils.streaming_utils import StreamingHandler
 
 logger = logging.getLogger(__name__)
@@ -200,56 +200,6 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
         + str(metadata["rollouts_per_example"])
     )
     return dataset_name
-
-
-def serialize_rollout(
-    state: State,
-    state_columns: list[str] | None = None,
-    include_timestamp: bool = False,
-) -> dict:
-    prompt = state.get("prompt", "")
-    completion = state.get("completion", "")
-    clean_prompt = sanitize_tool_calls(messages_to_printable(prompt))
-    clean_completion = sanitize_tool_calls(messages_to_printable(completion))
-
-    rollout_data: dict[str, Any] = {
-        "example_id": state.get("example_id", 0),
-        "prompt": clean_prompt,
-        "completion": clean_completion,
-        "task": state.get("task", ""),
-        "reward": state.get("reward", 0.0),
-    }
-
-    if include_timestamp:
-        rollout_data["timestamp"] = datetime.now().isoformat()
-
-    timing = state.get("timing", {})
-    if timing:
-        rollout_data["generation_ms"] = timing.get("generation_ms", 0.0)
-        rollout_data["scoring_ms"] = timing.get("scoring_ms", 0.0)
-        rollout_data["total_ms"] = timing.get("total_ms", 0.0)
-
-    metrics = state.get("metrics", {})
-    for k, v in metrics.items():
-        rollout_data[k] = v
-
-    answer = state.get("answer", "")
-    if answer:
-        rollout_data["answer"] = answer
-
-    info = state.get("info", {})
-    if info:
-        rollout_data["info"] = info
-
-    if state_columns:
-        for col in state_columns:
-            if col in state:
-                if col == "responses":
-                    rollout_data[col] = [r.model_dump() for r in state[col]]
-                else:
-                    rollout_data[col] = state[col]
-
-    return rollout_data
 
 
 def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
