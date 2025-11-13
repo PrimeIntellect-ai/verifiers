@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import signal
+import sys
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
@@ -809,8 +810,11 @@ class Environment(ABC):
             finished_rollouts, _ = load_from_disk(resume_from_path)
             finished_example_ids = list(finished_rollouts["example_id"])
             inputs = [i for i in inputs if i["example_id"] not in finished_example_ids]
+            if len(inputs) == 0:
+                self.logger.info("No inputs left to evaluate. Exiting.")
+                sys.exit(0)
             self.logger.info(
-                f"Found {len(set(finished_example_ids))} finished groups ({len(finished_example_ids)} total rollouts), skipping them"
+                f"Found {len(set(finished_example_ids))} finished group(s) ({len(finished_example_ids)} total rollouts), skipping them"
             )
         return await self.generate(
             inputs,
