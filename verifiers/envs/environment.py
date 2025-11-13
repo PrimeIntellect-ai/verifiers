@@ -674,7 +674,7 @@ class Environment(ABC):
 
             pbar = tqdm(
                 total=len(group_list),
-                desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+                desc=f"Evaluating {len(group_list)} examples",
                 leave=True,
                 position=0,
                 dynamic_ncols=True,
@@ -704,7 +704,7 @@ class Environment(ABC):
                         pbar.set_postfix(
                             {
                                 "avg_reward": f"{avg_reward:.3f}",
-                                "rollouts": rollout_count,
+                                "total_rollouts": rollout_count,
                             }
                         )
 
