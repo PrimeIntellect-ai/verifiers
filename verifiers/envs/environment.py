@@ -813,7 +813,7 @@ class Environment(ABC):
             finished_example_ids = list(finished_rollouts["example_id"])
             inputs = [i for i in inputs if i["example_id"] not in finished_example_ids]
             self.logger.info(
-                f"Found {len(finished_example_ids)} finished groups, skipping them"
+                f"Found {len(set(finished_example_ids))} finished groups ({len(finished_example_ids)} total rollouts), skipping them"
             )
         return await self.generate(
             inputs,
