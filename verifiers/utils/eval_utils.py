@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
-from datasets import Dataset, disable_progress_bar, enable_progress_bar
+from datasets import (
+    Dataset,
+    concatenate_datasets,
+    disable_progress_bar,
+    enable_progress_bar,
+)
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
@@ -217,6 +222,33 @@ def quiet_datasets():
 
 def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # If path_to_save already exists, we append the new rollout results and merge the metadata
+        existing_dataset, existing_metadata_dict = load_from_disk(path_to_save)
+        metadata_dict = {
+            **existing_metadata_dict,
+            **metadata_dict,
+            "time_ms": existing_metadata_dict["time_ms"] + metadata_dict["time_ms"],
+            "avg_reward": (
+                existing_metadata_dict["avg_reward"] * len(existing_dataset)
+                + metadata_dict["avg_reward"] * len(dataset)
+            )
+            / (len(dataset) + len(existing_dataset)),
+            "avg_metrics": {
+                metric_name: (
+                    existing_metadata_dict["avg_metrics"][metric_name]
+                    * len(existing_dataset)
+                    + metadata_dict["avg_metrics"][metric_name] * len(dataset)
+                )
+                / (len(dataset) + len(existing_dataset))
+                for metric_name in existing_metadata_dict["avg_metrics"]
+            },
+        }
+        dataset = concatenate_datasets([existing_dataset, dataset])
+    except FileNotFoundError:
+        pass
+
     with quiet_datasets():
         dataset.to_json(path_to_save / "results.jsonl")
     with open(path_to_save / "metadata.json", "w") as f:
