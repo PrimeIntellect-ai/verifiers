@@ -268,7 +268,8 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
             seen.add(k)
             return True
 
-        dataset = concatenate_datasets([existing_dataset, dataset]).filter(is_new)
+        with quiet_datasets():
+            dataset = concatenate_datasets([existing_dataset, dataset]).filter(is_new)
     except FileNotFoundError:
         pass
 
