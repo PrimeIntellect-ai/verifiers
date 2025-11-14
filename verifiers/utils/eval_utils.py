@@ -9,6 +9,8 @@ from typing import cast
 import numpy as np
 from datasets import (
     Dataset,
+    List,
+    Value,
     concatenate_datasets,
     disable_progress_bar,
     enable_progress_bar,
@@ -24,6 +26,27 @@ from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_c
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
+
+TOOL_CALL_SCHEMA = {
+    "function": {
+        "arguments": Value("string"),
+        "name": Value("string"),
+        "type": Value("string"),
+    },
+    "id": Value("string"),
+    "type": Value("string"),
+}
+
+MESSAGES_SCHEMA = List(
+    {
+        "content": Value("string"),
+        "role": Value("string"),
+        "reasoning_content": Value("string"),
+        "tool_calls": List(TOOL_CALL_SCHEMA),
+    }
+)
+
+TOOL_SCHEMA = Value("string")  # For now, we JSON-serialize the tool call definition
 
 
 def load_endpoints(endpoints_path: str):
@@ -312,15 +335,22 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
         pass
 
     with quiet_datasets():
-        dataset.to_json(path_to_save / "results.jsonl")
+        dataset.cast_column("prompt", MESSAGES_SCHEMA).cast_column(
+            "completion", MESSAGES_SCHEMA
+        ).cast_column("oai_tools", TOOL_SCHEMA).to_json(path_to_save / "results.jsonl")
     with open(path_to_save / "metadata.json", "w") as f:
         json.dump(metadata_dict, f)
 
 
 def load_from_disk(path_to_load: Path) -> tuple[Dataset, dict]:
     with quiet_datasets():
-        dataset = cast(
-            Dataset, Dataset.from_json((path_to_load / "results.jsonl").as_posix())
+        dataset = (
+            cast(
+                Dataset, Dataset.from_json((path_to_load / "results.jsonl").as_posix())
+            )
+            .cast_column("prompt", MESSAGES_SCHEMA)
+            .cast_column("completion", MESSAGES_SCHEMA)
+            .cast_column("oai_tools", TOOL_SCHEMA)
         )
     with open(path_to_load / "metadata.json", "r") as f:
         metadata_dict = json.load(f)
