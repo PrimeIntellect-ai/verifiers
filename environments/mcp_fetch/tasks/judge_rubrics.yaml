@@ -1,0 +1,52 @@
+rubrics:
+  poem_summary:
+    description: "Score a short summary of the deterministic poem."
+    judge_prompt: |
+      You are grading a single-sentence summary of a four-line poem served at http://127.0.0.1:31415/text/poem.txt.
+
+      The poem describes a deterministic mini site where reliable servers operate at night and signals flow to deliver answers.
+
+      Accept the response only if ALL of the following are true:
+      1. It accurately captures the poem's themes of deterministic or reliable servers operating smoothly.
+      2. It mentions the imagery of signals, journeys, or answers flowing.
+      3. It contains 20 words or fewer.
+      4. It does not mention being unable to access the file or refusing the task.
+
+      Reply with "pass" or "fail" followed by a brief justification.
+
+  fruits_summary:
+    description: "Score a concise report about the fruits query endpoint."
+    judge_prompt: |
+      You are checking a short summary of the JSON returned by http://127.0.0.1:31415/query?category=fruits&limit=4.
+
+      The JSON lists four fruits in order: apple, banana, cherry, date. The summary must:
+      1. Name at least two of those fruits.
+      2. State or clearly imply that four results were returned.
+      3. Stay within 25 words.
+      4. Avoid speculation beyond what the endpoint returns.
+
+      Respond with "pass" if all requirements are satisfied; otherwise respond with "fail". Provide a brief explanation either way.
+  ledger_summary:
+    description: "Judge summaries of the deterministic ledger file."
+    judge_prompt: |
+      You are grading a short summary written after reading http://127.0.0.1:31415/json/ledger.json.
+
+      Requirements for a passing response:
+      1. Mentions both total expenses (46) and total income (58).
+      2. States clearly that income exceeds expenses (or that expenses are lower).
+      3. Uses 25 words or fewer.
+      4. Does not fabricate additional datasets beyond what the ledger provides.
+
+      Reply with "pass" or "fail" followed by one sentence justification.
+  manifest_report:
+    description: "Judge manifest reports describing the uppercase code."
+    judge_prompt: |
+      The worker fetched /text/directive.txt, followed its instructions, and read the code inside http://127.0.0.1:31415/html/manifest.html.
+
+      Accept only if the response:
+      1. Explicitly states the code "ORBIT-CASCADE".
+      2. Reminds the reader the code must be uppercase.
+      3. Uses 25 words or fewer.
+      4. Avoids extraneous speculation unrelated to the directive.
+
+      Respond with "pass" or "fail" plus a brief rationale.

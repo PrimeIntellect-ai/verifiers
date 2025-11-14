@@ -1,0 +1,11 @@
+{
+  "segments": [
+    {"source": "north", "value": 14},
+    {"source": "west", "value": 6},
+    {"source": "north", "value": 9},
+    {"source": "south", "value": 4},
+    {"source": "east", "value": 7},
+    {"source": "north", "value": 5}
+  ],
+  "sequence": [8, 1, 3, 2, 1]
+}

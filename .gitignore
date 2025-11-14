@@ -1,7 +1,10 @@
 # env 
 .venv/
+**/.venv/
 venv/
+**/venv/
 env/
+**/env/
 .env
 .env.local
 uv.lock
@@ -45,3 +48,5 @@ scratch/
 .vscode/
 *.swp
 .DS_Store
+environments/mcp_fetch/.env
+environments/mcp_fetch/tests/test_gpt5_tool_call.py

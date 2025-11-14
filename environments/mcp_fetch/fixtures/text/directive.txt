@@ -1,0 +1,4 @@
+Directive 7b:
+1. Fetch http://127.0.0.1:31415/json/pointers.json and look for extras.manifest.
+2. Use that value to request http://127.0.0.1:31415/html/manifest.html and read <code data-role="final">.
+3. Respond only with that code in uppercase letters and remind the reader it must stay uppercase.

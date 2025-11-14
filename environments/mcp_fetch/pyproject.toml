@@ -1,0 +1,32 @@
+[project]
+name = "mcp-fetch"
+version = "0.1.0"
+description = "Deterministic MCP Fetch environment with offline fixtures"
+tags = ["mcp", "tools", "fetch", "offline"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.6.post0",
+    "mcp>=1.14.1",
+    "httpx>=0.27.0",
+    "anyio>=4.4.0",
+    "PyYAML>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "mcp_env.py",
+    "verifiers.py",
+    "README.md",
+    "tools/**",
+    "tasks/**",
+    "fixtures/**",
+    "utils/**",
+]
+
+[project.scripts]
+mcp-server-fetch = "mcp_fetch.tools.fetch_mcp_server:main"
+mcp-fetch-mini-httpd = "mcp_fetch.utils.mini_httpd:serve"
