@@ -194,7 +194,7 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         elif isinstance(obj, list):
             return [recursively_dump_model(v) for v in obj]
         elif isinstance(obj, BaseModel):
-            return obj.model_dump()
+            return obj.model_dump_json()
         else:
             return obj
 
