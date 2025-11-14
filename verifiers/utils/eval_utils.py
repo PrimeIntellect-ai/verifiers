@@ -244,7 +244,17 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
                 for metric_name in existing_metadata_dict["avg_metrics"]
             },
         }
-        dataset = concatenate_datasets([existing_dataset, dataset])
+        seen = set()
+
+        def is_new(example: dict) -> bool:
+            """De-duplicate based on completion."""
+            k = json.dumps(list(example["completion"]))
+            if k in seen:
+                return False
+            seen.add(k)
+            return True
+
+        dataset = concatenate_datasets([existing_dataset, dataset]).filter(is_new)
     except FileNotFoundError:
         pass
 
