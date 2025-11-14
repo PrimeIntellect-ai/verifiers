@@ -9,6 +9,7 @@ from typing import cast
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
+from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
@@ -186,11 +187,62 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         v = results["metrics"][k]
         results_dict[k] = v
 
+    def recursively_dump_model(obj):
+        """Best-effort dump any Pydantic model to a dict so that it can be serialized."""
+        if isinstance(obj, dict):
+            return {k: recursively_dump_model(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [recursively_dump_model(v) for v in obj]
+        elif isinstance(obj, BaseModel):
+            return obj.model_dump_json()
+        else:
+            return obj
+
+    def serialize_oai_tools(oai_tools) -> str:
+        return json.dumps(oai_tools)
+
+    def serialize_messages(messages: vf.Messages) -> str:
+        if isinstance(messages, str):
+            return messages
+        return json.dumps(recursively_dump_model(messages))
+
+    def serialize_response(response: vf.ModelResponse) -> str:
+        if not response:
+            return ""
+        if isinstance(response, vf.ChatCompletion):
+            return json.dumps(response.model_dump())
+        elif isinstance(response, vf.Completion):
+            return json.dumps(response.model_dump())
+
+    def serialize_trajectory_step(trajectory_step: vf.TrajectoryStep):
+        return {
+            **trajectory_step,
+            "prompt": serialize_messages(trajectory_step["prompt"]),
+            "completion": serialize_messages(trajectory_step["completion"]),
+            "response": serialize_response(trajectory_step["response"]),
+        }
+
+    def serialize_trajectory(trajectory) -> str:
+        return json.dumps([serialize_trajectory_step(ts) for ts in trajectory])
+
     # Add selected state columns if specified
     state_columns = results["metadata"]["state_columns"]
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results["state"]]
+            if col == "trajectory":
+                results_dict[col] = [
+                    serialize_trajectory(s.get("trajectory", []))
+                    for s in results["state"]
+                ]
+            if col == "oai_tools":
+                results_dict[col] = [
+                    serialize_oai_tools(s.get("oai_tools", []))
+                    for s in results["state"]
+                ]
+            else:
+                results_dict[col] = [
+                    recursively_dump_model(s.get(col, {})) for s in results["state"]
+                ]
 
     return Dataset.from_dict(results_dict)
 
