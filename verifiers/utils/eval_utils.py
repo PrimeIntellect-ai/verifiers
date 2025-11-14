@@ -226,14 +226,12 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         elif isinstance(response, vf.Completion):
             return json.dumps(response.model_dump())
 
-    def serialize_trajectory_step(trajectory_step) -> dict[str, str]:
+    def serialize_trajectory_step(trajectory_step: vf.TrajectoryStep):
         return {
+            **trajectory_step,
             "prompt": serialize_messages(trajectory_step["prompt"]),
             "completion": serialize_messages(trajectory_step["completion"]),
             "response": serialize_response(trajectory_step["response"]),
-            "tokens": json.dumps(trajectory_step["tokens"]),
-            "reward": json.dumps(trajectory_step["reward"]),
-            "advantage": json.dumps(trajectory_step["advantage"]),
         }
 
     def serialize_trajectory(trajectory) -> str:
