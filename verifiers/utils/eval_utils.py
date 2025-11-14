@@ -9,6 +9,7 @@ from typing import cast
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
+from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
@@ -186,11 +187,24 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         v = results["metrics"][k]
         results_dict[k] = v
 
+    def recursively_dump_model(obj):
+        """Best-effort dump any Pydantic model to a dict so that it can be serialized."""
+        if isinstance(obj, dict):
+            return {k: recursively_dump_model(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [recursively_dump_model(v) for v in obj]
+        elif isinstance(obj, BaseModel):
+            return obj.model_dump()
+        else:
+            return obj
+
     # Add selected state columns if specified
     state_columns = results["metadata"]["state_columns"]
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results["state"]]
+            results_dict[col] = [
+                recursively_dump_model(s.get(col)) for s in results["state"]
+            ]
 
     return Dataset.from_dict(results_dict)
 
