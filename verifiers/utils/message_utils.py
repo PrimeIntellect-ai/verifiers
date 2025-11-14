@@ -36,6 +36,8 @@ def message_to_printable(message: ChatMessage) -> ChatMessage:
     new_message["content"] = []
     if "tool_calls" in message:
         new_message["tool_calls"] = message["tool_calls"]
+    else:
+        new_message["tool_calls"] = []
     content = message.get("content")
     if content is None:
         return cast(ChatMessage, new_message)
