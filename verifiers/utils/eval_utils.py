@@ -306,8 +306,6 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
             return True
 
         with quiet_datasets():
-            existing_dataset.to_json(path_to_save / "before.jsonl")
-            dataset.to_json(path_to_save / "after.jsonl")
             # We do not concat the datasets here but "recreate" from list to avoid Pyarrow type mismatches across intermediate saves.
             # For huge workloads, this can be very slow, but it works for now.
             dataset = Dataset.from_list(
