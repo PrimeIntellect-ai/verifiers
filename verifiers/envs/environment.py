@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import signal
+import sys
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +40,11 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
-from verifiers.utils.eval_utils import make_dataset, save_rollout_results
+from verifiers.utils.eval_utils import (
+    load_from_disk,
+    make_dataset,
+    save_rollout_results,
+)
 from verifiers.utils.message_utils import (
     concat_messages,
     get_overlong_prompt_dummy_response,
@@ -790,12 +795,27 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        resume_from_path: Path | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset.
         """
         inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        if resume_from_path is not None:
+            if not resume_from_path.exists():
+                raise FileNotFoundError(
+                    f"Resume path does not exist: {resume_from_path}"
+                )
+            finished_rollouts, _ = load_from_disk(resume_from_path)
+            finished_example_ids = list(finished_rollouts["example_id"])
+            inputs = [i for i in inputs if i["example_id"] not in finished_example_ids]
+            if len(inputs) == 0:
+                self.logger.info("No inputs left to evaluate. Exiting.")
+                sys.exit(0)
+            self.logger.info(
+                f"Found {len(set(finished_example_ids))} finished group(s) ({len(finished_example_ids)} total rollouts), skipping them"
+            )
         return await self.generate(
             inputs,
             client=client,
