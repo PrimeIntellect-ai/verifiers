@@ -60,8 +60,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
         self.interception_port = interception_port
         self.interception_host = interception_host
-        self._tunnel_process: Any = None
-        self._tunnel_url: str | None = None
+        self._tunnels: list[
+            dict[str, Any]
+        ] = []  # List of {url, process, active_rollouts}
+        self._tunnel_lock = asyncio.Lock()
+        self._tunnel_round_robin_index = 0
         self.timeout_seconds = timeout_seconds
         self.request_timeout = request_timeout
         self.docker_image = docker_image
@@ -94,13 +97,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
         system = platform.system()
 
         if system == "Darwin":  # macOS
-            brew_path = shutil.which("brew")
-            if not brew_path:
-                raise RuntimeError(
-                    'Homebrew not found. Install with: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-                )
             result = subprocess.run(
-                [brew_path, "install", "cloudflare/cloudflare/cloudflared"],
+                ["brew", "install", "cloudflare/cloudflare/cloudflared"],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -155,12 +153,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
             return url
         return None
 
-    def _start_cloudflared_tunnel(self) -> str:
-        """Start cloudflared tunnel and return the public URL."""
+    def _start_cloudflared_tunnel(self) -> tuple[str, subprocess.Popen]:
+        """Start cloudflared tunnel and return (URL, process)."""
         cloudflared_path = self._ensure_cloudflared_installed()
 
         # Start cloudflared tunnel process
-        self._tunnel_process = subprocess.Popen(
+        tunnel_process = subprocess.Popen(
             [
                 cloudflared_path,
                 "tunnel",
@@ -174,8 +172,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         )
 
         # Read stderr line by line until we find the tunnel URL
-        import time
-
         stderr_lines = []
         max_wait_seconds = 30
         check_interval = 0.5
@@ -183,23 +179,24 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         for _ in range(max_iterations):
             # Check if process died
-            if self._tunnel_process.poll() is not None:
-                remaining = self._tunnel_process.stderr.read()
-                stderr_lines.append(remaining)
+            if tunnel_process.poll() is not None:
+                if tunnel_process.stderr:
+                    remaining = tunnel_process.stderr.read()
+                    stderr_lines.append(remaining)
                 error_output = "".join(stderr_lines)
                 raise RuntimeError(
                     f"cloudflared tunnel failed to start: {error_output}"
                 )
 
             # Try to read a line from stderr
-            line = self._tunnel_process.stderr.readline()
-            if line:
-                stderr_lines.append(line)
-                url = self._extract_tunnel_url_from_line(line)
-                if url:
-                    logger.info(f"Cloudflare tunnel started: {url}")
-                    self._tunnel_url = url
-                    return url
+            if tunnel_process.stderr:
+                line = tunnel_process.stderr.readline()
+                if line:
+                    stderr_lines.append(line)
+                    url = self._extract_tunnel_url_from_line(line)
+                    if url:
+                        logger.info(f"Cloudflare tunnel started: {url}")
+                        return url, tunnel_process
 
             time.sleep(check_interval)
 
@@ -209,19 +206,48 @@ class CliAgentEnv(vf.MultiTurnEnv):
             url = self._extract_tunnel_url_from_line(line)
             if url:
                 logger.info(f"Cloudflare tunnel started: {url}")
-                self._tunnel_url = url
-                return url
+                return url, tunnel_process
 
         raise RuntimeError(
             f"Failed to get tunnel URL from cloudflared after {max_wait_seconds} seconds. "
             f"Output: {all_output[:500]}"
         )
 
-    def _get_tunnel_url(self) -> str:
-        """Get or create tunnel URL."""
-        if self._tunnel_url:
-            return self._tunnel_url
-        return self._start_cloudflared_tunnel()
+    async def _get_tunnel_url(self) -> str:
+        """Get tunnel URL from pool, creating new tunnels as needed (1 per 50 active rollouts)."""
+        async with self._tunnel_lock:
+            # Count total active rollouts
+            total_active_rollouts = len(self.active_rollouts)
+
+            # Calculate required tunnels (at least 1 per 50 rollouts, minimum 1)
+            required_tunnels = max(1, (total_active_rollouts + 49) // 50)
+
+            # Ensure we have enough tunnels
+            while len(self._tunnels) < required_tunnels:
+                try:
+                    url, process = self._start_cloudflared_tunnel()
+                    self._tunnels.append(
+                        {
+                            "url": url,
+                            "process": process,
+                            "active_rollouts": 0,
+                        }
+                    )
+                    logger.debug(
+                        f"Created tunnel {len(self._tunnels)}/{required_tunnels}: {url}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create tunnel: {e}")
+                    raise
+
+            # Round-robin selection
+            tunnel = self._tunnels[self._tunnel_round_robin_index % len(self._tunnels)]
+            self._tunnel_round_robin_index += 1
+
+            # Increment active rollouts for this tunnel
+            tunnel["active_rollouts"] += 1
+
+            return tunnel["url"]
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -234,8 +260,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
         await self._ensure_interception_server()
 
         # Auto-start Cloudflare tunnel if not provided
+        tunnel_url: str | None = None
         if self.interception_host is None:
-            tunnel_url = self._get_tunnel_url()
+            tunnel_url = await self._get_tunnel_url()
             # Use full HTTPS URL from tunnel
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
         else:
@@ -275,6 +302,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         request_id_queue: asyncio.Queue = asyncio.Queue()
         state["request_id_queue"] = request_id_queue
         state["current_request_id"] = None
+        state["tunnel_url"] = tunnel_url if self.interception_host is None else None
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_id_queue,
             "current_request_id": None,
@@ -427,18 +455,21 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
     @vf.teardown
     async def teardown_tunnel(self):
-        """Stop cloudflared tunnel process"""
-        if self._tunnel_process:
-            try:
-                self._tunnel_process.terminate()
-                self._tunnel_process.wait(timeout=5)
-            except Exception as e:
-                logger.warning(f"Error stopping cloudflared tunnel: {e}")
-                try:
-                    self._tunnel_process.kill()
-                except Exception:
-                    pass
-            self._tunnel_process = None
+        """Stop all cloudflared tunnel processes"""
+        async with self._tunnel_lock:
+            for tunnel in self._tunnels:
+                process = tunnel.get("process")
+                if process:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    except Exception as e:
+                        logger.warning(f"Error stopping cloudflared tunnel: {e}")
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+            self._tunnels.clear()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -450,6 +481,17 @@ class CliAgentEnv(vf.MultiTurnEnv):
             if request_id and request_id in self.intercepts:
                 del self.intercepts[request_id]
             del self.active_rollouts[rollout_id]
+
+        # Decrement active rollouts for the tunnel used by this rollout
+        tunnel_url = state.get("tunnel_url")
+        if tunnel_url:
+            async with self._tunnel_lock:
+                for tunnel in self._tunnels:
+                    if tunnel["url"] == tunnel_url:
+                        tunnel["active_rollouts"] = max(
+                            0, tunnel["active_rollouts"] - 1
+                        )
+                        break
 
     @vf.stop
     async def agent_signaled_completion(self, state: State) -> bool:
