@@ -391,6 +391,9 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -399,6 +402,7 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
+        # store input
         state_input = deepcopy(input)
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
@@ -413,6 +417,11 @@ class Environment(ABC):
             state["oai_tools"] = self.oai_tools
         else:
             state["oai_tools"] = []
+        # store client, model, sampling_args
+        state["client"] = client
+        state["model"] = model
+        state["sampling_args"] = sampling_args
+        # initialize trajectory
         state["trajectory"] = []
         state["reward"] = None
         state["metrics"] = None
@@ -483,6 +492,7 @@ class Environment(ABC):
             if await self._render_stop(state, condition):
                 await self._render_timing(state)
                 await self._render_completion(state)
+                await self._cleanup(state)
                 return True
         return False
 
@@ -549,7 +559,7 @@ class Environment(ABC):
             path_to_save = results_path
         prompts = [state["prompt"] for state in all_states]
         completions = [state.get("completion") for state in all_states]
-        answers = [state["answer"] for state in all_states]
+        answers = [state.get("answer", "") for state in all_states]
         tasks = [state.get("task", "default") for state in all_states]
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]
