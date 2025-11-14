@@ -235,9 +235,12 @@ class EnvGroup(vf.Environment):
     async def init_state(
         self,
         input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.init_state(input)
+        return await env.init_state(input, client, model, sampling_args)
 
     async def setup_state(self, state: vf.State) -> vf.State:
         env = self.get_env_for_task(state["task"])

@@ -177,7 +177,7 @@ class Rubric:
             merged = dict(
                 prompts=[state["prompt"] for state in states],
                 completions=[state["completion"] for state in states],
-                answers=[state["answer"] for state in states],
+                answers=[state.get("answer", "") for state in states],
                 states=states,
                 tasks=[state["task"] for state in states],
                 infos=[state.get("info", {}) for state in states],
