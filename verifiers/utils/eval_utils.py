@@ -210,13 +210,53 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         else:
             return obj
 
+    def serialize_oai_tools(oai_tools) -> str:
+        return json.dumps(oai_tools)
+
+    def serialize_messages(messages: vf.Messages) -> str:
+        if isinstance(messages, str):
+            return messages
+        return json.dumps(recursively_dump_model(messages))
+
+    def serialize_response(response: vf.ModelResponse) -> str:
+        if not response:
+            return ""
+        if isinstance(response, vf.ChatCompletion):
+            return json.dumps(response.model_dump())
+        elif isinstance(response, vf.Completion):
+            return json.dumps(response.model_dump())
+
+    def serialize_trajectory_step(trajectory_step) -> dict[str, str]:
+        return {
+            "prompt": serialize_messages(trajectory_step["prompt"]),
+            "completion": serialize_messages(trajectory_step["completion"]),
+            "response": serialize_response(trajectory_step["response"]),
+            "tokens": json.dumps(trajectory_step["tokens"]),
+            "reward": json.dumps(trajectory_step["reward"]),
+            "advantage": json.dumps(trajectory_step["advantage"]),
+        }
+
+    def serialize_trajectory(trajectory) -> str:
+        return json.dumps([serialize_trajectory_step(ts) for ts in trajectory])
+
     # Add selected state columns if specified
     state_columns = results["metadata"]["state_columns"]
     if state_columns:
         for col in state_columns:
-            results_dict[col] = [
-                recursively_dump_model(s.get(col)) for s in results["state"]
-            ]
+            if col == "trajectory":
+                results_dict[col] = [
+                    serialize_trajectory(s.get("trajectory", []))
+                    for s in results["state"]
+                ]
+            if col == "oai_tools":
+                results_dict[col] = [
+                    serialize_oai_tools(s.get("oai_tools", []))
+                    for s in results["state"]
+                ]
+            else:
+                results_dict[col] = [
+                    recursively_dump_model(s.get(col, {})) for s in results["state"]
+                ]
 
     return Dataset.from_dict(results_dict)
 
