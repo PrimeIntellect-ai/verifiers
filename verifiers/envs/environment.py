@@ -483,6 +483,7 @@ class Environment(ABC):
             if await self._render_stop(state, condition):
                 await self._render_timing(state)
                 await self._render_completion(state)
+                await self._cleanup(state)
                 return True
         return False
 
