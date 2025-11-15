@@ -5,6 +5,8 @@ from typing import (
     Awaitable,
     Callable,
     Literal,
+    TypeAlias,
+    Union,
 )
 
 if sys.version_info < (3, 12):
@@ -13,8 +15,15 @@ else:
     from typing import TypedDict
 
 from openai import AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionDeveloperMessageParam,
+    ChatCompletionFunctionMessageParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionUserMessageParam,
+)
 from openai.types.chat.chat_completion import ChatCompletion
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
 # openai types
 from openai.types.chat.chat_completion_message_tool_call import (
@@ -31,8 +40,24 @@ from openai.types.shared_params import (  # noqa: F401
 )
 from pydantic import BaseModel
 
+
+class ChatCompletionAssistantMessageParamWithReasoning(
+    ChatCompletionAssistantMessageParam
+):
+    reasoning_content: str | None
+
+
+ChatCompletionMessageParamWithReasoning: TypeAlias = Union[
+    ChatCompletionDeveloperMessageParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionUserMessageParam,
+    ChatCompletionAssistantMessageParamWithReasoning,
+    ChatCompletionToolMessageParam,
+    ChatCompletionFunctionMessageParam,
+]
+
 # typing aliases
-ChatMessage = ChatCompletionMessageParam
+ChatMessage = ChatCompletionMessageParamWithReasoning
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
 
