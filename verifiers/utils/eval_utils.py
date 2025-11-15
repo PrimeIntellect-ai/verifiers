@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import logging
@@ -11,13 +12,74 @@ from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    State,
+)
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.rollout_utils import serialize_rollout
 
 logger = logging.getLogger(__name__)
+
+
+class _StreamWriter:
+    def __init__(
+        self,
+        results_path: Path,
+        total_rollouts: int,
+        state_columns: list[str] | None = None,
+    ):
+        self.results_path = results_path
+        self.total_rollouts = total_rollouts
+        self.state_columns = state_columns or []
+        self.completed_count = 0
+        self.running_reward_sum = 0.0
+        self.running_metrics_sum: dict[str, float] = {}
+
+        self.results_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log_rollout(self, state: State) -> None:
+        self.completed_count += 1
+        reward = state.get("reward", 0.0)
+        self.running_reward_sum += reward
+
+        metrics = state.get("metrics", {})
+        for k, v in metrics.items():
+            self.running_metrics_sum[k] = self.running_metrics_sum.get(k, 0.0) + v
+
+    def _write_sync(self, json_line: str) -> None:
+        with open(self.results_path, "a") as f:
+            f.write(json_line)
+
+    async def write_rollout_jsonl(self, state: State) -> None:
+        rollout_data = serialize_rollout(
+            state,
+            state_columns=self.state_columns,
+            include_timestamp=True,
+        )
+        json_line = json.dumps(rollout_data) + "\n"
+        await asyncio.to_thread(self._write_sync, json_line)
+
+    def get_running_stats(self) -> dict[str, float]:
+        if self.completed_count == 0:
+            return {}
+
+        stats = {
+            "avg_reward": self.running_reward_sum / self.completed_count,
+            "completed": self.completed_count,
+            "total": self.total_rollouts,
+        }
+
+        for k, v in self.running_metrics_sum.items():
+            stats[f"avg_{k}"] = v / self.completed_count
+
+        return stats
 
 
 def load_endpoints(endpoints_path: str):
@@ -115,6 +177,24 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
+
+    # Setup streaming handler for incremental saving
+    streaming_handler = None
+    rollout_callback = None
+
+    if config.save_results:
+        total_rollouts = config.num_examples * config.rollouts_per_example
+        results_jsonl_path = results_path / "results.jsonl"
+        streaming_handler = _StreamWriter(
+            results_path=results_jsonl_path,
+            total_rollouts=total_rollouts,
+            state_columns=config.state_columns,
+        )
+
+        async def rollout_callback(state: State) -> None:
+            streaming_handler.log_rollout(state)
+            await streaming_handler.write_rollout_jsonl(state)
+
     start_time = time.time()
     results = await vf_env.evaluate(
         client=client,
@@ -129,13 +209,28 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        on_rollout_complete=rollout_callback,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+
     if config.print_results:
         print_results(results)
+
     if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+        metadata_dict = sanitize_metadata(results["metadata"])
+        with open(results_path / "metadata.json", "w") as f:
+            json.dump(metadata_dict, f)
+        logger.info(f"Metadata saved to {results_path / 'metadata.json'}")
+
+        if config.save_to_hf_hub:
+            dataset = Dataset.from_json(str(results_path / "results.jsonl"))
+            dataset_name = config.hf_hub_dataset_name or get_hf_hub_dataset_name(
+                results
+            )
+            dataset.push_to_hub(dataset_name)
+            logger.info(f"Dataset pushed to Hugging Face Hub: {dataset_name}")
+
     return results
 
 
@@ -162,35 +257,21 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
 
 
 def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results["completion"]]
-    clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results["info"])
-    save_answer = any(answer != "" for answer in results["answer"])
-    results_dict = {
-        "example_id": results["example_id"],
-        "prompt": clean_prompts,
-        "completion": clean_completions,
-        "task": results["task"],
-        "reward": results["reward"],
-        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
-        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
-    }
-    if save_info:
-        results_dict["info"] = results["info"]
-    if save_answer:
-        results_dict["answer"] = results["answer"]
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        results_dict[k] = v
-
-    # Add selected state columns if specified
     state_columns = results["metadata"]["state_columns"]
-    if state_columns:
-        for col in state_columns:
-            results_dict[col] = [s.get(col) for s in results["state"]]
+
+    serialized_rollouts = [
+        serialize_rollout(state, state_columns=state_columns, include_timestamp=False)
+        for state in results["state"]
+    ]
+
+    if not serialized_rollouts:
+        return Dataset.from_dict({})
+
+    all_keys = {key for rollout in serialized_rollouts for key in rollout.keys()}
+
+    results_dict = {
+        key: [rollout.get(key) for rollout in serialized_rollouts] for key in all_keys
+    }
 
     return Dataset.from_dict(results_dict)
 
