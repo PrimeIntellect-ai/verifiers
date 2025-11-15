@@ -91,15 +91,22 @@ async def parse_response_tokens(
 async def parse_response_messages(
     response: ModelResponse, message_type: MessageType
 ) -> Messages:
-    response_text = ""
+    content = ""
+    reasoning_content = None
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
-            response_text = response.choices[0].message.content or ""
+            content = response.choices[0].message.content or ""
+            reasoning_content = getattr(
+                response.choices[0].message, "reasoning_content", None
+            )
+
         response_message: ChatMessage = {
             "role": "assistant",
-            "content": response_text,
+            "content": content,
+            "reasoning_content": reasoning_content,
         }
+
         if (
             response.choices
             and response.choices[0].message
@@ -113,6 +120,6 @@ async def parse_response_messages(
     else:
         assert isinstance(response, Completion)
         if response.choices and response.choices[0]:
-            response_text = response.choices[0].text or ""
-        completion_messages = str(response_text)
+            content = response.choices[0].text or ""
+        completion_messages = str(content)
     return completion_messages
