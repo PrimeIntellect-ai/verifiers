@@ -128,7 +128,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
-    @vf.teardown                            # type: ignore
+    @vf.teardown  # type: ignore
     async def teardown_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:
