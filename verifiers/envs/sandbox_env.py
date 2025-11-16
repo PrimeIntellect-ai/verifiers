@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Any
 
@@ -28,12 +29,14 @@ class SandboxEnv(vf.StatefulToolEnv):
         disk_size_gb: int = 5,
         gpu_count: int = 0,
         timeout_minutes: int = 60,
+        timeout_per_command_seconds: int = 30,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
         self.sandbox_request = CreateSandboxRequest(
             name=sandbox_name,
@@ -61,7 +64,16 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
-        results = await self.sandbox_client.execute_command(sandbox_id, command)
+        try:
+            results = await asyncio.wait_for(
+                self.sandbox_client.execute_command(sandbox_id, command),
+                timeout=self.timeout_per_command_seconds,
+            )
+        except asyncio.TimeoutError:
+            e = time.time()
+            timeout_msg = f"Command timed out after {self.timeout_per_command_seconds}s"
+            self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
+            return f"Error: {timeout_msg}"
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
@@ -128,7 +140,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
-    @vf.teardown                            # type: ignore
+    @vf.teardown  # type: ignore
     async def teardown_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:

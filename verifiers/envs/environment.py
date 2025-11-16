@@ -550,7 +550,7 @@ class Environment(ABC):
             path_to_save = results_path
         prompts = [state["prompt"] for state in all_states]
         completions = [state.get("completion") for state in all_states]
-        answers = [state["answer"] for state in all_states]
+        answers = [state.get("answer", "") for state in all_states]
         tasks = [state.get("task", "default") for state in all_states]
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]

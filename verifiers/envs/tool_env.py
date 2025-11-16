@@ -77,9 +77,13 @@ class ToolEnv(vf.MultiTurnEnv):
         tool_messages = []
         for tool_call in messages[-1]["tool_calls"]:
             tool_name: str = tool_call.get("function", {}).get("name", "")
-            tool_args: dict = json.loads(
-                tool_call.get("function", {}).get("arguments", "")
-            )
+            try:
+                tool_args: dict = json.loads(
+                    tool_call.get("function", {}).get("arguments", "")
+                )
+            except Exception as e:
+                self.logger.error(f"Error parsing tool arguments: {e}")
+                tool_args = {}
             tool_call_id: str = tool_call.get("id", "")
             tool_message: vf.Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
