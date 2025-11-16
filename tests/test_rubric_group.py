@@ -416,3 +416,126 @@ class TestRubricGroup:
 
         assert score.reward == 1.0
         assert recorded_parsers == [xml_parser]
+
+    def test_rubric_group_weights_validation(self):
+        """Test that mismatched weight length raises ValueError."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func1], weights=[1.0])
+
+        # Should raise ValueError when weights length doesn't match rubrics length
+        with pytest.raises(
+            ValueError,
+            match="Number of weights must match number of rubrics: got 3 weights for 2 rubrics",
+        ):
+            RubricGroup(rubrics=[rubric1, rubric2], weights=[1.0, 0.5, 0.3])
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_with_custom_weights_score_rollout(self):
+        """Test non-uniform weights applied in score_rollout."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        # Create group with custom weights [0.7, 0.3]
+        group = RubricGroup(rubrics=[rubric1, rubric2], weights=[0.7, 0.3])
+
+        prompt = [{"role": "user", "content": "Test prompt"}]
+        completion = [{"role": "assistant", "content": "Test completion"}]
+        state = {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}
+
+        score = await group.score_rollout(prompt, completion, "answer", state)
+
+        # Reward should be (1.0 * 0.7) + (0.5 * 0.3) = 0.7 + 0.15 = 0.85
+        assert score.reward == 0.85
+        # Metrics should also be weighted
+        assert score.metrics["func1"] == 0.7  # 1.0 * 0.7
+        assert score.metrics["func2"] == 0.15  # 0.5 * 0.3
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_with_custom_weights_score_rollouts(self):
+        """Test batch scoring with custom weights."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        # Create group with custom weights [0.6, 0.4]
+        group = RubricGroup(rubrics=[rubric1, rubric2], weights=[0.6, 0.4])
+
+        prompts = [
+            [{"role": "user", "content": "Test 1"}],
+            [{"role": "user", "content": "Test 2"}],
+        ]
+        completions = [
+            [{"role": "assistant", "content": "Response 1"}],
+            [{"role": "assistant", "content": "Response 2"}],
+        ]
+        answers = ["answer1", "answer2"]
+        tasks = ["default", "default"]
+        infos = [{}, {}]
+        states = [
+            {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}},
+            {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}},
+        ]
+
+        scores = await group.score_rollouts(
+            prompts=prompts,
+            completions=completions,
+            answers=answers,
+            states=states,
+            tasks=tasks,
+            infos=infos,
+        )
+
+        # All rewards should be (1.0 * 0.6) + (0.5 * 0.4) = 0.6 + 0.2 = 0.8
+        assert len(scores.reward) == 2
+        assert scores.reward[0] == 0.8
+        assert scores.reward[1] == 0.8
+        # All metrics should be weighted
+        assert scores.metrics["func1"][0] == 0.6  # 1.0 * 0.6
+        assert scores.metrics["func1"][1] == 0.6
+        assert scores.metrics["func2"][0] == 0.2  # 0.5 * 0.4
+        assert scores.metrics["func2"][1] == 0.2
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_default_weights_behavior(self):
+        """Test that default weights maintain backward compatibility (sum behavior)."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[1.0])
+
+        # Create group without specifying weights (should default to [1.0, 1.0])
+        group = RubricGroup(rubrics=[rubric1, rubric2])
+
+        prompt = [{"role": "user", "content": "Test prompt"}]
+        completion = [{"role": "assistant", "content": "Test completion"}]
+        state = {"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}
+
+        score = await group.score_rollout(prompt, completion, "answer", state)
+
+        # Reward should be (1.0 * 1.0) + (0.5 * 1.0) = 1.5 (sum behavior)
+        assert score.reward == 1.5
+        # Metrics should also be summed
+        assert score.metrics["func1"] == 1.0  # 1.0 * 1.0
+        assert score.metrics["func2"] == 0.5  # 0.5 * 1.0
