@@ -93,13 +93,15 @@ async def parse_response_messages(
 ) -> Messages:
     content = ""
     reasoning_content = None
+    reasoning_fields = ["reasoning_content", "reasoning"]
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
             content = response.choices[0].message.content or ""
-            reasoning_content = getattr(
-                response.choices[0].message, "reasoning_content", None
-            )
+            for field in reasoning_fields:
+                if getattr(response.choices[0].message, field, None) is not None:
+                    reasoning_content = str(getattr(response.choices[0].message, field))
+                    break
 
         response_message: ChatMessage = {
             "role": "assistant",
