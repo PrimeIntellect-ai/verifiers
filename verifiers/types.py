@@ -94,7 +94,9 @@ class State(dict):
     # created during rollout
     is_completed: bool
     stop_condition: str | None
+    model: str | None
     oai_tools: list[ChatCompletionToolParam]
+    sampling_args: SamplingArgs | None
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
