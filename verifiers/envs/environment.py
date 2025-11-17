@@ -381,6 +381,7 @@ class Environment(ABC):
                     "exceeds the model's context length",
                     "exceed the configured limit",
                     "exceeds the configured limit",
+                    "exceeded model",
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
                     self.logger.debug("Caught overlong prompt.")

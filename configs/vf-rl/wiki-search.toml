@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "primeintellect/wiki-search"
+id = "wiki-search"
 
 [env.args]
 max_turns = 10
@@ -20,7 +20,7 @@ gpus = 1
 run_name = "wiki-search"
 micro_batch_size = 4
 rollouts_per_example = 16
-batch_size = 1024
+batch_size = 512
 max_steps = 500
 max_tokens = 512
 max_seq_len = 4096
