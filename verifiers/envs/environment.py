@@ -393,6 +393,9 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -407,6 +410,9 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+        state["client"] = client
+        state["model"] = model
+        state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
