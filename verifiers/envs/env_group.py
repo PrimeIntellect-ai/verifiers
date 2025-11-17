@@ -235,9 +235,12 @@ class EnvGroup(vf.Environment):
     async def init_state(
         self,
         input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.init_state(input)
+        return await env.init_state(input, client, model, sampling_args)
 
     async def setup_state(self, state: vf.State) -> vf.State:
         env = self.get_env_for_task(state["task"])
@@ -255,3 +258,9 @@ class EnvGroup(vf.Environment):
 
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
+
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment group and all sub-environments."""
+        self.max_seq_len = max_seq_len
+        for env in self.envs:
+            env.set_max_seq_len(max_seq_len)

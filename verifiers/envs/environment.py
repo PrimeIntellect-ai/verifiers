@@ -386,6 +386,7 @@ class Environment(ABC):
                     "exceeds the model's context length",
                     "exceed the configured limit",
                     "exceeds the configured limit",
+                    "exceeded model",
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
                     self.logger.debug("Caught overlong prompt.")
@@ -398,6 +399,9 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -412,6 +416,9 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+        state["client"] = client
+        state["model"] = model
+        state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -866,6 +873,10 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
         )
+
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment."""
+        self.max_seq_len = max_seq_len
 
     make_dataset = make_dataset
 

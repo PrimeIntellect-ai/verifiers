@@ -92,7 +92,7 @@ class MultiTurnEnv(vf.Environment):
         """
         Generate a multi-turn rollout with the environment.
         """
-        state = await self.init_state(input)
+        state = await self.init_state(input, client, model, sampling_args)
         state = await self.setup_state(state)
         while not await self.is_completed(state):
             prompt_messages = await self.get_prompt_messages(state)
