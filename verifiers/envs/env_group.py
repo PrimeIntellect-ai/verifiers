@@ -258,3 +258,9 @@ class EnvGroup(vf.Environment):
 
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
+
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment group and all sub-environments."""
+        self.max_seq_len = max_seq_len
+        for env in self.envs:
+            env.set_max_seq_len(max_seq_len)

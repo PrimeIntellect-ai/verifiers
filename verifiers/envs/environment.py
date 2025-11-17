@@ -854,6 +854,10 @@ class Environment(ABC):
             save_every=save_every,
         )
 
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment."""
+        self.max_seq_len = max_seq_len
+
     make_dataset = make_dataset
 
 
