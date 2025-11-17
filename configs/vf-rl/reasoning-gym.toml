@@ -10,13 +10,11 @@ num_eval_examples = 2000
 seed = 1
 
 [inference]
-gpus = 4
-tensor_parallel_size = 2
-data_parallel_size = 2
+gpus = 6
 enforce_eager = true
 
 [trainer]
-gpus = 4
+gpus = 2
 batch_size = 512
 micro_batch_size = 2
 max_seq_len = 4096
