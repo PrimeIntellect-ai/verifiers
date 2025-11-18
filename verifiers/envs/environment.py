@@ -557,7 +557,12 @@ class Environment(ABC):
                 reward=-1,
                 advantage=None,
                 metrics=None,
-                timing=None,
+                timing=RolloutTiming(
+                    generation_ms=0.0,
+                    scoring_ms=0.0,
+                    total_ms=0.0,
+                    start_time=time.time(),
+                ),
             )
             return [dummy_state] * len(group_inputs)
 
@@ -734,7 +739,7 @@ class Environment(ABC):
                     self.logger.debug(
                         f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
                     )
-                    await asyncio.to_thread(save_rollout_results, temp_results)
+                    save_rollout_results(temp_results)
         finally:
             if pbar is not None:
                 pbar.close()
