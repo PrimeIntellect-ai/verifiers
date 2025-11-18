@@ -719,7 +719,7 @@ class Environment(ABC):
                     self.logger.debug(
                         f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
                     )
-                    save_rollout_results(temp_results)
+                    await asyncio.to_thread(save_rollout_results, temp_results)
         finally:
             if pbar is not None:
                 pbar.close()
