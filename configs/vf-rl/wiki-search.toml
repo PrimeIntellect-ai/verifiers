@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "will/wiki-search"
+id = "wiki-search"
 
 [env.args]
 max_turns = 10
@@ -18,7 +18,7 @@ gpus = 1
 
 [trainer.args]
 run_name = "wiki-search"
-micro_batch_size = 2
+micro_batch_size = 4
 rollouts_per_example = 16
 batch_size = 512
 max_steps = 500

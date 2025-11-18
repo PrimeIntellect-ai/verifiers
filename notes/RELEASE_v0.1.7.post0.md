@@ -2,6 +2,8 @@
 
 *Date:* 11/7/25
 
+**Update 0.1.7.post0**: Quick bug fix for `tmux` session setup with `prime-rl`.
+
 Verifiers v0.1.7 features a major overhaul of the included trainer (now called `vf.RLTrainer`), as well as a number of utilities for streamlining the usage of Verifiers with Prime-RL, along with a number of bug fixes, documentation updates, and QoL improvements. 
 
 ## Highlights

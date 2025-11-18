@@ -38,6 +38,7 @@ dependencies = [
     "textual",
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
+    "typing_extensions; python_version < '3.12'",
     "prime-sandboxes>=0.1.0",
     "wget>=3.2",
 ]
@@ -117,6 +118,7 @@ vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.rl.inference.server:main"
+prime-rl = "verifiers.scripts.prime_rl:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -171,6 +173,9 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
     "ignore::UserWarning:transformers.*",
+    "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
+    "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
+    "ignore::SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]

@@ -11,7 +11,7 @@ class ToolRubric(Rubric):
     def __init__(self, tools: list[Callable] | None = None):
         self.tools = tools or []
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
-        self.tool_names = [tool.__name__ for tool in self.tools]
+        self.tool_names = [tool.__name__ for tool in self.tools]  # type: ignore[union-attr]
 
         # Build initial reward functions and weights
         reward_funcs = []
@@ -30,8 +30,8 @@ class ToolRubric(Rubric):
         total = 0
         assert isinstance(completion, list)
         for msg in completion:
-            if msg.get("role") == "assistant" and "tool_calls" in msg:
-                tool_calls = msg.get("tool_calls", [])
+            if msg["role"] == "assistant" and "tool_calls" in msg:
+                tool_calls = msg["tool_calls"]
                 if isinstance(tool_calls, list):
                     total += len(tool_calls)
         return float(total)
@@ -45,8 +45,8 @@ class ToolRubric(Rubric):
             # Find tool calls in assistant messages
             assert isinstance(completion, list)
             for msg in completion:
-                if msg.get("role") == "assistant" and "tool_calls" in msg:
-                    tool_calls = msg.get("tool_calls", [])
+                if msg["role"] == "assistant" and "tool_calls" in msg:
+                    tool_calls = msg["tool_calls"]
                     for tool_call in tool_calls:
                         if tool_call.get("function", {}).get("name") == tool_name:
                             count += 1

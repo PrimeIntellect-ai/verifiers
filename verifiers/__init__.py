@@ -1,23 +1,31 @@
-__version__ = "0.1.6.post0"
+__version__ = "0.1.8.dev0"
 
 import importlib
 import logging
 import sys
 from typing import TYPE_CHECKING, Optional
 
+# early imports to avoid circular dependencies
 from .types import *  # noqa # isort: skip
+from .utils.decorators import (  # noqa # isort: skip
+    cleanup,
+    stop,
+    teardown,
+)
+from .parsers.parser import Parser  # noqa # isort: skip
+from .rubrics.rubric import Rubric  # noqa # isort: skip
+from .envs.environment import Environment  # noqa # isort: skip
+from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
+from .envs.tool_env import ToolEnv  # noqa # isort: skip
+
+# main imports
 from .envs.env_group import EnvGroup
-from .envs.environment import Environment
-from .envs.multiturn_env import MultiTurnEnv
 from .envs.singleturn_env import SingleTurnEnv
 from .envs.stateful_tool_env import StatefulToolEnv
-from .envs.tool_env import ToolEnv
 from .parsers.maybe_think_parser import MaybeThinkParser
-from .parsers.parser import Parser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
 from .rubrics.judge_rubric import JudgeRubric
-from .rubrics.rubric import Rubric
 from .rubrics.rubric_group import RubricGroup
 from .rubrics.tool_rubric import ToolRubric
 from .utils.data_utils import (
@@ -100,6 +108,9 @@ __all__ = [
     "GRPOConfig",
     "grpo_defaults",
     "lora_defaults",
+    "cleanup",
+    "stop",
+    "teardown",
 ]
 
 _LAZY_IMPORTS = {

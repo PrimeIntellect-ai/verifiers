@@ -33,7 +33,7 @@ class RLConfig(TrainingArguments):
     )
     lora_target_modules: List[str] | str | None = field(
         default=None,
-        metadata={"help": "LoRA target modules."},
+        metadata={"help": "LoRA target modules (all linear layers by default)."},
     )
     lora_modules_to_save: Optional[List[str]] = field(
         default=None,
@@ -320,6 +320,8 @@ class RLConfig(TrainingArguments):
                 "spaces_between_special_tokens": False,
                 "include_stop_str_in_output": False,
                 "return_tokens_as_token_ids": True,
+                "return_token_ids": True,
+                "prompt_logprobs": True,
             },
         }
         self.gradient_accumulation_steps = 1

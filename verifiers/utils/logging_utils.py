@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+from collections.abc import Mapping
 
 from rich.console import Console
 from rich.panel import Panel
@@ -8,7 +9,6 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import Messages
-from collections.abc import Mapping
 
 
 def setup_logging(

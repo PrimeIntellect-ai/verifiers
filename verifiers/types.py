@@ -1,12 +1,18 @@
+import sys
 from pathlib import Path
 from typing import (
     Any,
     Awaitable,
     Callable,
     Literal,
-    TypedDict,
 )
 
+if sys.version_info < (3, 12):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
+
+from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
@@ -23,39 +29,112 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
 
+ChatMessages = list[ChatMessage]
 Message = str | ChatMessage
 
 Messages = str | list[ChatMessage]
 Info = dict[str, Any]
 
-
-State = dict[str, Any]
 SamplingArgs = dict[str, Any]
-RewardFunc = Callable[..., float | Awaitable[float]]
+IndividualRewardFunc = Callable[..., float | Awaitable[float]]
+GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
+RewardFunc = IndividualRewardFunc | GroupRewardFunc
+
+
+class TrajectoryStepTokens(TypedDict):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+    overlong_prompt: bool
+    is_truncated: bool
+
+
+class TrajectoryStep(TypedDict):
+    prompt: Messages
+    completion: Messages
+    response: ModelResponse
+    tokens: TrajectoryStepTokens | None
+    reward: float | None
+    advantage: float | None
+    extras: dict[str, Any]
+
+
+class BaseRolloutInput(TypedDict):
+    prompt: Messages
+    example_id: int
+    task: str
+
+
+class RolloutInput(BaseRolloutInput, total=False):
+    # required: prompt, example_id, task
+    # optional: answer, info
+    answer: str
+    info: Info
+
+
+class RolloutTiming(TypedDict, total=False):
+    start_time: float
+    generation_ms: float
+    scoring_ms: float
+    total_ms: float
+
+
+class State(dict):
+    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    # rollout inputs
+    input: RolloutInput
+    client: AsyncOpenAI | None
+    model: str | None
+    sampling_args: SamplingArgs | None
+    # created during rollout
+    is_completed: bool
+    stop_condition: str | None
+    oai_tools: list[ChatCompletionToolParam]
+    trajectory: list[TrajectoryStep]
+    completion: Messages | None
+    reward: float | None
+    advantage: float | None
+    metrics: dict[str, float] | None
+    timing: RolloutTiming | None
+
+    def __getitem__(self, key: str) -> Any:
+        # forward to input if exists
+        if key in self.INPUT_FIELDS and "input" in self:
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                return input_obj[key]
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        # forward to input if exists
+        if key in self.INPUT_FIELDS and "input" in self:
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                input_obj[key] = value
+                return
+        super().__setitem__(key, value)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
 
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 
-class GenerateInputs(BaseModel):
-    """Pydantic model for generation inputs."""
-
-    prompt: list[Messages]
-    completion: list[Messages] | None = None
-    answer: list[str] | None = None
-    task: list[str] | None = None
-    info: list[Info] | None = None
-    example_id: list[int] | None = None
-
-
-class GenerateMetadata(BaseModel):
+class GenerateMetadata(TypedDict):
     """Pydantic model for generation metadata."""
 
     env_id: str
@@ -73,8 +152,8 @@ class GenerateMetadata(BaseModel):
     path_to_save: Path
 
 
-class GenerateOutputs(BaseModel):
-    """Pydantic model for generation outputs."""
+class GenerateOutputs(TypedDict):
+    """TypedDict for generation outputs."""
 
     prompt: list[Messages]
     completion: list[Messages]
@@ -84,26 +163,26 @@ class GenerateOutputs(BaseModel):
     info: list[Info]
     example_id: list[int]
     reward: list[float]
-    metrics: dict[str, list[float]] = Field(default_factory=dict)
+    metrics: dict[str, list[float]]
     metadata: GenerateMetadata
 
 
-class RolloutScore(BaseModel):
-    """Pydantic model for rollout scores."""
+class RolloutScore(TypedDict):
+    """TypedDict for rollout scores."""
 
     reward: float
-    metrics: dict[str, float] = Field(default_factory=dict)
+    metrics: dict[str, float]
 
 
-class RolloutScores(BaseModel):
-    """Pydantic model for rubric outputs."""
+class RolloutScores(TypedDict):
+    """TypedDict for rubric outputs."""
 
     reward: list[float]
-    metrics: dict[str, list[float]] = Field(default_factory=dict)
+    metrics: dict[str, list[float]]
 
 
-class ProcessedOutputs(BaseModel):
-    """Pydantic model for processed outputs."""
+class ProcessedOutputs(TypedDict):
+    """TypedDict for processed outputs."""
 
     prompt_ids: list[list[int]]
     prompt_mask: list[list[int]]
@@ -146,7 +225,6 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
-    interleave_scoring: bool = True
     # logging
     print_results: bool = False
     verbose: bool = False

@@ -1,13 +1,10 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "will/wordle"
+id = "wordle"
 
 [inference]
 gpus = 1
-
-[inference.args]
-enforce_eager = true
 
 [trainer]
 gpus = 1
@@ -15,7 +12,7 @@ gpus = 1
 [trainer.args]
 lora_target_modules = "all-linear"
 run_name = "wordle"
-micro_batch_size = 8
+micro_batch_size = 4
 rollouts_per_example = 16
 batch_size = 512
 max_steps = 500

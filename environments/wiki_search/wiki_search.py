@@ -221,7 +221,7 @@ def load_environment(
         read_section,
     ]
     parser = vf.Parser()
-    dataset = load_dataset("willcb/wiki-trivia-questions", split="train")
+    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
     tool_rubric = vf.ToolRubric(tools=tools)
 
     JUDGE_PROMPT = """Given a ground truth answer \

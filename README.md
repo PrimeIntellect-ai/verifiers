@@ -12,6 +12,12 @@
 Verifiers: Environments for LLM Reinforcement Learning
 </h3>
 
+<p align="center">
+  <a href="https://docs.primeintellect.ai/verifiers">Documentation</a> •
+  <a href="https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars">Environments Hub</a> •
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a>
+</p>
+
 ---
 
 <p align="center">
@@ -28,32 +34,38 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 ## News & Updates
 
-- [10/28/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
-- [10/27/25] A new iteration of the Prime Intellect [Environments Program]() is live!  
+- [11/07/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
+- [10/27/25] A new iteration of the Prime Intellect [Environments Program](https://docs.google.com/spreadsheets/d/13UDfRDjgIZXsMI2s9-Lmn8KSMMsgk2_zsfju6cx_pNU/edit?gid=0#gid=0) is live!  
 
 ## Overview
 
-Verifiers is a library of modular components for creating RL environments and training LLM agents. Environments built with Verifiers can be used directly as LLM evaluations, synthetic data pipelines, or agent harnesses for any OpenAI-compatible model endpoint, in addition to RL training. Verifiers includes an async GRPO implementation built around the `transformers` Trainer, is supported by `prime-rl` for large-scale FSDP training, and can easily be integrated into any RL framework which exposes an OpenAI-compatible inference client.
+Verifiers is a library of modular components for creating RL environments and training LLM agents. Environments built with Verifiers can be used directly as LLM evaluations, synthetic data pipelines, or agent harnesses for any OpenAI-compatible model endpoint, in addition to RL training. Verifiers is supported by `prime-rl` for large-scale performance-optimized async RL training, includes a minimal `transformers`-based trainer (`vf.RLTrainer`) for simple algorithmic experiments, and can easily be integrated into any RL training stack which exposes an OpenAI-compatible inference client.
 
 Full documentation is available [here](https://verifiers.readthedocs.io/en/latest/). 
 
-Verifiers is also the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub.
+Verifiers is the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub, and [here](https://github.com/PrimeIntellect-ai/prime-environments) for a collection of Environments built with Verifiers.
 
 ## Quick Start
 
-Install the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli):
-```bash
-uv tool install prime
-``` 
+Verifiers supports CPU-based environment development and evaluation with API models, as well as large-scale GPU-based RL training with [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) and several other trainers. Environments built with Verifiers are standalone Python packages that can be installed and used in your own projects, or shared with the community through the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars).
 
-Install `verifiers` in your project:
+
+To get started, install `uv` and the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli), and add `verifiers` to your project:
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv init && uv venv --python 3.12    # to create a new project if needed
+uv tool install prime
 uv add verifiers
 ```
 
 Select an environment from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to install:
 ```bash
-prime env install will/wordle
+prime env install will/wiki-search
+```
+
+Or install an environment from this repo:
+```bash
+uv run vf-install wordle --from-repo
 ```
 
 Run a quick evaluation with OpenAI models:
@@ -61,40 +73,56 @@ Run a quick evaluation with OpenAI models:
 uv run vf-eval wordle -m gpt-5-nano
 ```
 
-For RL training, do:
+For advanced evaluation configurations with the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli), see [here](https://docs.primeintellect.ai/tutorials-environments/evaluating)
+
+## RL Training
+
+### `prime-rl`
+We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer, and provide a basic setup guide below. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
+
+To get started, do: 
+
 ```bash
-uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main' # after 0.1.7 release, this will be: uv add 'verifiers[rl]'
-uv run vf-setup # creates default RL TOMLs under configs/
+uv run vf-setup
 ```
 
-## Setup
+This will clone and install the `prime-rl` trainer and its dependencies, and set up a default configuration for training with the included `wiki-search` Environment.
 
-We recommend using `verifiers` along with [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management in your own project:
+Then, you can start training with:
+
 ```bash
-# install uv (first time only)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# create a fresh project -- 3.11 + 3.12 supported
-uv init && uv venv --python 3.12 
+uv run prime-rl @ configs/prime-rl/wiki-search.toml
 ```
 
-For local (CPU) development and evaluation with API models, do:
-```bash
-uv add verifiers
-```
+This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server.
 
-For RL training on GPUs with the included trainer, do:
+### vf.RLTrainer
+
+The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `verifiers/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
+
+The feature set is intentionally kept minimal and focused. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the `prime-rl` trainer. 
+
+To use `vf.RLTrainer` in your own project, install with RL extras:
 ```bash
 uv add 'verifiers[rl]'
 ```
 
-To use the latest `main` branch with RL extras, do:
+Then, create a training configuration file, e.g. `configs/vf-rl/wiki-search.toml`, and do:
+
 ```bash
-uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main'
+uv run vf-rl @ configs/vf-rl/wiki-search.toml
 ```
 
-To use with `prime-rl`, see [here](https://github.com/PrimeIntellect-ai/prime-rl).
+Example configuration files can be created in your project by running `uv run vf-setup`.
 
-To install `verifiers` from source for core library development, install with:
+### Other Trainers
+
+`verifiers` is intended to be largely trainer-agnostic. It is supported by [SkyRL] and [Tinker], and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts. See the [integrations](https://github.com/PrimeIntellect-ai/verifiers/tree/main/integrations) directory for more information.
+
+
+## Development
+
+To install `verifiers` from source for core library development, or to use the latest `main` branch, install with:
 ```bash
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/verifiers/main/scripts/install.sh | bash
 ```
@@ -104,7 +132,8 @@ If you want to develop with RL extras enabled in this repo, do:
 uv sync --extra rl
 ```
 
-In general, we recommend that you build and train Environments *with* `verifiers`, not *in* `verifiers`. If you find yourself needing to clone and modify the core library in order to implement key functionality for your project, we'd love for you to open an issue so that we can try and streamline the development experience. Our aim is for `verifiers` to be a reliable toolkit to build on top of, and to minimize the "fork proliferation" which often pervades the RL infrastructure ecosystem.
+Please use the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) to share your Environments with the community, rather than PRs to this repo. If you find yourself needing to clone and modify the core library in order to implement key functionality for your project, please open an issue or PR so that we can help you.
+
 
 ## Environments
 
@@ -115,9 +144,14 @@ To initialize a blank Environment module template, do:
 uv run vf-init environment-name # -p /path/to/environments (defaults to "./environments")
 ```
 
-To an install an Environment module into your project, do:
+To install an Environment module into your project, do:
 ```bash
 uv run vf-install environment-name # -p /path/to/environments (defaults to "./environments") 
+```
+
+To install an Environment module from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
+```bash
+prime env install user/environment-name
 ```
 
 To install an Environment module from this repo's `environments` folder, do:
@@ -145,9 +179,8 @@ The core elements of Environments are:
 - Rubrics: an encapsulation for one or more reward functions
 - Parsers: optional; an encapsulation for reusable parsing logic
 
-We support both `/v1/chat/completions`-style and `/v1/completions`-style inference via OpenAI clients, though we generally recommend `/v1/chat/completions`-style inference for the vast majority of applications. Both the included `GRPOTrainer` as well as `prime-rl` support the full set of [SamplingParams](https://docs.vllm.ai/en/stable/api/vllm/sampling_params.html#vllm.sampling_params.SamplingParams) exposed by vLLM (via their OpenAI-compatible [server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html) interface), and leveraging this will often be the appropriate way to implement rollout strategies requiring finer-grained control, such as interrupting and resuming generations for interleaved tool use, or enforcing reasoning budgets.
+We support both `/v1/chat/completions`-style and `/v1/completions`-style inference via OpenAI clients, though we generally recommend `/v1/chat/completions`-style inference for the vast majority of applications. Both  `prime-rl` as well as the included `vf.RLTrainer` support the full set of [SamplingParams](https://docs.vllm.ai/en/stable/api/vllm/sampling_params.html#vllm.sampling_params.SamplingParams) exposed by vLLM (via their OpenAI-compatible [server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server.html) interface), and leveraging this will often be the appropriate way to implement rollout strategies requiring finer-grained control, such as interrupting and resuming generations for interleaved tool use, or enforcing reasoning budgets.
 
-The primary constraint we impose on rollout logic is that token sequences must be *increasing*, i.e. once a token has been added to a model's context in a rollout, it must remain as the rollout progresses. Note that this causes issues with some popular reasoning models such as the Qwen3 and DeepSeek-R1-Distill series; see [Troubleshooting](https://verifiers.readthedocs.io/en/latest/training.html#common-issues) for guidance on adapting these models to support multi-turn rollouts.  
 
 ### SingleTurnEnv
 
@@ -173,11 +206,19 @@ async def metric(completion) -> float:
 
 rubric = vf.Rubric(funcs=[reward_A, reward_B, metric], weights=[1.0, 0.5, 0.0])
 
-vf_env = SingleTurnEnv(
+vf_env = vf.SingleTurnEnv(
 	dataset=dataset,
 	rubric=rubric
 )
+
+# Async evaluation (recommended)
+from openai import AsyncOpenAI
+results = await vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
+
+# Sync evaluation
+from openai import OpenAI
 results = vf_env.evaluate_sync(client=OpenAI(), model="gpt-4.1-mini", num_examples=100, rollouts_per_example=1)
+
 vf_env.make_dataset(results) # HF dataset format
 ```
 
@@ -201,15 +242,6 @@ The following named attributes available for use by reward functions in your Rub
 
 For tasks involving LLM judges, you may wish to use `vf.JudgeRubric()` for managing requests to auxiliary models.
 
-Note on concurrency: environment APIs accept `max_concurrent` to control parallel rollouts. The `vf-eval` CLI currently exposes `--max-concurrent-requests`; ensure this maps to your environment’s concurrency as expected.
-
-`vf-eval` also supports specifying `sampling_args` as a JSON object, which is sent to the vLLM inference engine:
-
-```bash
-uv run vf-eval vf-environment-name --sampling-args '{"reasoning_effort": "low"}'
-```
-
-Use `vf-eval -s` to save outputs as dataset-formatted JSON, and view all locally-saved eval results with `vf-tui`. Pass `--save-every N` to checkpoint long runs incrementally when interleaving generation and scoring.
 
 ### ToolEnv
 
@@ -242,7 +274,6 @@ For training, or self-hosted endpoints, you'll want to enable auto tool choice i
 
 Both `SingleTurnEnv` and `ToolEnv` are instances of `MultiTurnEnv`, which exposes an interface for writing custom Environment interaction protocols. Override `is_completed` and `env_response`, and make sure any custom completion logic defers to the base class so turn limits and other shared guards keep working.
 
-
 ```python
 from typing import Tuple
 import verifiers as vf
@@ -267,76 +298,6 @@ class YourMultiTurnEnv(vf.MultiTurnEnv):
 
 If your application requires more fine-grained control than is allowed by `MultiTurnEnv`, you may want to inherit from the base `Environment` functionality directly and override the `rollout` method.
 
-### ToolEnv
-For many applications involving tool use, you can use `ToolEnv` to leverage models' native tool/function-calling capabilities in an agentic loop. Tools must be stateless and idempotent—each call should be fully determined by the provided arguments—because the environment will automatically terminate once the assistant responds without tool calls.
-
-#### StatefulToolEnv
-`StatefulToolEnv` extends `ToolEnv` for workflows where tool calls must incorporate dynamic state ...
-#### SandboxEnv & PythonEnv
-`SandboxEnv` builds on `StatefulToolEnv` to coordinate long-running sandboxes ... `PythonEnv` is a concrete sandboxed executor that demonstrates the pattern ...
-
-## Training
-
-Verifiers is supported by a number of trainers, including:
-- `verifiers.RLTrainer` (included with `verifiers[train]`, `transformers`-based, ZeRO3 + vLLM)
-- `prime-rl`
-- `SkyRL`
-- `tinker_cookbook` trainer
-
-### RL
-
-Use `vf-rl` with a single TOML to orchestrate both inference (vLLM) and training panes inside tmux.
-
-```bash
-# create or edit a config, e.g. configs/rl/wordle.toml
-# vf-rl will launch a tmux session with vLLM (top) and trainer (bottom)
-uv run vf-rl @ configs/rl/config.toml
-```
-
-Minimal TOML:
-
-```toml
-model = "Qwen/Qwen3-4B-Instruct-2507"
-
-[env]
-id = "kalomaze/alphabet-sort" # auto-installed from hub if given as user/env-id, or from local project if given as env-id
-
-[inference]
-gpus = 1
-
-[inference.args]
-enforce_eager = true
-
-[trainer]
-gpus = 1
-
-[trainer.args]
-run_name = "alphabet-sort"
-use_lora = true
-learning_rate = 1e-5
-micro_batch_size = 4
-rollouts_per_example = 16
-batch_size = 512
-max_steps = 100
-max_tokens = 512
-max_seq_len = 2048
-```
-
-Alternatively, you can train environments with the external `prime-rl` project (FSDP-first orchestration). See the `prime-rl` README for installation and examples. For example:
-
-```toml
-# orchestrator config (prime-rl)
-[environment]
-id = "vf-math-python"  # or your environment ID
-```
-
-```bash
-# run (prime-rl)
-uv run rl \
-  --trainer @ configs/your_exp/train.toml \
-  --orchestrator @ configs/your_exp/orch.toml \
-  --inference @ configs/your_exp/infer.toml
-```
 
 ### Troubleshooting 
 - Ensure your `wandb` and `huggingface-cli` logins are set up (or set `report_to=None` in `training_args`). You should also have something set as your `OPENAI_API_KEY` in your environment (can be a dummy key for vLLM). 
@@ -345,20 +306,8 @@ uv run rl \
 - If problems persist, please open an [issue](https://github.com/PrimeIntellect-ai/verifiers/issues).
 
 ### Resource Requirements
-`GRPOTrainer` is optimized for setups with at least 2 GPUs, scaling up to multiple nodes. 2-GPU setups with sufficient memory to enable small-scale experimentation can be [rented](https://app.primeintellect.ai/dashboard/create-cluster?image=ubuntu_22_cuda_12) for <$1/hr.
+`prime-rl` can be run on a single GPU by allocating only a fraction of the available memory to the inference server (see [here](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/alphabet_sort) for an example configuration), and can also be scaled to hundreds of GPUs for large-scale training. A wide range of competitively-priced cluster configurations are available on [Prime Intellect](https://app.primeintellect.ai/dashboard/create-cluster?image=ubuntu_22_cuda_12).
 
-### PRIME-RL
-If you do not require LoRA support, you may want to use the `prime-rl` trainer, which natively supports Environments created using `verifiers`, is more optimized for performance and scalability via FSDP, includes a broader set of configuration options and user experience features, and has more battle-tested defaults. Both trainers support asynchronous rollouts, and use a one-step off-policy delay by default for overlapping training and inference. See the `prime-rl` [docs](https://github.com/PrimeIntellect-ai/prime-rl) for usage instructions.
-
-## Further Documentation
-
-See the full [docs](https://verifiers.readthedocs.io/en/latest/) for more information.
-
-## Contribution Guidelines
-
-Verifiers warmly welcomes community contributions! Please open an issue or PR if you encounter bugs or other pain points during your development, or start a discussion for more open-ended questions.
-
-Please note that the core `verifiers/` library is intended to be a relatively lightweight set of reusable components rather than an exhaustive catalog of RL environments. Consider sharing any environments you create to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) 🙂
 
 ## Citation
 
@@ -370,7 +319,7 @@ If you use this code in your research, please cite:
 @misc{brown_verifiers_2025,
   author       = {William Brown},
   title        = {{Verifiers}: Environments for LLM Reinforcement Learning},
-  howpublished = {\url{https://github.com/willccbb/verifiers}},
+  howpublished = {\url{https://github.com/PrimeIntellect-ai/verifiers}},
   note         = {Commit abcdefg • accessed DD Mon YYYY},
   year         = {2025}
 }

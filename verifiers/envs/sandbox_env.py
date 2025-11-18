@@ -1,5 +1,4 @@
-import atexit
-import signal
+import asyncio
 import time
 from typing import Any
 
@@ -30,12 +29,14 @@ class SandboxEnv(vf.StatefulToolEnv):
         disk_size_gb: int = 5,
         gpu_count: int = 0,
         timeout_minutes: int = 60,
+        timeout_per_command_seconds: int = 30,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
         self.sandbox_request = CreateSandboxRequest(
             name=sandbox_name,
@@ -51,20 +52,6 @@ class SandboxEnv(vf.StatefulToolEnv):
             advanced_configs=advanced_configs,
         )
         self.active_sandboxes = set()
-
-        # Install handlers for regular exception, sigint (Ctrl-C) and sigterm (standard termination signal)
-        atexit.register(self.cleanup_sandboxes)
-        signal.signal(
-            signal.SIGINT,
-            lambda sig, frame: (
-                self.cleanup_sandboxes(),
-                signal.default_int_handler(sig, frame),
-            ),
-        )
-        signal.signal(
-            signal.SIGTERM, lambda _, __: (self.cleanup_sandboxes(), exit(143))
-        )
-
         self.add_tool(self.bash, args_to_skip=["sandbox_id"])
 
     async def bash(self, command: str, sandbox_id: str) -> str:
@@ -77,7 +64,16 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
-        results = await self.sandbox_client.execute_command(sandbox_id, command)
+        try:
+            results = await asyncio.wait_for(
+                self.sandbox_client.execute_command(sandbox_id, command),
+                timeout=self.timeout_per_command_seconds,
+            )
+        except asyncio.TimeoutError:
+            e = time.time()
+            timeout_msg = f"Command timed out after {self.timeout_per_command_seconds}s"
+            self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
+            return f"Error: {timeout_msg}"
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
@@ -91,14 +87,17 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Executed command in {e - s:.1f}s. Got output: {output}")
         return output
 
-    async def post_rollout(self, messages: vf.Messages, state: vf.State, **kwargs):
+    async def post_rollout(self, state: vf.State):
         """
         Override for custom post-rollout logic. For example, if sandbox state is needed for reward functions,
         run computation here and cache the result in state before sandbox is destroyed.
         """
         pass
 
-    async def destroy_sandbox(self, sandbox_id: str | None) -> None:
+    @vf.cleanup
+    async def destroy_sandbox(self, state: vf.State):
+        await self.post_rollout(state)
+        sandbox_id = state.get("sandbox_id")
         if sandbox_id is None:
             return
         try:
@@ -131,20 +130,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         else:
             return tool_args
 
-    async def is_completed(
-        self, messages: vf.Messages, state: vf.State, **kwargs
-    ) -> bool:
-        """
-        When overriding, if sandbox state is needed for reward functions,
-        run computation here and cache the result in state.
-        """
-        completed = await super().is_completed(messages, state, **kwargs)
-        if completed:
-            await self.post_rollout(messages, state, **kwargs)
-            await self.destroy_sandbox(state.pop("sandbox_id"))
-        return completed
-
-    def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
+    async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())
         try:
@@ -154,13 +140,12 @@ class SandboxEnv(vf.StatefulToolEnv):
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
-    def cleanup_sandboxes(self):
+    @vf.teardown  # type: ignore
+    async def teardown_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:
             return
-        self.logger.info(
-            f"Cleaning up {len(self.active_sandboxes)} remaining sandboxes"
-        )
+        self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
         sandbox_client = SandboxClient(APIClient())
         # TODO: Use the SandboxClient.bulk_delete method once it is more stable and faster
         while self.active_sandboxes:

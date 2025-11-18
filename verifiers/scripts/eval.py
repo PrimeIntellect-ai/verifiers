@@ -184,9 +184,9 @@ def main():
     parser.add_argument(
         "--state-columns",
         "-C",
-        nargs="+",
+        type=lambda t: [s.strip() for s in t.split(",")],
         default=[],
-        help="List of state columns to save",
+        help="Comma-separated list of state columns to save (e.g., 'turn,timing')",
     )
     parser.add_argument(
         "--save-results",
@@ -304,7 +304,6 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
-        interleave_scoring=not args.no_interleave_scoring,
         # logging
         print_results=True,
         verbose=args.verbose,

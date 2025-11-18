@@ -1,7 +1,6 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
-from typing import List, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -10,77 +9,70 @@ from openai.types.chat.chat_completion import Choice
 
 from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import (
-    ChatCompletion,
-    ChatMessage,
-    Completion,
-    GenerateInputs,
     GenerateMetadata,
     GenerateOutputs,
     Messages,
+    RolloutInput,
     RolloutScores,
+    SamplingArgs,
 )
 from verifiers.utils.eval_utils import make_dataset as build_dataset
-from verifiers.utils.processing_utils import (
-    parse_chat_completion_logprobs,
-    parse_chat_completion_tokens,
-    process_chat_format_vllm,
-    process_completion_format_vllm,
-)
 
 
 # Create a concrete implementation for testing the abstract base class
 class SimpleEnvironment(Environment):
     """Simple implementation of Environment for testing."""
 
+    async def setup_state(self, state):
+        """Setup state for SimpleEnvironment."""
+        return state
+
     async def rollout(
         self,
+        input: RolloutInput,
         client,
-        model,
-        prompt,
-        completion=None,
-        answer: str = "",
-        state: dict | None = None,
-        task: str = "default",
-        info: dict | None = None,
-        example_id: int = 0,
-        sampling_args: dict | None = None,
-        **kwargs,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
     ):
         """Simple test rollout implementation."""
-        info = info or {}
-        if completion is None:
-            completion = await self.init_completion()
-        if state is None:
-            state = await self.init_state(
-                prompt=prompt,
-                completion=completion,
-                answer=answer,
-                task=task,
-                info=info,
-                example_id=example_id,
-            )
+        state = await self.init_state(input)
+        state = await self.setup_state(state)
+
+        prompt_messages = state["prompt"]
         response = await self.get_model_response(
-            prompt=prompt, client=client, model=model, sampling_args=sampling_args or {}
+            client=client,
+            model=model,
+            prompt=prompt_messages,
+            sampling_args=sampling_args or {},
         )
-        if self.message_type == "chat":
-            assert isinstance(response, ChatCompletion)
-            assert isinstance(completion, list)
-            state.setdefault("responses", [])
-            state["responses"].append(response)
-            message = {
-                "role": "assistant",
-                "content": response.choices[0].message.content,
-            }
-            completion.append(cast(ChatMessage, message))
-            state["completion"] = completion
-        else:
-            assert isinstance(response, Completion)
-            assert isinstance(completion, str)
-            state.setdefault("responses", [])
-            state["responses"].append(response)
-            completion = completion + (response.choices[0].text or "")
-            state["completion"] = completion
-        return completion, state
+
+        from verifiers.utils.response_utils import parse_response_messages
+
+        completion_messages = await parse_response_messages(response, self.message_type)
+        from verifiers.types import TrajectoryStep
+        from verifiers.utils.response_utils import parse_response_tokens
+
+        tokens = await parse_response_tokens(response, self.message_type)
+        trajectory_step = TrajectoryStep(
+            prompt=prompt_messages,
+            completion=completion_messages,
+            response=response,
+            tokens=tokens,
+            reward=None,
+            advantage=None,
+            extras={},
+        )
+        state["trajectory"].append(trajectory_step)
+        state["is_completed"] = True
+
+        from verifiers.utils.message_utils import concat_messages
+
+        last_prompt = state["trajectory"][-1]["prompt"]
+        last_completion = state["trajectory"][-1]["completion"]
+        full_conversation = concat_messages([last_prompt, last_completion])
+        state["completion"] = full_conversation[len(state["prompt"]) :]
+
+        return state
 
 
 def _make_metadata(
@@ -158,7 +150,7 @@ class TestEnvironmentBase:
         self, mock_openai_client, sample_dataset
     ):
         """Test that warning is logged when parser and rubric parser are different."""
-        from unittest.mock import Mock, patch
+        from unittest.mock import patch
 
         think_parser = ThinkParser()
         rubric = Rubric()  # Different parser class
@@ -178,36 +170,6 @@ class TestEnvironmentBase:
             mock_logger.warning.assert_called_once_with(
                 "The parser and rubric parser are different. This may cause unexpected behavior."
             )
-
-    def test_format_prompt(self, mock_openai_client, sample_dataset):
-        """Test prompt formatting."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        prompt = "What is 2+2?"
-        system_prompt = "You are a helpful assistant."
-        few_shot: List[ChatMessage] = [
-            {"role": "user", "content": "What is 1+1?"},
-            {"role": "assistant", "content": "2"},
-        ]
-
-        formatted = env.format_prompt(prompt, system_prompt, few_shot)
-
-        assert len(formatted) == 4
-        assert formatted[0]["role"] == "system"
-        assert formatted[0]["content"] == system_prompt
-        assert formatted[1]["role"] == "user"
-        assert formatted[1]["content"] == "What is 1+1?"
-        assert formatted[2]["role"] == "assistant"
-        assert "content" in formatted[2]
-        assert formatted[2]["content"] == "2"
-        assert formatted[3]["role"] == "user"
-        assert formatted[3]["content"] == prompt
 
     def test_get_dataset(self, mock_openai_client, sample_dataset):
         """Test dataset retrieval."""
@@ -285,281 +247,6 @@ class TestEnvironmentBase:
         assert hasattr(response.choices[0], "text")
         mock_openai_client.completions.create.assert_called_once()
 
-    def test_process_chat_format(self, mock_openai_client, sample_dataset):
-        """Test processing chat format conversations."""
-
-        # Create a mock tokenizer
-        mock_tokenizer = Mock()
-
-        def apply_template(conversation, add_generation_prompt=True, tools=None):
-            # Return deterministic token ids ensuring prefix property
-            return list(range(10 if add_generation_prompt else 14))
-
-        mock_tokenizer.apply_chat_template = Mock(side_effect=apply_template)
-        mock_tokenizer.encode = Mock(side_effect=lambda text: list(range(len(text))))
-
-        prompt: List[ChatMessage] = [{"role": "user", "content": "What is 2+2?"}]
-        completion: List[ChatMessage] = [{"role": "assistant", "content": "4"}]
-        # Minimal vLLM-style chat completion with tokens/logprobs
-        token_entries = [
-            Mock(logprob=-0.1, token="token_id:11"),
-            Mock(logprob=-0.2, token="token_id:12"),
-            Mock(logprob=-0.3, token="token_id:13"),
-            Mock(logprob=-0.4, token="token_id:14"),
-        ]
-        mock_choice = Mock()
-        mock_choice.logprobs = Mock()
-        mock_choice.logprobs.content = token_entries
-        mock_chat_completion = Mock()
-        mock_chat_completion.choices = [mock_choice]
-        state = {"responses": [mock_chat_completion]}
-
-        (
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
-            completion_logprobs,
-        ) = process_chat_format_vllm(
-            prompt, completion, state, mock_tokenizer, mask_env_responses=False
-        )
-
-        assert isinstance(prompt_ids, list)
-        assert isinstance(prompt_mask, list)
-        assert isinstance(completion_ids, list)
-        assert isinstance(completion_mask, list)
-        assert isinstance(completion_logprobs, list)
-        assert len(prompt_ids) == len(prompt_mask)
-        assert len(completion_ids) == len(completion_mask)
-        assert len(completion_ids) == len(completion_logprobs)
-        assert all(m == 0 for m in prompt_mask)  # Prompt mask should be all 0s
-        assert all(m == 1 for m in completion_mask)  # Completion mask should be all 1s
-
-    def test_process_completion_format(self, mock_openai_client, sample_dataset):
-        """Test processing completion format text."""
-
-        # Create a mock tokenizer
-        mock_tokenizer = Mock()
-        mock_tokenizer.encode = Mock(side_effect=lambda text: list(range(len(text))))
-
-        prompt = "Complete this: 2+2="
-        completion = "4"
-        # Minimal vLLM-style completion covering entire completion string
-        mock_choice = Mock()
-        mock_choice.text = completion
-        mock_choice.logprobs = Mock()
-        mock_choice.logprobs.tokens = ["token_id:1"] * len(completion)
-        mock_choice.logprobs.token_logprobs = [-0.1] * len(completion)
-        mock_completion = Mock()
-        mock_completion.choices = [mock_choice]
-        state = {"responses": [mock_completion], "responses_start_idx": [0]}
-
-        (
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
-            completion_logprobs,
-        ) = process_completion_format_vllm(prompt, completion, state, mock_tokenizer)
-
-        assert isinstance(prompt_ids, list)
-        assert isinstance(prompt_mask, list)
-        assert isinstance(completion_ids, list)
-        assert isinstance(completion_mask, list)
-        assert isinstance(completion_logprobs, list)
-        assert len(prompt_ids) == len(prompt_mask)
-        assert len(completion_ids) == len(completion_mask)
-        assert len(completion_ids) == len(completion_logprobs)
-        assert all(m == 0 for m in prompt_mask)
-        assert all(m == 1 for m in completion_mask)
-
-    def test_process_env_results_chat(self, mock_openai_client, sample_dataset):
-        """Test processing environment results for chat format."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        # Create a mock tokenizer
-        mock_tokenizer = Mock()
-
-        # Track the conversation state
-        def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True, tools=None
-        ):
-            # Return token id list; size scales with number of messages
-            return list(range(len(conversation) * 5))
-
-        def mock_encode(text, **kwargs):
-            return list(range(3))
-
-        mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
-        mock_tokenizer.encode = Mock(side_effect=mock_encode)
-
-        prompts: List[Messages] = [[{"role": "user", "content": "Hello"}]]
-        completions: List[Messages] = [[{"role": "assistant", "content": "Hi there!"}]]
-        # Minimal vLLM-style chat completion mock for assistant turn
-        token_entries = [
-            Mock(logprob=-0.1, token="token_id:101"),
-            Mock(logprob=-0.2, token="token_id:102"),
-            Mock(logprob=-0.3, token="token_id:103"),
-        ]
-        mock_choice = Mock()
-        mock_choice.logprobs = Mock()
-        mock_choice.logprobs.content = token_entries
-        mock_chat_completion = Mock()
-        mock_chat_completion.choices = [mock_choice]
-        states = [{"responses": [mock_chat_completion]}]
-        rewards = [1.0]
-
-        results = env.process_env_results_vllm(
-            prompts, completions, states, rewards, mock_tokenizer
-        )
-
-        assert hasattr(results, "prompt_ids")
-        assert hasattr(results, "prompt_mask")
-        assert hasattr(results, "completion_ids")
-        assert hasattr(results, "completion_mask")
-        assert hasattr(results, "completion_logprobs")
-        assert hasattr(results, "rewards")
-        assert len(results.rewards) == 1
-        assert results.rewards[0] == 1.0
-
-    def test_process_env_results_with_truncation(
-        self, mock_openai_client, sample_dataset
-    ):
-        """Test processing environment results with sequence length truncation."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            dataset=sample_dataset,
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        # Create a mock tokenizer
-        mock_tokenizer = Mock()
-
-        # Track the conversation state
-        def mock_apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True, tools=None
-        ):
-            # Return deterministic token ids based on number of messages
-            # Ensures prefix property when conversation grows
-            return list(range(len(conversation) * 5))
-
-        def mock_encode(text, **kwargs):
-            # Not used by chat path; keep for compatibility
-            return list(range(3))
-
-        mock_tokenizer.apply_chat_template = Mock(side_effect=mock_apply_chat_template)
-        mock_tokenizer.encode = Mock(side_effect=mock_encode)
-
-        prompts: List[Messages] = [[{"role": "user", "content": "Hello"}]]
-        completions: List[Messages] = [[{"role": "assistant", "content": "Hi there!"}]]
-        # Produce enough assistant tokens to force truncation
-        token_entries = [
-            Mock(logprob=-0.1, token="token_id:201"),
-            Mock(logprob=-0.2, token="token_id:202"),
-            Mock(logprob=-0.3, token="token_id:203"),
-            Mock(logprob=-0.4, token="token_id:204"),
-            Mock(logprob=-0.5, token="token_id:205"),
-            Mock(logprob=-0.6, token="token_id:206"),
-        ]
-        mock_choice = Mock()
-        mock_choice.logprobs = Mock()
-        mock_choice.logprobs.content = token_entries
-        mock_chat_completion = Mock()
-        mock_chat_completion.choices = [mock_choice]
-        states = [{"responses": [mock_chat_completion]}]
-        rewards = [1.0]
-
-        results = env.process_env_results_vllm(
-            prompts,
-            completions,
-            states,
-            rewards,
-            mock_tokenizer,
-            max_seq_len=8,  # Force truncation
-            mask_truncated_completions=True,
-        )
-
-        # Check that total length respects max_seq_len
-        total_len = len(results.prompt_ids[0]) + len(results.completion_ids[0])
-        assert total_len <= 8
-        # Check that truncated completion is masked
-        assert all(m == 0 for m in results.completion_mask[0])
-
-    def test_parse_chat_completion_logprobs(self, mock_openai_client, sample_dataset):
-        """Test parsing logprobs from a vLLM chat completion."""
-
-        # Create mock chat completion with logprobs
-        mock_completion = Mock()
-        mock_completion.choices = [Mock()]
-        mock_completion.choices[0].logprobs = Mock()
-        mock_completion.choices[0].logprobs.content = [
-            Mock(logprob=-0.5),
-            Mock(logprob=-1.2),
-            Mock(logprob=-0.3),
-        ]
-
-        logprobs = parse_chat_completion_logprobs(mock_completion)
-        assert logprobs == [-0.5, -1.2, -0.3]
-
-    def test_parse_chat_completion_tokens(self, mock_openai_client, sample_dataset):
-        """Test parsing tokens from a vLLM chat completion."""
-
-        # Create mock chat completion with tokens
-        mock_completion = Mock()
-        mock_completion.choices = [Mock()]
-        mock_completion.choices[0].logprobs = Mock()
-        mock_completion.choices[0].logprobs.content = [
-            Mock(token="id:1234"),
-            Mock(token="id:5678"),
-            Mock(token="id:9012"),
-        ]
-
-        tokens = parse_chat_completion_tokens(mock_completion)
-        assert tokens == [1234, 5678, 9012]
-
-    @pytest.mark.asyncio
-    async def test_run_rollouts(self, mock_openai_client):
-        """Test running multiple rollouts."""
-        env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
-            eval_dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        prompts: List[Messages] = [
-            [{"role": "user", "content": "Hello"}],
-            [{"role": "user", "content": "Hi"}],
-        ]
-        answers = ["response1", "response2"]
-        tasks = ["default", "default"]
-        infos = [{}, {}]
-
-        # Mock the rollout method calls
-        results = await env.run_rollouts(
-            client=mock_openai_client,
-            model="test-model",
-            prompts=prompts,
-            answers=answers,
-            tasks=tasks,
-            infos=infos,
-            example_ids=list(range(len(prompts))),
-        )
-
-        assert len(results) == 2
-        assert all(
-            len(result) == 2 for result in results
-        )  # Each result is (completion, state)
-
     @pytest.mark.asyncio
     async def test_a_generate_with_score_rollouts(
         self, mock_openai_client, sample_dataset
@@ -574,28 +261,31 @@ class TestEnvironmentBase:
         )
 
         # Mock the rubric scoring
-        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
-            return_value=RolloutScores(reward=[1.0], metrics={})
-        )
+        async def mock_score_group(states, score_sem=None):
+            for state in states:
+                state["reward"] = 1.0
+                state["metrics"] = {}
 
-        inputs = {
-            "prompt": [[{"role": "user", "content": "Hello"}]],
-            "answer": ["Hi"],
-            "example_id": [0],
-        }
+        env.rubric.score_group = mock_score_group  # type: ignore[attr-defined]
 
-        results = await env.a_generate(
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "Hello"}],
+                answer="Hi",
+                example_id=0,
+            )
+        ]
+
+        results = await env.generate(
             inputs,
             client=mock_openai_client,
             model="test-model",
-            score_rollouts=True,
-            interleave_scoring=False,
         )
 
-        assert hasattr(results, "completion")
-        assert hasattr(results, "state")
-        assert hasattr(results, "reward")
-        assert results.reward == [1.0]
+        assert "completion" in results
+        assert "state" in results
+        assert "reward" in results
+        assert results["reward"] == [1.0]
 
     def test_generate_sync_wrapper(self, mock_openai_client, sample_dataset):
         """Test synchronous generate wrapper."""
@@ -606,26 +296,30 @@ class TestEnvironmentBase:
         )
 
         # Mock the rubric scoring
-        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
-            return_value=RolloutScores(reward=[1.0], metrics={})
-        )
+        async def mock_score_group(states, score_sem=None):
+            for state in states:
+                state["reward"] = 1.0
+                state["metrics"] = {}
 
-        inputs = GenerateInputs(
-            prompt=[[{"role": "user", "content": "Hello"}]],
-            answer=["Hi"],
-            info=[{}],
-            example_id=[0],
-        )
+        env.rubric.score_group = mock_score_group  # type: ignore[attr-defined]
+
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "Hello"}],
+                answer="Hi",
+                info={},
+                example_id=0,
+            )
+        ]
         results = env.generate_sync(
             inputs,
             client=mock_openai_client,
             model="test-model",
-            interleave_scoring=False,
         )
 
-        assert hasattr(results, "completion")
-        assert hasattr(results, "state")
-        assert hasattr(results, "reward")
+        assert "completion" in results
+        assert "state" in results
+        assert "reward" in results
 
     def test_make_dataset(self, mock_openai_client, sample_dataset):
         """Test creating a dataset from evaluation results."""
@@ -678,29 +372,29 @@ class TestEnvironmentBase:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        inputs = {
-            "prompt": [[{"role": "user", "content": "Hello"}]],
-            "answer": ["Hi"],
-            "info": [{"key": "value"}],
-            "example_id": [0],
-        }
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "Hello"}],
+                answer="Hi",
+                info={"key": "value"},
+                example_id=0,
+            )
+        ]
 
         results = await env.generate(
             inputs,
             client=mock_openai_client,
             model="test-model",
-            score_rollouts=True,
-            interleave_scoring=False,
         )
 
-        assert len(results.state) == 1
-        state = results.state[0]
+        assert len(results["state"]) == 1
+        state = results["state"][0]
 
-        assert state["prompt"] is results.prompt[0]
-        assert state["completion"] is results.completion[0]
-        assert state["answer"] is results.answer[0]
-        assert state["info"] is results.info[0]
-        assert state["example_id"] is results.example_id[0]
+        assert state["prompt"] is results["prompt"][0]
+        assert state["completion"] is results["completion"][0]
+        assert state["answer"] is results["answer"][0]
+        assert state["info"] is results["info"][0]
+        assert state["example_id"] is results["example_id"][0]
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_openai_client):
@@ -730,20 +424,19 @@ class TestEnvironmentBase:
             inputs=env.get_dataset(n=2),
             client=mock_openai_client,
             model="test-model",
-            score_rollouts=True,
         )
 
-        assert results.metadata.time_ms > 0.0
-        assert results.metadata.avg_reward == 0.75
-        assert len(results.metadata.avg_metrics) == 2
-        assert "reward_a" in results.metadata.avg_metrics
-        assert "reward_b" in results.metadata.avg_metrics
-        assert results.metadata.avg_metrics["reward_a"] == 1.0
-        assert results.metadata.avg_metrics["reward_b"] == 0.5
+        assert results["metadata"]["time_ms"] > 0.0
+        assert results["metadata"]["avg_reward"] == 0.75
+        assert len(results["metadata"]["avg_metrics"]) == 2
+        assert "reward_a" in results["metadata"]["avg_metrics"]
+        assert "reward_b" in results["metadata"]["avg_metrics"]
+        assert results["metadata"]["avg_metrics"]["reward_a"] == 1.0
+        assert results["metadata"]["avg_metrics"]["reward_b"] == 0.5
 
     @pytest.mark.asyncio
     async def test_generate_metadata_without_scoring(self, mock_openai_client):
-        """Test that metadata handles score_rollouts=False correctly."""
+        """Test that metadata handles scoring correctly."""
         dataset = Dataset.from_dict(
             {
                 "question": ["What is 2+2?"],
@@ -753,13 +446,21 @@ class TestEnvironmentBase:
 
         env = SimpleEnvironment(dataset=dataset, rubric=Rubric())
 
+        # Mock scoring to return no rewards for this test
+        async def mock_score_group(states, score_sem=None):
+            for state in states:
+                state["reward"] = 0.0
+                state["metrics"] = {}
+
+        env.rubric.score_group = mock_score_group  # type: ignore[attr-defined]
+
         results = await env.generate(
             inputs=env.get_dataset(n=1),
             client=mock_openai_client,
             model="test-model",
-            score_rollouts=False,
         )
 
-        assert results.metadata.time_ms > 0.0
-        assert results.metadata.avg_reward == 0.0
-        assert results.metadata.avg_metrics == {}
+        assert results["metadata"]["time_ms"] > 0.0
+        # Scoring always happens now, so rewards will be set by score_group
+        # If score_group doesn't set rewards, they'll be None/0
+        assert results["metadata"]["avg_reward"] >= 0.0

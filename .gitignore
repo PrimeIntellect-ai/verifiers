@@ -28,6 +28,9 @@ docs/build/
 *.pyd
 *.pyc
 
+# libraries
+prime-rl
+
 # outputs
 wandb/
 /outputs/

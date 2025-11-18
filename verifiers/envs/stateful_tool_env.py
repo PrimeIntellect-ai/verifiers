@@ -4,13 +4,12 @@ from typing import Callable
 
 from openai.types.chat import ChatCompletionFunctionToolParam
 
-from verifiers.envs.tool_env import ToolEnv
-from verifiers.types import Message, Messages, State
+import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
-class StatefulToolEnv(ToolEnv):
+class StatefulToolEnv(vf.ToolEnv):
     def __init__(
         self,
         tools: list[Callable] | None = None,
@@ -77,8 +76,8 @@ class StatefulToolEnv(ToolEnv):
         self,
         tool_name: str,
         tool_args: dict,
-        messages: Messages,
-        state: State,
+        messages: vf.Messages,
+        state: vf.State,
         **kwargs,
     ) -> dict:
         """Update tool arguments and/or state (in-place) based on messages and state."""
@@ -86,7 +85,7 @@ class StatefulToolEnv(ToolEnv):
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> Message:
+    ) -> vf.Message:
         """Call a tool based on JSON command."""
         try:
             tool_func = self.tool_map[tool_name]
@@ -104,8 +103,8 @@ class StatefulToolEnv(ToolEnv):
             }
 
     async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> tuple[Messages, State]:
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
         assert isinstance(messages, list)
         assert "tool_calls" in messages[-1]
         tool_messages = []
@@ -118,8 +117,8 @@ class StatefulToolEnv(ToolEnv):
             tool_args = self.update_tool_args(
                 tool_name, tool_args, messages, state, **kwargs
             )
-            tool_message: Message = await self.call_tool(
+            tool_message: vf.Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
             )
             tool_messages.append(tool_message)
-        return tool_messages, state
+        return tool_messages

@@ -40,7 +40,7 @@ class Batch(BaseModel):
     rewards_dict: dict[str, list[float]] = Field(default_factory=dict)
 
 
-class Generator:
+class Orchestrator:
     """
     Manages asynchronous batch generation in parallel with RL training.
     """
@@ -218,52 +218,44 @@ class Generator:
         start_time = time.time()
         batch_ds = self.get_dataset_slice(batch_id)
         repeated_ds = batch_ds.repeat(self.rollouts_per_example)
-        env_results = await self.env.a_generate(
+        env_results = await self.env.generate(
             repeated_ds,
             client=self.client,
             model=self.model_name,
             sampling_args=self.sampling_args,
-            score_rollouts=True,
             max_concurrent=self.max_concurrent,
         )
         self.is_generating = False
         wall_clock_s = time.time() - start_time
 
-        processed_results = self.env.process_env_results_vllm(
-            prompts=env_results.prompt,
-            completions=env_results.completion,
-            states=env_results.state,
-            rewards=env_results.reward,
-            processing_class=self.processing_class,
-            max_seq_len=self.max_seq_len,
-            mask_env_responses=self.mask_env_responses,
-            mask_truncated_completions=self.mask_truncated_completions,
-            zero_truncated_completions=self.zero_truncated_completions,
-        )
+        # process trajectories horizontally - each step becomes a separate training example
+        prompt_ids: list[list[int]] = []
+        prompt_mask: list[list[int]] = []
+        completion_ids: list[list[int]] = []
+        completion_mask: list[list[int]] = []
+        completion_logprobs: list[list[float]] = []
+        advantages: list[float] = []
 
-        rewards_dict = {"reward": processed_results.rewards}
-        for k in env_results.metrics:
-            rewards_dict[k] = env_results.metrics[k]
+        for state in env_results["state"]:
+            trajectory = state["trajectory"]
+            for step in trajectory:
+                tokens = step["tokens"]
+                assert tokens is not None
+                prompt_ids.append(tokens["prompt_ids"])
+                prompt_mask.append(tokens["prompt_mask"])
+                completion_ids.append(tokens["completion_ids"])
+                completion_mask.append(tokens["completion_mask"])
+                completion_logprobs.append(tokens["completion_logprobs"])
+                advantages.append(step["advantage"])
 
-        rewards: list[float] = processed_results.rewards
-        advantages: list[float] = [0.0] * len(rewards)
-        prompts_in_batch = len(batch_ds)
-        for prompt_idx in range(prompts_in_batch):
-            group_indices = [
-                prompt_idx + k * prompts_in_batch
-                for k in range(self.rollouts_per_example)
-                if (prompt_idx + k * prompts_in_batch) < len(rewards)
-            ]
-            if not group_indices:
-                continue
-            group = [rewards[i] for i in group_indices]
-            gmean = sum(group) / float(len(group))
-            for idx, r in zip(group_indices, group):
-                advantages[idx] = r - gmean
+        # Build rewards_dict from rollout-level data (for logging only)
+        rewards_dict = {"reward": env_results["reward"]}
+        for k in env_results["metrics"]:
+            rewards_dict[k] = env_results["metrics"][k]
 
         metrics_dict = {}
-        if rewards:
-            rewards_arr = np.asarray(rewards, dtype=np.float32)
+        if env_results["reward"]:
+            rewards_arr = np.asarray(env_results["reward"], dtype=np.float32)
             metrics_dict["reward"] = float(rewards_arr.mean())
             metrics_dict["reward/std"] = float(rewards_arr.std())
 
@@ -271,19 +263,21 @@ class Generator:
             adv_arr = np.asarray(advantages, dtype=np.float32)
             metrics_dict["advantage/absmean"] = float(np.abs(adv_arr).mean())
 
-        for reward_name, values in env_results.metrics.items():
+        for reward_name, values in rewards_dict.items():
+            if reward_name == "reward":
+                continue
             if len(values) == 0:
                 continue
             reward_values = np.asarray(values, dtype=np.float32)
             metrics_dict[f"reward/{reward_name}"] = float(reward_values.mean())
 
-        completion_lengths = [len(ids) for ids in processed_results.completion_ids]
+        completion_lengths = [len(ids) for ids in completion_ids]
         if completion_lengths:
             completion_lengths_arr = np.asarray(completion_lengths, dtype=np.float32)
             metrics_dict["tokens/completion"] = float(completion_lengths_arr.mean())
 
             completion_mask_lengths = np.asarray(
-                [sum(mask) for mask in processed_results.completion_mask],
+                [sum(mask) for mask in completion_mask],
                 dtype=np.float32,
             )
             valid_tokens = completion_mask_lengths.sum()
@@ -295,7 +289,7 @@ class Generator:
         generation_ms: list[float] = []
         scoring_ms: list[float] = []
         total_ms: list[float] = []
-        for state in env_results.state:
+        for state in env_results["state"]:
             timing = state.get("timing", {})
             if "generation_ms" in timing:
                 generation_ms.append(float(timing["generation_ms"]))
@@ -314,7 +308,7 @@ class Generator:
         metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
 
         # build per-process microbatches
-        N = len(processed_results.rewards)
+        N = len(advantages)
         per_proc = N // self.num_processes
         microbatches: list[list[Microbatch]] = []
         items_per_process: list[int] = []
@@ -325,19 +319,10 @@ class Generator:
             proc_item_total = 0
             for s in range(ps, pe, self.micro_batch_size):
                 e = min(s + self.micro_batch_size, pe)
-                ids_chunk = [
-                    processed_results.prompt_ids[i]
-                    + processed_results.completion_ids[i]
-                    for i in range(s, e)
-                ]
-                mask_chunk = [
-                    processed_results.prompt_mask[i]
-                    + processed_results.completion_mask[i]
-                    for i in range(s, e)
-                ]
-                slogp_chunk = [
-                    [0.0] * len(processed_results.prompt_mask[i])
-                    + processed_results.completion_logprobs[i]
+                ids_chunk = [prompt_ids[i] + completion_ids[i] for i in range(s, e)]
+                mask_chunk = [prompt_mask[i] + completion_mask[i] for i in range(s, e)]
+                logprobs_chunk = [
+                    [0.0] * len(prompt_mask[i]) + completion_logprobs[i]
                     for i in range(s, e)
                 ]
                 lengths = [len(mask) for mask in mask_chunk]
@@ -349,7 +334,7 @@ class Generator:
                 microbatch = Microbatch(
                     input_ids=ids_chunk,
                     loss_mask=mask_chunk,
-                    sampling_logprobs=slogp_chunk,
+                    sampling_logprobs=logprobs_chunk,
                     advantages=adv_chunk,
                     items=mb_items,
                 )
@@ -367,7 +352,7 @@ class Generator:
             global_item_count=global_item_count,
             generation_time=wall_clock_s,
             rewards_dict=rewards_dict,
-            completions=env_results.completion,
-            prompts=env_results.prompt,
+            completions=env_results["completion"],
+            prompts=env_results["prompt"],
             metrics_dict=metrics_dict,
         )

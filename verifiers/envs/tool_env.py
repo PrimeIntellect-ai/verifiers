@@ -1,13 +1,12 @@
 import json
-from typing import Any, Callable
+from typing import Callable
 
-from verifiers.envs.multiturn_env import MultiTurnEnv
-from verifiers.types import Message, Messages, State
+import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
-class ToolEnv(MultiTurnEnv):
+class ToolEnv(vf.MultiTurnEnv):
     def __init__(
         self,
         tools: list[Callable] | None = None,
@@ -40,20 +39,20 @@ class ToolEnv(MultiTurnEnv):
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map.pop(tool_name)
 
-    async def is_completed(
-        self, messages: Messages, state: State, **kwargs: Any
-    ) -> bool:
-        completed = await super().is_completed(messages, state, **kwargs)
-        assert isinstance(messages, list)
-        is_assistant_message = messages[-1]["role"] == "assistant"
+    @vf.stop
+    async def no_tools_called(self, state: vf.State) -> bool:
+        if len(state["trajectory"]) == 0:
+            return False
+        last_message = state["trajectory"][-1]["completion"][-1]
+        is_assistant_message = last_message["role"] == "assistant"
         no_tool_calls = (
-            "tool_calls" not in messages[-1] or messages[-1]["tool_calls"] is None
+            "tool_calls" not in last_message or last_message["tool_calls"] is None
         )
-        return completed or (is_assistant_message and no_tool_calls)
+        return is_assistant_message and no_tool_calls
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> Message:
+    ) -> vf.Message:
         """Call a tool based on JSON command."""
         try:
             tool_func = self.tool_map[tool_name]
@@ -71,19 +70,23 @@ class ToolEnv(MultiTurnEnv):
             }
 
     async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> tuple[Messages, State]:
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
         assert isinstance(messages, list)
         assert "tool_calls" in messages[-1]
         tool_messages = []
         for tool_call in messages[-1]["tool_calls"]:
             tool_name: str = tool_call.get("function", {}).get("name", "")
-            tool_args: dict = json.loads(
-                tool_call.get("function", {}).get("arguments", "")
-            )
+            try:
+                tool_args: dict = json.loads(
+                    tool_call.get("function", {}).get("arguments", "")
+                )
+            except Exception as e:
+                self.logger.error(f"Error parsing tool arguments: {e}")
+                tool_args = {}
             tool_call_id: str = tool_call.get("id", "")
-            tool_message: Message = await self.call_tool(
+            tool_message: vf.Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
             )
             tool_messages.append(tool_message)
-        return tool_messages, state
+        return tool_messages
