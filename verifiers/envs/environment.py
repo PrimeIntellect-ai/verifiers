@@ -532,19 +532,34 @@ class Environment(ABC):
         **kwargs,
     ) -> list[State]:
         """Generate and score one group."""
-        rollout_tasks = [
-            self.run_rollout(
-                gen_sem,
-                input,
-                client,
-                model,
-                gen_sampling_args,
+        try:
+            rollout_tasks = [
+                self.run_rollout(
+                    gen_sem,
+                    input,
+                    client,
+                    model,
+                    gen_sampling_args,
+                )
+                for input in group_inputs
+            ]
+            group_states = await asyncio.gather(*rollout_tasks)
+            await self.rubric.score_group(group_states, score_sem=score_sem)
+            return list(group_states)
+        except Exception as e:
+            dummy_state = State(
+                prompt=[{"role": "user", "content": "Error: {e}"}],
+                completion=[{"role": "assistant", "content": f"Error: {e}"}],
+                stop_condition=None,
+                is_completed=True,
+                oai_tools=[],
+                trajectory=[],
+                reward=-1,
+                advantage=None,
+                metrics=None,
+                timing=None,
             )
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
-        await self.rubric.score_group(group_states, score_sem=score_sem)
-        return list(group_states)
+            return [dummy_state] * len(group_inputs)
 
     def _prepare_rollout_results(
         self,
