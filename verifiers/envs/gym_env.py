@@ -1,11 +1,20 @@
 from __future__ import annotations
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple, Union
+
 from datasets import Dataset
 from pathlib import Path
 from openai import AsyncOpenAI, OpenAI
+
 from verifiers.envs.environment import Environment
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, State, SamplingArgs, ChatMessage, MessageType
+from verifiers.types import (
+    Messages,
+    State,
+    SamplingArgs,
+    ChatMessage,
+    MessageType,
+    RolloutInput,
+)
 
 # ---------- Protocol: anything with reset/step ----------
 ResetOut = Union[Any, Tuple[Any, Dict[str, Any]]]
@@ -65,6 +74,7 @@ def _default_eval_ds(message_type: str) -> Dataset:
                 "example_id": [0],
             }
         )
+    # chat: prompt is not used, but Environment requires something
     return Dataset.from_dict(
         {
             "prompt": [[]],
@@ -80,11 +90,12 @@ def _default_eval_ds(message_type: str) -> Dataset:
 class GymEnv(Environment):
     """
     Wrap any env that follows the `step`/`reset` API.
+
     Subclass and override `obs_to_text` if your env observations aren't already strings.
 
     Extras:
     - eval_runner: optional user-provided function that fully controls evaluation.
-      Signature mirrors Environment.evaluate; if set, GymEnv delegates to it.
+      Signature mirrors `Environment.evaluate`; if set, GymEnv delegates to it.
       If not set, GymEnv uses the default dataset-based evaluation with a small
       quality-of-life tweak: when using the built-in 1-row dummy eval dataset,
       passing num_examples=N behaves like “run N episodes” (i.e., it maps to
@@ -144,6 +155,16 @@ class GymEnv(Environment):
             "Non-string observation; override obs_to_text() in your subclass."
         )
 
+    # --- internal helper for prompt construction ---
+    def _build_initial_prompt(self, obs_text: str) -> list[ChatMessage]:
+        msgs: list[ChatMessage] = []
+        if self.system_prompt:
+            msgs.append({"role": "system", "content": self.system_prompt})
+        if self.few_shot:
+            msgs.extend(self.few_shot)
+        msgs.append({"role": "user", "content": obs_text})
+        return msgs
+
     # --- setup plumbing ---
     def _maybe_setup(self) -> None:
         if self._did_setup:
@@ -167,9 +188,7 @@ class GymEnv(Environment):
         self._history_chat = []
         self._history_text = ""
         if self.message_type == "chat":
-            self._history_chat = self.format_prompt(
-                self.obs_to_text(obs), self.system_prompt, self.few_shot
-            )
+            self._history_chat = self._build_initial_prompt(self.obs_to_text(obs))
         else:
             # for completion mode, callers can seed a non-empty prompt via eval_dataset; otherwise we start empty
             self._history_text = ""
@@ -188,52 +207,67 @@ class GymEnv(Environment):
             )
         return obs, reward, term, trunc, info
 
-    # --- verifiers rollout ---
+    # -------- Environment API: state setup --------
+    async def setup_state(self, state: State) -> State:
+        """
+        GymEnv doesn't need extra state wiring beyond what init_state() does.
+        Override if you want to inject env-specific info into state.
+        """
+        return state
+
+    # -------- Environment API: rollout --------
     async def rollout(
         self,
+        input: RolloutInput,
         client: AsyncOpenAI,
         model: str,
-        prompt: Messages,
-        completion: Messages | None = None,
-        answer: str = "",
-        state: State = {},
-        task: str = "default",
-        info: Dict[str, Any] | None = None,
-        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
-        **kwargs,
-    ) -> tuple[Messages, State]:
-        if self.last_obs is None or self.terminated or self.truncated or self.t == 0:
-            self.reset()
+    ) -> State:
+        """
+        Run a single RL episode as one rollout.
+
+        We ignore `input["prompt"]` for dynamics; the Gym env itself is the task.
+        We still respect the Environment pipeline (init_state, rubric scoring, etc.).
+        """
+        # Initialize State from RolloutInput
+        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.setup_state(state)
+        state.setdefault("responses", [])
+        state["completion"] = None
+
+        # Start a fresh episode every rollout
+        _, reset_info = self.reset()
+
+        input_dict = state["input"]
+        input_info = input_dict.get("info") if isinstance(input_dict, dict) else None
+        if isinstance(input_info, dict):
+            merged_info = {**input_info, "reset_info": reset_info}
+        else:
+            merged_info = {"reset_info": reset_info}
+        state["info"] = merged_info
 
         limit = self.max_episode_steps or getattr(
             self.env, "_max_episode_steps", 10_000
         )
-        state.setdefault("responses", [])
+
+        # Use the oai_tools resolved in init_state (info > env.oai_tools)
+        oai_tools = state.get("oai_tools")
 
         if self.message_type == "chat":
-            history: list[ChatMessage] = (
-                list(prompt)
-                if isinstance(prompt, list) and prompt
-                else list(self._history_chat)
-            )
-            comp_msgs: list[ChatMessage] = (
-                completion[:] if isinstance(completion, list) else []
-            )
+            history: list[ChatMessage] = list(self._history_chat)
             while not (self.terminated or self.truncated) and self.t < limit:
                 resp = await self.get_model_response(
                     client=client,
                     model=model,
                     prompt=history,
-                    oai_tools=(info or {}).get("oai_tools") if info else None,
-                    sampling_args=sampling_args,
-                    message_type=self.message_type,
+                    oai_tools=oai_tools,
+                    sampling_args=sampling_args or state.get("sampling_args"),
+                    message_type="chat",
                 )
                 assert resp is not None
                 text_out = resp.choices[0].message.content or ""  # type: ignore[attr-defined]
                 msg: ChatMessage = {"role": "assistant", "content": text_out}
                 history.append(msg)
-                comp_msgs.append(msg)
 
                 try:
                     action = self.action_parser(text_out)
@@ -254,29 +288,28 @@ class GymEnv(Environment):
                         "info": step_info,
                     }
                 )
+
+            # Expose history primarily for debugging/tests
             self._history_chat = list(history)
-            return comp_msgs, state
 
         else:
-            # completion mode
+            # completion mode: we only feed latest observation text as prompt
+
+            prompt_val = input.get("prompt", "")
             hist_text: str = (
-                prompt
-                if isinstance(prompt, str) and len(prompt) > 0
-                else self._history_text
+                prompt_val if isinstance(prompt_val, str) else self._history_text
             )
-            comp_text: str = completion if isinstance(completion, str) else ""
+            comp_text: str = ""
 
             while not (self.terminated or self.truncated) and self.t < limit:
-                # For completion mode, we feed only the latest observation text as the prompt.
-                # If caller wants accumulating prompts, they can subclass and override this method.
                 prompt_text = self.obs_to_text(self.last_obs)
                 resp = await self.get_model_response(
                     client=client,
                     model=model,
                     prompt=prompt_text,
                     oai_tools=None,
-                    sampling_args=sampling_args,
-                    message_type=self.message_type,
+                    sampling_args=sampling_args or state.get("sampling_args"),
+                    message_type="completion",
                 )
                 assert resp is not None
                 text_out = resp.choices[0].text or ""  # type: ignore[attr-defined]
@@ -303,17 +336,17 @@ class GymEnv(Environment):
                 )
                 hist_text = prompt_text  # next turn uses latest obs only
             self._history_text = hist_text
-            if self.message_type == "completion":
-                joined = "\n".join(
-                    [r["text"] for r in state.get("responses", []) if "text" in r]
-                )
-                return joined, state
-            return comp_text, state
+
+            if comp_text:
+                state["completion"] = comp_text
+
+        # Reward is computed later by rubric.score_group from state["responses"]
+        return state
 
     # expose read-only history for convenience/tests
     @property
     def history(self) -> Messages:
-        return self._history_chat if self.message_type == "chat" else ""
+        return self._history_chat if self.message_type == "chat" else self._history_text
 
     # -------- Customizable evaluation layer --------
     async def evaluate(
@@ -323,13 +356,12 @@ class GymEnv(Environment):
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
-        score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
-        interleave_scoring: bool = True,
-        results_path: "Path | None" = None,
-        state_columns: "list[str] | None" = None,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
         save_every: int = -1,
         **kwargs,
     ):
@@ -340,8 +372,8 @@ class GymEnv(Environment):
         num_examples=1 (explicit RPE still wins). Also clamp metadata
         num_examples to the actual count used for non-dummy datasets.
         """
+        # Full delegation if user supplied their own evaluation runner
         if self._eval_runner is not None:
-            # Let user fully own evaluation. We pass through all args.
             maybe = self._eval_runner(
                 self,
                 client=client,
@@ -349,13 +381,12 @@ class GymEnv(Environment):
                 sampling_args=sampling_args,
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
-                score_rollouts=score_rollouts,
                 max_concurrent=max_concurrent,
                 max_concurrent_generation=max_concurrent_generation,
                 max_concurrent_scoring=max_concurrent_scoring,
-                interleave_scoring=interleave_scoring,
                 results_path=results_path,
                 state_columns=state_columns,
+                save_results=save_results,
                 save_every=save_every,
                 **kwargs,
             )
@@ -390,13 +421,12 @@ class GymEnv(Environment):
             sampling_args=sampling_args,
             num_examples=mapped_ne,
             rollouts_per_example=mapped_rpe,
-            score_rollouts=score_rollouts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
-            interleave_scoring=interleave_scoring,
             results_path=results_path,
             state_columns=state_columns,
+            save_results=save_results,
             save_every=save_every,
             **kwargs,
         )
@@ -407,7 +437,6 @@ class GymEnv(Environment):
                 # Always 1 unique example in dummy mode
                 results.metadata.num_examples = 1
             else:
-                # Clamp to the real dataset size if requested NE was larger
                 if mapped_ne < 0:
                     results.metadata.num_examples = ds_len
                 else:
@@ -424,13 +453,12 @@ class GymEnv(Environment):
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
-        score_rollouts: bool = True,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
-        interleave_scoring: bool = True,
-        results_path: "Path | None" = None,
-        state_columns: "list[str] | None" = None,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
         save_every: int = -1,
         **kwargs,
     ):
@@ -440,18 +468,17 @@ class GymEnv(Environment):
         if self._eval_runner is not None:
             maybe = self._eval_runner(
                 self,
-                client=client,  # pass through unchanged
+                client=client,
                 model=model,
                 sampling_args=sampling_args,
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
-                score_rollouts=score_rollouts,
                 max_concurrent=max_concurrent,
                 max_concurrent_generation=max_concurrent_generation,
                 max_concurrent_scoring=max_concurrent_scoring,
-                interleave_scoring=interleave_scoring,
                 results_path=results_path,
                 state_columns=state_columns,
+                save_results=save_results,
                 save_every=save_every,
                 **kwargs,
             )
@@ -492,13 +519,12 @@ class GymEnv(Environment):
             sampling_args=sampling_args,
             num_examples=mapped_ne,
             rollouts_per_example=mapped_rpe,
-            score_rollouts=score_rollouts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
-            interleave_scoring=interleave_scoring,
             results_path=results_path,
             state_columns=state_columns,
+            save_results=save_results,
             save_every=save_every,
             **kwargs,
         )

@@ -138,12 +138,12 @@ def test_basic_rollout_and_reward_sum(toy_env, eval_dataset, client):
     )
 
     res = env.evaluate_sync(client=client, model="mock")
-    st = res.state[0]
+    st = res["state"][0]
     steps = st.get("responses", [])
 
     # Return equals sum of per-step rewards (rubric responsibility).
     logged = sum(s.get("reward", 0.0) for s in steps)
-    assert res.reward == [pytest.approx(logged)]
+    assert res["reward"] == [pytest.approx(logged)]
 
     # Sanity: step records are well-formed and last step has boolean flags.
     assert all(isinstance(s.get("reward", 0.0), (int, float)) for s in steps)
@@ -188,12 +188,12 @@ def test_invalid_parse_truncates(toy_env, eval_dataset, client):
         num_examples=1,
         rollouts_per_example=1,
     )
-    st = res.state[0]
+    st = res["state"][0]
     steps = st.get("responses", [])
 
     # If a parse error happens immediately, there may be zero steps.
     # Either way, reward should be zero and an error should be logged.
-    assert res.reward == [0.0]
+    assert res["reward"] == [0.0]
     assert any("action_parse_error" in err for err in st.get("errors", []))
 
     # If any step was logged before truncation, last step must show truncated flag.
@@ -306,7 +306,7 @@ def test_respects_max_episode_steps(eval_dataset, client):
         max_episode_steps=3,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res.state[0]
+    st = res["state"][0]
     steps = st.get("responses", [])
     assert len(steps) == 3
     # Flags are present and boolean
@@ -368,7 +368,7 @@ def test_five_tuple_step_normalization(eval_dataset, client):
         eval_dataset=eval_dataset,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res.state[0]
+    st = res["state"][0]
     steps = st.get("responses", [])
     assert steps[-1].get("terminated", False) is True
     assert steps[-1].get("truncated", False) is False
@@ -470,9 +470,9 @@ def test_dummy_eval_num_examples_maps_to_rollouts(eval_dataset, client):
     )
     res = env.evaluate_sync(client=client, model="mock", num_examples=5)
     # Should have run 5 rollouts of the single example
-    assert len(res.state) == 5
-    assert res.metadata.num_examples == 1
-    assert res.metadata.rollouts_per_example == 5
+    assert len(res["state"]) == 5
+    assert res["metadata"]["num_examples"] == 1
+    assert res["metadata"]["rollouts_per_example"] == 5
 
 
 def test_dummy_eval_explicit_rollouts_wins(eval_dataset, client):
@@ -488,9 +488,9 @@ def test_dummy_eval_explicit_rollouts_wins(eval_dataset, client):
     res = env.evaluate_sync(
         client=client, model="mock", num_examples=10, rollouts_per_example=3
     )
-    assert len(res.state) == 3
-    assert res.metadata.num_examples == 1
-    assert res.metadata.rollouts_per_example == 3
+    assert len(res["state"]) == 3
+    assert res["metadata"]["num_examples"] == 1
+    assert res["metadata"]["rollouts_per_example"] == 3
 
 
 def test_non_dummy_eval_no_mapping(client):
@@ -515,6 +515,6 @@ def test_non_dummy_eval_no_mapping(client):
     )
     # Ask for more examples than exist; Environment caps to len(dataset)=2
     res = env.evaluate_sync(client=client, model="mock", num_examples=5)
-    assert len(res.state) == 2
-    assert res.metadata.num_examples == 2
-    assert res.metadata.rollouts_per_example == 1
+    assert len(res["state"]) == 2
+    assert res["metadata"]["num_examples"] == 2
+    assert res["metadata"]["rollouts_per_example"] == 1
