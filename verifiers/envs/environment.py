@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, AsyncContextManager, Literal
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -223,11 +227,6 @@ class Environment(ABC):
     def get_reward_weights(self) -> list[float]:
         return self.rubric.get_reward_weights()
 
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-    )
     async def get_model_response(
         self,
         client: AsyncOpenAI,
@@ -288,18 +287,36 @@ class Environment(ABC):
                     }
 
                 if oai_tools:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,  # type: ignore
-                        tools=oai_tools,
-                        **clean_sampling_args,
+
+                    @retry(
+                        reraise=True,
+                        stop=stop_after_attempt(5),
+                        wait=wait_random_exponential(multiplier=1, min=10, max=60),
                     )
+                    async def get_response():
+                        return await client.chat.completions.create(
+                            model=model,
+                            messages=prompt,  # type: ignore
+                            tools=oai_tools,
+                            **clean_sampling_args,
+                        )
+
+                    response = await get_response()
                 else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,  # type: ignore
-                        **clean_sampling_args,
+
+                    @retry(
+                        reraise=True,
+                        stop=stop_after_attempt(5),
+                        wait=wait_random_exponential(multiplier=1, min=10, max=60),
                     )
+                    async def get_response():
+                        return await client.chat.completions.create(
+                            model=model,
+                            messages=prompt,  # type: ignore
+                            **clean_sampling_args,
+                        )
+
+                    response = await get_response()
                 return response
             elif message_type == "completion":
                 if oai_tools:
@@ -307,9 +324,20 @@ class Environment(ABC):
                         "oai_tools are not supported for completion tasks."
                     )
                 assert isinstance(prompt, str)
-                response = await client.completions.create(
-                    model=model, prompt=prompt, **clean_sampling_args
+
+                @retry(
+                    reraise=True,
+                    stop=stop_after_attempt(5),
+                    wait=wait_random_exponential(multiplier=1, min=10, max=60),
                 )
+                async def get_response():
+                    return await client.completions.create(
+                        model=model,
+                        prompt=prompt,
+                        **clean_sampling_args,
+                    )
+
+                response = await get_response()
                 return response
         except Exception as e:
             # in case of making a request with an overlong prompt, e.g from a too-long
