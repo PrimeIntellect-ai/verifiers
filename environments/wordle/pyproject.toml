@@ -2,9 +2,9 @@
 name = "wordle"
 description = "Game environment for Wordle, built on top of TextArena"
 tags = ["textarena", "multi-turn", "reasoning", "game", "train", "eval"]
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
-    "verifiers>=0.1.5.post0",
+    "verifiers>=0.1.8",
     "nltk",
     "textarena",
 ]
