@@ -5,7 +5,7 @@ tags = ["placeholder-tag", "train", "eval"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.7.post0",
+    "verifiers",
 ]
 
 [build-system]
@@ -18,3 +18,6 @@ include = ["http_mcp_env.py", "pyproject.toml"]
 [tool.verifiers.eval]
 num_examples = 5
 rollouts_per_example = 3
+
+[tool.uv.sources]
+verifiers = { path = "../../../../" }

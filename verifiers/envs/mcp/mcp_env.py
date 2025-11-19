@@ -159,9 +159,29 @@ class MCPEnv(vf.StatefulToolEnv):
         server_name: str,
         transport: MCPTransport
     ):
+        """Register tools from an MCP transport, bypassing convert_func_to_oai_tool validation."""
         for tool in transport.tools.values():
             wrapper = MCPToolWrapper(server_name, tool, transport)
-            self.add_tool(wrapper, args_to_skip=[])
+
+            # Manually register without going through add_tool()
+            # This avoids convert_func_to_oai_tool() which enforces strict schema validation
+            self.tools.append(wrapper)
+
+            # Use wrapper's to_oai_tool() which has schema cleaning
+            oai_tool = wrapper.to_oai_tool()
+
+            if self.oai_tools is None:
+                self.oai_tools = []
+            self.oai_tools.append(oai_tool)
+
+            # Register in tool_map
+            tool_name = wrapper.__name__
+            self.tool_map[tool_name] = wrapper
+
+            # Also track skipped args (empty for MCP tools)
+            if not hasattr(self, 'skipped_args'):
+                self.skipped_args = {}
+            self.skipped_args[tool_name] = []
 
     async def setup_session_connections(self):
         for config in self.mcp_servers:
@@ -179,6 +199,10 @@ class MCPEnv(vf.StatefulToolEnv):
 
     async def setup_state(self, state: State, **kwargs) -> State:
         state = await super().setup_state(state, **kwargs)
+
+        if self.oai_tools:
+            state["info"]["oai_tools"] = self.oai_tools
+
 
         if self.connection_scope == "session":
             if not self.session_transports:
@@ -201,6 +225,9 @@ class MCPEnv(vf.StatefulToolEnv):
                 await self.register_tools_from_transport(config.name, transport)
 
             state["mcp_transports"] = rollout_transports
+
+        if self.oai_tools:
+            state["info"]["oai_tools"] = self.oai_tools
 
         return state
 
