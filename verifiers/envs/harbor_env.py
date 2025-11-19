@@ -40,6 +40,7 @@ class HarborEnv(SandboxEnv):
         cpu_cores: int = 2,
         memory_gb: int = 4,
         disk_size_gb: int = 10,
+        working_dir: str | None = "/app",
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path) if dataset_path else None
@@ -48,6 +49,9 @@ class HarborEnv(SandboxEnv):
         self.cpu_cores = cpu_cores
         self.memory_gb = memory_gb
         self.disk_size_gb = disk_size_gb
+        # Set working_dir to /app by default (matches typical Dockerfile WORKDIR)
+        # This prevents agents from accidentally modifying /oracle or /tests
+        self.working_dir = working_dir
 
         dataset = self._load_harbor_dataset()
         rubric = vf.Rubric(funcs=[self.harbor_reward], weights=[1.0])
@@ -77,11 +81,9 @@ class HarborEnv(SandboxEnv):
             if not task_dir.is_dir():
                 continue
 
-            # Filter by task names if specified
             if self.task_names and task_dir.name not in self.task_names:
                 continue
 
-            # Check for required files
             task_toml = task_dir / "task.toml"
             instruction_md = task_dir / "instruction.md"
 
@@ -91,14 +93,11 @@ class HarborEnv(SandboxEnv):
                 )
                 continue
 
-            # Load task config
             with open(task_toml, "rb") as f:
                 config = tomli.load(f)
 
-            # Load instruction
             instruction = instruction_md.read_text().strip()
 
-            # Check for docker_image in config
             docker_image = config.get("environment", {}).get("docker_image")
             if not docker_image:
                 logger.warning(
@@ -107,7 +106,6 @@ class HarborEnv(SandboxEnv):
                 )
                 continue
 
-            # Create task entry
             task_entry = {
                 "example_id": len(tasks),
                 "task": task_dir.name,
@@ -127,7 +125,6 @@ class HarborEnv(SandboxEnv):
 
         logger.info(f"Loaded {len(tasks)} Harbor tasks from {self.dataset_path}")
 
-        # Convert to HuggingFace Dataset
         return Dataset.from_list(tasks)
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
@@ -135,7 +132,6 @@ class HarborEnv(SandboxEnv):
         Creates the sandbox, uploads solution and test files,
         and prepares the environment for the agent.
         """
-        # Get task info and update sandbox request BEFORE creating sandbox
         task_info = state.get("info", {})
         task_dir = Path(task_info.get("task_dir", ""))
         docker_image = task_info.get("docker_image")
@@ -144,19 +140,15 @@ class HarborEnv(SandboxEnv):
         if not task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {task_dir}")
 
-        # Update sandbox request with task-specific docker image
         if docker_image:
             self.sandbox_request.docker_image = docker_image
 
-        # Call parent setup to create sandbox (this will use updated docker_image)
         state = await super().setup_state(state, **kwargs)
 
-        # Get sandbox_id
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
             raise RuntimeError("Sandbox not created in parent setup_state")
 
-        # Wait for sandbox to be ready before uploading files
         await self.sandbox_client.wait_for_creation(sandbox_id)
 
         # Upload solution folder to /oracle
@@ -184,21 +176,18 @@ class HarborEnv(SandboxEnv):
         self, sandbox_id: str, local_dir: Path, remote_path: str
     ):
         """Upload a directory to the sandbox using tar."""
-        # Create tar file
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
 
         try:
-            # Create tar archive
             with tarfile.open(tar_path, "w:gz") as tar:
                 for item in local_dir.iterdir():
                     tar.add(item, arcname=item.name)
 
-            # Upload tar to sandbox (note: upload_file params are sandbox_id, remote_path, local_path)
+            # Upload tar to sandbox (upload_file params are sandbox_id, remote_path, local_path)
             remote_tar = f"/tmp/upload_{local_dir.name}.tar.gz"
             await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
 
-            # Extract in sandbox
             await self.bash(
                 f"mkdir -p {remote_path} && tar -xzf {remote_tar} -C {remote_path} && rm {remote_tar}",
                 sandbox_id,
@@ -230,7 +219,6 @@ class HarborEnv(SandboxEnv):
             return 0.0
 
         try:
-            # Run test script
             logger.info(f"Running tests for task {state.get('task')}")
             result = await self.bash("cd /tests && bash test.sh", sandbox_id)
             logger.debug(f"Test script output: {result}")
@@ -256,7 +244,6 @@ class HarborEnv(SandboxEnv):
                 logger.info(f"Reward from reward.json: {reward_value}")
                 return reward_value
 
-            # No reward file found
             logger.warning(
                 f"No reward.txt or reward.json found for task {state.get('task')}"
             )

@@ -33,6 +33,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        working_dir: str | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -50,6 +51,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             team_id=team_id,
             advanced_configs=advanced_configs,
         )
+        self.working_dir = None  # Default working directory for bash commands
         self.active_sandboxes = set()
 
         # Install handlers for regular exception, sigint (Ctrl-C) and sigterm (standard termination signal)
@@ -76,8 +78,15 @@ class SandboxEnv(vf.StatefulToolEnv):
         )  # wait for sandbox to be created
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
-        self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
-        results = await self.sandbox_client.execute_command(sandbox_id, command)
+        # Execute command with optional working directory
+        if self.working_dir:
+            self.logger.debug(f"Executing command in {self.working_dir}: {command}")
+            results = await self.sandbox_client.execute_command(
+                sandbox_id, command, working_dir=self.working_dir
+            )
+        else:
+            self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
+            results = await self.sandbox_client.execute_command(sandbox_id, command)
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
