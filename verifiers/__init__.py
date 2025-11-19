@@ -12,6 +12,7 @@ from .envs.multiturn_env import MultiTurnEnv
 from .envs.singleturn_env import SingleTurnEnv
 from .envs.stateful_tool_env import StatefulToolEnv
 from .envs.tool_env import ToolEnv
+from .envs.mcp.mcp_env import MCPEnv
 from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.parser import Parser
 from .parsers.think_parser import ThinkParser
@@ -85,6 +86,7 @@ __all__ = [
     "SandboxEnv",
     "StatefulToolEnv",
     "ToolEnv",
+    "MCPEnv",
     "EnvGroup",
     "extract_boxed_answer",
     "extract_hash_answer",
@@ -116,6 +118,7 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
+    "MCPEnv": "verifiers.envs.mcp.mcp_env:MCPEnv",
 }
 
 
@@ -137,6 +140,7 @@ if TYPE_CHECKING:
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.mcp.mcp_env import MCPEnv  # noqa: F401
     from .rl.trainer import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,
