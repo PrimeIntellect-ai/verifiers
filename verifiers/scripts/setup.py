@@ -6,11 +6,9 @@ import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
 PRIME_RL_REPO = "primeintellect-ai/prime-rl"
-PRIME_RL_COMMIT = (
-    "main"  # Commit hash, branch name, or tag to use for installed prime-rl version
-)
+PRIME_RL_COMMIT = "will/trajectories"  # Commit hash, branch name, or tag to use for installed prime-rl version
 PRIME_RL_INSTALL_SCRIPT_REF = (
-    "main"  # Ref to use for fetching the install script itself
+    "will/trajectories"  # Ref to use for fetching the install script itself
 )
 
 ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/main/configs/endpoints.py"
