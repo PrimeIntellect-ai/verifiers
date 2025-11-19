@@ -33,7 +33,6 @@ class SandboxEnv(vf.StatefulToolEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
-        working_dir: str | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -51,7 +50,6 @@ class SandboxEnv(vf.StatefulToolEnv):
             team_id=team_id,
             advanced_configs=advanced_configs,
         )
-        self.working_dir = None  # Default working directory for bash commands
         self.active_sandboxes = set()
 
         # Install handlers for regular exception, sigint (Ctrl-C) and sigterm (standard termination signal)
@@ -67,9 +65,11 @@ class SandboxEnv(vf.StatefulToolEnv):
             signal.SIGTERM, lambda _, __: (self.cleanup_sandboxes(), exit(143))
         )
 
-        self.add_tool(self.bash, args_to_skip=["sandbox_id"])
+        self.add_tool(self.bash, args_to_skip=["sandbox_id", "working_dir"])
 
-    async def bash(self, command: str, sandbox_id: str) -> str:
+    async def bash(
+        self, command: str, sandbox_id: str, working_dir: str | None = None
+    ) -> str:
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
         s = time.time()
@@ -79,10 +79,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
         # Execute command with optional working directory
-        if self.working_dir:
-            self.logger.debug(f"Executing command in {self.working_dir}: {command}")
+        if working_dir:
+            self.logger.debug(f"Executing command in {working_dir}: {command}")
             results = await self.sandbox_client.execute_command(
-                sandbox_id, command, working_dir=self.working_dir
+                sandbox_id, command, working_dir=working_dir
             )
         else:
             self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
