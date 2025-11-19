@@ -6,24 +6,20 @@ import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
 PRIME_RL_REPO = "primeintellect-ai/prime-rl"
+VERIFIERS_COMMIT = "trajectories"
 PRIME_RL_COMMIT = "will/trajectories"  # Commit hash, branch name, or tag to use for installed prime-rl version
 PRIME_RL_INSTALL_SCRIPT_REF = (
     "will/trajectories"  # Ref to use for fetching the install script itself
 )
 
-ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/main/configs/endpoints.py"
+ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/endpoints.py"
 ENDPOINTS_DST = "configs/endpoints.py"
 
-ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/main/configs/zero3.yaml"
+ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
 ZERO3_DST = "configs/zero3.yaml"
 
 VERIFIERS_CONFIGS = [
     # (source_repo, source_path, dest_path)
-    (
-        VERIFIERS_REPO,
-        "configs/vf-rl/alphabet-sort.toml",
-        "configs/vf-rl/alphabet-sort.toml",
-    ),
     (
         VERIFIERS_REPO,
         "configs/vf-rl/gsm8k.toml",
