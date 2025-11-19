@@ -1,8 +1,11 @@
 from __future__ import annotations
+
+import asyncio
+import inspect
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple, Union
 
 from datasets import Dataset
-from pathlib import Path
 from openai import AsyncOpenAI, OpenAI
 
 from verifiers.envs.environment import Environment
@@ -14,13 +17,22 @@ from verifiers.types import (
     ChatMessage,
     MessageType,
     RolloutInput,
+    TrajectoryStep,
+)
+from verifiers.utils.response_utils import (
+    parse_response_messages,
+    parse_response_tokens,
 )
 
 # ---------- Protocol: anything with reset/step ----------
 ResetOut = Union[Any, Tuple[Any, Dict[str, Any]]]
 StepOut = Union[
     Tuple[
-        Any, float, bool, bool, Dict[str, Any]
+        Any,
+        float,
+        bool,
+        bool,
+        Dict[str, Any],
     ],  # (obs, reward, terminated, truncated, info)
     Tuple[Any, float, bool, Dict[str, Any]],  # (obs, reward, done, info)
 ]
@@ -38,6 +50,11 @@ def _normalize_reset(out: ResetOut) -> Tuple[Any, Dict[str, Any]]:
 
 
 def _normalize_step(out: StepOut) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+    if not isinstance(out, (tuple, list)):
+        raise TypeError(
+            "env.step(action) must return a tuple/list of length 4 or 5, got "
+            f"{type(out)}"
+        )
     if len(out) == 5:
         obs, reward, term, trunc, info = out
         return obs, float(reward), bool(term), bool(trunc), info
@@ -64,6 +81,12 @@ class EpisodicSumRubric(Rubric):
 
 # --- tiny helper to avoid forcing users to pass a dataset ---
 def _default_eval_ds(message_type: str) -> Dataset:
+    """
+    Built-in dummy eval dataset used when the user doesn't provide one.
+
+    We only ever use this to satisfy Environment's requirement that at least
+    one of (dataset, eval_dataset) is set; the contents do not drive dynamics.
+    """
     if message_type == "completion":
         return Dataset.from_dict(
             {
@@ -77,7 +100,7 @@ def _default_eval_ds(message_type: str) -> Dataset:
     # chat: prompt is not used, but Environment requires something
     return Dataset.from_dict(
         {
-            "prompt": [[]],
+            "prompt": [[]],  # shape matches chat-style prompts, but unused
             "answer": [""],
             "info": [{}],
             "task": ["default"],
@@ -86,76 +109,97 @@ def _default_eval_ds(message_type: str) -> Dataset:
     )
 
 
-# --- GymEnv ---
-class GymEnv(Environment):
+# ---------- GymBaseEnv: base class for RL-style env *runners* ----------
+class GymBaseEnv(Environment):
     """
-    Wrap any env that follows the `step`/`reset` API.
+    Base class for Gym-style RL environments driven by LLMs.
 
-    Subclass and override `obs_to_text` if your env observations aren't already strings.
+    Important: this class is a *runner*, just like Environment itself.
+    It does NOT hold per-rollout state. Each call to `rollout()` must be
+    self-contained and concurrency-safe.
 
-    Extras:
-    - eval_runner: optional user-provided function that fully controls evaluation.
-      Signature mirrors `Environment.evaluate`; if set, GymEnv delegates to it.
-      If not set, GymEnv uses the default dataset-based evaluation with a small
-      quality-of-life tweak: when using the built-in 1-row dummy eval dataset,
-      passing num_examples=N behaves like “run N episodes” (i.e., it maps to
-      rollouts_per_example=N under the hood).
+    You provide:
+      - an action_parser: str -> action
+      - an implementation of `_make_env(state) -> StepResetEnv`
+        which returns a fresh env instance per rollout
+      - optionally obs_to_text (or ensure your observations are strings)
+
+    Two usage patterns:
+
+    1. Wrap existing gym-like envs:
+       - use GymEnv(env_cls=SomeEnv, env_kwargs=...)
+       - maybe pass obs_to_text if obs are not strings
+
+    2. Verifiers-native RL envs:
+       - subclass GymBaseEnv
+       - implement `_make_env(self, state) -> StepResetEnv`
+         returning a tiny object with reset/step and internal state.
     """
 
     def __init__(
         self,
-        env: StepResetEnv,
         *,
         action_parser: Callable[[str], Any],
+        # optional datasets (verifiers-style)
+        dataset: Dataset | None = None,
+        eval_dataset: Dataset | None = None,
+        # if True and no dataset/eval_dataset given, create 1-row dummy eval dataset
+        auto_dummy_eval: bool = True,
         message_type: MessageType = "chat",
+        obs_to_text: Callable[[Any], str] | None = None,
         max_episode_steps: Optional[int] = None,
-        setup_fn: Optional[Callable[[StepResetEnv], None]] = None,
-        setup_kwargs: Optional[Dict[str, Any]] = None,
-        rubric: Optional[
-            Rubric
-        ] = None,  # you can override; defaults to EpisodicSumRubric
+        rubric: Optional[Rubric] = None,  # defaults to EpisodicSumRubric
         eval_runner: Optional[Callable[..., Any]] = None,
-        **env_kwargs,
+        **env_kwargs: Any,
     ):
         env_kwargs = dict(env_kwargs)
         env_kwargs["rubric"] = rubric or EpisodicSumRubric()
-
-        # Most Gym-style envs do not need an explicit dataset, as they already contain it
-        if "dataset" not in env_kwargs and "eval_dataset" not in env_kwargs:
-            env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
         env_kwargs["message_type"] = message_type
+
+        # Respect user-provided dataset/eval_dataset if given
+        if dataset is not None:
+            env_kwargs["dataset"] = dataset
+        if eval_dataset is not None:
+            env_kwargs["eval_dataset"] = eval_dataset
+
+        # If neither dataset nor eval_dataset, optionally inject dummy eval set
+        if (
+            auto_dummy_eval
+            and "dataset" not in env_kwargs
+            and "eval_dataset" not in env_kwargs
+        ):
+            env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
 
         super().__init__(**env_kwargs)
 
-        self.env = env
         self.action_parser = action_parser
         self.max_episode_steps = max_episode_steps
-        self._setup_fn = setup_fn
-        self._setup_kwargs = setup_kwargs or {}
-        self._did_setup = False
 
-        # optional custom evaluator
+        # optional custom evaluator (full override)
         self._eval_runner = eval_runner
 
-        self.t = 0
-        self.terminated = False
-        self.truncated = False
-        self.ep_return = 0.0
-        self.last_obs: Any = None
-        self.last_info: Dict[str, Any] = {}
-        self._history_chat: list[ChatMessage] = []
-        self._history_text: str = ""
+        # optional obs_to_text callback; if None, strings are accepted, others error
+        self._obs_to_text_fn: Callable[[Any], str] | None = obs_to_text
 
-    # --- subclass hook ---
+    # ----- hooks for concrete envs -----
     def obs_to_text(self, obs: Any) -> str:
-        """Convert env observation to a string for the chat transcript."""
+        """
+        Convert env observation to a string for the LLM.
+
+        Default behavior:
+          - if obs_to_text was passed in __init__, use it
+          - else if obs is str, return it
+          - else raise: user must define a mapping
+        """
+        if self._obs_to_text_fn is not None:
+            return self._obs_to_text_fn(obs)
         if isinstance(obs, str):
             return obs
         raise TypeError(
-            "Non-string observation; override obs_to_text() in your subclass."
+            "Non-string observation and no obs_to_text provided; "
+            "either pass obs_to_text=... in __init__ or override obs_to_text()."
         )
 
-    # --- internal helper for prompt construction ---
     def _build_initial_prompt(self, obs_text: str) -> list[ChatMessage]:
         msgs: list[ChatMessage] = []
         if self.system_prompt:
@@ -165,55 +209,116 @@ class GymEnv(Environment):
         msgs.append({"role": "user", "content": obs_text})
         return msgs
 
-    # --- setup plumbing ---
-    def _maybe_setup(self) -> None:
-        if self._did_setup:
-            return
-        if self._setup_fn:
-            self._setup_fn(self.env, **self._setup_kwargs)
-        elif hasattr(self.env, "setup") and callable(getattr(self.env, "setup")):
-            self.env.setup()  # type: ignore[attr-defined]
-        self._did_setup = True
+    # ---- abstract env factory ----
+    def _make_env(self, state: State | None = None) -> StepResetEnv:
+        """
+        Create a fresh env instance for a rollout.
 
-    # --- public step/reset (raw obs returned; text goes to chat only) ---
-    def reset(self, **kwargs) -> Tuple[Any, Dict[str, Any]]:
-        self._maybe_setup()
-        obs, info = _normalize_reset(self.env.reset(**kwargs))
-        self.t = 0
-        self.terminated = False
-        self.truncated = False
-        self.ep_return = 0.0
-        self.last_obs, self.last_info = obs, info
+        Must be implemented by subclasses (including GymEnv).
+        """
+        raise NotImplementedError
 
-        self._history_chat = []
-        self._history_text = ""
-        if self.message_type == "chat":
-            self._history_chat = self._build_initial_prompt(self.obs_to_text(obs))
-        else:
-            # for completion mode, callers can seed a non-empty prompt via eval_dataset; otherwise we start empty
-            self._history_text = ""
-        return obs, info
+    def _episode_limit_for_env(self, env: Any) -> int:
+        """
+        Determine maximum episode length given an env instance.
 
-    def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
-        obs, reward, term, trunc, info = _normalize_step(self.env.step(action))
-        self.t += 1
-        self.ep_return += reward
-        self.terminated, self.truncated = term, trunc
-        self.last_obs, self.last_info = obs, info
+        Preference order:
+          1. explicit self.max_episode_steps
+          2. env._max_episode_steps
+          3. env.spec.max_episode_steps (gym/gymnasium-style)
+          4. fallback 10_000
+        """
+        if self.max_episode_steps is not None:
+            return self.max_episode_steps
 
-        if self.message_type == "chat":
-            self._history_chat.append(
-                {"role": "user", "content": self.obs_to_text(obs)}
-            )
-        return obs, reward, term, trunc, info
+        limit = getattr(env, "_max_episode_steps", None)
+        if isinstance(limit, int) and limit > 0:
+            return limit
+
+        spec = getattr(env, "spec", None)
+        if spec is not None:
+            spec_limit = getattr(spec, "max_episode_steps", None)
+            if isinstance(spec_limit, int) and spec_limit > 0:
+                return spec_limit
+
+        return 10_000
 
     # -------- Environment API: state setup --------
     async def setup_state(self, state: State) -> State:
         """
-        GymEnv doesn't need extra state wiring beyond what init_state() does.
-        Override if you want to inject env-specific info into state.
+        GymBaseEnv doesn't need extra state wiring beyond what init_state() does.
+        Override if you want to inject env-specific info into state, e.g., using
+        dataset-provided metadata in state["input"]["info"] to configure reset().
         """
         return state
+
+    # ---- dummy-eval detection ----
+    def _is_dummy_eval_ds(self) -> bool:
+        """
+        Heuristic to detect the built-in dummy eval dataset we create via
+        _default_eval_ds(). We only treat that special case as "episodes mode".
+        """
+        try:
+            ds = self.get_eval_dataset(n=-1)
+        except Exception:
+            return False
+
+        if len(ds) != 1:
+            return False
+
+        cols = set(ds.column_names)
+        expected = {"prompt", "answer", "info", "task", "example_id"}
+        if not expected.issubset(cols):
+            return False
+
+        row = ds[0]
+        if row.get("task", "default") != "default":
+            return False
+        if row.get("example_id", 0) != 0:
+            return False
+
+        # prompt structure from _default_eval_ds
+        prompt = row.get("prompt")
+        if self.message_type == "completion":
+            if prompt != "":
+                return False
+        else:  # chat
+            if prompt != []:
+                return False
+
+        return True
+
+    async def _add_trajectory_step(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response,
+    ) -> TrajectoryStep | None:
+        """
+        Convert a raw model response into a TrajectoryStep and append to state.
+        Returns the step or None if overlong-prompt.
+        """
+        if response is not None and getattr(response, "id", None) == "overlong-prompt":
+            state["prompt_too_long"] = True
+            return None
+
+        completion_messages = await parse_response_messages(
+            response, self.message_type
+        )
+        tokens = await parse_response_tokens(
+            response, self.message_type, self.max_seq_len
+        )
+        step: TrajectoryStep = TrajectoryStep(
+            prompt=prompt_messages,
+            completion=completion_messages,
+            response=response,
+            tokens=tokens,
+            reward=None,
+            advantage=None,
+            extras={},
+        )
+        state["trajectory"].append(step)
+        return step
 
     # -------- Environment API: rollout --------
     async def rollout(
@@ -224,10 +329,11 @@ class GymEnv(Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         """
-        Run a single RL episode as one rollout.
+        Run a single RL episode as one rollout, using a *fresh* env instance
+        returned by `_make_env(state)`.
 
-        We ignore `input["prompt"]` for dynamics; the Gym env itself is the task.
-        We still respect the Environment pipeline (init_state, rubric scoring, etc.).
+        This is concurrency-safe: each async rollout gets its own env.
+        No per-rollout state is stored on self.
         """
         # Initialize State from RolloutInput
         state = await self.init_state(input, client, model, sampling_args)
@@ -235,9 +341,19 @@ class GymEnv(Environment):
         state.setdefault("responses", [])
         state["completion"] = None
 
-        # Start a fresh episode every rollout
-        _, reset_info = self.reset()
+        # Fresh env per rollout
+        env = self._make_env(state)
 
+        # Episode-local variables
+        t = 0
+        terminated = False
+        truncated = False
+
+        # Start episode
+        obs, reset_info = _normalize_reset(env.reset())
+        last_obs = obs
+
+        # Merge reset_info with existing input["info"]
         input_dict = state["input"]
         input_info = input_dict.get("info") if isinstance(input_dict, dict) else None
         if isinstance(input_info, dict):
@@ -246,63 +362,85 @@ class GymEnv(Environment):
             merged_info = {"reset_info": reset_info}
         state["info"] = merged_info
 
-        limit = self.max_episode_steps or getattr(
-            self.env, "_max_episode_steps", 10_000
-        )
+        limit = self._episode_limit_for_env(env)
 
         # Use the oai_tools resolved in init_state (info > env.oai_tools)
         oai_tools = state.get("oai_tools")
 
         if self.message_type == "chat":
-            history: list[ChatMessage] = list(self._history_chat)
-            while not (self.terminated or self.truncated) and self.t < limit:
+            history: list[ChatMessage] = []
+            if self.system_prompt:
+                history.append({"role": "system", "content": self.system_prompt})
+            if self.few_shot:
+                history.extend(self.few_shot)
+
+            # initial observation
+            history.append({"role": "user", "content": self.obs_to_text(last_obs)})
+
+            while not (terminated or truncated) and t < limit:
+                prompt_messages: Messages = list(history)
+
                 resp = await self.get_model_response(
                     client=client,
                     model=model,
-                    prompt=history,
+                    prompt=prompt_messages,
                     oai_tools=oai_tools,
                     sampling_args=sampling_args or state.get("sampling_args"),
                     message_type="chat",
                 )
                 assert resp is not None
+
+                step = await self._add_trajectory_step(state, prompt_messages, resp)
+                if step is None:
+                    # overlong prompt, bailout
+                    truncated = True
+                    break
+
+                # for action parsing, use the raw response content
                 text_out = resp.choices[0].message.content or ""  # type: ignore[attr-defined]
-                msg: ChatMessage = {"role": "assistant", "content": text_out}
-                history.append(msg)
+                history.append({"role": "assistant", "content": text_out})
 
                 try:
                     action = self.action_parser(text_out)
                 except Exception as e:
                     state.setdefault("errors", []).append(f"action_parse_error: {e}")
-                    self.truncated = True
+                    truncated = True
                     break
 
-                obs, reward, term, trunc, step_info = self.step(action)
+                obs, reward, term, trunc, step_info = _normalize_step(env.step(action))
+                t += 1
+                terminated, truncated = bool(term), bool(trunc)
+                last_obs = obs
+
+                # new observation as user message
+                history.append(
+                    {"role": "user", "content": self.obs_to_text(last_obs)}
+                )
+
                 state["responses"].append(
                     {
-                        "t": self.t,
+                        "t": t,
                         "text": text_out,
                         "action": action,
                         "reward": float(reward),
-                        "terminated": bool(term),
-                        "truncated": bool(trunc),
+                        "terminated": terminated,
+                        "truncated": truncated,
                         "info": step_info,
                     }
                 )
 
-            # Expose history primarily for debugging/tests
-            self._history_chat = list(history)
+            # For logging/debugging, expose full conversation if desired
+            state["completion"] = history
 
         else:
-            # completion mode: we only feed latest observation text as prompt
-
-            prompt_val = input.get("prompt", "")
-            hist_text: str = (
-                prompt_val if isinstance(prompt_val, str) else self._history_text
-            )
+            # completion mode: prompt is always the latest observation text
             comp_text: str = ""
+            # local last_obs already set from reset
 
-            while not (self.terminated or self.truncated) and self.t < limit:
-                prompt_text = self.obs_to_text(self.last_obs)
+            while not (terminated or truncated) and t < limit:
+                prompt_text = self.obs_to_text(last_obs)
+                prompt_messages: Messages = prompt_text  # completion API uses str
+
                 resp = await self.get_model_response(
                     client=client,
                     model=model,
@@ -312,6 +450,12 @@ class GymEnv(Environment):
                     message_type="completion",
                 )
                 assert resp is not None
+
+                step = await self._add_trajectory_step(state, prompt_messages, resp)
+                if step is None:
+                    truncated = True
+                    break
+
                 text_out = resp.choices[0].text or ""  # type: ignore[attr-defined]
                 comp_text = comp_text + text_out if comp_text else text_out
 
@@ -319,34 +463,31 @@ class GymEnv(Environment):
                     action = self.action_parser(text_out)
                 except Exception as e:
                     state.setdefault("errors", []).append(f"action_parse_error: {e}")
-                    self.truncated = True
+                    truncated = True
                     break
 
-                obs, reward, term, trunc, step_info = self.step(action)
+                obs, reward, term, trunc, step_info = _normalize_step(env.step(action))
+                t += 1
+                terminated, truncated = bool(term), bool(trunc)
+                last_obs = obs
+
                 state["responses"].append(
                     {
-                        "t": self.t,
+                        "t": t,
                         "text": text_out,
                         "action": action,
                         "reward": float(reward),
-                        "terminated": bool(term),
-                        "truncated": bool(trunc),
+                        "terminated": terminated,
+                        "truncated": truncated,
                         "info": step_info,
                     }
                 )
-                hist_text = prompt_text  # next turn uses latest obs only
-            self._history_text = hist_text
 
             if comp_text:
                 state["completion"] = comp_text
 
         # Reward is computed later by rubric.score_group from state["responses"]
         return state
-
-    # expose read-only history for convenience/tests
-    @property
-    def history(self) -> Messages:
-        return self._history_chat if self.message_type == "chat" else self._history_text
 
     # -------- Customizable evaluation layer --------
     async def evaluate(
@@ -363,14 +504,19 @@ class GymEnv(Environment):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
+        Evaluate model on this RL environment.
+
         If a user-supplied eval_runner exists, delegate to it.
-        Otherwise: when using the built-in 1-row dummy eval dataset,
-        treat num_examples>1 as "episodes" (map to RPE) and always set
-        num_examples=1 (explicit RPE still wins). Also clamp metadata
-        num_examples to the actual count used for non-dummy datasets.
+
+        Otherwise:
+          - When using the built-in 1-row dummy eval dataset, treat
+            num_examples > 1 as "episodes" (map to rollouts_per_example) and
+            always set num_examples=1 (explicit RPE still wins).
+          - On real datasets, num_examples counts dataset rows
+            (capped to dataset size as usual).
         """
         # Full delegation if user supplied their own evaluation runner
         if self._eval_runner is not None:
@@ -394,23 +540,22 @@ class GymEnv(Environment):
                 return await maybe  # type: ignore[no-any-return]
             return maybe  # type: ignore[no-any-return]
 
-        # Figure out if we're on the built-in 1-row dummy eval dataset
+        is_dummy = self._is_dummy_eval_ds()
         try:
             ds = self.get_eval_dataset(n=-1)
             ds_len = len(ds)
-            is_dummy_len_one = ds_len == 1
         except Exception:
             ds_len = 0
-            is_dummy_len_one = False
+            is_dummy = False
 
         # Mapping rules:
-        # - Dummy len==1:
+        # - Dummy:
         #     * If num_examples > 1 and RPE==1 -> set RPE = num_examples, NE = 1
         #     * If num_examples > 1 and RPE>1  -> keep RPE, force NE = 1
-        # - Non-dummy: no mapping; NE is capped to dataset size
+        # - Non-dummy: no mapping; NE is capped to dataset size by Environment
         mapped_ne = num_examples
         mapped_rpe = rollouts_per_example
-        if is_dummy_len_one and num_examples > 1:
+        if is_dummy and num_examples > 1:
             if rollouts_per_example <= 1:
                 mapped_rpe = num_examples
             mapped_ne = 1
@@ -433,7 +578,7 @@ class GymEnv(Environment):
 
         # Correct metadata to reflect the actual evaluation configuration
         try:
-            if is_dummy_len_one:
+            if is_dummy:
                 # Always 1 unique example in dummy mode
                 results.metadata.num_examples = 1
             else:
@@ -460,11 +605,15 @@ class GymEnv(Environment):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         Sync wrapper with the same delegation/mapping semantics as the async one.
         """
+        # If client is sync OpenAI, adapt to AsyncOpenAI (Environment.generate_sync does this too)
+        if isinstance(client, OpenAI):
+            client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
+
         if self._eval_runner is not None:
             maybe = self._eval_runner(
                 self,
@@ -482,9 +631,6 @@ class GymEnv(Environment):
                 save_every=save_every,
                 **kwargs,
             )
-            import inspect
-            import asyncio
-
             if inspect.isawaitable(maybe):
                 try:
                     loop = asyncio.get_running_loop()
@@ -496,19 +642,17 @@ class GymEnv(Environment):
                     return asyncio.run(maybe)  # type: ignore[no-any-return]
             return maybe  # type: ignore[no-any-return]
 
-        # Detect dummy vs non-dummy
+        is_dummy = self._is_dummy_eval_ds()
         try:
             ds = self.get_eval_dataset(n=-1)
             ds_len = len(ds)
-            is_dummy_len_one = ds_len == 1
         except Exception:
             ds_len = 0
-            is_dummy_len_one = False
+            is_dummy = False
 
-        # Apply mapping (see async version for rules)
         mapped_ne = num_examples
         mapped_rpe = rollouts_per_example
-        if is_dummy_len_one and num_examples > 1:
+        if is_dummy and num_examples > 1:
             if rollouts_per_example <= 1:
                 mapped_rpe = num_examples
             mapped_ne = 1
@@ -526,11 +670,10 @@ class GymEnv(Environment):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
-            **kwargs,
         )
 
         try:
-            if is_dummy_len_one:
+            if is_dummy:
                 results.metadata.num_examples = 1
             else:
                 if mapped_ne < 0:
@@ -541,3 +684,89 @@ class GymEnv(Environment):
         except Exception:
             pass
         return results
+
+
+# ---------- GymEnv: env_cls + env_kwargs wrapper ----------
+class GymEnv(GymBaseEnv):
+    """
+    Wrap an external env *by spec* (env_cls + env_kwargs) and create a fresh
+    env instance for each rollout. This makes concurrent rollouts safe.
+
+    Usage:
+        env = GymEnv(
+            env_cls=SomeGymEnv,
+            env_kwargs={"arg": 1},
+            action_parser=parse_action,
+            obs_to_text=lambda obs: f"state: {obs}",
+            ...
+        )
+
+    You can still pass dataset/eval_dataset if you want verifiers-style control
+    via state["input"]["info"], and override _make_env if env construction
+    should depend on the dataset row.
+    """
+
+    def __init__(
+        self,
+        env_cls: type,
+        env_kwargs: Dict[str, Any] | None = None,
+        *,
+        action_parser: Callable[[str], Any],
+        # optional datasets
+        dataset: Dataset | None = None,
+        eval_dataset: Dataset | None = None,
+        auto_dummy_eval: bool = True,
+        message_type: MessageType = "chat",
+        obs_to_text: Callable[[Any], str] | None = None,
+        max_episode_steps: Optional[int] = None,
+        # env_setup_fn is called on each fresh env instance; can optionally
+        # accept (env, state) or just (env)
+        env_setup_fn: Optional[Callable[..., None]] = None,
+        rubric: Optional[Rubric] = None,
+        eval_runner: Optional[Callable[..., Any]] = None,
+        **env_kwargs_rest: Any,
+    ):
+        self._env_cls = env_cls
+        self._env_kwargs = dict(env_kwargs or {})
+        self._env_setup_fn = env_setup_fn
+
+        super().__init__(
+            action_parser=action_parser,
+            dataset=dataset,
+            eval_dataset=eval_dataset,
+            auto_dummy_eval=auto_dummy_eval,
+            message_type=message_type,
+            obs_to_text=obs_to_text,
+            max_episode_steps=max_episode_steps,
+            rubric=rubric,
+            eval_runner=eval_runner,
+            **env_kwargs_rest,
+        )
+
+        # Fill env_id/env_args for metadata if user didn't set them
+        if not getattr(self, "env_id", ""):
+            try:
+                self.env_id = getattr(env_cls, "__name__", "gym_env")
+            except Exception:
+                self.env_id = "gym_env"
+        if not getattr(self, "env_args", {}):
+            try:
+                self.env_args = {"env_cls": str(env_cls), "env_kwargs": self._env_kwargs}
+            except Exception:
+                self.env_args = {}
+
+    def _make_env(self, state: State | None = None) -> StepResetEnv:
+        """Create and (optionally) set up a fresh env instance for this rollout."""
+        env = self._env_cls(**self._env_kwargs)  # type: ignore[call-arg]
+
+        # Call user-provided setup if any; support (env, state) or (env)
+        if self._env_setup_fn is not None:
+            try:
+                self._env_setup_fn(env, state)
+            except TypeError:
+                # user wrote setup_fn(env) only, ignore state
+                self._env_setup_fn(env)  # type: ignore[misc]
+        elif hasattr(env, "setup") and callable(getattr(env, "setup")):
+            env.setup()  # type: ignore[attr-defined]
+
+        return env  # type: ignore[return-value]

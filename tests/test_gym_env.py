@@ -4,6 +4,8 @@ from typing import Any, Dict, List
 
 import pytest
 from datasets import Dataset
+from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from verifiers.envs.gym_env import GymEnv, EpisodicSumRubric
 
 
@@ -46,21 +48,6 @@ class ToyEnv:
 
 
 # ----------------- Mock OpenAI client (chat) -----------------
-class _MockMsg:
-    def __init__(self, content: str):
-        self.content = content
-
-
-class _MockChoice:
-    def __init__(self, content: str):
-        self.message = _MockMsg(content)
-
-
-class _MockResp:
-    def __init__(self, content: str):
-        self.choices = [_MockChoice(content)]
-
-
 class _MockChatCompletions:
     async def create(self, *, model: str, messages: List[Dict[str, str]], **kwargs):
         # Read latest user obs "x=<n>" and return a valid action as content.
@@ -77,7 +64,27 @@ class _MockChatCompletions:
         if m:
             n = int(m.group(1))
         action = "1" if n < 3 else "0"
-        return _MockResp(action)
+
+        # Real ChatCompletion + Choice + ChatCompletionMessage, built minimally.
+        message = ChatCompletionMessage.model_construct(
+            role="assistant",
+            content=action,
+            tool_calls=None,  # must exist so response.choices[0].message.tool_calls is safe
+        )
+        choice = Choice.model_construct(
+            index=0,
+            message=message,
+            finish_reason="stop",
+            logprobs=None,
+        )
+        return ChatCompletion.model_construct(
+            id="mock-chatcmpl",
+            choices=[choice],
+            created=0,
+            model=model,
+            object="chat.completion",
+            usage=None,
+        )
 
 
 class _MockChat:
@@ -109,6 +116,7 @@ def toy_env():
 @pytest.fixture
 def eval_dataset():
     # Environment base class demands dataset or eval_dataset
+    # This is *not* the built-in dummy dataset used by GymBaseEnv.
     return Dataset.from_dict(
         {
             "prompt": [[]],
@@ -128,7 +136,12 @@ def client():
 # ----------------- Tests -----------------
 def test_basic_rollout_and_reward_sum(toy_env, eval_dataset, client):
     env = GymEnv(
-        env=toy_env,
+        env_cls=ToyEnv,
+        env_kwargs={
+            "start": toy_env.start,
+            "target": toy_env.target,
+            "max_steps": toy_env.max_steps,
+        },
         action_parser=parse_action,
         message_type="chat",
         system_prompt="Reply ONLY with 0 or 1.",
@@ -153,30 +166,12 @@ def test_basic_rollout_and_reward_sum(toy_env, eval_dataset, client):
         assert isinstance(last.get("truncated", False), bool)
 
 
-def test_reset_and_step_passthrough(toy_env, eval_dataset, client):
-    env = GymEnv(
-        env=toy_env,
-        action_parser=parse_action,
-        message_type="chat",
-        eval_dataset=eval_dataset,
-    )
-    obs, info = env.reset()
-    assert isinstance(obs, str) and obs.startswith("x=")
-    assert "target" in info
-
-    obs2, r, done, trunc, _ = env.step(1)
-    assert obs2.startswith("x=")
-    assert isinstance(r, float)
-    assert done in (True, False)
-    assert trunc in (True, False)
-
-
-def test_invalid_parse_truncates(toy_env, eval_dataset, client):
+def test_invalid_parse_truncates(eval_dataset, client):
     def bad_parser(_txt: str) -> int:
         raise ValueError("no action")
 
     env = GymEnv(
-        env=toy_env,
+        env_cls=ToyEnv,
         action_parser=bad_parser,
         message_type="chat",
         eval_dataset=eval_dataset,
@@ -201,7 +196,7 @@ def test_invalid_parse_truncates(toy_env, eval_dataset, client):
         assert steps[-1].get("truncated", False) is True
 
 
-def test_setup_fn_called_once(eval_dataset, client):
+def test_env_setup_called_once_per_rollout(eval_dataset, client):
     calls = {"n": 0}
 
     class EnvWithSetup(ToyEnv):
@@ -211,18 +206,15 @@ def test_setup_fn_called_once(eval_dataset, client):
         def reset(self, **kwargs):
             return super().reset(**kwargs)
 
-    base = EnvWithSetup()
     env = GymEnv(
-        env=base,
+        env_cls=EnvWithSetup,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
     )
 
-    # First reset triggers setup
-    env.reset()
-    # Subsequent resets do not re-call setup
-    env.reset()
+    # One evaluate() call => one rollout => one env instance => setup() once
+    env.evaluate_sync(client=client, model="mock")
     assert calls["n"] == 1
 
 
@@ -243,38 +235,36 @@ def test_nonstring_obs_requires_formatter(eval_dataset, client):
             self.done = d
             return self.x, float(d), d, {}
 
-    # Without custom obs_to_text -> TypeError on reset (guardrail)
+    # Without custom obs_to_text -> TypeError during rollout when obs_to_text is called
     env = GymEnv(
-        env=NumObsEnv(),
+        env_cls=NumObsEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
     )
     with pytest.raises(TypeError):
-        env.reset()
+        env.evaluate_sync(client=client, model="mock")
 
-    # With custom obs_to_text -> OK; returned obs is raw (0), formatted text is in chat history
+    # With custom obs_to_text -> OK; we inspect the first trajectory prompt
     class FmtGymEnv(GymEnv):
         def obs_to_text(self, obs: Any) -> str:
             return f"x={obs}"
 
     env = FmtGymEnv(
-        env=NumObsEnv(),
+        env_cls=NumObsEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
     )
-    obs, _ = env.reset()
-    assert obs == 0  # raw obs unchanged
-    # Type-narrow history
-    assert isinstance(env.history, list)
-    msg0 = env.history[0]
-    assert isinstance(msg0, dict)
-    assert msg0["role"] == "user"
-    assert msg0.get("content") == "x=0"  # formatted text used for chat
-
-
-# ----------------- Extra coverage -----------------
+    res = env.evaluate_sync(client=client, model="mock")
+    st = res["state"][0]
+    traj = st["trajectory"]
+    assert len(traj) >= 1
+    first_prompt = traj[0]["prompt"]
+    assert isinstance(first_prompt, list)
+    # last message in initial prompt is the user obs
+    assert first_prompt[-1]["role"] == "user"
+    assert first_prompt[-1].get("content") == "x=0"
 
 
 def test_respects_max_episode_steps(eval_dataset, client):
@@ -299,7 +289,7 @@ def test_respects_max_episode_steps(eval_dataset, client):
             return f"x={self.x}", 0.0, False, {"x": self.x}
 
     env = GymEnv(
-        env=NoTermEnv(),
+        env_cls=NoTermEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
@@ -321,26 +311,24 @@ def test_history_contains_system_fewshot_and_obs(eval_dataset, client):
     ]
 
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
         system_prompt="SYS",
         few_shot=few,
         eval_dataset=eval_dataset,
     )
-    obs, _ = env.reset()
-    assert isinstance(env.history, list)
-    roles = [m["role"] for m in env.history]  # type: ignore[index]
-    contents = [m.get("content") for m in env.history]  # type: ignore[union-attr]
+    res = env.evaluate_sync(client=client, model="mock")
+    st = res["state"][0]
+    traj = st["trajectory"]
+    assert len(traj) >= 1
+    first_prompt = traj[0]["prompt"]
+    roles = [m["role"] for m in first_prompt]
+    contents = [m.get("content") for m in first_prompt]
     # system, few-shot user/assistant, then user with obs
     assert roles[:4] == ["system", "user", "assistant", "user"]
     assert contents[0] == "SYS"
-    assert contents[-1] == f"x={obs.split('=')[1]}"
-
-    # After a step, a new user message with updated obs should be appended
-    env.step(1)
-    assert env.history[-1]["role"] == "user"  # type: ignore[index]
-    assert env.history[-1].get("content", "").startswith("x=")  # type: ignore[index]
+    assert contents[-1].startswith("x=")
 
 
 def test_five_tuple_step_normalization(eval_dataset, client):
@@ -362,7 +350,7 @@ def test_five_tuple_step_normalization(eval_dataset, client):
             return f"x={self.x}", float(terminated), terminated, truncated, info
 
     env = GymEnv(
-        env=FiveTupleEnv(),
+        env_cls=FiveTupleEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
@@ -374,32 +362,27 @@ def test_five_tuple_step_normalization(eval_dataset, client):
     assert steps[-1].get("truncated", False) is False
 
 
-def test_setup_fn_precedence_and_kwargs(eval_dataset, client):
-    calls = {"env_setup": 0, "hook": 0, "kw": None}
+def test_env_setup_fn_precedence(eval_dataset, client):
+    calls = {"env_setup": 0, "hook": 0}
 
     class E(ToyEnv):
         def setup(self):
             calls["env_setup"] += 1
 
-    def setup_hook(e: Any, **kw):
+    def setup_hook(e: Any, state: Any):
         calls["hook"] += 1
-        calls["kw"] = kw
 
-    base = E()
     env = GymEnv(
-        env=base,
+        env_cls=E,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
-        setup_fn=setup_hook,
-        setup_kwargs={"alpha": 7},
+        env_setup_fn=setup_hook,
     )
-    env.reset()
-    env.reset()
-    # Only our hook runs, once (GymEnv prefers setup_fn over env.setup)
+    env.evaluate_sync(client=client, model="mock")
+    # Only our hook runs (GymEnv prefers env_setup_fn over env.setup)
     assert calls["hook"] == 1
     assert calls["env_setup"] == 0
-    assert calls["kw"] == {"alpha": 7}
 
 
 # ----------------- Evaluation customization tests -----------------
@@ -416,7 +399,7 @@ def test_eval_runner_sync_delegates(eval_dataset, client):
         return sentinel
 
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
@@ -446,7 +429,7 @@ async def test_eval_runner_async_delegates(eval_dataset, client):
         return sentinel
 
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
@@ -459,17 +442,17 @@ async def test_eval_runner_async_delegates(eval_dataset, client):
 
 def test_dummy_eval_num_examples_maps_to_rollouts(eval_dataset, client):
     """
-    With the built-in dummy-style eval dataset (len==1), num_examples=N maps to
+    With the built-in dummy eval dataset (auto_dummy_eval), num_examples=N maps to
     rollouts_per_example=N (and num_examples becomes 1).
     """
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
-        eval_dataset=eval_dataset,  # len==1
+        # No explicit eval_dataset: use _default_eval_ds()
     )
     res = env.evaluate_sync(client=client, model="mock", num_examples=5)
-    # Should have run 5 rollouts of the single example
+    # Should have run 5 rollouts of the single dummy example
     assert len(res["state"]) == 5
     assert res["metadata"]["num_examples"] == 1
     assert res["metadata"]["rollouts_per_example"] == 5
@@ -477,13 +460,14 @@ def test_dummy_eval_num_examples_maps_to_rollouts(eval_dataset, client):
 
 def test_dummy_eval_explicit_rollouts_wins(eval_dataset, client):
     """
-    If caller explicitly sets rollouts_per_example, we don't remap even if num_examples>1.
+    In dummy mode, if caller explicitly sets rollouts_per_example, we still
+    collapse num_examples to 1 but keep the caller's RPE.
     """
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
-        eval_dataset=eval_dataset,  # len==1
+        # Again, rely on auto_dummy_eval; no explicit eval_dataset.
     )
     res = env.evaluate_sync(
         client=client, model="mock", num_examples=10, rollouts_per_example=3
@@ -508,7 +492,7 @@ def test_non_dummy_eval_no_mapping(client):
         }
     )
     env = GymEnv(
-        env=ToyEnv(),
+        env_cls=ToyEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=ds,
