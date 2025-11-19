@@ -40,7 +40,6 @@ class HarborEnv(SandboxEnv):
         cpu_cores: int = 2,
         memory_gb: int = 4,
         disk_size_gb: int = 10,
-        working_dir: str | None = "/app",
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path) if dataset_path else None
@@ -49,9 +48,6 @@ class HarborEnv(SandboxEnv):
         self.cpu_cores = cpu_cores
         self.memory_gb = memory_gb
         self.disk_size_gb = disk_size_gb
-        # Set working_dir to /app by default (matches typical Dockerfile WORKDIR)
-        # This prevents agents from accidentally modifying /oracle or /tests
-        self.working_dir = working_dir
 
         dataset = self._load_harbor_dataset()
         rubric = vf.Rubric(funcs=[self.harbor_reward], weights=[1.0])
@@ -163,14 +159,33 @@ class HarborEnv(SandboxEnv):
             await self._upload_directory(sandbox_id, tests_dir, "/tests")
             logger.debug(f"Uploaded tests to /tests in sandbox {sandbox_id}")
 
-        # Create /logs/verifier directory for test outputs
-        await self.bash("mkdir -p /logs/verifier", sandbox_id)
+        # Create /logs/verifier directory for test outputs (run from root)
+        await self.bash("mkdir -p /logs/verifier", sandbox_id, working_dir=None)
 
         # Store task config in state for reward function
         state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
         return state
+
+    def update_tool_args(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        messages: vf.Messages,
+        state: vf.State,
+        **kwargs,
+    ) -> dict:
+        """Inject working_dir=/app for agent bash calls."""
+        updated_args = super().update_tool_args(
+            tool_name, tool_args, messages, state, **kwargs
+        )
+
+        # For bash commands, inject working_dir=/app for agent calls
+        if tool_name == "bash" and "working_dir" not in updated_args:
+            updated_args["working_dir"] = "/app"
+
+        return updated_args
 
     async def _upload_directory(
         self, sandbox_id: str, local_dir: Path, remote_path: str
@@ -188,9 +203,11 @@ class HarborEnv(SandboxEnv):
             remote_tar = f"/tmp/upload_{local_dir.name}.tar.gz"
             await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
 
+            # Extract in sandbox (run from root to access /tmp and create directories)
             await self.bash(
                 f"mkdir -p {remote_path} && tar -xzf {remote_tar} -C {remote_path} && rm {remote_tar}",
                 sandbox_id,
+                working_dir=None,
             )
         finally:
             tar_path.unlink(missing_ok=True)
@@ -220,12 +237,14 @@ class HarborEnv(SandboxEnv):
 
         try:
             logger.info(f"Running tests for task {state.get('task')}")
-            result = await self.bash("cd /tests && bash test.sh", sandbox_id)
+            result = await self.bash("bash test.sh", sandbox_id, working_dir="/tests")
             logger.debug(f"Test script output: {result}")
 
             # Try to read reward.txt first
             reward_txt_result = await self.bash(
-                "cat /logs/verifier/reward.txt 2>/dev/null || echo ''", sandbox_id
+                "cat /logs/verifier/reward.txt 2>/dev/null || echo ''",
+                sandbox_id,
+                working_dir=None,
             )
 
             if reward_txt_result and reward_txt_result.strip():
@@ -235,7 +254,9 @@ class HarborEnv(SandboxEnv):
 
             # Fall back to reward.json
             reward_json_result = await self.bash(
-                "cat /logs/verifier/reward.json 2>/dev/null || echo ''", sandbox_id
+                "cat /logs/verifier/reward.json 2>/dev/null || echo ''",
+                sandbox_id,
+                working_dir=None,
             )
 
             if reward_json_result and reward_json_result.strip():
