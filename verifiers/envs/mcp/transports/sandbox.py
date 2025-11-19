@@ -1,11 +1,9 @@
-import asyncio
 from typing import Dict, Optional
-from mcp import ClientSession
-from mcp.types import Tool, TextContent
-from mcp.client.stdio import sse_client
+
+from mcp.types import Tool
 
 from .streaming_http import StreamingHTTPTransport
-from ..models import MCPServerConfig
+from ..mcp_utils.models import MCPServerConfig
 
 class SandboxTransport(StreamingHTTPTransport):
     def __init__(

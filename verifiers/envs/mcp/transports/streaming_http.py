@@ -1,11 +1,11 @@
-import asyncio
 from typing import Dict, Optional
+
 from mcp import ClientSession
-from mcp.types import Tool, TextContent
-from mcp.client.stdio import sse_client
+from mcp.client.sse import sse_client
+from mcp.types import TextContent, Tool
 
 from .base import MCPTransport
-from ..models import MCPServerConfig
+from ..mcp_utils.models import MCPServerConfig
 
 class StreamingHTTPTransport(MCPTransport):
     def __init__(
@@ -19,7 +19,7 @@ class StreamingHTTPTransport(MCPTransport):
         self.url = url
         self.timeout = timeout
         self.max_retries = max_retries
-        self.session = Optional[ClientSession] = None
+        self.session: Optional[ClientSession] = None
         self.tools: Dict[str, Tool] = {}
         self._sse_context = None
         self._session_context = None
@@ -47,13 +47,13 @@ class StreamingHTTPTransport(MCPTransport):
         if result.content:
             text_parts = []
             for content_item in result.content:
-                if isinstance(content_item, "text"):
+                if isinstance(content_item, TextContent):
                     text_parts.append(content_item.text)
                 else:
                     text_parts.append(str(content_item))
             return "\n".join(text_parts)
 
-        return "No result return from tool"
+        return "No result returned from tool"
 
 
     async def disconnect(self) -> None:
@@ -67,5 +67,5 @@ class StreamingHTTPTransport(MCPTransport):
 
         self.tools = {}
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         return self.session is not None
