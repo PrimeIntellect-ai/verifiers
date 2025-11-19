@@ -113,8 +113,8 @@ def download_configs(configs):
     """Download configs from specified repos."""
     for repo, source_path, dest_path in configs:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        ref = PRIME_RL_COMMIT if repo == PRIME_RL_REPO else "main"
-        src = f"https://raw.githubusercontent.com/{repo}/{ref}/{source_path}"
+        ref = PRIME_RL_COMMIT if repo == PRIME_RL_REPO else VERIFIERS_COMMIT
+        src = f"https://raw.githubusercontent.com/{repo}/refs/heads/{ref}/{source_path}"
         dst = dest_path
         if not os.path.exists(dst):
             wget.download(src, dst)
