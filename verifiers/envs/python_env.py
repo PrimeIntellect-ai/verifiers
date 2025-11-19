@@ -112,8 +112,6 @@ class PythonEnv(SandboxEnv):
 
         rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
-        pip install -q numpy sympy scipy
-
         python - <<'PY'
 import base64
 from pathlib import Path
