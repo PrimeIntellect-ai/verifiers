@@ -40,6 +40,7 @@ dependencies = [
     "tomli; python_version < '3.11'",
     "prime-sandboxes>=0.2.2",
     "wget>=3.2",
+    "tenacity"
 ]
 
 [dependency-groups]

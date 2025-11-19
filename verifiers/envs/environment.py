@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, AsyncContextManager, Literal
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -222,6 +223,11 @@ class Environment(ABC):
     def get_reward_weights(self) -> list[float]:
         return self.rubric.get_reward_weights()
 
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+    )
     async def get_model_response(
         self,
         client: AsyncOpenAI,
