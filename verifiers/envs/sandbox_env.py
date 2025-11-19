@@ -109,7 +109,16 @@ class SandboxEnv(vf.StatefulToolEnv):
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await self.sandbox_client.create(self.sandbox_request)
+        for i in range(5):
+            try:
+                sandbox = await self.sandbox_client.create(self.sandbox_request)
+                break
+            except Exception as e:
+                if i < 4:
+                    self.logger.warning(f"Failed to create sandbox: {e}")
+                    await asyncio.sleep(1)
+                else:
+                    raise e
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
