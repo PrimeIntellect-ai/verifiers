@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, AsyncContextManager, Literal
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 from tenacity import (
+    RetryCallState,
     retry,
     stop_after_attempt,
     wait_random_exponential,
@@ -286,12 +287,20 @@ class Environment(ABC):
                         "modalities": ["text"],
                     }
 
+                def log_retry(retry_state: RetryCallState):
+                    self.logger.info(
+                        f"Finished call to '{retry_state.fn}' "
+                        f"after {retry_state.seconds_since_start}(s), "
+                        f"this was the {retry_state.attempt_number} time calling it.",
+                    )
+
                 if oai_tools:
 
                     @retry(
                         reraise=True,
                         stop=stop_after_attempt(5),
                         wait=wait_random_exponential(multiplier=1, min=10, max=60),
+                        after=log_retry,
                     )
                     async def get_response():
                         return await client.chat.completions.create(
@@ -308,6 +317,7 @@ class Environment(ABC):
                         reraise=True,
                         stop=stop_after_attempt(5),
                         wait=wait_random_exponential(multiplier=1, min=10, max=60),
+                        after=log_retry,
                     )
                     async def get_response():
                         return await client.chat.completions.create(
@@ -329,6 +339,7 @@ class Environment(ABC):
                     reraise=True,
                     stop=stop_after_attempt(5),
                     wait=wait_random_exponential(multiplier=1, min=10, max=60),
+                    after=log_retry,
                 )
                 async def get_response():
                     return await client.completions.create(
