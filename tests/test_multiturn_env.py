@@ -3,7 +3,8 @@
 import pytest
 from datasets import Dataset
 
-from verifiers import Messages, MultiTurnEnv, Parser, Rubric, State
+from verifiers import Messages, MultiTurnEnv, Parser, Rubric, State, stop
+from verifiers.types import RolloutInput
 
 
 class TestMultiTurnEnv:
@@ -59,14 +60,21 @@ class TestMultiTurnEnv:
             response="Final response DONE",
         )
 
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="target_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="target_answer",
         )
 
         # Should have: assistant + user + assistant + user + assistant
+        assert len(state["trajectory"]) == 3  # Three trajectory steps
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) == 5
         assert completion[0]["role"] == "assistant"
         assert completion[0]["content"] == "First response"
@@ -78,9 +86,6 @@ class TestMultiTurnEnv:
         # Check state structure
         assert state["answer"] == "target_answer"
         assert state["prompt"] == prompt
-        assert state["completion"] == completion
-        assert "responses" in state
-        assert len(state["responses"]) == 3  # Three assistant responses
 
     @pytest.mark.asyncio
     async def test_max_turns_limiting(self, mock_multiturn_env_max_turns):
@@ -91,19 +96,25 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start conversation"}]
-        completion, state = await mock_multiturn_env_max_turns.rollout(
+        state = await mock_multiturn_env_max_turns.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="target_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env_max_turns.client,
             model="test-model",
-            prompt=prompt,
-            answer="target_answer",
         )
 
         # Should stop at max_turns=2: assistant + user + assistant (3 messages)
+        assert len(state["trajectory"]) == 2  # Two trajectory steps
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) == 3
         assert completion[0]["role"] == "assistant"
         assert completion[1]["role"] == "user"
         assert completion[2]["role"] == "assistant"
-        assert len(state["responses"]) == 2  # Two assistant responses
 
     @pytest.mark.asyncio
     async def test_override_is_completed_respects_max_turns(
@@ -115,19 +126,18 @@ class TestMultiTurnEnv:
             def __init__(self, **kwargs):
                 super().__init__(max_turns=2, **kwargs)
 
-            async def is_completed(self, messages, state, **kwargs):  # type: ignore[override]
-                if await super().is_completed(messages, state, **kwargs):
-                    return True
+            @stop
+            async def done_condition(self, state: State) -> bool:
                 return state.get("done", False)
 
-            def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
                 state["env_calls"] = state.get("env_calls", 0) + 1
                 return [
                     {
                         "role": "user",
                         "content": "Environment follow-up",
                     }
-                ], state
+                ]
 
         env = MaxTurnsAwareEnv(
             client=mock_openai_client,
@@ -140,16 +150,19 @@ class TestMultiTurnEnv:
         mock_openai_client.set_default_responses(chat_response="Still thinking")
 
         prompt: Messages = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="target",
+                example_id=0,
+            ),
             client=mock_openai_client,
             model="test-model",
-            prompt=prompt,
-            answer="target",
         )
+        completion = state["completion"]
 
-        assert state["turn"] == 2
         assert state.get("env_calls", 0) == 1
-        assert len(state["responses"]) == 2
+        assert len(state["trajectory"]) == 2
         assert isinstance(completion, list)
         assert "content" in completion[-1]
         assert completion[-1]["role"] == "assistant"
@@ -163,25 +176,29 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Test state"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test_answer",
+                task="test_task",
+                info={"extra": "data"},
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="test_answer",
-            task="test_task",
-            info={"extra": "data"},
-            example_id=0,
         )
 
         # Check all state fields are initialized
         assert state["prompt"] == prompt
-        assert state["completion"] == completion
         assert state["answer"] == "test_answer"
         assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
         assert state["example_id"] == 0
-        assert "responses" in state
-        assert isinstance(state["responses"], list)
+        assert "trajectory" in state
+        assert isinstance(state["trajectory"], list)
+        assert len(state["trajectory"]) > 0  # Should have at least one step
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
 
     @pytest.mark.asyncio
     async def test_immediate_completion(self, mock_multiturn_env):
@@ -192,17 +209,23 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Quick question"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="target_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="target_answer",
         )
 
         # Should complete immediately
+        assert len(state["trajectory"]) == 1
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) == 1
         assert completion[0]["content"] == "Immediate DONE"
-        assert len(state["responses"]) == 1
 
     @pytest.mark.asyncio
     async def test_env_response_integration(self, mock_multiturn_env):
@@ -222,14 +245,21 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start conversation"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="target_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="target_answer",
         )
 
         # Verify environment responses are included
+        assert len(state["trajectory"]) > 0
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) >= 3
         user_messages = [msg for msg in completion if msg["role"] == "user"]
         assert len(user_messages) >= 1
@@ -246,11 +276,14 @@ class TestMultiTurnEnv:
             response="Response DONE",
         )
 
-        completion, state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=original_prompt,
+                answer="test_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=original_prompt,
-            answer="test_answer",
         )
 
         # Original prompt should be unchanged
@@ -267,11 +300,14 @@ class TestMultiTurnEnv:
         prompt = [{"role": "user", "content": "Test sampling"}]
         sampling_args = {"temperature": 0.8, "max_tokens": 50}
 
-        completion, state = await mock_multiturn_env.rollout(
+        await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test_answer",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="test_answer",
             sampling_args=sampling_args,
         )
 
@@ -288,15 +324,18 @@ class TestMultiTurnEnv:
             def __init__(self, **kwargs):
                 super().__init__(message_type="completion", **kwargs)
 
-            async def is_completed(
-                self, messages: Messages, state: State, **kwargs
-            ) -> bool:
-                return "DONE" in messages
+            @stop
+            async def done_condition(self, state: State) -> bool:
+                if state["trajectory"]:
+                    last_completion = state["trajectory"][-1]["completion"]
+                    if isinstance(last_completion, str):
+                        return "DONE" in last_completion
+                return False
 
             async def env_response(
                 self, messages: Messages, state: State, **kwargs
-            ) -> tuple[Messages, State]:
-                return " Continue.", state
+            ) -> Messages:
+                return " Continue."
 
         completion_dataset = Dataset.from_dict(
             {"prompt": ["Start:"], "answer": ["Done"]}
@@ -315,14 +354,25 @@ class TestMultiTurnEnv:
         )
 
         prompt = "Start:"
-        completion, state = await env.rollout(
-            client=mock_openai_client, model="test-model", prompt=prompt, answer="Done"
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="Done",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
         )
 
+        assert len(state["trajectory"]) == 2
+        # With max_turns=3, the rollout should complete after 2 turns
+        # (max_turns_reached stop condition should trigger)
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert isinstance(completion, str)
         assert "First response" in completion
         assert "DONE" in completion
-        assert len(state["responses"]) == 2
 
     @pytest.mark.asyncio
     async def test_environment_response_state_modification(
@@ -331,14 +381,13 @@ class TestMultiTurnEnv:
         """Test that environment can modify state between turns."""
 
         class StatefulMultiTurnEnv(MultiTurnEnv):
-            def is_completed(self, messages, state, **kwargs):
+            @stop
+            async def turn_count_reached(self, state: State) -> bool:
                 return state.get("turn_count", 0) >= 2
 
-            def env_response(self, messages, state, **kwargs):  # type: ignore
+            async def env_response(self, messages, state, **kwargs):  # type: ignore
                 state["turn_count"] = state.get("turn_count", 0) + 1
-                return [
-                    {"role": "user", "content": f"Turn {state['turn_count']}"}
-                ], state
+                return [{"role": "user", "content": f"Turn {state['turn_count']}"}]
 
         env = StatefulMultiTurnEnv(
             client=mock_openai_client,
@@ -352,15 +401,22 @@ class TestMultiTurnEnv:
         env.client.set_default_responses(chat_response="Continue")  # type: ignore
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
             client=env.client,  # type: ignore
             model="test-model",
-            prompt=prompt,  # type: ignore
-            answer="test",  # type: ignore
         )
 
         # Should complete when turn_count reaches 2
         assert state["turn_count"] == 2
+        assert len(state["trajectory"]) >= 2
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) >= 3  # Multiple turns with env responses
 
     def test_abstract_methods_not_implemented(self):
@@ -377,21 +433,16 @@ class TestMultiTurnEnv:
         """Test completion detection works before env_response is called."""
 
         class ImmediateCompletionEnv(MultiTurnEnv):
-            async def is_completed(
-                self, messages: Messages, state: State, **kwargs
-            ) -> bool:
-                # Complete if we have any assistant message
-                return (
-                    any(msg.get("role") == "assistant" for msg in messages)
-                    if isinstance(messages, list)
-                    else False
-                )
+            @stop
+            async def has_trajectory_step(self, state: State) -> bool:
+                # Complete if we have any trajectory step
+                return len(state["trajectory"]) > 0
 
             async def env_response(
                 self, messages: Messages, state: State, **kwargs
-            ) -> tuple[Messages, State]:  # type: ignore
+            ) -> Messages:  # type: ignore
                 # This should never be called due to immediate completion
-                return [{"role": "user", "content": "Should not appear"}], state
+                return [{"role": "user", "content": "Should not appear"}]
 
         env = ImmediateCompletionEnv(
             client=mock_openai_client,
@@ -407,14 +458,21 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await env.rollout(
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
             client=env.client,  # type: ignore
             model="test-model",
-            prompt=prompt,  # type: ignore
-            answer="test",  # type: ignore
         )
 
         # Should complete immediately after first assistant response
+        assert len(state["trajectory"]) == 1
+        assert state["is_completed"] is True
+        assert "completion" in state  # Completion is set when is_completed returns True
+        completion = state["completion"]
         assert len(completion) == 1
         assert completion[0]["role"] == "assistant"  # type: ignore
         assert completion[0]["content"] == "First response"  # type: ignore
@@ -446,16 +504,19 @@ class TestMultiTurnEnv:
         )
 
         prompt = [{"role": "user", "content": "Start"}]
-        completion, state = await mock_multiturn_env.rollout(
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
             client=mock_multiturn_env.client,
             model="test-model",
-            prompt=prompt,
-            answer="test",
         )
 
-        # Check that all responses are stored
-        assert len(state["responses"]) == 3
-        # Each response should have the structure returned by get_model_response
-        for response in state["responses"]:
-            assert hasattr(response, "choices")
-            assert len(response.choices) > 0
+        # Check that all trajectory steps are stored
+        assert len(state["trajectory"]) == 3
+        # Each trajectory step should have the structure returned by get_model_response
+        for step in state["trajectory"]:
+            assert hasattr(step["response"], "choices")
+            assert len(step["response"].choices) > 0

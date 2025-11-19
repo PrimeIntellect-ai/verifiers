@@ -17,6 +17,7 @@ from verifiers import (
     ThinkParser,
     ToolEnv,
     XMLParser,
+    stop,
 )
 
 
@@ -186,8 +187,8 @@ class MockAsyncOpenAI:
         # Create a simplified representation for hashing
         key_parts = []
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+            role = msg["role"]
+            content = msg["content"]
             key_parts.append(f"{role}:{content}")
         return tuple(key_parts)
 
@@ -269,49 +270,54 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
         )
         self.env_response_count = 0
 
-    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        """Simple completion logic for testing."""
-        if await self.max_turns_reached(state):
-            return True
+    @stop
+    async def done_condition(self, state: State) -> bool:
+        """Complete when assistant says 'DONE'."""
         if self.completion_condition == "answer":
-            # Complete when assistant says "DONE"
-            assert isinstance(messages, list)
-            if messages and messages[-1].get("role") == "assistant":
-                assert isinstance(messages, list)
-                return "DONE" in str(messages[-1].get("content", ""))
-        elif self.completion_condition == "max_turns":
-            # Never complete naturally (test max_turns)
-            return False
-        elif self.completion_condition == "error":
-            # Complete on any error
-            assert isinstance(messages, list)
-            if messages and messages[-1].get("role") == "assistant":
-                assert isinstance(messages, list)
-                return str(messages[-1].get("content", "")).startswith("[ERROR]")
+            if state["trajectory"]:
+                last_completion = state["trajectory"][-1]["completion"]
+                if isinstance(last_completion, list) and last_completion:
+                    return "DONE" in str(last_completion[-1].get("content", ""))
+                elif isinstance(last_completion, str):
+                    return "DONE" in last_completion
         return False
 
-    async def env_response(self, messages, state, **kwargs) -> tuple[Messages, State]:
+    @stop
+    async def error_condition(self, state: State) -> bool:
+        """Complete on any error."""
+        if self.completion_condition == "error":
+            if state["trajectory"]:
+                last_completion = state["trajectory"][-1]["completion"]
+                if isinstance(last_completion, list) and last_completion:
+                    return str(last_completion[-1].get("content", "")).startswith(
+                        "[ERROR]"
+                    )
+                elif isinstance(last_completion, str):
+                    return last_completion.startswith("[ERROR]")
+        return False
+
+    async def env_response(self, messages, state, **kwargs) -> Messages:
         """Simple environment response for testing."""
         self.env_response_count += 1
 
         if self.completion_condition == "answer":
             # Encourage completion after a few turns
             if self.env_response_count >= 2:
-                return [{"role": "user", "content": "Please finish with DONE"}], state
+                return [{"role": "user", "content": "Please finish with DONE"}]
             else:
                 return [
                     {
                         "role": "user",
                         "content": f"Continue (turn {self.env_response_count})",
                     }
-                ], state
+                ]
         else:
             return [
                 {
                     "role": "user",
                     "content": f"Environment response {self.env_response_count}",
                 }
-            ], state
+            ]
 
 
 @pytest.fixture

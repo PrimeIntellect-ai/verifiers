@@ -1,10 +1,8 @@
+from typing import AsyncContextManager
+
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    Info,
-    Messages,
     RewardFunc,
-    RolloutScore,
-    RolloutScores,
     State,
 )
 
@@ -21,22 +19,22 @@ class RubricGroup(Rubric):
         self.rubrics = rubrics
         self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
 
-    def get_reward_func_names(self) -> list[str]:
+    def _get_reward_func_names(self) -> list[str]:
         names = []
         for rubric in self.rubrics:
-            names.extend(rubric.get_reward_func_names())
+            names.extend(rubric._get_reward_func_names())
         return names
 
-    def get_reward_funcs(self) -> list[RewardFunc]:
+    def _get_reward_funcs(self) -> list[RewardFunc]:
         funcs = []
         for rubric in self.rubrics:
-            funcs.extend(rubric.get_reward_funcs())
+            funcs.extend(rubric._get_reward_funcs())
         return funcs
 
-    def get_reward_weights(self) -> list[float]:
+    def _get_reward_weights(self) -> list[float]:
         weights = []
         for rubric in self.rubrics:
-            weights.extend(rubric.get_reward_weights())
+            weights.extend(rubric._get_reward_weights())
         return weights
 
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
@@ -44,84 +42,60 @@ class RubricGroup(Rubric):
         self.logger.warning("Adding reward function to the first rubric in the group.")
         self.rubrics[0].add_reward_func(func, weight)
 
-    async def score_rollout(
-        self,
-        prompt: Messages,
-        completion: Messages,
-        answer: str,
-        state: State,
-        task: str = "default",
-        info: Info | None = None,
-        example_id: int | None = None,
-        **kwargs,
-    ) -> RolloutScore:
+    async def score_rollout(self, state: State, score_sem: AsyncContextManager):
+        """
+        Evaluate all reward functions in-place for a single rollout.
+        """
         total_reward = 0.0
         aggregated_metrics: dict[str, float] = {}
-        for rubric in self.rubrics:
-            score = await rubric.score_rollout(
-                prompt,
-                completion,
-                answer,
-                state,
-                task,
-                info,
-                example_id,
-                **kwargs,
-            )
-            total_reward += score.reward
-            for key, value in score.metrics.items():
-                aggregated_metrics[key] = aggregated_metrics.get(key, 0.0) + value
-        return RolloutScore(reward=total_reward, metrics=aggregated_metrics)
-
-    async def score_rollouts(
-        self,
-        prompts: list[Messages],
-        completions: list[Messages],
-        answers: list[str],
-        states: list[State],
-        tasks: list[str],
-        infos: list[Info],
-        example_ids: list[int] | None = None,
-        max_concurrent: int = -1,
-        use_tqdm: bool = True,
-        **kwargs,
-    ) -> RolloutScores:
-        """
-        Run all rubrics sequentially and return the aggregated scores.
-
-        Reward functions with the same name are summed up.
-        """
-        example_ids = example_ids or list(range(len(prompts)))
-        all_scores = RolloutScores(
-            reward=[],
-            metrics={},
+        original_reward = state.get("reward", 0.0)
+        original_metrics = (
+            state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
         for rubric in self.rubrics:
-            rubric_scores = await rubric.score_rollouts(
-                prompts,
-                completions,
-                answers,
-                states,
-                tasks,
-                infos,
-                example_ids,
-                max_concurrent=max_concurrent,
-                use_tqdm=use_tqdm,
-                **kwargs,
+            await rubric.score_rollout(state, score_sem=score_sem)
+            rubric_reward = state.get("reward", 0.0)
+            rubric_metrics = (
+                state.get("metrics", {}).copy() if state.get("metrics") else {}
             )
-            # aggregate reward (element-wise sum across rubrics)
-            if not all_scores.reward:
-                all_scores.reward = rubric_scores.reward
-            else:
-                all_scores.reward = [
-                    a + b for a, b in zip(all_scores.reward, rubric_scores.reward)
-                ]
-            for key, value in rubric_scores.metrics.items():
-                if key in all_scores.metrics:
-                    # element-wise sum
-                    all_scores.metrics[key] = [
-                        a + b for a, b in zip(all_scores.metrics[key], value)
-                    ]
-                else:
-                    all_scores.metrics[key] = value
-        return all_scores
+            total_reward += rubric_reward
+            for key, value in rubric_metrics.items():
+                aggregated_metrics[key] = aggregated_metrics.get(key, 0.0) + value
+            # restore original values for next rubric
+            state["reward"] = original_reward
+            state["metrics"] = original_metrics.copy()
+        state["reward"] = total_reward
+        state["metrics"] = aggregated_metrics
+
+    async def score_group(self, states: list[State], score_sem: AsyncContextManager):
+        """
+        Evaluate all reward functions in-place for a group of rollouts.
+        """
+        aggregated_rewards = [0.0] * len(states)
+        aggregated_metrics: dict[str, list[float]] = {}
+        original_rewards = [state.get("reward", 0.0) for state in states]
+        original_metrics = [
+            state.get("metrics", {}).copy() if state.get("metrics") else {}
+            for state in states
+        ]
+        for rubric in self.rubrics:
+            await rubric.score_group(states, score_sem=score_sem)
+            for i, state in enumerate(states):
+                rubric_reward = state.get("reward", 0.0)
+                rubric_metrics = (
+                    state.get("metrics", {}).copy() if state.get("metrics") else {}
+                )
+                aggregated_rewards[i] += rubric_reward
+                for key, value in rubric_metrics.items():
+                    if key not in aggregated_metrics:
+                        aggregated_metrics[key] = [0.0] * len(states)
+                    aggregated_metrics[key][i] += value
+                state["reward"] = original_rewards[i]
+                state["metrics"] = original_metrics[i].copy()
+        for i, state in enumerate(states):
+            state["reward"] = aggregated_rewards[i]
+            if aggregated_metrics:
+                if "metrics" not in state:
+                    state["metrics"] = {}
+                for key, values in aggregated_metrics.items():
+                    state["metrics"][key] = values[i]

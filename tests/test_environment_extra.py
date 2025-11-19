@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import List
 
 import pytest
 from datasets import Dataset
@@ -24,10 +23,8 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
-    Info,
-    Messages,
+    RolloutInput,
     SamplingArgs,
-    State,
 )
 from verifiers.utils.eval_utils import make_dataset as build_dataset
 from verifiers.utils.message_utils import sanitize_tool_calls
@@ -35,53 +32,56 @@ from verifiers.utils.message_utils import sanitize_tool_calls
 
 # Local simple concrete Environment for testing
 class DummyEnvironment(Environment):
+    async def setup_state(self, state):
+        return state
+
     async def rollout(
         self,
+        input: RolloutInput,
         client,
-        model,
-        prompt: Messages,
-        completion: Messages | None = None,
-        answer: str = "",
-        state: State | None = None,
-        task: str = "default",
-        info: Info | None = {},
-        example_id: int = 0,
+        model: str,
         sampling_args: SamplingArgs | None = None,
-        **kwargs,
     ):
+        state = await self.init_state(input)
+        state = await self.setup_state(state)
+
+        prompt_messages = state["prompt"]
         response = await self.get_model_response(
-            prompt=prompt, client=client, model=model, sampling_args=sampling_args
+            prompt=prompt_messages,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
         )
         assert response is not None
-        info = info or {}
-        if completion is None:
-            completion = await self.init_completion()
-        if state is None:
-            state = await self.init_state(
-                prompt=prompt,
-                completion=completion,
-                answer=answer,
-                task=task,
-                info=info,
-                example_id=example_id,
-            )
-        if self.message_type == "chat":
-            assert isinstance(completion, list)
-            state.setdefault("responses", [])
-            state["responses"].append(response)
-            message = {
-                "role": "assistant",
-                "content": response.choices[0].message.content,
-            }
-            completion.append(message)
-            state["completion"] = completion
-        else:
-            assert isinstance(completion, str)
-            state.setdefault("responses", [])
-            state["responses"].append(response)
-            completion = completion + (response.choices[0].text or "")
-            state["completion"] = completion
-        return completion, state
+
+        from verifiers.types import TrajectoryStep
+        from verifiers.utils.response_utils import (
+            parse_response_messages,
+            parse_response_tokens,
+        )
+
+        completion_messages = await parse_response_messages(response, self.message_type)
+        tokens = await parse_response_tokens(response, self.message_type)
+        trajectory_step = TrajectoryStep(
+            prompt=prompt_messages,
+            completion=completion_messages,
+            response=response,
+            tokens=tokens,
+            reward=None,
+            advantage=None,
+            extras={},
+        )
+        state["trajectory"].append(trajectory_step)
+        state["is_completed"] = True
+
+        from verifiers.utils.message_utils import concat_messages
+
+        last_prompt = state["trajectory"][-1]["prompt"]
+        last_completion = state["trajectory"][-1]["completion"]
+        full_conversation = concat_messages([last_prompt, last_completion])
+        state["completion"] = full_conversation[len(state["prompt"]) :]
+
+        return state
 
 
 def _make_metadata(
@@ -157,82 +157,44 @@ async def test_get_model_response_completion_rejects_tools(mock_openai_client):
 
 def test_run_rollouts_with_max_concurrent(mock_openai_client):
     env = _make_env(mock_openai_client)
-    prompts = [[{"role": "user", "content": "hi"}] for _ in range(3)]
-    answers = ["", "", ""]
-    coro = env.run_rollouts(
-        client=mock_openai_client,
-        model="test-model",
-        prompts=prompts,
-        answers=answers,
-        tasks=["default"] * 3,
-        infos=[{}] * 3,
-        max_concurrent=2,
-        example_ids=list(range(len(prompts))),
+    inputs = [
+        RolloutInput(
+            prompt=[{"role": "user", "content": "hi"}],
+            answer="",
+            example_id=i,
+        )
+        for i in range(3)
+    ]
+    results = asyncio.run(
+        env.generate(
+            inputs,
+            client=mock_openai_client,
+            model="test-model",
+            max_concurrent=2,
+        )
     )
-    results: List = asyncio.run(coro)
-    assert len(results) == 3
+    assert len(results["state"]) == 3
 
 
 def test_run_rollouts_with_semaphore(mock_openai_client):
     env = _make_env(mock_openai_client)
-    prompts = [[{"role": "user", "content": "hi"}] for _ in range(3)]
-    answers = ["", "", ""]
-    coro = env.run_rollouts(
-        client=mock_openai_client,
-        model="test-model",
-        prompts=prompts,
-        answers=answers,
-        tasks=["default"] * 3,
-        infos=[{}] * 3,
-        semaphore=asyncio.Semaphore(2),
-        example_ids=list(range(len(prompts))),
+    inputs = [
+        RolloutInput(
+            prompt=[{"role": "user", "content": "hi"}],
+            answer="",
+            example_id=i,
+        )
+        for i in range(3)
+    ]
+    results = asyncio.run(
+        env.generate(
+            inputs,
+            client=mock_openai_client,
+            model="test-model",
+            max_concurrent=2,
+        )
     )
-    results: List = asyncio.run(coro)
-    assert len(results) == 3
-
-
-def test_process_env_results_zero_truncated_reward_vllm(mock_openai_client):
-    # Use pre-formatted dataset to avoid map/progress side effects in test
-    ds = Dataset.from_dict(
-        {
-            "prompt": [[{"role": "user", "content": "q"}]],
-            "answer": ["a"],
-        }
-    )
-    env = _make_env(mock_openai_client, dataset=ds, message_type="completion")
-
-    # Mock tokenizer: encode maps length to token list
-    class Tok:
-        def encode(self, text, **kwargs):
-            return list(range(len(text)))
-
-    prompts = ["Hello!"]  # 6 tokens
-    completions = ["World!!!"]  # 8 tokens
-    # Minimal vLLM-style completion response covering entire completion text
-    mock_choice = type("C", (), {})()
-    mock_choice.text = completions[0]
-    mock_choice.logprobs = type("LP", (), {})()
-    mock_choice.logprobs.tokens = ["token_id:1"] * len(completions[0])
-    mock_choice.logprobs.token_logprobs = [-0.1] * len(completions[0])
-    mock_completion = type("R", (), {})()
-    mock_completion.choices = [mock_choice]
-    states = [{"responses": [mock_completion], "responses_start_idx": [0]}]
-    rewards = [1.0]
-
-    out = env.process_env_results_vllm(
-        prompts,
-        completions,
-        states,
-        rewards,
-        Tok(),  # type: ignore[arg-type]
-        max_seq_len=10,  # force truncation (6 + 8 > 10)
-        mask_truncated_completions=True,
-        zero_truncated_completions=True,
-    )
-
-    assert out.rewards == [0.0]
-    assert len(out.prompt_ids[0]) + len(out.completion_ids[0]) <= 10
-    print("end_zero_truncated")
+    assert len(results["state"]) == 3
 
 
 def test_evaluate_fallback_and_repeat(mock_openai_client):
@@ -247,28 +209,26 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
             model="test-model",
             num_examples=2,
             rollouts_per_example=2,
-            score_rollouts=False,
-            interleave_scoring=False,
         )
     )
     # Expect n * r rollouts in outputs
-    assert len(res.prompt) == 2 * 2
-    assert len(res.completion) == 2 * 2
+    assert len(res["prompt"]) == 2 * 2
+    assert len(res["completion"]) == 2 * 2
 
 
 @pytest.mark.asyncio
 async def test_generate_inside_running_loop(mock_openai_client):
     env = _make_env(mock_openai_client)
-    inputs = {
-        "prompt": [[{"role": "user", "content": "Hi"}]],
-        "answer": [""],
-        "example_id": [0],
-    }
+    inputs = [
+        RolloutInput(
+            prompt=[{"role": "user", "content": "Hi"}],
+            answer="",
+            example_id=0,
+        )
+    ]
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
-    out = await env.a_generate(
-        inputs, client=mock_openai_client, model="test-model", interleave_scoring=False
-    )
-    assert hasattr(out, "completion") and len(out.completion) == 1
+    out = await env.generate(inputs, client=mock_openai_client, model="test-model")
+    assert "completion" in out and len(out["completion"]) == 1
 
 
 def test_sanitize_tool_calls_outputs_strings():
@@ -317,41 +277,3 @@ def test_make_dataset_basic_without_tools(mock_openai_client):
     )
     ds = build_dataset(results)
     assert len(ds) == 1 and "foo" in ds.column_names
-
-
-def test_truncation_masks_completion_format_vllm(mock_openai_client):
-    # Duplicate of zero_truncated test under a different name to avoid any runner quirk
-    ds = Dataset.from_dict(
-        {
-            "prompt": [[{"role": "user", "content": "q"}]],
-            "answer": ["a"],
-        }
-    )
-    env = _make_env(mock_openai_client, dataset=ds, message_type="completion")
-
-    class Tok:
-        def encode(self, text, **kwargs):
-            return list(range(len(text)))
-
-    prompts = ["Hello!"]
-    completions = ["World!!!"]
-    # Minimal vLLM-style completion response covering entire completion text
-    mock_choice2 = type("C2", (), {})()
-    mock_choice2.text = completions[0]
-    mock_choice2.logprobs = type("LP2", (), {})()
-    mock_choice2.logprobs.tokens = ["token_id:1"] * len(completions[0])
-    mock_choice2.logprobs.token_logprobs = [-0.1] * len(completions[0])
-    mock_completion2 = type("R2", (), {})()
-    mock_completion2.choices = [mock_choice2]
-    out = env.process_env_results_vllm(
-        prompts,
-        completions,
-        [{"responses": [mock_completion2], "responses_start_idx": [0]}],
-        [1.0],
-        Tok(),  # type: ignore[arg-type]
-        max_seq_len=10,
-        mask_truncated_completions=True,
-        zero_truncated_completions=True,
-    )
-    assert out.rewards == [0.0]
-    assert len(out.prompt_ids[0]) + len(out.completion_ids[0]) <= 10

@@ -320,6 +320,8 @@ class RLConfig(TrainingArguments):
                 "spaces_between_special_tokens": False,
                 "include_stop_str_in_output": False,
                 "return_tokens_as_token_ids": True,
+                "return_token_ids": True,
+                "prompt_logprobs": True,
             },
         }
         self.gradient_accumulation_steps = 1

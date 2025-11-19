@@ -30,8 +30,8 @@ class ToolRubric(Rubric):
         total = 0
         assert isinstance(completion, list)
         for msg in completion:
-            if msg.get("role") == "assistant" and "tool_calls" in msg:
-                tool_calls = msg.get("tool_calls", [])
+            if msg["role"] == "assistant" and "tool_calls" in msg:
+                tool_calls = msg["tool_calls"]
                 if isinstance(tool_calls, list):
                     total += len(tool_calls)
         return float(total)
@@ -45,8 +45,8 @@ class ToolRubric(Rubric):
             # Find tool calls in assistant messages
             assert isinstance(completion, list)
             for msg in completion:
-                if msg.get("role") == "assistant" and "tool_calls" in msg:
-                    tool_calls = msg.get("tool_calls", [])
+                if msg["role"] == "assistant" and "tool_calls" in msg:
+                    tool_calls = msg["tool_calls"]
                     for tool_call in tool_calls:
                         if tool_call.get("function", {}).get("name") == tool_name:
                             count += 1
