@@ -6,7 +6,7 @@ import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
 PRIME_RL_REPO = "primeintellect-ai/prime-rl"
-VERIFIERS_COMMIT = "trajectories"
+VERIFIERS_COMMIT = "main"
 PRIME_RL_COMMIT = "will/trajectories"  # Commit hash, branch name, or tag to use for installed prime-rl version
 PRIME_RL_INSTALL_SCRIPT_REF = (
     "will/trajectories"  # Ref to use for fetching the install script itself
