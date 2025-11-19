@@ -240,7 +240,8 @@ class Orchestrator:
             trajectory = state["trajectory"]
             for step in trajectory:
                 tokens = step["tokens"]
-                assert tokens is not None
+                if tokens is None:
+                    continue
                 prompt_ids.append(tokens["prompt_ids"])
                 prompt_mask.append(tokens["prompt_mask"])
                 completion_ids.append(tokens["completion_ids"])
