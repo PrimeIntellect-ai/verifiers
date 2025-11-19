@@ -1,18 +1,16 @@
 import atexit
 import signal
-from typing import Any, Callab,e Dict, List, Literal, Optional
+from typing import Callable, Dict, List, Literal, Optional
 
-from datasets import Dataset
-
-from transports.base import MCPTransport
-from transports.stdio import StdioTransport
-from transports.streaming_http import StreamingHTTPTransport
-from transports.sandbox import SandboxTransport
-from models import MCPServerConfig
-from mcp_tool_wrapper import MCPToolWrapper
+from .transports.base import MCPTransport
+from .transports.sandbox import SandboxTransport
+from .transports.stdio import StdioTransport
+from .transports.streaming_http import StreamingHTTPTransport
+from .mcp_utils.models import MCPServerConfig
+from .mcp_utils.mcp_tool_wrapper import MCPToolWrapper
 
 import verifiers as vf
-from verifiers import Message, State
+from verifiers import Messages, State
 
 
 try:
@@ -62,13 +60,13 @@ class MCPEnv(vf.StatefulToolEnv):
         self.sandbox_memory_gb = sandbox_memory_gb
         self.sandbox_disk_size_gb = sandbox_disk_size_gb
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
-        self.sandbox_environment_vars = sandbox_environment_vars
+        self.sandbox_environment_vars = sandbox_environment_vars or {}
         self.sandbox_client: Optional[AsyncSandboxClient] = None
+        self.active_sandboxes: set[str] = set()
 
         self._validate_config()
 
         self.session_transports: Dict[str, MCPTransport] = {}
-        self.active_transports: set[str] = set()
 
         super().__init__(
             tools=[],
@@ -83,7 +81,7 @@ class MCPEnv(vf.StatefulToolEnv):
                     "prime-sandboxes required for sandbox transport "
                 )
             self.sandbox_client = AsyncSandboxClient()
-            self.register(self.cleanup_sandboxes)
+            atexit.register(self.cleanup_sandboxes)
             signal.signal(
                 signal.SIGINT,
                 lambda sig, frame: (
@@ -122,7 +120,7 @@ class MCPEnv(vf.StatefulToolEnv):
 
         elif self.transport_type == "http":
             url = self.http_urls[config.name]
-            return HttpStreamingTransport(
+            return StreamingHTTPTransport(
                 config,
                 url=url,
                 timeout=self.http_timeout,
@@ -131,7 +129,7 @@ class MCPEnv(vf.StatefulToolEnv):
 
         elif self.transport_type == "sandbox":
             if not self.sandbox_client:
-                raise RuntimeError("Sandbox client not initializeD")
+                raise RuntimeError("Sandbox client not initialized")
 
             env_vars = {**self.sandbox_environment_vars, **(config.env or {})}
 
@@ -141,7 +139,7 @@ class MCPEnv(vf.StatefulToolEnv):
                 start_command=self.sandbox_start_command,
                 cpu_cores=self.sandbox_cpu_cores,
                 memory_gb=self.sandbox_memory_gb,
-                disk_dize_gb=self.sandbox_disk_size_gb,
+                disk_size_gb=self.sandbox_disk_size_gb,
                 timeout_minutes=self.sandbox_timeout_minutes,
                 environment_vars=env_vars,
             )
@@ -154,7 +152,7 @@ class MCPEnv(vf.StatefulToolEnv):
             )
 
         else:
-            raise ValueError(f"Unknown transport tpye: {self.transport_type}")
+            raise ValueError(f"Unknown transport type: {self.transport_type}")
 
     async def register_tools_from_transport(
         self,

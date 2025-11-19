@@ -1,11 +1,10 @@
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
 class MCPServerConfig:
     name: str
     command: str
-    args: List[str] | None = None
-    env: Dict[str, str] | None = None
-    d
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None

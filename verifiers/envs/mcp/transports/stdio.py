@@ -1,16 +1,17 @@
 import asyncio
 from typing import Dict, Optional
-from mcp import ClientSession
-from mcp.types import Tool, TextContent
-from mcp.client.stdio import stdio_client
 
-from .baseimport MCPTransport
-from ..models import MCPServerConfig
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.types import TextContent, Tool
+
+from .base import MCPTransport
+from ..mcp_utils.models import MCPServerConfig
 
 class StdioTransport(MCPTransport):
     def __init__(self, config: MCPServerConfig):
         self.config = config
-        self.session = Optional[ClientSession] = None
+        self.session: Optional[ClientSession] = None
         self.tools: Dict[str, Tool] = {}
         self._stdio_context = None
         self._session_context = None
@@ -20,7 +21,7 @@ class StdioTransport(MCPTransport):
         server_params = StdioServerParameters(
             command=self.config.command,
             args=self.config.args or [],
-            env=self.config.env
+            env=self.config.env,
         )
         self._stdio_context = stdio_client(server_params)
         read, write = await self._stdio_context.__aenter__()
@@ -49,7 +50,7 @@ class StdioTransport(MCPTransport):
                     text_parts.append(str(content_item))
             return "\n".join(text_parts)
 
-        return "No result return from tool"
+        return "No result returned from tool"
 
 
     async def disconnect(self) -> None:
@@ -63,5 +64,5 @@ class StdioTransport(MCPTransport):
 
         self.tools = {}
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         return self.session is not None

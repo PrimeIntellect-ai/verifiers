@@ -2,13 +2,11 @@ from typing import Any
 
 from mcp.types import Tool
 
-from .mcp_server_connection import MCPServerConnection
+from ..transports.base import MCPTransport
 
 
 class MCPToolWrapper:
-    def __init__(
-        self, server_name: str, tool: Tool, server_connection: MCPServerConnection
-    ):
+    def __init__(self, server_name: str, tool: Tool, server_connection: MCPTransport):
         self.server_name = server_name
         self.tool = tool
         self.server_connection = server_connection
