@@ -1,7 +1,7 @@
 import random
 from copy import deepcopy
 from difflib import SequenceMatcher
-from typing import List, Tuple
+from typing import List
 
 from datasets import Dataset, load_dataset
 

@@ -131,7 +131,7 @@ class Rubric:
                     ans = float(await maybe_await(func, **merged))
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"
+                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = 0.0
             else:
@@ -140,7 +140,7 @@ class Rubric:
                     ans = float(await maybe_await(func, **allowed))
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"
+                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = 0.0
             return ans
@@ -188,7 +188,7 @@ class Rubric:
                     ans = await maybe_await(func, **merged)
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"
+                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = [0.0] * len(states)
             else:
@@ -197,7 +197,7 @@ class Rubric:
                     ans = await maybe_await(func, **allowed)
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"
+                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = [0.0] * len(states)
             return ans

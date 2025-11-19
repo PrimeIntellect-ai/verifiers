@@ -192,10 +192,10 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         for col in state_columns:
             if col == "responses":
                 results_dict[col] = [
-                    [r.model_dump() for r in s.get(col, [])] for s in results.state
+                    [r.model_dump() for r in s.get(col, [])] for s in results["state"]
                 ]
             else:
-                results_dict[col] = [s.get(col) for s in results.state]
+                results_dict[col] = [s.get(col) for s in results["state"]]
 
     return Dataset.from_dict(results_dict)
 
