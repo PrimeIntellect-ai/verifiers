@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
-from datasets import Dataset, disable_progress_bar, enable_progress_bar
+from datasets import (
+    Dataset,
+    concatenate_datasets,
+    disable_progress_bar,
+    enable_progress_bar,
+)
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
@@ -110,8 +115,14 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
     # run evaluation
-    results_path = get_eval_results_path(config)
-    logger.info(f"Starting evaluation with model: {config.model}")
+    if not config.resume_from_path:
+        results_path = get_eval_results_path(config)
+        resume_from_path = None
+        logger.info(f"Starting evaluation with model: {config.model}")
+    else:
+        results_path = Path(config.resume_from_path)
+        resume_from_path = results_path
+        logger.info(f"Resuming evaluation from {results_path}")
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
@@ -129,6 +140,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        resume_from_path=resume_from_path,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
@@ -214,10 +226,58 @@ def quiet_datasets():
 
 def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # If path_to_save already exists, we append the new rollout results and merge the metadata
+        existing_dataset, existing_metadata_dict = load_from_disk(path_to_save)
+        metadata_dict = {
+            **existing_metadata_dict,
+            **metadata_dict,
+            "time_ms": existing_metadata_dict["time_ms"] + metadata_dict["time_ms"],
+            "avg_reward": (
+                existing_metadata_dict["avg_reward"] * len(existing_dataset)
+                + metadata_dict["avg_reward"] * len(dataset)
+            )
+            / (len(dataset) + len(existing_dataset)),
+            "avg_metrics": {
+                metric_name: (
+                    existing_metadata_dict["avg_metrics"][metric_name]
+                    * len(existing_dataset)
+                    + metadata_dict["avg_metrics"][metric_name] * len(dataset)
+                )
+                / (len(dataset) + len(existing_dataset))
+                for metric_name in existing_metadata_dict["avg_metrics"]
+            },
+        }
+        seen = set()
+
+        def is_new(example: dict) -> bool:
+            """De-duplicate based on completion."""
+            k = json.dumps(list(example["completion"]))
+            if k in seen:
+                return False
+            seen.add(k)
+            return True
+
+        with quiet_datasets():
+            dataset = concatenate_datasets([existing_dataset, dataset]).filter(is_new)
+    except FileNotFoundError:
+        pass
+
     with quiet_datasets():
         dataset.to_json(path_to_save / "results.jsonl")
     with open(path_to_save / "metadata.json", "w") as f:
         json.dump(metadata_dict, f)
+
+
+def load_from_disk(path_to_load: Path) -> tuple[Dataset, dict]:
+    with quiet_datasets():
+        dataset = cast(
+            Dataset, Dataset.from_json((path_to_load / "results.jsonl").as_posix())
+        )
+    with open(path_to_load / "metadata.json", "r") as f:
+        metadata_dict = json.load(f)
+    return dataset, metadata_dict
 
 
 def save_rollout_results(

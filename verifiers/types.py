@@ -232,5 +232,6 @@ class EvalConfig(BaseModel):
     state_columns: list[str] | None = None
     save_results: bool = False
     save_every: int = -1
+    resume_from_path: str | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
