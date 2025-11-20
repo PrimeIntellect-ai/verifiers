@@ -1,8 +1,8 @@
 [project]
 name = "math-group"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.8",
     "math-verify>=0.8.0",
 ]
 

@@ -1,13 +1,14 @@
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
 
 max_steps = 500
+max_async_level = 4
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-4B-Thinking-2507"
 
 [wandb]
-project = "wiki-search"
+project = "wiki-search-debug"
 name = "wiki-search-4b"
 
 [trainer.optim]
@@ -31,14 +32,17 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
-seq_len = 4096
+seq_len = 16384
 mask_truncated_completions = false
 zero_truncated_completions = true
 oversampling_factor = 2.0
 
-[orchestrator.sampling]
-max_tokens = 512
 
+[orchestrator.sampling]
+max_tokens = 4096
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
 
 [[orchestrator.env]]
 id = "primeintellect/wiki-search"

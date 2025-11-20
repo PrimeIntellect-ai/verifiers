@@ -3,9 +3,9 @@ name = "wiki-search"
 description = "Agentic RAG over Wikipedia pages for trivia Q&A"
 tags = ["wikipedia", "multi-turn", "agentic-search", "rag", "train", "eval", "llm-judge"]
 requires-python = ">=3.11"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
-    "verifiers>=0.1.7",
+    "verifiers>=0.1.8",
     "chromadb",
     "datasets",
     "openai",

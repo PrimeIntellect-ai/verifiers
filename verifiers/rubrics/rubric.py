@@ -60,7 +60,7 @@ class Rubric:
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs]
+        return [func.__name__ for func in self.funcs]  # type: ignore[possibly-missing-attribute]
 
     def _get_reward_funcs(self) -> list[RewardFunc]:
         return [func for func in self.funcs]
@@ -86,10 +86,10 @@ class Rubric:
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if not self._is_group_func(func)]
+        return [func.__name__ for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]  # type: ignore
+        return [func for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
 
     def _get_individual_reward_weights(self) -> list[float]:
         return [
@@ -131,7 +131,7 @@ class Rubric:
                     ans = float(await maybe_await(func, **merged))
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"
+                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = 0.0
             else:
@@ -140,7 +140,7 @@ class Rubric:
                     ans = float(await maybe_await(func, **allowed))
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"
+                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = 0.0
             return ans
@@ -150,10 +150,10 @@ class Rubric:
 
     # group-level reward helpers
     def _get_group_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if self._is_group_func(func)]
+        return [func.__name__ for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
 
     def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
-        return [func for func in self.funcs if self._is_group_func(func)]  # type: ignore
+        return [func for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
 
     def _get_group_reward_weights(self) -> list[float]:
         return [
@@ -188,7 +188,7 @@ class Rubric:
                     ans = await maybe_await(func, **merged)
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"
+                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = [0.0] * len(states)
             else:
@@ -197,7 +197,7 @@ class Rubric:
                     ans = await maybe_await(func, **allowed)
                 except Exception as e:
                     self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"
+                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
                     ans = [0.0] * len(states)
             return ans

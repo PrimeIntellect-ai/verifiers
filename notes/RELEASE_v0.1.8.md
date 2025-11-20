@@ -1,6 +1,6 @@
 # Verifiers v0.1.8 Release Notes
 
-*Date:* TBD
+*Date:* 11/19/2025
 
 Verifiers v0.1.8 introduces a major refactor of the rollout system to use trajectory-based tracking, where each LLM request/response pair is recorded as an independent step. This enables cleaner horizontal training workflows (e.g. truncated thinking, branching rollouts, sub-agents, self-summarization) and eliminates retokenization brittleness by preserving vLLM's native token IDs and logprobs.
 
@@ -11,6 +11,7 @@ Verifiers v0.1.8 introduces a major refactor of the rollout system to use trajec
 - **Decorator-based termination**: New `@stop`, `@cleanup`, and `@teardown` decorators for declarative rollout lifecycle management.
 - **State structure improvements**: Clear separation between `init_state()` (environment-agnostic) and `setup_state()` (environment-specific configuration).
 - **Horizontal training support**: Each trajectory step can be processed as an independent training example without retokenization.
+- **Training integration**: Both `RLTrainer` and `prime-rl` now use trajectory-based rollouts for training. `prime-rl` support is available via the `will/trajectories` branch, which is automatically pinned when using `vf-setup`.
 - **Group reward functions**: Reward functions can now operate on groups of rollouts simultaneously by accepting plural parameters (`states`, `prompts`, `completions`, etc.), enabling relative scoring (e.g. pairwise, tournament). 
 - **Simplified scoring logic**: Scoring is now performed at the group level via `score_group()` by default, parallelizing across rollouts for any rollout-based (non-group) reward functions.
 - **Completion rendering**: Internal `_render_completion()` method automatically renders completion from trajectory for output saving, ensuring consistent formatting.
@@ -56,8 +57,82 @@ class MyEnv(MultiTurnEnv):
 
 ### Rollout API Changes
 
-- `rollout()` now takes `input: RolloutInput` instead of state
-- State is created internally via `init_state()` and `setup_state()`
+**⚠️ Breaking for environments that don't override `MultiTurnEnv`**: The `rollout()` and `init_state()` method signatures have changed.
+
+**Old `rollout()` signature (deprecated):**
+```python
+async def rollout(
+    self,
+    client: AsyncOpenAI,
+    model: str,
+    prompt: Messages,
+    completion: Messages | None = None,
+    answer: str = "",
+    state: State = {},
+    task: str = "default",
+    info: Info | None = None,
+    example_id: int = 0,
+    sampling_args: SamplingArgs | None = None,
+    **kwargs,
+) -> tuple[Messages, State]:
+    # Returns tuple of (completion, state)
+    # ...
+```
+
+**New `rollout()` signature:**
+```python
+async def rollout(
+    self,
+    input: RolloutInput,
+    client: AsyncOpenAI,
+    model: str,
+    sampling_args: SamplingArgs | None = None,
+) -> State:
+    state = await self.init_state(input, client, model, sampling_args)
+    state = await self.setup_state(state)
+    # ... rollout logic ...
+    return state
+```
+
+**Old `init_state()` signature (deprecated):**
+```python
+async def init_state(
+    self,
+    prompt: Messages,
+    completion: Messages,
+    answer: str,
+    task: str,
+    info: Info,
+    example_id: int,
+    **kwargs,
+) -> State:
+    # Takes individual parameters, returns state dict
+    # ...
+```
+
+**New `init_state()` signature:**
+```python
+async def init_state(
+    self,
+    input: RolloutInput,
+    client: AsyncOpenAI,
+    model: str,
+    sampling_args: SamplingArgs | None = None,
+) -> State:
+    # Creates state from input, sets up trajectory list, timing, etc.
+    # ...
+```
+
+**Key changes:**
+- `rollout()` now takes `input: RolloutInput` as the first parameter instead of many individual parameters (`prompt`, `completion`, `answer`, `task`, `info`, `example_id`, etc.)
+- `rollout()` now returns `State` instead of `tuple[Messages, State]`
+- `init_state()` now takes `input: RolloutInput, client: AsyncOpenAI, model: str, sampling_args: SamplingArgs | None = None` instead of individual parameters
+- `setup_state()` is now abstract in `Environment` and **must be implemented** by environments that inherit directly from `Environment`. `MultiTurnEnv` implements it as a no-op (returns state unchanged), so environments inheriting from `MultiTurnEnv` can override it as needed but don't need to implement it
+- State is created internally via `init_state()` and `setup_state()` within `rollout()`
+
+**Impact:**
+- Environments that inherit from `MultiTurnEnv` (including `SingleTurnEnv`, `ToolEnv`, etc.) are unaffected as `MultiTurnEnv` handles these changes
+- Environments that inherit directly from `Environment` (e.g., custom environments) **must** update their `rollout()` and `init_state()` signatures and implement `setup_state()`
 
 ### Scoring Changes
 
@@ -68,7 +143,41 @@ class MyEnv(MultiTurnEnv):
 
 ### For Environment Developers
 
-1. **Replace `is_completed()` overrides with `@stop` decorators**: Do not override `is_completed()`. Instead, define stop conditions as methods decorated with `@stop`:
+1. **Update `rollout()` and `init_state()` signatures** (if inheriting directly from `Environment`): If your environment doesn't inherit from `MultiTurnEnv`, you must update these method signatures:
+   ```python
+   async def init_state(
+       self,
+       input: RolloutInput,
+       client: AsyncOpenAI,
+       model: str,
+       sampling_args: SamplingArgs | None = None,
+   ) -> State:
+       # Create state from input
+       state = await super().init_state(input, client, model, sampling_args)
+       # ... any custom initialization ...
+       return state
+   
+   async def rollout(
+       self,
+       input: RolloutInput,
+       client: AsyncOpenAI,
+       model: str,
+       sampling_args: SamplingArgs | None = None,
+   ) -> State:
+       state = await self.init_state(input, client, model, sampling_args)
+       state = await self.setup_state(state)
+       # ... your rollout logic ...
+       return state
+   ```
+
+2. **Implement `setup_state()`** (if inheriting directly from `Environment`): `setup_state()` is abstract in `Environment` and must be implemented. Note that `MultiTurnEnv` implements it as a no-op, so environments inheriting from `MultiTurnEnv` can override it as needed but don't need to implement it:
+   ```python
+   async def setup_state(self, state: State) -> State:
+       # Environment-specific setup (tools, sandbox IDs, etc.)
+       return state
+   ```
+
+3. **Replace `is_completed()` overrides with `@stop` decorators**: Do not override `is_completed()`. Instead, define stop conditions as methods decorated with `@stop`:
    ```python
    from verifiers import stop
    
@@ -77,8 +186,8 @@ class MyEnv(MultiTurnEnv):
        async def max_turns_reached(self, state: State) -> bool:
            return len(state["trajectory"]) >= self.max_turns
    ```
-2. **Update state access**: Use `state["trajectory"]` instead of `state["responses"]`
-3. **Review `setup_state()`**: Ensure environment-specific setup (tools, sandbox IDs, etc.) happens in `setup_state()` rather than `__init__()`
+
+4. **Update state access**: Use `state["trajectory"]` instead of `state["responses"]`
 
 ### For Users
 

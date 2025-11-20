@@ -6,26 +6,20 @@ import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
 PRIME_RL_REPO = "primeintellect-ai/prime-rl"
-PRIME_RL_COMMIT = (
-    "main"  # Commit hash, branch name, or tag to use for installed prime-rl version
-)
+VERIFIERS_COMMIT = "main"
+PRIME_RL_COMMIT = "will/trajectories"  # Commit hash, branch name, or tag to use for installed prime-rl version
 PRIME_RL_INSTALL_SCRIPT_REF = (
-    "main"  # Ref to use for fetching the install script itself
+    "will/trajectories"  # Ref to use for fetching the install script itself
 )
 
-ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/main/configs/endpoints.py"
+ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/endpoints.py"
 ENDPOINTS_DST = "configs/endpoints.py"
 
-ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/main/configs/zero3.yaml"
+ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
 ZERO3_DST = "configs/zero3.yaml"
 
 VERIFIERS_CONFIGS = [
     # (source_repo, source_path, dest_path)
-    (
-        VERIFIERS_REPO,
-        "configs/vf-rl/alphabet-sort.toml",
-        "configs/vf-rl/alphabet-sort.toml",
-    ),
     (
         VERIFIERS_REPO,
         "configs/vf-rl/gsm8k.toml",
@@ -119,8 +113,8 @@ def download_configs(configs):
     """Download configs from specified repos."""
     for repo, source_path, dest_path in configs:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        ref = PRIME_RL_COMMIT if repo == PRIME_RL_REPO else "main"
-        src = f"https://raw.githubusercontent.com/{repo}/{ref}/{source_path}"
+        ref = PRIME_RL_COMMIT if repo == PRIME_RL_REPO else VERIFIERS_COMMIT
+        src = f"https://raw.githubusercontent.com/{repo}/refs/heads/{ref}/{source_path}"
         dst = dest_path
         if not os.path.exists(dst):
             wget.download(src, dst)

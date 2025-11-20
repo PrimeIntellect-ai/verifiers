@@ -282,7 +282,9 @@ class TestCleanupPriorityOrdering:
                 answer="test",
                 example_id=0,
                 task="test",
-            )
+            ),
+            client=mock_openai_client,
+            model="test-model",
         )
         await env._cleanup(state)
 

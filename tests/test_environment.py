@@ -35,7 +35,7 @@ class SimpleEnvironment(Environment):
         sampling_args: SamplingArgs | None = None,
     ):
         """Simple test rollout implementation."""
-        state = await self.init_state(input)
+        state = await self.init_state(input, client=client, model=model)
         state = await self.setup_state(state)
 
         prompt_messages = state["prompt"]
