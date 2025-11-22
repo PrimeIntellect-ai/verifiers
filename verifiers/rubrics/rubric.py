@@ -8,6 +8,7 @@ import verifiers as vf
 from verifiers.types import (
     GroupRewardFunc,
     RewardFunc,
+    RewardResult,
     RolloutScore,
     State,
 )
@@ -98,14 +99,37 @@ class Rubric:
             if not self._is_group_func(func)
         ]
 
+    def _parse_reward_result(
+        self, func_name: str, result: float | RewardResult
+    ) -> tuple[float, str | None]:
+        """
+        Normalize reward function outputs to (score, feedback).
+
+        Raises:
+            ValueError: if a RewardResult dict omits the required "score" key.
+        """
+        if isinstance(result, dict):
+            if "score" not in result:
+                raise ValueError(
+                    f"RewardResult dict missing required 'score' key for {func_name}: {result}"
+                )
+            score = float(result["score"])
+            feedback = result.get("feedback")
+            return score, feedback
+        return float(result), None
+
     async def _call_individual_reward_func(
         self,
         func: RewardFunc,
         state: State,
         score_sem: AsyncContextManager,
-    ) -> float:
+    ) -> float | RewardResult:
         """
         Invoke `func` with only the required arguments.
+
+        Reward functions can return either:
+        - float: backward compatible (no feedback)
+        - dict: {"score": float, "feedback": str} (for FeedbackRubric)
 
         Example:
         ```
@@ -128,22 +152,31 @@ class Rubric:
             merged.update(self.class_objects)
             if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
                 try:
-                    ans = float(await maybe_await(func, **merged))
+                    result = await maybe_await(func, **merged)
+                    # Handle both float and dict returns
+                    if isinstance(result, dict):
+                        return result
+                    else:
+                        return float(result)
                 except Exception as e:
                     self.logger.error(
                         f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
-                    ans = 0.0
+                    return 0.0
             else:
                 allowed = {k: v for k, v in merged.items() if k in sig.parameters}
                 try:
-                    ans = float(await maybe_await(func, **allowed))
+                    result = await maybe_await(func, **allowed)
+                    # Handle both float and dict returns
+                    if isinstance(result, dict):
+                        return result
+                    else:
+                        return float(result)
                 except Exception as e:
                     self.logger.error(
                         f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
                     )
-                    ans = 0.0
-            return ans
+                    return 0.0
 
         async with score_sem:
             return await _call()
@@ -216,14 +249,20 @@ class Rubric:
         )
         start_time = time.time()
         reward_scores = []
+        feedbacks = []  # Collect feedback from functions that return dicts
+
         for func in reward_funcs:
-            reward_scores.append(
-                await self._call_individual_reward_func(
-                    func=func,
-                    state=state,
-                    score_sem=score_sem,
-                )
+            result = await self._call_individual_reward_func(
+                func=func,
+                state=state,
+                score_sem=score_sem,
             )
+
+            score, feedback = self._parse_reward_result(func.__name__, result)
+            if feedback:
+                feedbacks.append(f"{func.__name__}: {feedback}")
+            reward_scores.append(score)
+
         rewards = RolloutScore(
             metrics={
                 func.__name__: reward
@@ -243,6 +282,32 @@ class Rubric:
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
+        state["feedbacks"] = feedbacks  # Store feedback for get_feedback()
+
+    def get_feedback(self, state: State) -> str:
+        """
+        Combine feedback from all reward functions into a single string.
+
+        This method should be called after score_rollout() has been executed,
+        which populates state["feedbacks"].
+
+        Args:
+            state: State dict containing execution results
+
+        Returns:
+            Combined feedback string from all reward functions
+        """
+        feedbacks = state.get("feedbacks", [])
+
+        if not feedbacks:
+            # Fallback if no functions provided feedback
+            score = state.get("reward", 0.0)
+            return f"Score: {score:.2%} (no detailed feedback available)"
+
+        # Combine all feedback with score summary
+        combined = f"Score: {state.get('reward', 0.0):.2%}\n\n"
+        combined += "\n\n".join(feedbacks)
+        return combined
 
     async def score_group(self, states: list[State], score_sem: AsyncContextManager):
         """
@@ -271,7 +336,13 @@ class Rubric:
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
                 for i in range(num_states):
-                    score_value = scores[i]
+                    score_value, feedback = self._parse_reward_result(
+                        func_name, scores[i]
+                    )
+                    if feedback:
+                        states[i].setdefault("feedbacks", []).append(
+                            f"{func_name}: {feedback}"
+                        )
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
             else:
@@ -288,7 +359,13 @@ class Rubric:
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
                 for i in range(num_states):
-                    score_value = scores[i]
+                    score_value, feedback = self._parse_reward_result(
+                        func_name, scores[i]
+                    )
+                    if feedback:
+                        states[i].setdefault("feedbacks", []).append(
+                            f"{func_name}: {feedback}"
+                        )
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
 

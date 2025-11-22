@@ -81,6 +81,9 @@ envs = [
     "nltk",
     "textarena",
 ]
+gepa = [
+    "gepa>=0.0.22",
+]
 docs = [
     "sphinx",
     "myst-parser",
@@ -95,6 +98,7 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
+vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"

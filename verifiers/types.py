@@ -104,6 +104,7 @@ class State(dict):
     reward: float | None
     advantage: float | None
     metrics: dict[str, float] | None
+    feedbacks: list[str] | None
     timing: RolloutTiming | None
 
     def __getitem__(self, key: str) -> Any:
@@ -172,6 +173,18 @@ class RolloutScore(TypedDict):
 
     reward: float
     metrics: dict[str, float]
+
+
+class RewardResult(TypedDict, total=False):
+    """Result from a reward function with optional feedback.
+
+    Reward functions can return either:
+    - float: backward compatible (no feedback)
+    - RewardResult: {"score": float, "feedback": str}
+    """
+
+    score: float  # required
+    feedback: str  # optional
 
 
 class RolloutScores(TypedDict):
