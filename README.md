@@ -77,7 +77,7 @@ For advanced evaluation configurations with the `prime` [CLI](https://github.com
 
 ## Prompt Optimization with GEPA
 
-Automatically improve your environment's prompts using GEPA (Gradient-free Evolutionary Prompt Adaptation):
+Automatically improve your environment's prompts using GEPA (Genetic-Pareto):
 
 ```bash
 # Install GEPA extras
