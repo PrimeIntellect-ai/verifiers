@@ -1,6 +1,6 @@
 # GEPA Integration
 
-GEPA (Gradient-free Evolutionary Prompt Adaptation) integration for Verifiers environments.
+GEPA (Genetic-Pareto) integration for Verifiers environments.
 
 ## Overview
 

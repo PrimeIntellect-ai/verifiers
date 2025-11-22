@@ -1,6 +1,6 @@
 # GEPA: Prompt Optimization
 
-GEPA (Gradient-free Evolutionary Prompt Adaptation) is an automatic prompt optimization system that improves your environment's system prompts and tool descriptions based on rubric feedback.
+GEPA (Genetic-Pareto) is an automatic prompt optimization system that improves your environment's system prompts and tool descriptions based on rubric feedback.
 
 ## Overview
 
