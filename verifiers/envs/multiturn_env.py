@@ -1,6 +1,8 @@
 import logging
 import time
+from copy import deepcopy
 from abc import abstractmethod
+from json import JSONDecodeError
 
 from openai import AsyncOpenAI
 
@@ -20,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = -1, **kwargs):
+    def __init__(self, max_turns: int = -1, max_retries: int = 5, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.max_retries = max_retries
 
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
@@ -84,66 +87,83 @@ class MultiTurnEnv(Environment):
             assert isinstance(state["prompt"], str)
             assert isinstance(state["completion"], str)
             state["responses_start_idx"] = []
+        retry_count = 0
         while not is_completed:
-            context_messages = await self.get_context_messages(state)
-            if await maybe_await(self.is_completed, context_messages, state, **kwargs):
-                is_completed = True
-                break
-            response = await self.get_model_response(
-                client,
-                model,
-                context_messages,
-                oai_tools=info.get("oai_tools", None),
-                sampling_args=sampling_args,
-                message_type=self.message_type,
-                initial_prompt=len(state["responses"]) == 0,
-                **kwargs,
-            )
-            if response is not None and response.id == "overlong-prompt":
-                state["prompt_too_long"] = True
-                break
-            state["responses"].append(response)
-            response_text: str = ""
-            if self.message_type == "chat":
-                assert isinstance(context_messages, list)
-                assert isinstance(response, ChatCompletion)
-                if response.choices and response.choices[0].message:
-                    response_text = response.choices[0].message.content or ""
-                response_message: ChatMessage = {
-                    "role": "assistant",
-                    "content": response_text,
-                }
-                if (
-                    response.choices
-                    and response.choices[0].message
-                    and response.choices[0].message.tool_calls
+            old_state = deepcopy(state)
+            try:
+                context_messages = await self.get_context_messages(state)
+                if await maybe_await(
+                    self.is_completed, context_messages, state, **kwargs
                 ):
-                    tool_calls = response.choices[0].message.tool_calls
-                    response_message["tool_calls"] = [  # type: ignore
-                        tool_call.model_dump() for tool_call in tool_calls
-                    ]
-                state["completion"].append(response_message)
-            else:
-                assert isinstance(response, Completion)
-                state["responses_start_idx"].append(len(completion))
-                if response.choices and response.choices[0]:
-                    response_text = response.choices[0].text or ""
-                state["completion"] += response_text
-            context_messages = await self.get_context_messages(state)
-            state["turn"] += 1
-            if await maybe_await(self.is_completed, context_messages, state, **kwargs):
-                is_completed = True
-                end_time = time.time()
-                state["timing"]["generation_ms"] = (end_time - start_time) * 1000
-                state["timing"]["total_ms"] = (end_time - start_time) * 1000
-            else:
-                env_msgs, state = await maybe_await(
-                    self.env_response, context_messages, state, **kwargs
+                    is_completed = True
+                    break
+                response = await self.get_model_response(
+                    client,
+                    model,
+                    context_messages,
+                    oai_tools=info.get("oai_tools", None),
+                    sampling_args=sampling_args,
+                    message_type=self.message_type,
+                    initial_prompt=len(state["responses"]) == 0,
+                    **kwargs,
                 )
+                if response is not None and response.id == "overlong-prompt":
+                    state["prompt_too_long"] = True
+                    break
+                state["responses"].append(response)
+                response_text: str = ""
                 if self.message_type == "chat":
-                    assert isinstance(env_msgs, list)
-                    state["completion"] += env_msgs
+                    assert isinstance(context_messages, list)
+                    assert isinstance(response, ChatCompletion)
+                    if response.choices and response.choices[0].message:
+                        response_text = response.choices[0].message.content or ""
+                    response_message: ChatMessage = {
+                        "role": "assistant",
+                        "content": response_text,
+                    }
+                    if (
+                        response.choices
+                        and response.choices[0].message
+                        and response.choices[0].message.tool_calls
+                    ):
+                        tool_calls = response.choices[0].message.tool_calls
+                        response_message["tool_calls"] = [  # type: ignore
+                            tool_call.model_dump() for tool_call in tool_calls
+                        ]
+                    state["completion"].append(response_message)
                 else:
-                    assert isinstance(env_msgs, str)
-                    state["completion"] += env_msgs
+                    assert isinstance(response, Completion)
+                    state["responses_start_idx"].append(len(completion))
+                    if response.choices and response.choices[0]:
+                        response_text = response.choices[0].text or ""
+                    state["completion"] += response_text
+                context_messages = await self.get_context_messages(state)
+                state["turn"] += 1
+                if await maybe_await(
+                    self.is_completed, context_messages, state, **kwargs
+                ):
+                    is_completed = True
+                    end_time = time.time()
+                    state["timing"]["generation_ms"] = (end_time - start_time) * 1000
+                    state["timing"]["total_ms"] = (end_time - start_time) * 1000
+                else:
+                    env_msgs, state = await maybe_await(
+                        self.env_response, context_messages, state, **kwargs
+                    )
+                    if self.message_type == "chat":
+                        assert isinstance(env_msgs, list)
+                        state["completion"] += env_msgs
+                    else:
+                        assert isinstance(env_msgs, str)
+                        state["completion"] += env_msgs
+                retry_count = 0
+            except JSONDecodeError as e:
+                logger.error(f"JSONDecodeError: {e}")
+                state = deepcopy(old_state)
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    continue
+                else:
+                    logger.error(f"Max retries ({self.max_retries}) exceeded")
+                    raise e
         return state["completion"], state
