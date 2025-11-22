@@ -219,6 +219,36 @@ class TestRubric:
         assert state["reward"] == 2.0
 
     @pytest.mark.asyncio
+    async def test_reward_result_missing_score_raises(self):
+        """RewardResult dicts must include a score key."""
+
+        def bad_reward(completion, **kwargs):
+            return {"feedback": "oops"}
+
+        rubric = Rubric(funcs=[bad_reward])
+
+        state = State(
+            input=RolloutInput(
+                prompt="prompt",
+                answer="answer",
+                task="task",
+                example_id=0,
+            )
+        )
+        state["completion"] = "prediction"
+        state["trajectory"] = []
+        state["timing"] = {
+            "generation_ms": 0.0,
+            "scoring_ms": 0.0,
+            "total_ms": 0.0,
+            "start_time": 0.0,
+        }
+        score_sem = NullAsyncContext()
+
+        with pytest.raises(ValueError, match="missing required 'score'"):
+            await rubric.score_rollout(state, score_sem)
+
+    @pytest.mark.asyncio
     async def test_score_rollouts_multiple(self):
         """Test scoring multiple rollouts using score_group."""
 
@@ -275,6 +305,83 @@ class TestRubric:
         assert states[0]["metrics"]["length_func"] == 7.0
         assert states[1]["metrics"]["length_func"] == 7.0
         assert states[2]["metrics"]["length_func"] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_score_group_handles_reward_result_dicts(self):
+        """Ensure score_group handles RewardResult outputs from individual funcs."""
+
+        def reward_with_feedback(completion, **kwargs):
+            return {"score": 0.25, "feedback": "ok"}
+
+        rubric = Rubric(funcs=[reward_with_feedback], weights=[2.0])
+
+        state = State(
+            input=RolloutInput(
+                prompt="prompt",
+                answer="answer",
+                task="task",
+                example_id=0,
+            )
+        )
+        state["completion"] = "prediction"
+        state["trajectory"] = []
+        state["timing"] = {
+            "generation_ms": 0.0,
+            "scoring_ms": 0.0,
+            "total_ms": 0.0,
+            "start_time": 0.0,
+        }
+        score_sem = NullAsyncContext()
+
+        await rubric.score_group([state], score_sem)
+
+        assert state["metrics"]["reward_with_feedback"] == pytest.approx(0.25)
+        assert state["reward"] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_group_reward_func_handles_dict_scores(self):
+        """Ensure group-level reward functions can emit RewardResult dicts."""
+
+        def group_reward(states, **kwargs):
+            return [{"score": 0.1}, {"score": 0.2}]
+
+        rubric = Rubric(funcs=[group_reward], weights=[1.0])
+
+        states = [
+            State(
+                input=RolloutInput(
+                    prompt="p1",
+                    answer="a1",
+                    task="t1",
+                    example_id=0,
+                )
+            ),
+            State(
+                input=RolloutInput(
+                    prompt="p2",
+                    answer="a2",
+                    task="t2",
+                    example_id=1,
+                )
+            ),
+        ]
+        for state in states:
+            state["completion"] = "resp"
+            state["trajectory"] = []
+            state["timing"] = {
+                "generation_ms": 0.0,
+                "scoring_ms": 0.0,
+                "total_ms": 0.0,
+                "start_time": 0.0,
+            }
+
+        score_sem = NullAsyncContext()
+        await rubric.score_group(states, score_sem)
+
+        assert states[0]["metrics"]["group_reward"] == pytest.approx(0.1)
+        assert states[1]["metrics"]["group_reward"] == pytest.approx(0.2)
+        assert states[0]["reward"] == pytest.approx(0.1)
+        assert states[1]["reward"] == pytest.approx(0.2)
 
     @pytest.mark.asyncio
     async def test_score_rollouts_with_apply_weights(self):

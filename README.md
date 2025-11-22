@@ -75,6 +75,38 @@ uv run vf-eval wordle -m gpt-5-nano
 
 For advanced evaluation configurations with the `prime` [CLI](https://github.com/PrimeIntellect-ai/prime-cli), see [here](https://docs.primeintellect.ai/tutorials-environments/evaluating)
 
+## Prompt Optimization with GEPA
+
+Automatically improve your environment's prompts using GEPA (Gradient-free Evolutionary Prompt Adaptation):
+
+```bash
+# Install GEPA extras
+uv add 'verifiers[gepa]'
+
+# Optimize system prompt
+vf-gepa wordle --auto medium
+
+# Optimize system prompt + tool descriptions
+vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+```
+
+GEPA analyzes your rubric's feedback and iteratively refines prompts. Works best when reward functions return rich textual feedback. See the [GEPA documentation](docs/source/gepa.md) for details.
+
+After a run completes, apply the saved components to an environment instance:
+
+```python
+import json
+import verifiers as vf
+
+with open("gepa_results/wordle/<run_id>/wordle_optimized.json") as f:
+    optimized = json.load(f)
+
+env = vf.load_environment("wordle")
+env.system_prompt = optimized["system_prompt"]
+if "tool_0_description" in optimized and hasattr(env, "oai_tools"):
+    env.oai_tools[0]["function"]["description"] = optimized["tool_0_description"]
+```
+
 ## RL Training
 
 ### `prime-rl`

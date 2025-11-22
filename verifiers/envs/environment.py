@@ -431,6 +431,7 @@ class Environment(ABC):
             total_ms=0.0,
             start_time=time.time(),
         )
+        state["feedbacks"] = []
         return state
 
     @abstractmethod
