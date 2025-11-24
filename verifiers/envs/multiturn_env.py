@@ -96,11 +96,11 @@ class MultiTurnEnv(vf.Environment):
         while not await self.is_completed(state):
             prompt_messages = await self.get_prompt_messages(state)
             response = await self.get_model_response(
-                client,
-                model,
-                prompt_messages,
+                client=state["client"],
+                model=state["model"],
+                prompt=prompt_messages,
                 oai_tools=state["oai_tools"],
-                sampling_args=sampling_args,
+                sampling_args=state["sampling_args"],
                 message_type=self.message_type,
             )
             await self.add_model_response(state, prompt_messages, response)

@@ -98,6 +98,7 @@ class State(dict):
     # created during rollout
     is_completed: bool
     stop_condition: str | None
+    model: str | None
     oai_tools: list[ChatCompletionToolParam]
     trajectory: list[TrajectoryStep]
     completion: Messages | None

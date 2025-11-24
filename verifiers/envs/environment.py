@@ -405,6 +405,7 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
+        # store input
         state_input = deepcopy(input)
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
@@ -422,6 +423,11 @@ class Environment(ABC):
             state["oai_tools"] = self.oai_tools
         else:
             state["oai_tools"] = []
+        # store client, model, sampling_args
+        state["client"] = client
+        state["model"] = model
+        state["sampling_args"] = sampling_args
+        # initialize trajectory
         state["trajectory"] = []
         state["reward"] = None
         state["metrics"] = None
