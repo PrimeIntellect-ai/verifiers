@@ -150,7 +150,11 @@ class TestGEPAAdapter:
             )
 
     def test_gepa_adapter_build_program(self):
-        """Test GEPAAdapter.build_program creates new environment with updated components."""
+        """Test GEPAAdapter.build_program creates new environment with updated components.
+
+        Important: datasets should NOT be copied for efficiency (can be huge).
+        The adapter provides inputs directly via _build_rollout_inputs.
+        """
         GEPAAdapter = require_gepa_adapter()
 
         # Create real environment
@@ -175,8 +179,15 @@ class TestGEPAAdapter:
         candidate = {"system_prompt": "Optimized prompt"}
         new_env = adapter.build_program(candidate)
 
+        # Verify component was updated
         assert new_env.system_prompt == "Optimized prompt"
         assert new_env.system_prompt != env.system_prompt
+
+        # Verify dataset was NOT copied (efficiency optimization)
+        # New env should have a minimal dummy dataset, not the original
+        assert new_env.dataset is not None  # Has some dataset to satisfy init
+        assert len(new_env.dataset) == 1  # But it's minimal (dummy)
+        assert new_env.dataset is not env.dataset  # Not the same reference
 
     def test_gepa_adapter_extract_seed_candidate(self):
         """Test extracting seed candidate from environment."""

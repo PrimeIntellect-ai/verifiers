@@ -247,3 +247,42 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+
+
+class GEPAConfig(BaseModel):
+    """Pydantic model for GEPA optimization configuration."""
+
+    # environment
+    env_id: str
+    env_args: dict
+    env_dir_path: str
+    # task model
+    model: str
+    client_config: ClientConfig
+    sampling_args: SamplingArgs
+    # reflection model
+    reflection_model: str
+    reflection_api_key: str
+    reflection_base_url: str
+    reflection_temperature: float
+    reflection_max_tokens: int
+    reflection_minibatch_size: int
+    # datasets
+    num_examples: int
+    num_val: int
+    rollouts_per_example: int
+    trainset: list[dict]
+    valset: list[dict]
+    # optimization
+    components_to_optimize: list[str]
+    seed_candidate: dict[str, str]
+    max_metric_calls: int
+    # execution
+    max_concurrent: int
+    seed: int
+    # output
+    log_dir: Path
+    save_results: bool
+    save_every: int
+    track_stats: bool
+    verbose: bool
