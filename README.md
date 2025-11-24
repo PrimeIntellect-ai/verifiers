@@ -84,10 +84,10 @@ Automatically improve your environment's prompts using GEPA (Genetic-Pareto):
 uv add 'verifiers[gepa]'
 
 # Optimize system prompt
-vf-gepa wordle --auto medium
+vf-gepa wordle --budget medium
 
 # Optimize system prompt + tool descriptions
-vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+vf-gepa wiki-search --budget heavy --components system_prompt tool_descriptions
 ```
 
 GEPA analyzes your rubric's feedback and iteratively refines prompts. Works best when reward functions return rich textual feedback. See the [GEPA documentation](docs/source/gepa.md) for details.

@@ -27,7 +27,7 @@ This installs the `gepa` optimization engine.
 Optimize the system prompt for an environment:
 
 ```bash
-vf-gepa wordle --auto medium
+vf-gepa wordle --budget medium
 ```
 
 This will:
@@ -38,33 +38,33 @@ This will:
 
 ## Budget Modes
 
-GEPA offers three auto budget levels:
+GEPA offers three budget presets:
 
 ### Light (~6 candidates)
 Fast iteration for testing:
 ```bash
-vf-gepa my-env --auto light
+vf-gepa my-env --budget light
 ```
-- Best for: Quick experiments, sanity checks
-- Time: ~5-10 minutes for simple environments
-- Use when: Testing GEPA setup, iterating rapidly
+- Best for: Quick experiments, initial testing
+- Time: ~30-60 minutes for typical environments
+- Use when: Testing GEPA setup, first optimization runs
 
 ### Medium (~12 candidates)  
 Balanced optimization:
 ```bash
-vf-gepa my-env --auto medium
+vf-gepa my-env --budget medium
 ```
 - Best for: Most use cases, good improvements
-- Time: ~15-30 minutes for simple environments
+- Time: ~1-2 hours for typical environments
 - Use when: Standard optimization runs
 
 ### Heavy (~18 candidates)
 Thorough exploration:
 ```bash
-vf-gepa my-env --auto heavy
+vf-gepa my-env --budget heavy
 ```
 - Best for: Final production prompts, critical environments
-- Time: ~30-60 minutes for simple environments
+- Time: ~2-4 hours for typical environments
 - Use when: You need the best possible prompt
 
 ### Custom Budget
@@ -74,24 +74,33 @@ For fine control, specify exact metric calls:
 vf-gepa my-env --max-metric-calls 1000
 ```
 
+### Faster Iteration
+
+For quicker feedback cycles (at the cost of potentially noisier signals), reduce the minibatch size:
+```bash
+vf-gepa my-env --budget light --reflection-minibatch-size 10
+```
+
+The default minibatch size is 35 examples per reflection step. Smaller values (5-15) trade stability for speed, useful during initial experimentation.
+
 ## Component Selection
 
 By default, GEPA optimizes `system_prompt`. You can specify multiple components:
 
 ### System Prompt Only
 ```bash
-vf-gepa my-env --auto medium --components system_prompt
+vf-gepa my-env --budget medium --components system_prompt
 ```
 
 ### Tool Descriptions
 For environments with tools, optimize their descriptions:
 ```bash
-vf-gepa wiki-search --auto medium --components tool_descriptions
+vf-gepa wiki-search --budget medium --components tool_descriptions
 ```
 
 ### Both System Prompt and Tool Descriptions
 ```bash
-vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+vf-gepa wiki-search --budget heavy --components system_prompt tool_descriptions
 ```
 
 When optimizing `tool_descriptions`, GEPA:
@@ -105,18 +114,18 @@ When optimizing `tool_descriptions`, GEPA:
 ### Task Model
 The model being optimized (default: `gpt-4o-mini`):
 ```bash
-vf-gepa my-env --auto medium -m gpt-4o
+vf-gepa my-env --budget medium -m gpt-4o
 ```
 
 ### Reflection Model
 The model generating improved prompts (default: `gpt-4o`):
 ```bash
-vf-gepa my-env --auto medium --reflection-model gpt-4o
+vf-gepa my-env --budget medium --reflection-model gpt-4o
 ```
 
 ### Sampling Parameters
 ```bash
-vf-gepa my-env --auto medium \
+vf-gepa my-env --budget medium \
   -T 0.7 \              # Temperature for task model
   -t 2048 \             # Max tokens
   --reflection-temperature 1.0  # Temperature for reflection
@@ -127,7 +136,7 @@ vf-gepa my-env --auto medium \
 Control train/validation split sizes:
 
 ```bash
-vf-gepa my-env --auto medium \
+vf-gepa my-env --budget medium \
   -n 100 \              # 100 training examples
   --num-val 30          # 30 validation examples
 ```
@@ -196,24 +205,24 @@ The `feedback` field is used by GEPA to understand *why* completions failed, ena
 ### Multiple Rollouts Per Example
 Increase robustness with multiple rollouts:
 ```bash
-vf-gepa my-env --auto medium --rollouts-per-example 3
+vf-gepa my-env --budget medium --rollouts-per-example 3
 ```
 
 ### Custom Log Directory
 ```bash
-vf-gepa my-env --auto medium --log-dir ./my_optimization_runs
+vf-gepa my-env --budget medium --log-dir ./my_optimization_runs
 ```
 
 ### Track Detailed Statistics
 Save full outputs for analysis:
 ```bash
-vf-gepa my-env --auto medium --track-stats
+vf-gepa my-env --budget medium --track-stats
 ```
 
 ### Verbose Logging
 Debug optimization process:
 ```bash
-vf-gepa my-env --auto medium -v
+vf-gepa my-env --budget medium -v
 ```
 
 ## Best Practices
@@ -238,7 +247,7 @@ return 0.5  # GEPA will only see the number
 Ensure your training and validation sets cover the full range of task difficulty and variety.
 
 ### 3. Start Light, Then Scale Up
-Begin with `--auto light` to verify everything works, then use `medium` or `heavy` for production.
+Begin with `--budget light` to verify everything works, then use `medium` or `heavy` for production.
 
 ### 4. Iterate on Feedback Quality
 If GEPA improvements are small, review your rubric's feedback. More specific feedback = better improvements.
@@ -273,7 +282,7 @@ Check that your environment exposes the component you're trying to optimize. Use
 - GEPA expects deterministic environment construction. Expensive setup code will re-run for every candidate.
 
 ### Low Improvement
-- Increase budget: Use `--auto heavy` or `--max-metric-calls 2000`
+- Increase budget: Use `--budget heavy` or `--max-metric-calls 2000`
 - Improve feedback: Make your rubric's feedback more specific
 - Add more examples: Use `-n 100 --num-val 30`
 - Check dataset quality: Ensure examples are representative
@@ -287,12 +296,12 @@ Check that your environment exposes the component you're trying to optimize. Use
 
 ### Basic Optimization
 ```bash
-vf-gepa wordle --auto medium
+vf-gepa wordle --budget medium
 ```
 
 ### Tool-Using Environment
 ```bash
-vf-gepa wiki-search --auto heavy \
+vf-gepa wiki-search --budget heavy \
   --components system_prompt tool_descriptions \
   -m gpt-4o
 ```
@@ -307,7 +316,7 @@ vf-gepa my-env --max-metric-calls 2000 \
 
 ### Custom Models
 ```bash
-vf-gepa my-env --auto medium \
+vf-gepa my-env --budget medium \
   -m claude-3-5-sonnet-20241022 \
   --reflection-model gpt-4o
 ```
