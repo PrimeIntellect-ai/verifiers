@@ -14,8 +14,6 @@ import json
 import logging
 import os
 import sys
-import uuid
-from pathlib import Path
 
 try:
     from gepa import optimize  # noqa: F401
@@ -244,10 +242,6 @@ Examples:
         help="Save rollout trajectories every n evaluations during optimization",
     )
     parser.add_argument(
-        "--log-dir",
-        help="Directory for GEPA logs (default: ./gepa_results/<env_id>/<run_id>)",
-    )
-    parser.add_argument(
         "--track-stats",
         action="store_true",
         help="Track detailed optimization statistics",
@@ -448,15 +442,6 @@ Examples:
         logger.error("No valid components found to optimize!")
         return
 
-    # Setup log directory
-    if args.log_dir:
-        log_dir = Path(args.log_dir)
-    else:
-        run_id = str(uuid.uuid4())[:8]
-        log_dir = Path(f"./gepa_results/{args.env_id}/{run_id}")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Log directory: {log_dir}")
-
     # Convert budget preset to max_metric_calls if needed
     if args.budget:
         max_metric_calls = auto_budget_to_metric_calls(
@@ -501,7 +486,6 @@ Examples:
         max_concurrent=args.max_concurrent,
         seed=args.seed,
         # output
-        log_dir=log_dir,
         save_results=args.save_results,
         save_every=args.save_every,
         track_stats=args.track_stats,

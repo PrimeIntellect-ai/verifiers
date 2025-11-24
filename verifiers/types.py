@@ -281,7 +281,6 @@ class GEPAConfig(BaseModel):
     max_concurrent: int
     seed: int
     # output
-    log_dir: Path
     save_results: bool
     save_every: int
     track_stats: bool
