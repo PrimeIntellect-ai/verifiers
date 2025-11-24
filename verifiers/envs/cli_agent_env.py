@@ -3,6 +3,7 @@ import logging
 import subprocess
 import time
 import uuid
+import json
 from typing import Any
 
 from aiohttp import web
@@ -513,6 +514,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        )
+        logger.info(
+            f"Response to agent: {json.dumps(response_dict, indent=2, default=str)[:2000]}"
         )
         return web.json_response(response_dict)  # type: ignore
 
