@@ -169,7 +169,7 @@ class HarborCliAgentEnv(CliAgentEnv):
         )
 
         logger.debug(
-            f"Creating Harbor sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
+            f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
         )
         sandbox = await sandbox_client.create(sandbox_request)
