@@ -105,8 +105,12 @@ class GEPAAdapter(BaseGEPAAdapter):
         post_init_overrides: dict[str, Any] = {}
 
         # Preserve constructor arguments present on the base environment
+        # Skip dataset/eval_dataset as they are not needed (adapter provides inputs)
+        # and copying them would be hugely inefficient for large datasets
         for param_name in signature.parameters:
             if param_name == "self":
+                continue
+            if param_name in ("dataset", "eval_dataset"):
                 continue
             if hasattr(self.base_env, param_name):
                 value = getattr(self.base_env, param_name)
@@ -118,9 +122,12 @@ class GEPAAdapter(BaseGEPAAdapter):
         # Ensure core Environment parameters are forwarded when available
         # BUT only if they're explicitly in the specific environment's signature
         # (Some envs like TextArenaEnv create dataset/eval_dataset internally)
+        # Skip dataset/eval_dataset for efficiency (not needed by adapter)
         env_signature = inspect.signature(vf.Environment.__init__)
         env_param_names = [
-            name for name in env_signature.parameters if name not in {"self", "kwargs"}
+            name
+            for name in env_signature.parameters
+            if name not in {"self", "kwargs", "dataset", "eval_dataset"}
         ]
         for param_name in env_param_names:
             if param_name in init_kwargs:
@@ -158,6 +165,11 @@ class GEPAAdapter(BaseGEPAAdapter):
                 init_kwargs[comp_name] = comp_value
             else:
                 post_init_overrides[comp_name] = comp_value
+
+        # Provide minimal dataset if none exists (adapter provides inputs directly)
+        # This avoids copying large datasets and improves performance
+        if "dataset" not in init_kwargs and "eval_dataset" not in init_kwargs:
+            init_kwargs["dataset"] = vf.load_example_dataset(n=1)
 
         try:
             new_env = env_class(**init_kwargs)
