@@ -24,13 +24,13 @@ This installs the `gepa` package (>=0.0.22).
 Optimize a system prompt:
 
 ```bash
-vf-gepa wordle --auto medium
+vf-gepa wordle --budget medium
 ```
 
 Optimize system prompt + tool descriptions:
 
 ```bash
-vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+vf-gepa wiki-search --budget heavy --components system_prompt tool_descriptions
 ```
 
 ## Components
@@ -99,7 +99,7 @@ When optimizing `tool_descriptions`, the adapter:
 Example:
 
 ```bash
-vf-gepa my-env --components tool_descriptions --auto medium
+vf-gepa my-env --components tool_descriptions --budget medium
 ```
 
 ## Architecture
@@ -181,7 +181,7 @@ Full documentation: [`docs/source/gepa.md`](../../docs/source/gepa.md)
 
 ```bash
 # Basic
-vf-gepa ENV_ID --auto light|medium|heavy
+vf-gepa ENV_ID --budget light|medium|heavy
 
 # Advanced
 vf-gepa ENV_ID \
@@ -195,7 +195,7 @@ vf-gepa ENV_ID \
 # Options
   -n, --num-examples       Training examples (default: 50)
   --num-val               Validation examples (default: 20)
-  --auto                  Budget: light/medium/heavy
+  --budget                Budget preset: light/medium/heavy
   --max-metric-calls      Custom budget (total metric calls)
   --components            What to optimize (default: system_prompt)
   -m, --model             Task model (default: gpt-4o-mini)

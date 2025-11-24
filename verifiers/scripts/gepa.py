@@ -3,8 +3,8 @@
 GEPA optimization script for Verifiers environments.
 
 Usage:
-    vf-gepa wordle --auto light
-    vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+    vf-gepa wordle --budget light
+    vf-gepa wiki-search --budget heavy --components system_prompt tool_descriptions
     vf-gepa my-env --max-metric-calls 1000 -n 100 --num-val 30
 """
 
@@ -52,10 +52,10 @@ def main():
         epilog="""
 Examples:
   # Light optimization (quick test)
-  vf-gepa wordle --auto light
+  vf-gepa wordle --budget light
 
   # Heavy optimization with tool descriptions
-  vf-gepa wiki-search --auto heavy --components system_prompt tool_descriptions
+  vf-gepa wiki-search --budget heavy --components system_prompt tool_descriptions
 
   # Custom configuration
   vf-gepa my-env --max-metric-calls 1000 -n 100 --num-val 30
@@ -178,9 +178,10 @@ Examples:
     # 8. GEPA budget (mutually exclusive)
     budget_group = parser.add_mutually_exclusive_group(required=True)
     budget_group.add_argument(
-        "--auto",
+        "--budget",
+        "-B",
         choices=["light", "medium", "heavy"],
-        help="Auto budget: light (~6 candidates), medium (~12), heavy (~18)",
+        help="Budget preset: light (~6 candidates), medium (~12), heavy (~18)",
     )
     budget_group.add_argument(
         "--max-metric-calls", type=int, help="Maximum total metric calls budget"
@@ -223,8 +224,8 @@ Examples:
     parser.add_argument(
         "--reflection-minibatch-size",
         type=int,
-        default=3,
-        help="Number of examples per reflection step (default: 3)",
+        default=35,
+        help="Number of examples per reflection step (default: 35)",
     )
 
     # 10. Output/Logging
@@ -456,10 +457,10 @@ Examples:
     log_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Log directory: {log_dir}")
 
-    # Convert auto budget to max_metric_calls if needed
-    if args.auto:
+    # Convert budget preset to max_metric_calls if needed
+    if args.budget:
         max_metric_calls = auto_budget_to_metric_calls(
-            auto=args.auto,
+            auto=args.budget,
             num_components=len(seed_candidate),
             valset_size=len(valset),
             minibatch_size=args.reflection_minibatch_size,

@@ -147,19 +147,19 @@ def auto_budget_to_metric_calls(
     auto: str,
     num_components: int,
     valset_size: int,
-    minibatch_size: int = 3,
+    minibatch_size: int = 35,
     full_eval_steps: int = 5,
 ) -> int:
     """
     Convert auto budget (light/medium/heavy) to max_metric_calls.
 
-    This replicates GEPA's auto_budget calculation for consistency.
+    This replicates DSPy's auto_budget calculation for consistency.
 
     Args:
         auto: Budget level ('light', 'medium', or 'heavy')
         num_components: Number of components being optimized
         valset_size: Size of validation set
-        minibatch_size: Reflection minibatch size
+        minibatch_size: Reflection minibatch size (default: 35, matching DSPy)
         full_eval_steps: Steps between full validations
 
     Returns:
