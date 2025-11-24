@@ -25,6 +25,37 @@ from verifiers.types import (
 logger = logging.getLogger(__name__)
 
 
+def _truncate(text: str, max_len: int = 500) -> str:
+    """Truncate text for logging."""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + f"... ({len(text) - max_len} more chars)"
+
+
+def _format_message(msg: dict) -> str:
+    """Format a message for logging."""
+    role = msg.get("role", "unknown")
+    content = msg.get("content", "")
+
+    # Handle tool calls
+    tool_calls = msg.get("tool_calls", [])
+    if tool_calls:
+        tools_summary = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name", "unknown")
+            args = func.get("arguments", "")
+            tools_summary.append(f"{name}({_truncate(args, 200)})")
+        return f"[{role}] tool_calls: {', '.join(tools_summary)}"
+
+    # Handle tool results
+    if role == "tool":
+        tool_call_id = msg.get("tool_call_id", "")
+        return f"[{role}:{tool_call_id}] {_truncate(str(content), 300)}"
+
+    return f"[{role}] {_truncate(str(content), 500)}"
+
+
 class CliAgentEnv(vf.MultiTurnEnv):
     """
     Environment for running full agent code inside sandboxes.
@@ -55,6 +86,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        log_requests: bool = True,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -77,12 +109,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
+        self.log_requests = log_requests
         self.active_rollouts: dict[str, dict[str, Any]] = {}
         self.intercepts: dict[str, dict[str, Any]] = {}  # request_id -> intercept data
         self.interception_server: Any = None
         self._server_lock = asyncio.Lock()
         self._server_runner: Any = None
         self._server_site: Any = None
+        self._request_counts: dict[str, int] = {}  # rollout_id -> request count
 
     def _ensure_cloudflared_installed(self) -> str:
         """Install cloudflared if not already installed. Returns path to cloudflared binary."""
@@ -318,7 +352,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         process request immediately with injected sampling_args, store response in intercept,
         return messages.
         """
+        rollout_id = state.get("rollout_id", "unknown")
         request_id_queue = state["request_id_queue"]
+
+        # Track request count for logging
+        if rollout_id not in self._request_counts:
+            self._request_counts[rollout_id] = 0
+        self._request_counts[rollout_id] += 1
+        req_num = self._request_counts[rollout_id]
 
         request_id = await asyncio.wait_for(
             request_id_queue.get(),
@@ -333,6 +374,16 @@ class CliAgentEnv(vf.MultiTurnEnv):
         request_tools = intercept.get("tools")
         effective_sampling_args = state.get("sampling_args") or {}
 
+        # Log the intercepted request
+        if self.log_requests:
+            logger.info(
+                f"[Request #{req_num}] model={request_model}, "
+                f"messages={len(messages)}, tools={len(request_tools or [])}"
+            )
+            # Log the last few messages (most relevant context)
+            for msg in messages[-3:]:
+                logger.info(f"  {_format_message(msg)}")
+
         client = state.get("client")
         if client is None:
             raise RuntimeError("Client not set in state")
@@ -346,6 +397,18 @@ class CliAgentEnv(vf.MultiTurnEnv):
             sampling_args=effective_sampling_args,
             message_type=None,
         )
+
+        # Log the response
+        if self.log_requests and response.choices:
+            choice = response.choices[0]
+            msg = choice.message
+            if msg.tool_calls:
+                tools = [f"{tc.function.name}(...)" for tc in msg.tool_calls]
+                logger.info(f"[Response #{req_num}] tool_calls: {', '.join(tools)}")
+            elif msg.content:
+                logger.info(f"[Response #{req_num}] {_truncate(msg.content, 200)}")
+            else:
+                logger.info(f"[Response #{req_num}] (empty)")
 
         intercept["response_future"].set_result(response)
         intercept["response"] = response
@@ -481,6 +544,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
             if request_id and request_id in self.intercepts:
                 del self.intercepts[request_id]
             del self.active_rollouts[rollout_id]
+
+        # Clean up request count
+        if rollout_id and rollout_id in self._request_counts:
+            del self._request_counts[rollout_id]
 
         # Decrement active rollouts for the tunnel used by this rollout
         tunnel_url = state.get("tunnel_url")
