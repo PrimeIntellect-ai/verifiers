@@ -33,6 +33,91 @@ def _truncate(text: str, max_len: int = 500) -> str:
     return text[:max_len] + f"... ({len(text) - max_len} more chars)"
 
 
+def _normalize_chat_completion_response(response_dict: dict) -> dict:
+    """
+    Normalize a chat completion response to standard OpenAI format.
+
+    Removes non-standard fields that may confuse agents like Codex/Cline
+    that expect strict OpenAI chat completions API format.
+    """
+    # Standard top-level fields for chat.completion
+    standard_top_level = {
+        "id",
+        "object",
+        "created",
+        "model",
+        "choices",
+        "usage",
+        "system_fingerprint",
+    }
+
+    # Standard message fields
+    standard_message_fields = {
+        "role",
+        "content",
+        "tool_calls",
+        "function_call",
+        "refusal",
+        "name",
+    }
+
+    # Standard tool_call fields
+    standard_tool_call_fields = {"id", "type", "function"}
+
+    # Standard function fields within tool_call
+    standard_function_fields = {"name", "arguments"}
+
+    # Filter top-level fields
+    normalized = {k: v for k, v in response_dict.items() if k in standard_top_level}
+
+    # Normalize choices
+    if "choices" in response_dict:
+        normalized_choices = []
+        for choice in response_dict["choices"]:
+            normalized_choice = {
+                "index": choice.get("index", 0),
+                "finish_reason": choice.get("finish_reason"),
+                "logprobs": choice.get("logprobs"),
+            }
+
+            # Normalize message
+            if "message" in choice:
+                msg = choice["message"]
+                normalized_msg = {
+                    k: v for k, v in msg.items() if k in standard_message_fields
+                }
+
+                # Normalize tool_calls if present
+                if "tool_calls" in msg and msg["tool_calls"]:
+                    normalized_tool_calls = []
+                    for tc in msg["tool_calls"]:
+                        normalized_tc = {
+                            k: v
+                            for k, v in tc.items()
+                            if k in standard_tool_call_fields
+                        }
+                        # Normalize function within tool_call
+                        if "function" in tc:
+                            normalized_tc["function"] = {
+                                k: v
+                                for k, v in tc["function"].items()
+                                if k in standard_function_fields
+                            }
+                        normalized_tool_calls.append(normalized_tc)
+                    normalized_msg["tool_calls"] = normalized_tool_calls
+
+                normalized_choice["message"] = normalized_msg
+
+            normalized_choices.append(normalized_choice)
+        normalized["choices"] = normalized_choices
+
+    # Ensure object type is set
+    if "object" not in normalized:
+        normalized["object"] = "chat.completion"
+
+    return normalized
+
+
 def _format_message(msg: dict) -> str:
     """Format a message for logging."""
     role = msg.get("role", "unknown")
@@ -515,10 +600,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
         response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
+        # Normalize to standard OpenAI format (removes non-standard fields like reasoning, reasoning_details)
+        normalized_response = _normalize_chat_completion_response(response_dict)
         logger.info(
-            f"Response to agent: {json.dumps(response_dict, indent=2, default=str)[:2000]}"
+            f"Response to agent: {json.dumps(normalized_response, indent=2, default=str)[:2000]}"
         )
-        return web.json_response(response_dict)  # type: ignore
+        return web.json_response(normalized_response)  # type: ignore
 
     @vf.teardown
     async def teardown_tunnel(self):
