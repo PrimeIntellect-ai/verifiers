@@ -188,10 +188,17 @@ class RLConfig(TrainingArguments):
         default="0.0.0.0",
         metadata={"help": "Host of the vLLM server to connect to."},
     )
+
     vllm_server_port: int = field(
         default=8000,
         metadata={"help": "Port of the vLLM server to connect to."},
     )
+
+    vllm_server_protocol: str = field(
+        default="http",
+        metadata={"help": "VLLM server protocol type (https or http)."},
+    )
+
     vllm_server_timeout: float = field(
         default=300.0,
         metadata={

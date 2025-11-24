@@ -87,11 +87,16 @@ class RLTrainer(Trainer):
         if self.accelerator.is_main_process:
             host = args.vllm_server_host
             port = args.vllm_server_port
+            protocol = args.vllm_server_protocol
+
+            if protocol not in ["http", "https"]:
+                raise ValueError(f"Invalid protocol '{protocol}'. Supported protocols are 'http' and 'https'.")
+
             self.client = VLLMClient(
                 host=host, port=port, connection_timeout=args.vllm_server_timeout
             )
             self.client.init_communicator()
-            vllm_base_url = f"http://{host}:{port}/v1"
+            vllm_base_url = f"{protocol}://{host}:{port}/v1"
             self.orchestrator = Orchestrator(
                 env=env,
                 client_base_url=vllm_base_url,
