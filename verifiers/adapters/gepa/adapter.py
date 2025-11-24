@@ -9,6 +9,7 @@ tool descriptions, etc.) through reflection-based evolution.
 import asyncio
 import inspect
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -161,6 +162,10 @@ class GEPAAdapter(BaseGEPAAdapter):
         for comp_name, comp_value in candidate.items():
             if comp_name.startswith("tool_") and comp_name.endswith("_description"):
                 continue
+            # Never pass dataset/eval_dataset - some envs create these internally
+            # and would get duplicate arguments
+            if comp_name in {"dataset", "eval_dataset"}:
+                continue
             if comp_name in signature.parameters or accepts_kwargs:
                 init_kwargs[comp_name] = comp_value
             else:
@@ -168,7 +173,13 @@ class GEPAAdapter(BaseGEPAAdapter):
 
         # Provide minimal dataset if none exists (adapter provides inputs directly)
         # This avoids copying large datasets and improves performance
-        if "dataset" not in init_kwargs and "eval_dataset" not in init_kwargs:
+        # Only add if dataset is an explicit parameter (not just accepted via **kwargs)
+        # Some envs like TextArenaEnv create dataset internally
+        if (
+            "dataset" not in init_kwargs
+            and "eval_dataset" not in init_kwargs
+            and "dataset" in signature.parameters
+        ):
             init_kwargs["dataset"] = vf.load_example_dataset(n=1)
 
         try:
@@ -212,12 +223,13 @@ class GEPAAdapter(BaseGEPAAdapter):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
+            # No running loop - create one
             return asyncio.run(evaluation)
 
-        raise RuntimeError(
-            "GEPAAdapter.evaluate() cannot run inside an active asyncio loop. "
-            "Use 'await adapter.evaluate_async(...)' instead."
-        )
+        # Already in an event loop - run in a thread pool to avoid blocking
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(asyncio.run, evaluation)
+            return future.result()
 
     async def evaluate_async(
         self,
