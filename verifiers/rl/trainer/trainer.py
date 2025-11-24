@@ -93,7 +93,7 @@ class RLTrainer(Trainer):
                 raise ValueError(f"Invalid protocol '{protocol}'. Supported protocols are 'http' and 'https'.")
 
             self.client = VLLMClient(
-                host=host, port=port, connection_timeout=args.vllm_server_timeout
+                host=host, port=port, protocol=protocol, connection_timeout=args.vllm_server_timeout
             )
             self.client.init_communicator()
             vllm_base_url = f"{protocol}://{host}:{port}/v1"
