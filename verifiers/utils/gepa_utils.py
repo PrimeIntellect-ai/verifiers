@@ -20,7 +20,9 @@ from openai import AsyncOpenAI, OpenAI
 import verifiers as vf
 from verifiers.adapters.gepa import GEPAAdapter
 from verifiers.types import GEPAConfig
+from verifiers.utils.client_utils import setup_client
 from verifiers.utils.eval_utils import save_rollout_results
+from verifiers.utils.path_utils import get_gepa_results_path
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +339,7 @@ def print_optimization_results(result, log_dir: Path):
     print(
         f"Improvement: {max(result.val_aggregate_scores) - result.val_aggregate_scores[0]:.3f}"
     )
-    print(f"Total candidates explored: {len(result.candidates)}")
+    print(f"Total candidates fully explored: {len(result.candidates)}")
     print("\nOptimized components:")
     print("-" * 80)
 
@@ -373,7 +375,10 @@ async def run_gepa_optimization(config: GEPAConfig):
         print("Install with: uv add 'verifiers[gepa]'")
         sys.exit(1)
 
-    from verifiers.utils.client_utils import setup_client
+    # Setup log directory
+    log_dir = get_gepa_results_path(config)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Log directory: {log_dir}")
 
     # Setup task client
     client = setup_client(config.client_config)
@@ -453,7 +458,7 @@ async def run_gepa_optimization(config: GEPAConfig):
                 config.reflection_max_tokens,
             ),
             reflection_minibatch_size=config.reflection_minibatch_size,
-            run_dir=str(config.log_dir),
+            run_dir=str(log_dir),
             track_best_outputs=config.track_stats,
             seed=config.seed,
             display_progress_bar=True,
@@ -463,7 +468,7 @@ async def run_gepa_optimization(config: GEPAConfig):
         raise
 
     # Print results
-    print_optimization_results(result, config.log_dir)
+    print_optimization_results(result, log_dir)
 
     # Prepare run configuration for saving
     run_config = {
@@ -483,9 +488,9 @@ async def run_gepa_optimization(config: GEPAConfig):
 
     # Save results
     save_optimized_components(
-        config.env_id, result.best_candidate, config.seed_candidate, config.log_dir
+        config.env_id, result.best_candidate, config.seed_candidate, log_dir
     )
-    save_optimization_metrics(config.env_id, result, config.log_dir, run_config)
+    save_optimization_metrics(config.env_id, result, log_dir, run_config)
 
     # Save rollouts if requested
     if config.save_results:
@@ -506,7 +511,7 @@ async def run_gepa_optimization(config: GEPAConfig):
                 rollouts_per_example=config.rollouts_per_example,
                 max_concurrent=config.max_concurrent,
                 save_every=save_every,
-                log_dir=config.log_dir,
+                log_dir=log_dir,
             )
             await save_candidate_rollouts(
                 adapter=adapter,
@@ -519,7 +524,7 @@ async def run_gepa_optimization(config: GEPAConfig):
                 rollouts_per_example=config.rollouts_per_example,
                 max_concurrent=config.max_concurrent,
                 save_every=save_every,
-                log_dir=config.log_dir,
+                log_dir=log_dir,
             )
 
         try:

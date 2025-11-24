@@ -60,6 +60,7 @@ class GEPAAdapter(BaseGEPAAdapter):
         self.components_to_optimize = components_to_optimize or ["system_prompt"]
         self.num_rollouts_per_example = num_rollouts_per_example
         self.max_concurrent = max_concurrent
+        self._candidate_build_count = 0  # Track candidate environment builds
 
         if self.num_rollouts_per_example < 1:
             raise ValueError("num_rollouts_per_example must be at least 1")
@@ -95,6 +96,12 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         Reconstruct a fresh Environment instance with updated components.
         """
+        self._candidate_build_count += 1
+        logger.debug(
+            f"Building candidate environment #{self._candidate_build_count} "
+            f"with components: {list(candidate.keys())}"
+        )
+
         env_class = self.base_env.__class__
         signature = inspect.signature(env_class.__init__)
         accepts_kwargs = any(
@@ -196,6 +203,9 @@ class GEPAAdapter(BaseGEPAAdapter):
         if updated_oai_tools is not None:
             new_env.oai_tools = updated_oai_tools
 
+        logger.debug(
+            f"Successfully built {env_class.__name__} candidate #{self._candidate_build_count}"
+        )
         return new_env
 
     def evaluate(
@@ -217,6 +227,11 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         # Build environment with candidate components
         env = self.build_program(candidate)
+
+        logger.debug(
+            f"Evaluating candidate on batch of {len(batch)} examples "
+            f"({self.num_rollouts_per_example} rollouts/example = {len(batch) * self.num_rollouts_per_example} total rollouts)"
+        )
 
         # Run evaluation using Environment's evaluate method
         evaluation = self._evaluate_async(env, batch, capture_traces)
