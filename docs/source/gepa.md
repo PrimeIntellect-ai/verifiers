@@ -112,22 +112,22 @@ When optimizing `tool_descriptions`, GEPA:
 ## Model Configuration
 
 ### Task Model
-The model being optimized (default: `gpt-4o-mini`):
+The model being optimized (default: `gpt-5-mini`):
 ```bash
-vf-gepa my-env --budget medium -m gpt-4o
+vf-gepa my-env --budget medium -m gpt-5-mini
 ```
 
 ### Reflection Model
-The model generating improved prompts (default: `gpt-4o`):
+The model generating improved prompts (default: `gpt-5-mini`):
 ```bash
-vf-gepa my-env --budget medium --reflection-model gpt-4o
+vf-gepa my-env --budget medium --reflection-model gpt-5-mini
 ```
 
 ### Sampling Parameters
 ```bash
 vf-gepa my-env --budget medium \
-  -T 0.7 \              # Temperature for task model
-  -t 2048 \             # Max tokens
+  -T 0.7 \                      # Temperature for task model
+  -t 2048 \                     # Max tokens
   --reflection-temperature 1.0  # Temperature for reflection
 ```
 
@@ -225,6 +225,76 @@ Debug optimization process:
 vf-gepa my-env --budget medium -v
 ```
 
+## Experiment Tracking
+
+GEPA supports integration with popular experiment tracking platforms to monitor and analyze optimization runs.
+
+### Weights & Biases (wandb)
+
+Track GEPA runs in wandb:
+
+```bash
+vf-gepa my-env --budget medium \
+  --use-wandb \
+  --wandb-project my-project \
+  --wandb-entity my-team \
+  --wandb-name "wordle-optimization"
+```
+
+**Configuration options**:
+- `--use-wandb`: Enable wandb logging
+- `--wandb-project PROJECT`: Wandb project name
+- `--wandb-entity ENTITY`: Wandb entity/team name
+- `--wandb-name NAME`: Run name (default: auto-generated from env_id)
+- `--wandb-api-key-var VAR`: Environment variable containing API key (default: `WANDB_API_KEY`)
+- `--wandb-init-kwargs JSON`: Additional `wandb.init()` kwargs as JSON
+
+**Example with additional kwargs**:
+```bash
+vf-gepa my-env --budget medium \
+  --use-wandb \
+  --wandb-project gepa-experiments \
+  --wandb-init-kwargs '{"tags": ["baseline", "system-prompt"], "mode": "online"}'
+```
+
+**Logged metrics**:
+- Validation scores per candidate
+- Training scores per reflection step
+- Component-level improvements
+- Optimization progress over time
+- Final best candidate components
+
+### MLflow
+
+Track GEPA runs in MLflow:
+
+```bash
+vf-gepa my-env --budget medium \
+  --use-mlflow \
+  --mlflow-tracking-uri http://localhost:5000 \
+  --mlflow-experiment-name gepa-wordle
+```
+
+**Configuration options**:
+- `--use-mlflow`: Enable MLflow logging
+- `--mlflow-tracking-uri URI`: MLflow tracking server URI
+- `--mlflow-experiment-name NAME`: Experiment name
+
+**Logged data**:
+- Parameters: model, budget, dataset sizes, components
+- Metrics: validation scores, improvements
+- Artifacts: optimized components, metrics JSON
+
+### Using Both Simultaneously
+
+You can enable both wandb and MLflow tracking in the same run:
+
+```bash
+vf-gepa my-env --budget medium \
+  --use-wandb --wandb-project my-project \
+  --use-mlflow --mlflow-tracking-uri http://localhost:5000
+```
+
 ## Best Practices
 
 ### 1. Provide Rich Feedback
@@ -290,7 +360,7 @@ Check that your environment exposes the component you're trying to optimize. Use
 ### Out of Memory
 - Reduce batch sizes: `--reflection-minibatch-size 2`
 - Reduce examples: `-n 30 --num-val 10`
-- Use smaller models: `-m gpt-4o-mini`
+- Use smaller models: `-m gpt-5-mini`
 
 ## Examples
 
@@ -303,7 +373,7 @@ vf-gepa wordle --budget medium
 ```bash
 vf-gepa wiki-search --budget heavy \
   --components system_prompt tool_descriptions \
-  -m gpt-4o
+  -m gpt-5-mini
 ```
 
 ### Large-Scale Optimization
@@ -318,7 +388,7 @@ vf-gepa my-env --max-metric-calls 2000 \
 ```bash
 vf-gepa my-env --budget medium \
   -m claude-3-5-sonnet-20241022 \
-  --reflection-model gpt-4o
+  --reflection-model gpt-5-mini
 ```
 
 ## API Usage
@@ -327,7 +397,7 @@ For programmatic use:
 
 ```python
 import verifiers as vf
-from verifiers.adapters import GEPAAdapter
+from verifiers.gepa import GEPAAdapter
 from gepa import optimize
 
 # Load environment
@@ -337,7 +407,7 @@ env = vf.load_environment("wordle")
 adapter = GEPAAdapter(
     env=env,
     client=client,
-    model="gpt-4o-mini",
+    model="gpt-5-mini",
     sampling_args={"temperature": 1.0, "max_tokens": 8096},
     components_to_optimize=["system_prompt"],
 )
