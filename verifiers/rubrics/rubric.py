@@ -48,6 +48,7 @@ class Rubric:
             )
 
         self.parser = parser or vf.Parser()
+        self._warned_no_feedback = False
 
         # class objects for reward functions
         self.class_objects = {}
@@ -300,7 +301,13 @@ class Rubric:
         feedbacks = state.get("feedbacks", [])
 
         if not feedbacks:
-            # Fallback if no functions provided feedback
+            # Fallback if no functions provided feedback - warn once
+            if not self._warned_no_feedback:
+                self.logger.warning(
+                    "No detailed feedback from reward functions. For better GEPA optimization, "
+                    "return RewardResult({'score': float, 'feedback': str}) from reward functions."
+                )
+                self._warned_no_feedback = True
             score = state.get("reward", 0.0)
             return f"Score: {score:.2%} (no detailed feedback available)"
 

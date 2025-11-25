@@ -83,17 +83,23 @@ def get_env_gepa_defaults(env_id: str) -> Dict[str, Any]:
 
 
 def ensure_env_dir_on_path(env_dir_path: str, env_id: str) -> None:
-    """Add local environment directory to sys.path if present."""
+    """Add local environment directory to sys.path if present.
+
+    Adds the specific environment folder (e.g., environments/gsm8k/) to sys.path
+    so that `import gsm8k` finds gsm8k.py directly, avoiding namespace package issues.
+    """
     env_dir = Path(env_dir_path).resolve()
     if not env_dir.exists():
         return
     module_name = env_id.replace("-", "_").split("/")[-1]
     candidate = env_dir / module_name
     if candidate.exists():
-        env_dir_str = str(env_dir)
-        if env_dir_str not in sys.path:
-            sys.path.insert(0, env_dir_str)
-            logger.debug(f"Added {env_dir_str} to sys.path for environment loading")
+        # Add the specific environment folder so Python finds the .py file directly
+        # e.g., add environments/gsm8k/ so `import gsm8k` finds gsm8k.py
+        env_folder_str = str(candidate)
+        if env_folder_str not in sys.path:
+            sys.path.insert(0, env_folder_str)
+            logger.debug(f"Added {env_folder_str} to sys.path for environment loading")
 
 
 async def save_candidate_rollouts(
