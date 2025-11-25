@@ -436,11 +436,15 @@ Examples:
         elif hasattr(vf_env, comp):
             seed_candidate[comp] = getattr(vf_env, comp)
         else:
-            logger.warning(f"Environment doesn't have component '{comp}', skipping")
+            raise ValueError(
+                f"Environment '{args.env_id}' does not have component '{comp}'. "
+                f"Available components: system_prompt, tool_descriptions"
+            )
 
     if not seed_candidate:
-        logger.error("No valid components found to optimize!")
-        return
+        raise ValueError(
+            f"No valid components found to optimize for environment '{args.env_id}'"
+        )
 
     # Convert budget preset to max_metric_calls if needed
     if args.budget:
