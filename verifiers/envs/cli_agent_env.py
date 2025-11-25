@@ -584,6 +584,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
+        # Log request details including stream parameter
+        stream_requested = request_body.get("stream", False)
+        logger.info(
+            f"Intercepted request: stream={stream_requested}, "
+            f"model={request_body.get('model')}, "
+            f"messages={len(request_body.get('messages', []))}"
+        )
+
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         intercept = {
             "request_id": request_id,
