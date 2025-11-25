@@ -47,7 +47,7 @@ The `GEPAAdapter` class bridges Verifiers environments to GEPA's optimization pr
 ### Key Methods
 
 ```python
-from verifiers.adapters.gepa import GEPAAdapter
+from verifiers.gepa import GEPAAdapter
 
 adapter = GEPAAdapter(
     env=vf_env,

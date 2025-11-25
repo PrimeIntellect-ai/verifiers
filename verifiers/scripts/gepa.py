@@ -25,7 +25,7 @@ except ImportError:
 from verifiers import setup_logging
 from verifiers.types import ClientConfig, GEPAConfig
 from verifiers.utils.eval_utils import load_endpoints
-from verifiers.utils.gepa_utils import (
+from verifiers.gepa import (
     auto_budget_to_metric_calls,
     ensure_env_dir_on_path,
     get_env_gepa_defaults,
