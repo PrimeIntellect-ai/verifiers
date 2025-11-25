@@ -106,8 +106,8 @@ Examples:
     parser.add_argument(
         "-m",
         "--model",
-        default="gpt-4o-mini",
-        help="Model to optimize (default: gpt-4o-mini)",
+        default="gpt-5-mini",
+        help="Model to optimize (default: gpt-5-mini)",
     )
     parser.add_argument(
         "--api-key-var",
@@ -194,8 +194,8 @@ Examples:
     )
     parser.add_argument(
         "--reflection-model",
-        default="gpt-4o",
-        help="Model for reflection/proposal (default: gpt-4o)",
+        default="gpt-5-mini",
+        help="Model for reflection/proposal (default: gpt-5-mini)",
     )
     parser.add_argument(
         "--reflection-temperature",
