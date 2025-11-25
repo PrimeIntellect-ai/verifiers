@@ -312,6 +312,16 @@ class GEPAAdapter(BaseGEPAAdapter):
         messages.append({"role": "user", "content": str(prompt)})
         return messages
 
+    def _format_tool_calls_text(self, tool_calls: list[dict]) -> str:
+        """Format tool calls as readable text for GEPA reflection."""
+        parts = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name", "unknown")
+            args_str = func.get("arguments", "{}")
+            parts.append(f"Tool Call: {name}({args_str})")
+        return "\n".join(parts)
+
     def make_reflective_dataset(
         self,
         candidate: dict[str, str],
@@ -345,7 +355,24 @@ class GEPAAdapter(BaseGEPAAdapter):
         # For environment-level components (like system_prompt), all examples
         # reflect on the same component, so we aggregate feedback across examples
         for comp_name in components_to_update:
-            if comp_name not in self.components_to_optimize:
+            # Check if component is in optimization list
+            # Support both exact matches (e.g., "system_prompt") and group patterns
+            # (e.g., "tool_0_description" matches "tool_descriptions")
+            is_optimizable = comp_name in self.components_to_optimize
+
+            # Check if this is a tool description (tool_N_description pattern)
+            if (
+                not is_optimizable
+                and "tool_descriptions" in self.components_to_optimize
+            ):
+                # Match pattern: tool_0_description, tool_1_description, etc.
+                if comp_name.startswith("tool_") and comp_name.endswith("_description"):
+                    is_optimizable = True
+
+            if not is_optimizable:
+                logger.debug(
+                    f"Skipping component '{comp_name}' - not in components_to_optimize: {self.components_to_optimize}"
+                )
                 continue
 
             examples = []
@@ -364,15 +391,33 @@ class GEPAAdapter(BaseGEPAAdapter):
                 else:
                     prompt_text = prompt
 
-                # Extract completion text
+                # Extract completion text - format entire conversation
                 if isinstance(completion, list):
-                    # Chat format
-                    asst_msgs = [m for m in completion if m.get("role") == "assistant"]
+                    # Chat format - include all messages (assistant + tool responses)
+                    completion_parts = []
+                    for msg in completion:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+
+                        if role == "assistant":
+                            # Include content if present
+                            if content:
+                                completion_parts.append(f"Assistant: {content}")
+                            # Include tool calls
+                            tool_calls = msg.get("tool_calls", [])
+                            if tool_calls:
+                                completion_parts.append(
+                                    self._format_tool_calls_text(tool_calls)
+                                )
+                        elif role == "tool":
+                            # Include tool responses
+                            completion_parts.append(f"Tool Result: {content}")
+
                     completion_text = (
-                        asst_msgs[-1].get("content", "") if asst_msgs else ""
+                        "\n\n".join(completion_parts) if completion_parts else ""
                     )
                 else:
-                    completion_text = completion
+                    completion_text = str(completion)
 
                 # Build inputs dict
                 inputs = {
@@ -413,18 +458,6 @@ class GEPAAdapter(BaseGEPAAdapter):
             raise ValueError(
                 f"No reflective data generated for components: {components_to_update}"
             )
-
-        # Log sample feedback for debugging
-        for comp_name, examples in reflective_data.items():
-            logger.debug("\n%s\nComponent: %s", "=" * 80, comp_name)
-            logger.debug("Sample feedback (first example):")
-            if examples:
-                first_ex = examples[0]
-                logger.debug(
-                    f"  Task: {first_ex['Inputs'].get('Task', 'N/A')[:200]}..."
-                )
-                logger.debug(f"  Output: {first_ex['Generated Outputs'][:200]}...")
-                logger.debug(f"  Feedback: {first_ex['Feedback'][:500]}...")
 
         logger.info(
             f"Generated reflective dataset with {sum(len(v) for v in reflective_data.values())} examples "
