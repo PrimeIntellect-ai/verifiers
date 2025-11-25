@@ -155,7 +155,27 @@ def auto_budget_to_metric_calls(
     """
     Convert auto budget (light/medium/heavy) to max_metric_calls.
 
-    This replicates DSPy's auto_budget calculation for consistency.
+    This replicates DSPy's auto_budget calculation for consistency with GEPA's
+    expectations. The formula estimates total metric calls (rollout evaluations) by:
+
+    1. Mapping budget -> target number of candidates to explore:
+       - light: ~6 candidates
+       - medium: ~12 candidates
+       - heavy: ~18 candidates
+
+    2. Computing number of optimization trials (iterations) using:
+       - Log growth: 2.0 * (num_components * 2) * log2(num_candidates)
+       - Linear fallback: 1.5 * num_candidates
+       - Take the maximum to ensure sufficient exploration
+
+    3. Summing all evaluation costs:
+       - Initial validation: V (full eval on seed candidate)
+       - Bootstrap: num_candidates * 5 (small evals per candidate)
+       - Reflection minibatches: N * M (N trials on M examples each)
+       - Periodic full validations: (N // full_eval_steps + 1) * V
+
+    This ensures the optimization has enough budget to explore candidates
+    while periodically measuring improvement on the full validation set.
 
     Args:
         auto: Budget level ('light', 'medium', or 'heavy')
@@ -167,9 +187,11 @@ def auto_budget_to_metric_calls(
     Returns:
         Maximum number of metric calls
     """
+    # Map budget name to target number of candidates
     num_candidates = AUTO_BUDGET_CANDIDATES[auto]
 
     # Calculate number of trials using log-growth vs. linear fallback
+    # Log-growth scales better with more candidates, linear ensures minimum trials
     log_trials = (
         TRIAL_LOG_BASE_MULTIPLIER
         * (num_components * TRIAL_COMPONENT_MULTIPLIER)
@@ -178,24 +200,26 @@ def auto_budget_to_metric_calls(
     linear_trials = TRIAL_LINEAR_MULTIPLIER * num_candidates
     num_trials = int(max(log_trials, linear_trials))
 
-    V = valset_size
-    N = num_trials
-    M = minibatch_size
-    m = full_eval_steps
+    # Use shorter variable names for clarity in formula
+    V = valset_size  # Validation set size
+    N = num_trials  # Number of optimization trials
+    M = minibatch_size  # Minibatch size for reflection
+    m = full_eval_steps  # Steps between full validations
 
-    # Initial full evaluation on the default program
+    # Initial full evaluation on the seed (default) program
     total = V
 
-    # Assume a handful of bootstrap trials per candidate
+    # Bootstrap evaluations: quick evals to initialize each candidate
     total += num_candidates * BOOTSTRAP_TRIALS_PER_CANDIDATE
 
-    # N minibatch evaluations
+    # Reflection minibatch evaluations: N trials, each on M examples
     total += N * M
 
     if N == 0:
         return total
 
-    # Periodic full evals
+    # Periodic full validations to measure progress
+    # We do a full validation every m steps, plus potentially a final one
     periodic_fulls = (N + 1) // m + 1
     extra_final = 1 if N < m else 0
 
@@ -461,6 +485,16 @@ async def run_gepa_optimization(config: GEPAConfig):
     wandb_api_key = os.getenv(config.wandb_api_key_var) if config.use_wandb else None
 
     # Set reflection_lm on adapter for propose_new_texts method
+    # GEPA's optimize() expects a simple reflection_lm(prompt) -> str callable.
+    # We create a lambda that captures the reflection client and config,
+    # allowing the adapter's propose_new_texts() to call the reflection model
+    # without needing to manage the client itself.
+    #
+    # Why set this on the adapter?
+    # The GEPAAdapter.propose_new_texts() method needs to call the reflection model,
+    # but GEPA's protocol doesn't pass reflection_lm to that method - it only passes
+    # it to optimize(). By setting it as an attribute, we make it accessible within
+    # propose_new_texts() while keeping the GEPA protocol interface clean.
     adapter.reflection_lm = lambda x: call_reflection_model(
         reflection_client,
         x,
