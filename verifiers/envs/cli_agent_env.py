@@ -87,7 +87,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
-        log_requests: bool = True,
+        log_requests: bool = False,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
