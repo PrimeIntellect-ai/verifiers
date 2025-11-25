@@ -4,6 +4,7 @@ import importlib.resources
 import json
 import logging
 import math
+import os
 import sys
 import textwrap
 from datetime import datetime
@@ -436,6 +437,23 @@ async def run_gepa_optimization(config: GEPAConfig):
     logger.info("Starting GEPA optimization...")
     logger.info("=" * 80)
 
+    # Build wandb_init_kwargs from config
+    wandb_init_kwargs = (
+        config.wandb_init_kwargs.copy() if config.wandb_init_kwargs else {}
+    )
+    if config.use_wandb:
+        if config.wandb_project:
+            wandb_init_kwargs["project"] = config.wandb_project
+        if config.wandb_entity:
+            wandb_init_kwargs["entity"] = config.wandb_entity
+        if config.wandb_name:
+            wandb_init_kwargs["name"] = config.wandb_name
+        else:
+            wandb_init_kwargs.setdefault("name", f"gepa-{config.env_id}")
+
+    # Get wandb API key from env var
+    wandb_api_key = os.getenv(config.wandb_api_key_var) if config.use_wandb else None
+
     try:
         result = optimize(
             seed_candidate=config.seed_candidate,
@@ -455,6 +473,13 @@ async def run_gepa_optimization(config: GEPAConfig):
             track_best_outputs=config.track_stats,
             seed=config.seed,
             display_progress_bar=True,
+            # experiment tracking
+            use_wandb=config.use_wandb,
+            wandb_api_key=wandb_api_key,
+            wandb_init_kwargs=wandb_init_kwargs if config.use_wandb else None,
+            use_mlflow=config.use_mlflow,
+            mlflow_tracking_uri=config.mlflow_tracking_uri,
+            mlflow_experiment_name=config.mlflow_experiment_name,
         )
     except Exception as e:
         logger.error(f"GEPA optimization failed: {e}", exc_info=True)
