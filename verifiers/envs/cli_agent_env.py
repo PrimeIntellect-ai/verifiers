@@ -87,7 +87,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
-        log_requests: bool = False,
+        log_requests: bool = True,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -529,9 +529,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
 
-        logger.info(
-            f"Response to agent: {json.dumps(response_dict, indent=2, default=str)[:2000]}"
-        )
+        # logger.info(
+        #     f"Response to agent: {json.dumps(response_dict, indent=2, default=str)[:2000]}"
+        # )
 
         # If client requested streaming, convert to SSE format
         if intercept.get("stream_requested", False):
