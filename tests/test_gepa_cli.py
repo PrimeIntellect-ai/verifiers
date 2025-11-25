@@ -111,7 +111,7 @@ def _run_cli(monkeypatch, overrides, custom_env=None):
     monkeypatch.setattr(eval_utils, "load_endpoints", lambda *_: {})
 
     # Mock get_env_gepa_defaults
-    from verifiers.utils import gepa_utils
+    from verifiers import gepa as gepa_utils
 
     monkeypatch.setattr(gepa_utils, "get_env_gepa_defaults", lambda *_: {})
 

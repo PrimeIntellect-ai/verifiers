@@ -19,7 +19,7 @@ except ImportError:
 from openai import AsyncOpenAI, OpenAI
 
 import verifiers as vf
-from verifiers.adapters.gepa import GEPAAdapter
+from verifiers.gepa.adapter import GEPAAdapter
 from verifiers.types import GEPAConfig
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.eval_utils import save_rollout_results
@@ -460,6 +460,15 @@ async def run_gepa_optimization(config: GEPAConfig):
     # Get wandb API key from env var
     wandb_api_key = os.getenv(config.wandb_api_key_var) if config.use_wandb else None
 
+    # Set reflection_lm on adapter for propose_new_texts method
+    adapter.reflection_lm = lambda x: call_reflection_model(
+        reflection_client,
+        x,
+        config.reflection_model,
+        config.reflection_temperature,
+        config.reflection_max_tokens,
+    )
+
     try:
         result = optimize(
             seed_candidate=config.seed_candidate,
@@ -467,13 +476,7 @@ async def run_gepa_optimization(config: GEPAConfig):
             valset=config.valset,
             adapter=adapter,
             max_metric_calls=config.max_metric_calls,
-            reflection_lm=lambda x: call_reflection_model(
-                reflection_client,
-                x,
-                config.reflection_model,
-                config.reflection_temperature,
-                config.reflection_max_tokens,
-            ),
+            reflection_lm=adapter.reflection_lm,
             reflection_minibatch_size=config.reflection_minibatch_size,
             run_dir=str(log_dir),
             track_best_outputs=config.track_stats,

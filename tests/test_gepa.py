@@ -11,7 +11,7 @@ from verifiers.types import RewardResult, State
 
 def require_gepa_adapter():
     """Import GEPAAdapter or skip tests if the module is unavailable."""
-    module = pytest.importorskip("verifiers.adapters.gepa")
+    module = pytest.importorskip("verifiers.gepa.adapter")
     return module.GEPAAdapter
 
 
@@ -466,6 +466,174 @@ class TestGEPAAdapter:
         assert result.outputs == [[{"role": "assistant", "content": "42"}]]
         assert result.trajectories is not None
         assert result.trajectories[0]["score"] == 0.9
+
+    def test_gepa_adapter_tool_metadata_extraction(self):
+        """Test that GEPAAdapter extracts tool metadata for tool_descriptions."""
+        GEPAAdapter = require_gepa_adapter()
+
+        def search_tool(query: str, max_results: int = 10) -> str:
+            """Search for information about a query.
+
+            Args:
+                query: The search query string
+                max_results: Maximum number of results to return
+            """
+            return f"Results for: {query}"
+
+        dataset = vf.load_example_dataset(n=5)
+        env = vf.ToolEnv(
+            dataset=dataset,
+            tools=[search_tool],
+            system_prompt="Use the search tool",
+            rubric=vf.Rubric(),
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["tool_descriptions"],
+        )
+
+        # Verify tool metadata was extracted
+        assert "tool_0_description" in adapter._tool_metadata
+        assert adapter._tool_metadata["tool_0_description"]["name"] == "search_tool"
+        assert "parameters" in adapter._tool_metadata["tool_0_description"]
+
+        # Verify parameters include the function arguments
+        params = adapter._tool_metadata["tool_0_description"]["parameters"]
+        assert "properties" in params
+        assert "query" in params["properties"]
+        assert "max_results" in params["properties"]
+
+    def test_gepa_adapter_propose_new_texts_tool_descriptions(self):
+        """Test that propose_new_texts uses tool-specific template for tool descriptions."""
+        GEPAAdapter = require_gepa_adapter()
+
+        def calculate(x: int, y: int) -> int:
+            """Add two numbers together."""
+            return x + y
+
+        dataset = vf.load_example_dataset(n=5)
+        env = vf.ToolEnv(
+            dataset=dataset,
+            tools=[calculate],
+            system_prompt="Use the calculator",
+            rubric=vf.Rubric(),
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["tool_descriptions"],
+        )
+
+        # Mock reflection_lm
+        reflection_output = "```\nImproved tool description that adds two numbers with better clarity.\n```"
+        adapter.reflection_lm = MagicMock(return_value=reflection_output)
+
+        # Create mock candidate and reflective dataset
+        candidate = {"tool_0_description": "Add two numbers together."}
+        reflective_dataset = {
+            "tool_0_description": [
+                {
+                    "Inputs": {"Task": "Calculate 2 + 3"},
+                    "Generated Outputs": "Tool Call: calculate(x=2, y=3)",
+                    "Feedback": "Correct usage",
+                }
+            ]
+        }
+
+        # Call propose_new_texts
+        new_texts = adapter.propose_new_texts(
+            candidate=candidate,
+            reflective_dataset=reflective_dataset,
+            components_to_update=["tool_0_description"],
+        )
+
+        # Verify the reflection_lm was called
+        assert adapter.reflection_lm.called
+        called_prompt = adapter.reflection_lm.call_args[0][0]
+
+        # Verify tool name is in the prompt
+        assert "calculate" in called_prompt
+
+        # Verify tool parameters are in the prompt (JSON schema)
+        assert "parameters" in called_prompt.lower()
+        assert '"x"' in called_prompt or "'x'" in called_prompt
+        assert '"y"' in called_prompt or "'y'" in called_prompt
+
+        # Verify current description is in the prompt
+        assert "Add two numbers together" in called_prompt
+
+        # Verify new text was extracted correctly
+        assert "tool_0_description" in new_texts
+        assert "Improved tool description" in new_texts["tool_0_description"]
+
+    def test_gepa_adapter_propose_new_texts_system_prompt(self):
+        """Test that propose_new_texts uses default GEPA template for system_prompt."""
+        GEPAAdapter = require_gepa_adapter()
+
+        dataset = vf.load_example_dataset(n=5)
+        env = vf.SingleTurnEnv(
+            dataset=dataset,
+            system_prompt="Original system prompt",
+            rubric=vf.Rubric(),
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["system_prompt"],
+        )
+
+        # Mock reflection_lm
+        reflection_output = "```\nImproved system prompt with better instructions.\n```"
+        adapter.reflection_lm = MagicMock(return_value=reflection_output)
+
+        # Create mock candidate and reflective dataset
+        candidate = {"system_prompt": "Original system prompt"}
+        reflective_dataset = {
+            "system_prompt": [
+                {
+                    "Inputs": {"Task": "Solve this problem"},
+                    "Generated Outputs": "Here's the solution",
+                    "Feedback": "Good response",
+                }
+            ]
+        }
+
+        # Call propose_new_texts
+        new_texts = adapter.propose_new_texts(
+            candidate=candidate,
+            reflective_dataset=reflective_dataset,
+            components_to_update=["system_prompt"],
+        )
+
+        # Verify the reflection_lm was called
+        assert adapter.reflection_lm.called
+        called_prompt = adapter.reflection_lm.call_args[0][0]
+
+        # Verify it uses the default GEPA template (should NOT contain tool-specific language)
+        assert "TOOL NAME" not in called_prompt
+        assert "TOOL PARAMETERS" not in called_prompt
+
+        # Should contain the default GEPA language about "assistant" and "instructions"
+        assert (
+            "assistant" in called_prompt.lower()
+            or "instruction" in called_prompt.lower()
+        )
+
+        # Verify new text was extracted correctly
+        assert "system_prompt" in new_texts
 
 
 class TestRubricDictSupport:
