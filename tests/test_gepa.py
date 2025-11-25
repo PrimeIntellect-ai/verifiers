@@ -189,6 +189,178 @@ class TestGEPAAdapter:
         assert len(new_env.dataset) == 1  # But it's minimal (dummy)
         assert new_env.dataset is not env.dataset  # Not the same reference
 
+    def test_gepa_adapter_build_program_multiturn_env(self):
+        """Test build_program with MultiTurnEnv (uses **kwargs)."""
+        GEPAAdapter = require_gepa_adapter()
+
+        # Create a simple MultiTurnEnv
+        dataset = vf.load_example_dataset(n=5)
+
+        class TestMultiTurnEnv(vf.MultiTurnEnv):
+            async def env_response(self, messages, state, **kwargs):
+                return [{"role": "user", "content": "test"}]
+
+        env = TestMultiTurnEnv(
+            dataset=dataset,
+            system_prompt="Original prompt",
+            rubric=vf.Rubric(),
+            max_turns=3,
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["system_prompt"],
+        )
+
+        candidate = {"system_prompt": "Optimized prompt"}
+        new_env = adapter.build_program(candidate)
+
+        # Verify component was updated
+        assert new_env.system_prompt == "Optimized prompt"
+        # Verify dataset was replaced with minimal dummy
+        assert new_env.dataset is not None
+        assert len(new_env.dataset) == 1
+        assert new_env.dataset is not env.dataset
+
+    def test_gepa_adapter_build_program_tool_env(self):
+        """Test build_program with ToolEnv."""
+        GEPAAdapter = require_gepa_adapter()
+
+        def example_tool(x: int) -> int:
+            return x * 2
+
+        dataset = vf.load_example_dataset(n=5)
+
+        class TestToolEnv(vf.ToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(tools=[example_tool], **kwargs)
+
+        env = TestToolEnv(
+            dataset=dataset,
+            system_prompt="Use the tool",
+            rubric=vf.Rubric(),
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["system_prompt"],
+        )
+
+        candidate = {"system_prompt": "Use the tool wisely"}
+        new_env = adapter.build_program(candidate)
+
+        # Verify component was updated
+        assert new_env.system_prompt == "Use the tool wisely"
+        # Verify dataset was replaced with minimal dummy
+        assert new_env.dataset is not None
+        assert len(new_env.dataset) == 1
+        assert new_env.oai_tools is not None  # Tools preserved
+
+    def test_gepa_adapter_build_program_stateful_tool_env(self):
+        """Test build_program with StatefulToolEnv."""
+        GEPAAdapter = require_gepa_adapter()
+
+        def stateful_tool(x: int, state_val: int) -> int:
+            return x + state_val
+
+        dataset = vf.load_example_dataset(n=5)
+
+        class TestStatefulToolEnv(vf.StatefulToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(tools=[stateful_tool], **kwargs)
+
+            def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+                return {**tool_args, "state_val": 10}
+
+        env = TestStatefulToolEnv(
+            dataset=dataset,
+            system_prompt="Stateful tool env",
+            rubric=vf.Rubric(),
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["system_prompt"],
+        )
+
+        candidate = {"system_prompt": "Updated stateful prompt"}
+        new_env = adapter.build_program(candidate)
+
+        # Verify component was updated
+        assert new_env.system_prompt == "Updated stateful prompt"
+        # Verify dataset was replaced with minimal dummy
+        assert new_env.dataset is not None
+        assert len(new_env.dataset) == 1
+
+    def test_gepa_adapter_build_program_internal_dataset_env(self):
+        """Test build_program with env that creates dataset internally."""
+        GEPAAdapter = require_gepa_adapter()
+
+        class InternalDatasetEnv(vf.SingleTurnEnv):
+            """Mock env that creates dataset internally like TextArenaEnv."""
+
+            def __init__(
+                self,
+                num_train_examples: int = 10,
+                num_eval_examples: int = 0,
+                system_prompt: str | None = None,
+                **kwargs,
+            ):
+                # Create dataset internally (like TextArenaEnv does)
+                from datasets import Dataset
+
+                rows = [
+                    {"question": f"q{i}", "answer": f"a{i}"}
+                    for i in range(num_train_examples)
+                ]
+                dataset = Dataset.from_list(rows)
+
+                self.num_train_examples = num_train_examples
+                self.num_eval_examples = num_eval_examples
+
+                super().__init__(
+                    dataset=dataset,
+                    system_prompt=system_prompt,
+                    rubric=vf.Rubric(),
+                    **kwargs,
+                )
+
+        env = InternalDatasetEnv(
+            num_train_examples=100,
+            system_prompt="Internal dataset env",
+        )
+
+        client = AsyncMock()
+        adapter = GEPAAdapter(
+            env=env,
+            client=client,
+            model="gpt-4o-mini",
+            sampling_args={},
+            components_to_optimize=["system_prompt"],
+        )
+
+        candidate = {"system_prompt": "Updated internal prompt"}
+        new_env = adapter.build_program(candidate)
+
+        # Verify component was updated
+        assert new_env.system_prompt == "Updated internal prompt"
+        # Verify dataset was created internally (not the dummy one)
+        assert new_env.dataset is not None
+        assert len(new_env.dataset) == 100  # Created internally with num_train_examples
+        assert new_env.num_train_examples == 100
+
     def test_gepa_adapter_extract_seed_candidate(self):
         """Test extracting seed candidate from environment."""
         dataset = vf.load_example_dataset(n=5)

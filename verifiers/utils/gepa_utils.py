@@ -42,7 +42,7 @@ def get_env_gepa_defaults(env_id: str) -> Dict[str, Any]:
     """Get GEPA config defaults from environment package's pyproject.toml.
 
     Returns dict with 'num_examples', 'num_val', and 'rollouts_per_example' keys if found,
-    otherwise returns empty dict. All errors are silently handled.
+    otherwise returns empty dict.
     """
     defaults: Dict[str, Any] = {}
     module_name = env_id.replace("-", "_").split("/")[-1]
@@ -77,10 +77,6 @@ def get_env_gepa_defaults(env_id: str) -> Dict[str, Any]:
             )
     except ModuleNotFoundError:
         logger.debug(f"Package {module_name} not installed")
-    except Exception as e:
-        logger.debug(
-            f"Could not load GEPA defaults from {module_name} pyproject.toml: {e}"
-        )
 
     return defaults
 
@@ -116,10 +112,7 @@ async def save_candidate_rollouts(
     Evaluate a candidate program and save rollout trajectories to disk.
     """
     if num_examples <= 0:
-        logger.warning(
-            "Skipping rollout saving for %s candidate because num_examples<=0", label
-        )
-        return
+        raise ValueError(f"num_examples must be positive, got {num_examples}")
 
     env = adapter.build_program(candidate)
     rollouts_dir = log_dir / "rollouts" / label
@@ -216,7 +209,7 @@ def prepare_gepa_dataset(dataset) -> list[dict]:
     GEPA expects a list of dicts with keys like 'question', 'answer', 'info', 'task'.
     """
     if dataset is None:
-        return []
+        raise ValueError("dataset cannot be None")
 
     examples = []
     for item in dataset:
@@ -531,6 +524,7 @@ async def run_gepa_optimization(config: GEPAConfig):
             await save_all_candidates()
         except RuntimeError as exc:
             logger.error(f"Failed to save rollout trajectories: {exc}")
+            raise
 
     logger.info("GEPA optimization completed successfully!")
     return result

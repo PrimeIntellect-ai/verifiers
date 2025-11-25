@@ -180,13 +180,13 @@ class GEPAAdapter(BaseGEPAAdapter):
 
         # Provide minimal dataset if none exists (adapter provides inputs directly)
         # This avoids copying large datasets and improves performance
-        # Only add if dataset is an explicit parameter (not just accepted via **kwargs)
-        # Some envs like TextArenaEnv create dataset internally
-        if (
-            "dataset" not in init_kwargs
-            and "eval_dataset" not in init_kwargs
-            and "dataset" in signature.parameters
-        ):
+        # Detect if env creates dataset internally (has num_train_examples or num_eval_examples params)
+        creates_internal_dataset = (
+            "num_train_examples" in signature.parameters
+            or "num_eval_examples" in signature.parameters
+        )
+        accepts_dataset = "dataset" in signature.parameters or accepts_kwargs
+        if accepts_dataset and not creates_internal_dataset:
             init_kwargs["dataset"] = vf.load_example_dataset(n=1)
 
         try:
@@ -267,9 +267,8 @@ class GEPAAdapter(BaseGEPAAdapter):
         """Async helper for evaluation."""
         rollout_inputs = self._build_rollout_inputs(env, batch)
         if not rollout_inputs:
-            logger.warning("Empty evaluation batch received by GEPAAdapter")
-            return EvaluationBatch(
-                outputs=[], scores=[], trajectories=[] if capture_traces else None
+            raise ValueError(
+                "Empty evaluation batch - no rollout inputs generated from batch"
             )
 
         generate_outputs = await env.generate(
@@ -285,7 +284,11 @@ class GEPAAdapter(BaseGEPAAdapter):
         states = generate_outputs["state"]
         rewards = generate_outputs["reward"]
 
-        scores = [float(score) if score is not None else 0.0 for score in rewards]
+        if any(r is None for r in rewards):
+            raise ValueError(
+                "Received None reward from environment - check rubric configuration"
+            )
+        scores = [float(score) for score in rewards]
         trajectories = [] if capture_traces else None
 
         if capture_traces:
@@ -459,6 +462,10 @@ class GEPAAdapter(BaseGEPAAdapter):
                     feedback = self.base_env.rubric.get_feedback(state)
                 else:
                     # Default fallback for basic rubrics
+                    logger.warning(
+                        "Rubric lacks get_feedback method - using generic feedback. "
+                        "Consider implementing get_feedback for better GEPA reflection."
+                    )
                     feedback = f"Reward: {score:.3f}"
                     if score < 0.5:
                         feedback += " (Low score - needs improvement)"
