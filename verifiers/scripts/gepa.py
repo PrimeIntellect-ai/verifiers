@@ -256,6 +256,62 @@ Examples:
         help="Random seed for reproducibility (default: 42)",
     )
 
+    # 11. Experiment tracking - wandb
+    parser.add_argument(
+        "--use-wandb",
+        action="store_true",
+        help="Enable wandb logging",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="Wandb project name",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        type=str,
+        default=None,
+        help="Wandb entity/team name",
+    )
+    parser.add_argument(
+        "--wandb-name",
+        type=str,
+        default=None,
+        help="Wandb run name (default: auto-generated from env_id)",
+    )
+    parser.add_argument(
+        "--wandb-api-key-var",
+        type=str,
+        default="WANDB_API_KEY",
+        help="Environment variable containing wandb API key (default: WANDB_API_KEY)",
+    )
+    parser.add_argument(
+        "--wandb-init-kwargs",
+        type=json.loads,
+        default=None,
+        help='Additional wandb.init() kwargs as JSON (e.g., \'{"tags": ["gepa"], "mode": "offline"}\')',
+    )
+
+    # 12. Experiment tracking - mlflow
+    parser.add_argument(
+        "--use-mlflow",
+        action="store_true",
+        help="Enable mlflow logging",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        type=str,
+        default=None,
+        help="MLflow tracking server URI",
+    )
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        type=str,
+        default=None,
+        help="MLflow experiment name",
+    )
+
     args = parser.parse_args()
 
     # Parse env_args
@@ -494,6 +550,16 @@ Examples:
         save_every=args.save_every,
         track_stats=args.track_stats,
         verbose=args.verbose,
+        # experiment tracking
+        use_wandb=args.use_wandb,
+        wandb_api_key_var=args.wandb_api_key_var,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_name=args.wandb_name,
+        wandb_init_kwargs=args.wandb_init_kwargs,
+        use_mlflow=args.use_mlflow,
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_experiment_name=args.mlflow_experiment_name,
     )
 
     # Run GEPA optimization

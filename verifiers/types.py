@@ -285,3 +285,13 @@ class GEPAConfig(BaseModel):
     save_every: int
     track_stats: bool
     verbose: bool
+    # experiment tracking
+    use_wandb: bool = False
+    wandb_api_key_var: str = "WANDB_API_KEY"
+    wandb_project: str | None = None
+    wandb_entity: str | None = None
+    wandb_name: str | None = None
+    wandb_init_kwargs: dict | None = None
+    use_mlflow: bool = False
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment_name: str | None = None
