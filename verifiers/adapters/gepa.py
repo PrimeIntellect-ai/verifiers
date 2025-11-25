@@ -7,7 +7,6 @@ tool descriptions, etc.) through reflection-based evolution.
 """
 
 import asyncio
-import inspect
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -93,118 +92,43 @@ class GEPAAdapter(BaseGEPAAdapter):
         )
 
     def build_program(self, candidate: dict[str, str]) -> vf.Environment:
+        """Create a candidate environment with updated components using shallow copy.
+
+        Shallow copy shares heavy objects (dataset, rubric, parser) while
+        allowing string attributes to be replaced. For oai_tools, we deep copy
+        only if tool descriptions are being updated.
         """
-        Reconstruct a fresh Environment instance with updated components.
-        """
+        import copy
+
         self._candidate_build_count += 1
         logger.debug(
             f"Building candidate environment #{self._candidate_build_count} "
             f"with components: {list(candidate.keys())}"
         )
 
-        env_class = self.base_env.__class__
-        signature = inspect.signature(env_class.__init__)
-        accepts_kwargs = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
-        )
+        # Create shallow copy - shares dataset, rubric, parser, etc.
+        new_env = copy.copy(self.base_env)
 
-        init_kwargs: dict[str, Any] = {}
-        post_init_overrides: dict[str, Any] = {}
+        # Update system_prompt (assignment replaces reference, safe)
+        if "system_prompt" in candidate:
+            new_env.system_prompt = candidate["system_prompt"]
 
-        # Preserve constructor arguments present on the base environment
-        # Skip dataset/eval_dataset as they are not needed (adapter provides inputs)
-        # and copying them would be hugely inefficient for large datasets
-        for param_name in signature.parameters:
-            if param_name == "self":
-                continue
-            if param_name in ("dataset", "eval_dataset"):
-                continue
-            if hasattr(self.base_env, param_name):
-                value = getattr(self.base_env, param_name)
-                if isinstance(value, (dict, list)):
-                    init_kwargs[param_name] = deepcopy(value)
-                else:
-                    init_kwargs[param_name] = value
-
-        # Ensure core Environment parameters are forwarded when available
-        # BUT only if they're explicitly in the specific environment's signature
-        # (Some envs like TextArenaEnv create dataset/eval_dataset internally)
-        # Skip dataset/eval_dataset for efficiency (not needed by adapter)
-        env_signature = inspect.signature(vf.Environment.__init__)
-        env_param_names = [
-            name
-            for name in env_signature.parameters
-            if name not in {"self", "kwargs", "dataset", "eval_dataset"}
-        ]
-        for param_name in env_param_names:
-            if param_name in init_kwargs:
-                continue
-            # Only add if explicitly in the environment's signature
-            # Skip if only accepted via **kwargs
-            if param_name not in signature.parameters:
-                continue
-            if not hasattr(self.base_env, param_name):
-                continue
-            value = getattr(self.base_env, param_name)
-            if isinstance(value, (dict, list)):
-                init_kwargs[param_name] = deepcopy(value)
-            else:
-                init_kwargs[param_name] = value
-
-        updated_oai_tools = None
-        if (
-            "tool_descriptions" in self.components_to_optimize
-            and hasattr(self.base_env, "oai_tools")
-            and self.base_env.oai_tools
-        ):
-            updated_oai_tools = deepcopy(self.base_env.oai_tools)
-            for i, tool in enumerate(updated_oai_tools):
-                tool_desc_key = f"tool_{i}_description"
-                if tool_desc_key in candidate:
-                    tool["function"]["description"] = candidate[tool_desc_key]
-            init_kwargs["oai_tools"] = updated_oai_tools
-
-        # Override constructor args with candidate values when applicable
-        for comp_name, comp_value in candidate.items():
-            if comp_name.startswith("tool_") and comp_name.endswith("_description"):
-                continue
-            # Never pass dataset/eval_dataset - some envs create these internally
-            # and would get duplicate arguments
-            if comp_name in {"dataset", "eval_dataset"}:
-                continue
-            if comp_name in signature.parameters or accepts_kwargs:
-                init_kwargs[comp_name] = comp_value
-            else:
-                post_init_overrides[comp_name] = comp_value
-
-        # Provide minimal dataset if none exists (adapter provides inputs directly)
-        # This avoids copying large datasets and improves performance
-        # Detect if env creates dataset internally (has num_train_examples or num_eval_examples params)
-        creates_internal_dataset = (
-            "num_train_examples" in signature.parameters
-            or "num_eval_examples" in signature.parameters
-        )
-        accepts_dataset = "dataset" in signature.parameters or accepts_kwargs
-        if accepts_dataset and not creates_internal_dataset:
-            init_kwargs["dataset"] = vf.load_example_dataset(n=1)
-
-        try:
-            new_env = env_class(**init_kwargs)
-        except TypeError as exc:
-            raise ValueError(
-                f"Failed to reconstruct {env_class.__name__} with optimized components. "
-                f"Error: {exc}"
-            ) from exc
-
-        for attr_name, attr_value in post_init_overrides.items():
-            setattr(new_env, attr_name, attr_value)
-
-        if updated_oai_tools is not None:
-            new_env.oai_tools = updated_oai_tools
+        # Update tool descriptions (need deep copy since we mutate nested dicts)
+        if hasattr(self.base_env, "oai_tools") and self.base_env.oai_tools:
+            tool_updates = {
+                k: v
+                for k, v in candidate.items()
+                if k.startswith("tool_") and k.endswith("_description")
+            }
+            if tool_updates:
+                new_env.oai_tools = copy.deepcopy(self.base_env.oai_tools)
+                for i, tool in enumerate(new_env.oai_tools):
+                    key = f"tool_{i}_description"
+                    if key in tool_updates:
+                        tool["function"]["description"] = tool_updates[key]
 
         logger.debug(
-            f"Successfully built {env_class.__name__} candidate #{self._candidate_build_count}"
+            f"Successfully built {new_env.__class__.__name__} candidate #{self._candidate_build_count}"
         )
         return new_env
 
@@ -416,6 +340,7 @@ class GEPAAdapter(BaseGEPAAdapter):
             )
 
         reflective_data: dict[str, list[dict]] = {}
+        _warned_no_get_feedback = False
 
         # For environment-level components (like system_prompt), all examples
         # reflect on the same component, so we aggregate feedback across examples
@@ -461,11 +386,13 @@ class GEPAAdapter(BaseGEPAAdapter):
                 if hasattr(self.base_env.rubric, "get_feedback"):
                     feedback = self.base_env.rubric.get_feedback(state)
                 else:
-                    # Default fallback for basic rubrics
-                    logger.warning(
-                        "Rubric lacks get_feedback method - using generic feedback. "
-                        "Consider implementing get_feedback for better GEPA reflection."
-                    )
+                    # Default fallback for basic rubrics - warn once
+                    if not _warned_no_get_feedback:
+                        logger.warning(
+                            "Rubric lacks get_feedback method - using generic feedback. "
+                            "Consider implementing get_feedback for better GEPA reflection."
+                        )
+                        _warned_no_get_feedback = True
                     feedback = f"Reward: {score:.3f}"
                     if score < 0.5:
                         feedback += " (Low score - needs improvement)"

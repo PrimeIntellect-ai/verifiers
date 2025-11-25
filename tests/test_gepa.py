@@ -152,7 +152,7 @@ class TestGEPAAdapter:
     def test_gepa_adapter_build_program(self):
         """Test GEPAAdapter.build_program creates new environment with updated components.
 
-        Important: datasets should NOT be copied for efficiency (can be huge).
+        Important: datasets are shared (not copied) for efficiency via shallow copy.
         The adapter provides inputs directly via _build_rollout_inputs.
         """
         GEPAAdapter = require_gepa_adapter()
@@ -183,11 +183,12 @@ class TestGEPAAdapter:
         assert new_env.system_prompt == "Optimized prompt"
         assert new_env.system_prompt != env.system_prompt
 
-        # Verify dataset was NOT copied (efficiency optimization)
-        # New env should have a minimal dummy dataset, not the original
-        assert new_env.dataset is not None  # Has some dataset to satisfy init
-        assert len(new_env.dataset) == 1  # But it's minimal (dummy)
-        assert new_env.dataset is not env.dataset  # Not the same reference
+        # Verify dataset is shared (shallow copy - most efficient)
+        assert new_env.dataset is not None
+        assert new_env.dataset is env.dataset  # Same reference (shared)
+
+        # Verify rubric is also shared (preserves feedback functions)
+        assert new_env.rubric is env.rubric
 
     def test_gepa_adapter_build_program_multiturn_env(self):
         """Test build_program with MultiTurnEnv (uses **kwargs)."""
@@ -221,10 +222,9 @@ class TestGEPAAdapter:
 
         # Verify component was updated
         assert new_env.system_prompt == "Optimized prompt"
-        # Verify dataset was replaced with minimal dummy
+        # Verify dataset is shared (shallow copy)
         assert new_env.dataset is not None
-        assert len(new_env.dataset) == 1
-        assert new_env.dataset is not env.dataset
+        assert new_env.dataset is env.dataset
 
     def test_gepa_adapter_build_program_tool_env(self):
         """Test build_program with ToolEnv."""
@@ -259,9 +259,9 @@ class TestGEPAAdapter:
 
         # Verify component was updated
         assert new_env.system_prompt == "Use the tool wisely"
-        # Verify dataset was replaced with minimal dummy
+        # Verify dataset is shared (shallow copy)
         assert new_env.dataset is not None
-        assert len(new_env.dataset) == 1
+        assert new_env.dataset is env.dataset
         assert new_env.oai_tools is not None  # Tools preserved
 
     def test_gepa_adapter_build_program_stateful_tool_env(self):
@@ -300,9 +300,9 @@ class TestGEPAAdapter:
 
         # Verify component was updated
         assert new_env.system_prompt == "Updated stateful prompt"
-        # Verify dataset was replaced with minimal dummy
+        # Verify dataset is shared (shallow copy)
         assert new_env.dataset is not None
-        assert len(new_env.dataset) == 1
+        assert new_env.dataset is env.dataset
 
     def test_gepa_adapter_build_program_internal_dataset_env(self):
         """Test build_program with env that creates dataset internally."""
@@ -356,9 +356,10 @@ class TestGEPAAdapter:
 
         # Verify component was updated
         assert new_env.system_prompt == "Updated internal prompt"
-        # Verify dataset was created internally (not the dummy one)
+        # Verify dataset is shared (shallow copy preserves all attributes)
         assert new_env.dataset is not None
-        assert len(new_env.dataset) == 100  # Created internally with num_train_examples
+        assert new_env.dataset is env.dataset  # Shared reference
+        assert len(new_env.dataset) == 100  # Original dataset preserved
         assert new_env.num_train_examples == 100
 
     def test_gepa_adapter_extract_seed_candidate(self):
