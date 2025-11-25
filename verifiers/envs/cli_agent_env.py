@@ -592,6 +592,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
             f"messages={len(request_body.get('messages', []))}"
         )
 
+        # Force non-streaming - we don't support SSE streaming yet
+        # The response will be converted to SSE format if stream was requested
+        request_body["stream"] = False
+
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         intercept = {
             "request_id": request_id,
@@ -599,6 +603,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             "messages": request_body["messages"],
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
+            "stream_requested": stream_requested,  # Remember if client wanted streaming
             "response_future": asyncio.Future(),
         }
 
@@ -621,7 +626,125 @@ class CliAgentEnv(vf.MultiTurnEnv):
         logger.info(
             f"Response to agent: {json.dumps(normalized_response, indent=2, default=str)[:2000]}"
         )
+
+        # If client requested streaming, convert to SSE format
+        if intercept.get("stream_requested", False):
+            return self._create_sse_response(normalized_response)
+
         return web.json_response(normalized_response)  # type: ignore
+
+    def _create_sse_response(self, response_dict: dict) -> web.Response:
+        """Convert a chat completion response to SSE streaming format."""
+        response_id = response_dict.get("id", "chatcmpl-unknown")
+        created = response_dict.get("created", 0)
+        model = response_dict.get("model", "unknown")
+
+        chunks = []
+
+        for choice in response_dict.get("choices", []):
+            message = choice.get("message", {})
+            finish_reason = choice.get("finish_reason")
+            index = choice.get("index", 0)
+
+            # First chunk: role
+            first_chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": index,
+                        "delta": {"role": message.get("role", "assistant")},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            chunks.append(f"data: {json.dumps(first_chunk)}\n\n")
+
+            # Content chunk (if any)
+            content = message.get("content")
+            if content:
+                content_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": index,
+                            "delta": {"content": content},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                chunks.append(f"data: {json.dumps(content_chunk)}\n\n")
+
+            # Tool calls chunks (if any)
+            tool_calls = message.get("tool_calls", [])
+            if tool_calls:
+                # Send tool call with full info in one chunk
+                tc_delta = []
+                for i, tc in enumerate(tool_calls):
+                    tc_delta.append(
+                        {
+                            "index": i,
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "function"),
+                            "function": {
+                                "name": tc.get("function", {}).get("name", ""),
+                                "arguments": tc.get("function", {}).get(
+                                    "arguments", ""
+                                ),
+                            },
+                        }
+                    )
+
+                tool_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": index,
+                            "delta": {"tool_calls": tc_delta},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                chunks.append(f"data: {json.dumps(tool_chunk)}\n\n")
+
+            # Final chunk with finish_reason
+            final_chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": index,
+                        "delta": {},
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+            chunks.append(f"data: {json.dumps(final_chunk)}\n\n")
+
+        # End of stream
+        chunks.append("data: [DONE]\n\n")
+
+        body = "".join(chunks)
+        logger.debug(f"SSE response body:\n{body[:1500]}")
+        return web.Response(
+            body=body,
+            status=200,
+            content_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
 
     @vf.teardown
     async def teardown_tunnel(self):
