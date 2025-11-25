@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Optional
 
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent, Tool
 
 from .base import MCPTransport
@@ -17,7 +17,7 @@ class StreamingHTTPTransport(MCPTransport):
         timeout: float = 30.0,
         max_retries: int = 3
     ):
-        """Initialize the HTTP SSE transport."""
+        """Initialize the Streamable HTTP transport."""
         self.config = config
         self.url = url
         self.timeout = timeout
@@ -39,13 +39,13 @@ class StreamingHTTPTransport(MCPTransport):
         return self.tools
 
     async def _maintain_connection(self):
-        """Background task that maintains the HTTP SSE connection."""
+        """Background task that maintains the Streamable HTTP connection."""
         last_error = None
         
         for attempt in range(self.max_retries):
             try:
-                # Context managers stay within this single task
-                async with sse_client(self.url) as (read, write):
+                # Use streamablehttp_client instead of sse_client
+                async with streamablehttp_client(self.url) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         self.session = session
                         await session.initialize()

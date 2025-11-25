@@ -94,32 +94,73 @@ class MCPEnv(vf.StatefulToolEnv):
                 lambda _, __: (self.cleanup_sandboxes(), exit(143))
             )
 
+    def _get_server_url(self, config: MCPServerConfig) -> str:
+        """Get URL for a server, checking config.url first, then http_urls dict."""
+        if config.url:
+            return config.url
+        if config.name in self.http_urls:
+            return self.http_urls[config.name]
+        raise ValueError(
+            f"No URL found for server '{config.name}'. "
+            f"Provide either 'url' in server config or add to 'http_urls' dict."
+        )
+
     def _validate_config(self):
-        if self.transport_type == "http":
+        """Validate configuration based on transport type."""
+        if self.transport_type == "stdio":
+            # stdio requires command
+            missing_commands = [
+                s.name for s in self.mcp_servers
+                if not s.command
+            ]
+            if missing_commands:
+                raise ValueError(
+                    f"'command' is required for stdio transport. "
+                    f"Missing for servers: {missing_commands}"
+                )
+
+        elif self.transport_type == "http":
+            # http requires url (either in config or http_urls dict)
             missing_urls = [
                 s.name for s in self.mcp_servers
-                if s.name not in self.http_urls
+                if not s.url and s.name not in self.http_urls
             ]
             if missing_urls:
                 raise ValueError(
-                    f"HTTP URLs required for servers: {missing_urls}. "
+                    f"URL required for HTTP transport. "
+                    f"Missing for servers: {missing_urls}. "
+                    f"Provide 'url' in server config or add to 'http_urls' dict."
                 )
 
-        if self.transport_type == "sandbox" and self.connection_scope == "session":
-            self.logger.warning(
-                "Using session scope with sandbox transport. "
-                "This will create one sandbox for all rollouts."
-            )
+        elif self.transport_type == "sandbox":
+            # sandbox requires command for starting MCP server in sandbox
+            missing_commands = [
+                s.name for s in self.mcp_servers
+                if not s.command
+            ]
+            if missing_commands:
+                raise ValueError(
+                    f"'command' is required for sandbox transport. "
+                    f"Missing for servers: {missing_commands}"
+                )
+            
+            if self.connection_scope == "session":
+                self.logger.warning(
+                    "Using session scope with sandbox transport. "
+                    "This will create one sandbox for all rollouts."
+                )
 
     async def create_transport(
         self,
         config: MCPServerConfig,
     ) -> MCPTransport:
         if self.transport_type == "stdio":
+            if not config.command:
+                raise ValueError(f"'command' required for stdio transport: {config.name}")
             return StdioTransport(config)
 
         elif self.transport_type == "http":
-            url = self.http_urls[config.name]
+            url = self._get_server_url(config)
             return StreamingHTTPTransport(
                 config,
                 url=url,
@@ -130,6 +171,8 @@ class MCPEnv(vf.StatefulToolEnv):
         elif self.transport_type == "sandbox":
             if not self.sandbox_client:
                 raise RuntimeError("Sandbox client not initialized")
+            if not config.command:
+                raise ValueError(f"'command' required for sandbox transport: {config.name}")
 
             env_vars = {**self.sandbox_environment_vars, **(config.env or {})}
 
@@ -296,14 +339,3 @@ class MCPEnv(vf.StatefulToolEnv):
                 self.active_sandboxes.discard(sandbox_id)
             except Exception as e:
                 self.logger.error(f"Failed to cleanup sandbox {sandbox_id}: {e}")
-
-
-
-
-
-
-
-
-
-
-
