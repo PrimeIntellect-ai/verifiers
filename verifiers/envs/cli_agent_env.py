@@ -115,6 +115,14 @@ def _normalize_chat_completion_response(response_dict: dict) -> dict:
     if "object" not in normalized:
         normalized["object"] = "chat.completion"
 
+    # Ensure usage is present (some agents like Codex may fail on null usage)
+    if normalized.get("usage") is None:
+        normalized["usage"] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
     return normalized
 
 
