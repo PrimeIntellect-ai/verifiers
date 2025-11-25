@@ -52,7 +52,7 @@ from verifiers.gepa import GEPAAdapter
 adapter = GEPAAdapter(
     env=vf_env,
     client=async_client,
-    model="gpt-4o-mini",
+    model="gpt-5-mini",
     sampling_args={"temperature": 1.0},
     components_to_optimize=["system_prompt"],
 )
@@ -60,12 +60,17 @@ adapter = GEPAAdapter(
 # Build new environment with optimized components
 new_env = adapter.build_program({"system_prompt": "Optimized prompt..."})
 
-# Evaluate candidate prompts
+# Evaluate candidate prompts (sync wrapper)
 results = adapter.evaluate(batch, candidate, capture_traces=True)
+
+# Evaluate candidate prompts (async - preferred in async contexts)
+results = await adapter.evaluate_async(batch, candidate, capture_traces=True)
 
 # Generate reflection dataset for GEPA
 reflective_data = adapter.make_reflective_dataset(candidate, results, components)
 ```
+
+**Note**: Use `evaluate_async()` when you're already in an async context (e.g., notebooks, async services). The sync `evaluate()` method is a convenience wrapper that manages the event loop for you.
 
 ## Rubric Feedback
 
@@ -147,8 +152,8 @@ vf-gepa my-env --components tool_descriptions --budget medium
 
 ### Models
 
-- **Task model** (being optimized): `gpt-4o-mini`, `gpt-4o`, or custom
-- **Reflection model** (generating proposals): `gpt-4o` recommended
+- **Task model** (being optimized): `gpt-5-mini`, or custom
+- **Reflection model** (generating proposals): `gpt-5-mini` (default)
 
 ## Output
 
@@ -158,11 +163,40 @@ GEPA saves results to `./gepa_results/<env_id>/<run_id>/`:
 - `<env_id>_original.json` - Original components (for comparison)
 - `<env_id>_metrics.json` - Optimization metrics and history
 
+## Experiment Tracking
+
+GEPA supports integration with Weights & Biases (wandb) and MLflow for tracking optimization runs:
+
+```bash
+# Track with wandb
+vf-gepa my-env --budget medium \
+  --use-wandb \
+  --wandb-project gepa-experiments
+
+# Track with MLflow
+vf-gepa my-env --budget medium \
+  --use-mlflow \
+  --mlflow-tracking-uri http://localhost:5000
+
+# Use both simultaneously
+vf-gepa my-env --budget medium \
+  --use-wandb --wandb-project my-project \
+  --use-mlflow --mlflow-tracking-uri http://localhost:5000
+```
+
+These integrations automatically log:
+- Validation and training scores
+- Component-level improvements
+- Optimization configuration
+- Final optimized components
+
+For detailed documentation on experiment tracking options, see [GEPA Documentation](../../docs/source/gepa.md#experiment-tracking).
+
 ## Implementation Notes
 
 ### Packaging
 
-The GEPA adapter ships inside the `verifiers.adapters` package so it is available to `pip install verifiers` users. The legacy `integrations/gepa` module re-exports the same class for backward compatibility inside this repository.
+The GEPA adapter ships inside the `verifiers.gepa` package so it is available to `pip install verifiers` users. The `integrations/gepa` directory contains additional documentation and examples for reference.
 
 ### Feedback Collection
 
@@ -188,8 +222,8 @@ vf-gepa ENV_ID \
   --max-metric-calls 1000 \
   -n 100 --num-val 30 \
   --components system_prompt tool_descriptions \
-  -m gpt-4o \
-  --reflection-model gpt-4o \
+  -m gpt-5-mini \
+  --reflection-model gpt-5-mini \
   --rollouts-per-example 3
 
 # Options
@@ -198,12 +232,17 @@ vf-gepa ENV_ID \
   --budget                Budget preset: light/medium/heavy
   --max-metric-calls      Custom budget (total metric calls)
   --components            What to optimize (default: system_prompt)
-  -m, --model             Task model (default: gpt-4o-mini)
-  --reflection-model      Reflection model (default: gpt-4o)
+  -m, --model             Task model (default: gpt-5-mini)
+  --reflection-model      Reflection model (default: gpt-5-mini)
   -T, --temperature       Task model temperature (default: 1.0)
   -t, --max-tokens        Max tokens (default: 8096)
   --track-stats           Save detailed statistics
   -v, --verbose           Verbose logging
+  --use-wandb             Enable wandb logging
+  --wandb-project         Wandb project name
+  --wandb-entity          Wandb entity/team name
+  --use-mlflow            Enable MLflow logging
+  --mlflow-tracking-uri   MLflow tracking server URI
 ```
 
 ## Links
