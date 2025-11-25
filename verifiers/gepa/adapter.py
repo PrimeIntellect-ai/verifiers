@@ -108,9 +108,17 @@ class GEPAAdapter(BaseGEPAAdapter):
     def build_program(self, candidate: dict[str, str]) -> vf.Environment:
         """Create a candidate environment with updated components using shallow copy.
 
-        Shallow copy shares heavy objects (dataset, rubric, parser) while
-        allowing string attributes to be replaced. For oai_tools, we deep copy
-        only if tool descriptions are being updated.
+        Why shallow copy instead of deep copy?
+        - Efficiency: Datasets can be large (100s of MB). Shallow copy shares the dataset
+          reference across all candidate environments, avoiding memory bloat and copy overhead.
+        - Safety: String attributes like system_prompt are immutable. Assignment (e.g.,
+          new_env.system_prompt = "...") creates a new reference without affecting the original.
+        - Shared state: Rubric and parser objects are also shared, which is fine since they
+          don't get mutated during evaluation.
+
+        Special case for oai_tools:
+        - When optimizing tool_descriptions, we need to mutate nested dicts in oai_tools
+        - We deep copy oai_tools in this case to avoid mutating the base environment's tools
         """
         import copy
 
@@ -121,13 +129,16 @@ class GEPAAdapter(BaseGEPAAdapter):
         )
 
         # Create shallow copy - shares dataset, rubric, parser, etc.
+        # This is safe because we only replace immutable string attributes,
+        # not mutate shared objects (except oai_tools, handled below).
         new_env = copy.copy(self.base_env)
 
-        # Update system_prompt (assignment replaces reference, safe)
+        # Update system_prompt (assignment replaces reference, doesn't mutate original)
         if "system_prompt" in candidate:
             new_env.system_prompt = candidate["system_prompt"]
 
         # Update tool descriptions (need deep copy since we mutate nested dicts)
+        # We ONLY deep copy when actually updating tools to avoid unnecessary overhead
         if hasattr(self.base_env, "oai_tools") and self.base_env.oai_tools:
             tool_updates = {
                 k: v
@@ -155,6 +166,14 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         Evaluate candidate on batch of examples.
 
+        This method provides a synchronous interface to evaluation, required by GEPA's
+        optimization loop. Since the verifiers Environment API is async, we bridge the gap:
+        - If no event loop is running: Use asyncio.run() to create one
+        - If already in an event loop: Use ThreadPoolExecutor to avoid blocking
+
+        This allows GEPA to work in both sync contexts (normal scripts) and async contexts
+        (notebooks, services) without requiring callers to manage event loops.
+
         Args:
             batch: List of examples (dicts with 'question', 'answer', 'info', 'task')
             candidate: Dict of component values to evaluate
@@ -172,14 +191,17 @@ class GEPAAdapter(BaseGEPAAdapter):
         )
 
         # Run evaluation using Environment's evaluate method
+        # Note: We cannot simply await here because GEPA's optimize() expects a
+        # synchronous evaluate() method. We handle both sync and async contexts:
         evaluation = self._evaluate_async(env, batch, capture_traces)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop - create one
+            # No running loop - create one and run the async evaluation
             return asyncio.run(evaluation)
 
         # Already in an event loop - run in a thread pool to avoid blocking
+        # This happens when GEPA is called from an already-async context
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(asyncio.run, evaluation)
             return future.result()
@@ -258,18 +280,29 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         Convert GEPA batch examples into Verifiers RolloutInput objects.
 
-        Handles prompt normalization, example/task bookkeeping, answer passthrough,
-        and optional info payloads while duplicating entries according to
-        num_rollouts_per_example so downstream generate() calls receive independent
-        rollout inputs.
+        GEPA uses a different schema than verifiers:
+        - GEPA: {"question": str, "answer": Any, "task": str, "info": dict, "example_id": int}
+        - Verifiers: {"prompt": Messages, "answer": Any, "task": str, "info": dict, "example_id": int}
+
+        This method:
+        1. Maps "question" -> "prompt" (with format normalization via _format_prompt)
+        2. Preserves "answer", "task", "info" fields
+        3. Ensures "example_id" is an integer (falls back to index)
+        4. Duplicates each input num_rollouts_per_example times for multiple evaluations
+
+        Why deepcopy for each rollout?
+        - Each rollout needs an independent RolloutInput to avoid state contamination
+        - Without deepcopy, modifying one rollout's state would affect all copies
         """
         rollout_inputs: list[RolloutInput] = []
 
         for example_idx, example in enumerate(batch):
+            # Extract prompt - GEPA uses "question", verifiers uses "prompt"
             raw_prompt = example.get("prompt") or example.get("question") or ""
             formatted_prompt = self._format_prompt(env, raw_prompt)
             task = str(example.get("task") or env.env_id or "default")
 
+            # Ensure example_id is an integer (GEPA may pass strings)
             example_id_value = example.get("example_id", example_idx)
             try:
                 example_id = int(example_id_value)
@@ -289,6 +322,7 @@ class GEPAAdapter(BaseGEPAAdapter):
             if info is not None:
                 base_input["info"] = deepcopy(info)
 
+            # Create independent copies for each rollout to avoid state contamination
             for _ in range(self.num_rollouts_per_example):
                 rollout_inputs.append(deepcopy(base_input))
 
@@ -298,14 +332,26 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         Ensure prompts match the environment's declared message_type.
 
-        Completion environments expect raw strings, so chat-style prompts are
-        flattened into a single string. Chat environments expect structured
-        message lists, so bare strings are wrapped with system/few-shot context.
+        Environments can be either "completion" (raw text) or "chat" (message lists).
+        We need to normalize GEPA's prompts (which can be either format) to match:
+
+        For completion environments (message_type == "completion"):
+        - String prompts: Pass through as-is
+        - List prompts: Flatten message contents into a single string
+
+        For chat environments (message_type == "chat"):
+        - List prompts: Pass through as-is
+        - String prompts: Wrap in chat structure with system prompt + few-shot examples
+
+        This ensures the environment receives prompts in the format it expects,
+        regardless of how GEPA provides them.
         """
+        # Completion environment: flatten everything to a string
         if env.message_type == "completion":
             if isinstance(prompt, str):
                 return prompt
             if isinstance(prompt, list):
+                # Extract content from all messages and join
                 content_parts: list[str] = []
                 for message in prompt:
                     if isinstance(message, dict):
@@ -315,9 +361,11 @@ class GEPAAdapter(BaseGEPAAdapter):
                 return " ".join(content_parts) if content_parts else str(prompt)
             return str(prompt)
 
+        # Chat environment: ensure we have a message list
         if isinstance(prompt, list):
             return prompt
 
+        # String prompt for chat env: wrap with system prompt + few-shot
         messages: list[dict[str, str]] = []
         if env.system_prompt:
             messages.append({"role": "system", "content": env.system_prompt})
@@ -372,6 +420,12 @@ class GEPAAdapter(BaseGEPAAdapter):
             # Check if component is in optimization list
             # Support both exact matches (e.g., "system_prompt") and group patterns
             # (e.g., "tool_0_description" matches "tool_descriptions")
+            #
+            # Why this complexity?
+            # When optimizing tool_descriptions, GEPA's propose_new_texts receives
+            # individual components like "tool_0_description", "tool_1_description" etc.
+            # But components_to_optimize contains the group name "tool_descriptions".
+            # We need to match the individual tool components to the group.
             is_optimizable = comp_name in self.components_to_optimize
 
             # Check if this is a tool description (tool_N_description pattern)
@@ -489,9 +543,18 @@ class GEPAAdapter(BaseGEPAAdapter):
         """
         Propose new text for components using tool-aware templates.
 
-        For tool descriptions (tool_N_description), uses a tool-specific template
-        that includes the tool name and parameter schema. For other components,
-        uses GEPA's default instruction proposal template.
+        Why different templates for different components?
+        - Tool descriptions need context about the tool's name, parameters, and purpose
+        - System prompts are general instructions that don't need tool-specific context
+
+        Template selection logic:
+        1. Check if component is in self._tool_metadata (tool_N_description pattern)
+           -> Use TOOL_DESCRIPTION_PROMPT_TEMPLATE with tool name + parameters
+        2. Otherwise (system_prompt, etc.)
+           -> Use GEPA's default InstructionProposalSignature
+
+        Both templates receive the same reflective feedback data, but format it
+        differently for the reflection model to generate appropriate improvements.
 
         Args:
             candidate: Current candidate component values
@@ -525,8 +588,10 @@ class GEPAAdapter(BaseGEPAAdapter):
             feedback_data = reflective_dataset[comp_name]
 
             # Check if this is a tool description component
+            # Tool metadata is populated in __init__ when tool_descriptions is being optimized
             if comp_name in self._tool_metadata:
-                # Use tool-specific template
+                # Use tool-specific template that includes tool name and parameter schema
+                # This gives the reflection model context about what the tool does
                 tool_info = self._tool_metadata[comp_name]
                 new_texts[comp_name] = self._propose_tool_description(
                     tool_name=tool_info["name"],
@@ -538,7 +603,8 @@ class GEPAAdapter(BaseGEPAAdapter):
                     f"Proposed new tool description for {comp_name} (tool: {tool_info['name']})"
                 )
             else:
-                # Use default GEPA instruction proposal for system_prompt, etc.
+                # Use default GEPA instruction proposal template for system_prompt, etc.
+                # This is GEPA's standard prompt optimization template
                 new_texts[comp_name] = InstructionProposalSignature.run(
                     lm=self.reflection_lm,
                     input_dict={
