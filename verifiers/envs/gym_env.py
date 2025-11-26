@@ -173,11 +173,17 @@ class GymEnv(Environment):
               so that evaluation behaves like "episodes mode" where
               `num_examples` maps naturally onto `rollouts_per_example`.
 
+        * If you pass ONLY `eval_dataset` (no `dataset`) and `auto_dummy_eval=True`:
+            - `eval_dataset` is used *only* for evaluation.
+            - A separate train `dataset` is auto-generated with
+              `num_train_episodes` rows via `_build_auto_dataset(...)`.
+              We deliberately do **not** mirror eval into train.
+
     - Heterogeneous mode (env_registry is set):
         * If you pass your own dataset:
             - Each row's `info` MUST include:
                 - `env_type` (a key in `env_registry`)
-                - `env_kwargs` (a dict passed to `env_cls(**env_kwargs)`)
+                - `env_kwargs` (for __init__) for that env type
               plus any extra metadata you want; the whole `info` dict is later
               splatted into `reset(**info)`.
         * If you do NOT pass `dataset` / `eval_dataset` and `auto_dummy_eval=True`:
@@ -190,6 +196,9 @@ class GymEnv(Environment):
               That means that, in the heterogeneous/no-dataset case, rollouts
               will alternate between the registered envs with default args
               (unless you override via `info_builder`).
+
+        * If you pass ONLY `eval_dataset` in heterogeneous mode, GymEnv does
+          **not** try to guess a train dataset; `dataset` simply remains unset.
 
     ------------------------ Env interface assumptions ------------------------
 
@@ -280,11 +289,19 @@ class GymEnv(Environment):
                 final_env_kwargs["dataset"] = auto_ds
                 final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
 
-        # If eval_dataset is provided but dataset is not, mirror eval->dataset
-        # This keeps trainers (which expect env.dataset) happy even if the user
-        # only configures an eval dataset.
-        if "dataset" not in final_env_kwargs and "eval_dataset" in final_env_kwargs:
-            final_env_kwargs["dataset"] = final_env_kwargs["eval_dataset"]
+        # If the user passes only eval_dataset (no dataset), we do NOT mirror
+        # eval into train (that would be a surprising leakage). In homogeneous
+        # mode we can still auto-build a separate train dataset when requested.
+        if (
+            auto_dummy_eval
+            and "dataset" not in final_env_kwargs
+            and "eval_dataset" in final_env_kwargs
+            and self._env_registry is None
+        ):
+            final_env_kwargs["dataset"] = self._build_auto_dataset(
+                num_samples=num_train_episodes,
+                message_type=message_type,
+            )
 
         super().__init__(**final_env_kwargs)
 
@@ -521,7 +538,7 @@ class GymEnv(Environment):
                 "answer": ["" for _ in range(num_samples)],
                 "info": infos,
                 "task": ["default" for _ in range(num_samples)],
-                "example_id": list(num_samples for _ in range(num_samples)),
+                "example_id": list(range(num_samples)),
             }
         )
 

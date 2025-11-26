@@ -425,7 +425,7 @@ def test_mode_1_homogeneous_multi_row_init(toy_env_class, client):
     expected_starts = list(range(N))
     for i, state in enumerate(all_states):
         expected_start = expected_starts[i]
-        
+
         # Check that the correct input info was passed
         assert state["input"]["info"]["start"] == expected_start
         assert state["example_id"] == i
@@ -532,7 +532,7 @@ def test_mode_3_custom_subclass_obs_formatter(eval_dataset, client):
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     traj = st["trajectory"]
-    
+
     assert len(traj) == 1
     assert traj[0]["prompt"][-1]["content"] == "obs_is_0"
 
@@ -719,6 +719,7 @@ def test_non_dummy_eval_no_mapping(toy_env_class, client):
     assert res["metadata"]["num_examples"] == 2
     assert res["metadata"]["rollouts_per_example"] == 1
 
+
 # ----------------- Auto-dataset and dataset semantics tests -----------------
 
 
@@ -781,26 +782,33 @@ def test_auto_dataset_completion_prompt_shape(toy_env_class):
     assert ds[0]["prompt"] == ""
 
 
-def test_eval_dataset_is_mirrored_into_dataset(toy_env_class, eval_dataset):
+def test_eval_dataset_does_not_become_train_data(toy_env_class, eval_dataset):
     """
-    If user passes only eval_dataset, GymEnv should mirror it into dataset so
-    trainers that expect env.dataset (like Orchestrator) don't explode.
+    If user passes only eval_dataset, GymEnv should:
+      - keep eval_dataset for evaluation only
+      - auto-build a separate train dataset via num_train_episodes
+      - NOT mirror eval_dataset into dataset
     """
+    num_train = 11
     env = GymEnv(
         env_cls=toy_env_class,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
+        num_train_episodes=num_train,
     )
 
-    # Both datasets should be present and have same length/contents
     assert env.eval_dataset is not None
     assert env.dataset is not None
 
-    assert len(env.eval_dataset) == len(env.dataset)
-    # Quick sanity check on first row fields
-    assert env.dataset[0]["example_id"] == env.eval_dataset[0]["example_id"]
-    assert env.dataset[0]["task"] == env.eval_dataset[0]["task"]
+    # Eval dataset is the original single-row eval set
+    assert len(env.eval_dataset) == 1
+
+    # Train dataset is auto-generated and has num_train_episodes rows
+    assert len(env.dataset) == num_train
+
+    # They should not be the same underlying object
+    assert env.dataset is not env.eval_dataset
 
 
 def test_user_dataset_prevents_auto_dataset(toy_env_class):
