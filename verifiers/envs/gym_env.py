@@ -66,9 +66,9 @@ def _normalize_step(out: StepOut) -> Tuple[Any, float, bool, bool, Dict[str, Any
 
 # ---------- Episodic rubric (sums stepwise rewards) ----------
 def sum_step_rewards(*, state: State, **_) -> float:
-    """Sum r_t from state['responses'][i]['reward']."""
+    """Sum r_t from state['trajectory'][i]['reward']."""
     return float(
-        sum(float(step.get("reward", 0.0)) for step in state.get("responses", []))
+        sum(float(step.get("reward", 0.0)) for step in state.get("trajectory", []))
     )
 
 
@@ -85,14 +85,17 @@ def _default_eval_ds(message_type: str) -> Dataset:
     Built-in dummy eval dataset used when the user doesn't provide one.
 
     We only ever use this to satisfy Environment's requirement that at least
-    one of (dataset, eval_dataset) is set; the contents do not drive dynamics.
+    one of (dataset, eval_dataset) is set; the contents do not drive dynamics
+    unless 'auto_dummy_eval' is used with heterogeneous mode.
     """
     if message_type == "completion":
         return Dataset.from_dict(
             {
                 "prompt": [""],
                 "answer": [""],
-                "info": [{}],
+                "info": [
+                    {"env_type": "default", "env_kwargs": {}}
+                ],  # For heterogeneous
                 "task": ["default"],
                 "example_id": [0],
             }
@@ -102,44 +105,48 @@ def _default_eval_ds(message_type: str) -> Dataset:
         {
             "prompt": [[]],  # shape matches chat-style prompts, but unused
             "answer": [""],
-            "info": [{}],
+            "info": [
+                {"env_type": "default", "env_kwargs": {}}
+            ],  # For heterogeneous
             "task": ["default"],
             "example_id": [0],
         }
     )
 
 
-# ---------- GymBaseEnv: base class for RL-style env *runners* ----------
-class GymBaseEnv(Environment):
+# ---------- GymEnv: Concrete class for Gym-style env *runners* ----------
+class GymEnv(Environment):
     """
-    Base class for Gym-style RL environments driven by LLMs.
+    Concrete class for running Gym-style RL environments driven by LLMs.
 
-    Important: this class is a *runner*, just like Environment itself.
-    It does NOT hold per-rollout state. Each call to `rollout()` must be
-    self-contained and concurrency-safe.
+    This class is a "batteries-included" runner that supports three modes:
 
-    You provide:
-      - an action_parser: str -> action
-      - an implementation of `_make_env(state) -> StepResetEnv`
-        which returns a fresh env instance per rollout
-      - optionally obs_to_text (or ensure your observations are strings)
+    1. Homogeneous Mode:
+       Pass `env_cls` and `env_kwargs`. Every rollout will use a
+       fresh instance of this single env type. The dataset's 'info'
+       column is passed to `env.reset()` for initialization (e.g., seeds).
 
-    Two usage patterns:
+    2. Heterogeneous Mode:
+       Pass `env_registry` and a `dataset`. The dataset's 'info'
+       column *must* specify the 'env_type' (key in registry)
+       and 'env_kwargs' (for __init__) for each rollout.
 
-    1. Wrap existing gym-like envs:
-       - use GymEnv(env_cls=SomeEnv, env_kwargs=...)
-       - maybe pass obs_to_text if obs are not strings
-
-    2. Verifiers-native RL envs:
-       - subclass GymBaseEnv
-       - implement `_make_env(self, state) -> StepResetEnv`
-         returning a tiny object with reset/step and internal state.
+    3. Custom Mode:
+       Do not pass `env_cls` or `env_registry`. Subclass GymEnv
+       and implement your own `_make_env(state)` logic.
     """
 
     def __init__(
         self,
         *,
         action_parser: Callable[[str], Any],
+        # Mode 1: Homogeneous
+        env_cls: Optional[type] = None,
+        env_kwargs: Dict[str, Any] | None = None,
+        # Mode 2: Heterogeneous
+        env_registry: Optional[Dict[str, type]] = None,
+        # env_setup_fn is for Homogeneous mode (Mode 1)
+        env_setup_fn: Optional[Callable[..., None]] = None,
         # optional datasets (verifiers-style)
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
@@ -150,27 +157,41 @@ class GymBaseEnv(Environment):
         max_episode_steps: Optional[int] = None,
         rubric: Optional[Rubric] = None,  # defaults to EpisodicSumRubric
         eval_runner: Optional[Callable[..., Any]] = None,
-        **env_kwargs: Any,
+        **env_kwargs_rest: Any,
     ):
-        env_kwargs = dict(env_kwargs)
-        env_kwargs["rubric"] = rubric or EpisodicSumRubric()
-        env_kwargs["message_type"] = message_type
+        # --- Store env factory info ---
+        self._env_cls = env_cls
+        self._env_kwargs = dict(env_kwargs or {})
+        self._env_registry = env_registry
+        self._env_setup_fn = env_setup_fn
+
+        # Ensure modes are mutually exclusive
+        if self._env_cls and self._env_registry:
+            raise ValueError(
+                "Cannot provide both 'env_cls' (Homogeneous Mode) and "
+                "'env_registry' (Heterogeneous Mode) at the same time."
+            )
+
+        # --- Prepare args for Environment.__init__ ---
+        final_env_kwargs = dict(env_kwargs_rest)
+        final_env_kwargs["rubric"] = rubric or EpisodicSumRubric()
+        final_env_kwargs["message_type"] = message_type
 
         # Respect user-provided dataset/eval_dataset if given
         if dataset is not None:
-            env_kwargs["dataset"] = dataset
+            final_env_kwargs["dataset"] = dataset
         if eval_dataset is not None:
-            env_kwargs["eval_dataset"] = eval_dataset
+            final_env_kwargs["eval_dataset"] = eval_dataset
 
         # If neither dataset nor eval_dataset, optionally inject dummy eval set
         if (
             auto_dummy_eval
-            and "dataset" not in env_kwargs
-            and "eval_dataset" not in env_kwargs
+            and "dataset" not in final_env_kwargs
+            and "eval_dataset" not in final_env_kwargs
         ):
-            env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
+            final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
 
-        super().__init__(**env_kwargs)
+        super().__init__(**final_env_kwargs)
 
         self.action_parser = action_parser
         self.max_episode_steps = max_episode_steps
@@ -180,6 +201,27 @@ class GymBaseEnv(Environment):
 
         # optional obs_to_text callback; if None, strings are accepted, others error
         self._obs_to_text_fn: Callable[[Any], str] | None = obs_to_text
+
+        # --- Metadata (moved from old GymEnv) ---
+        if self._env_cls:
+            if not getattr(self, "env_id", ""):
+                try:
+                    self.env_id = getattr(self._env_cls, "__name__", "gym_env")
+                except Exception:
+                    self.env_id = "gym_env"
+            if not getattr(self, "env_args", {}):
+                try:
+                    self.env_args = {
+                        "env_cls": str(self._env_cls),
+                        "env_kwargs": self._env_kwargs,
+                    }
+                except Exception:
+                    self.env_args = {}
+        elif self._env_registry:
+            self.env_id = self.env_id or "dataset_driven_env"
+            self.env_args = self.env_args or {
+                "registry_keys": list(self._env_registry.keys())
+            }
 
     # ----- hooks for concrete envs -----
     def obs_to_text(self, obs: Any) -> str:
@@ -209,14 +251,57 @@ class GymBaseEnv(Environment):
         msgs.append({"role": "user", "content": obs_text})
         return msgs
 
-    # ---- abstract env factory ----
+    # ---- concrete env factory ----
     def _make_env(self, state: State | None = None) -> StepResetEnv:
         """
-        Create a fresh env instance for a rollout.
+        Create a fresh env instance for a rollout based on __init__ mode.
 
-        Must be implemented by subclasses (including GymEnv).
+        This method can be overridden by subclasses for custom env creation.
         """
-        raise NotImplementedError
+        # Mode 1: Homogeneous (env_cls was given)
+        if self._env_cls is not None:
+            env = self._env_cls(**self._env_kwargs)  # type: ignore[call-arg]
+
+            # Call user-provided setup if any
+            if self._env_setup_fn is not None:
+                try:
+                    self._env_setup_fn(env, state)
+                except TypeError:
+                    self._env_setup_fn(env)  # type: ignore[misc]
+            elif hasattr(env, "setup") and callable(getattr(env, "setup")):
+                env.setup()  # type: ignore[attr-defined]
+
+            return env  # type: ignore[return-value]
+
+        # Mode 2: Heterogeneous (env_registry was given)
+        if self._env_registry is not None:
+            if not state:
+                raise ValueError("State is required for Heterogeneous Mode")
+
+            info = state["input"].get("info")
+            if not isinstance(info, dict):
+                raise ValueError("Dataset 'info' must be a dict for Heterogeneous Mode")
+
+            env_type_name = info.get("env_type")
+            if not env_type_name or env_type_name not in self._env_registry:
+                raise ValueError(
+                    f"Dataset 'info.env_type' missing or '{env_type_name}' "
+                    f"not in registry. Available: {list(self._env_registry.keys())}"
+                )
+
+            env_cls = self._env_registry[env_type_name]
+            env_kwargs = info.get("env_kwargs", {})
+            if not isinstance(env_kwargs, dict):
+                raise ValueError("Dataset 'info.env_kwargs' must be a dict")
+
+            return env_cls(**env_kwargs)  # type: ignore[return-value]
+
+        # Mode 3: Custom (must be subclassed)
+        raise NotImplementedError(
+            "GymEnv must be initialized with 'env_cls' (Mode 1) or "
+            "'env_registry' (Mode 2), or you must subclass it and "
+            "implement your own _make_env(state) method."
+        )
 
     def _episode_limit_for_env(self, env: Any) -> int:
         """
@@ -246,9 +331,9 @@ class GymBaseEnv(Environment):
     # -------- Environment API: state setup --------
     async def setup_state(self, state: State) -> State:
         """
-        GymBaseEnv doesn't need extra state wiring beyond what init_state() does.
-        Override if you want to inject env-specific info into state, e.g., using
-        dataset-provided metadata in state["input"]["info"] to configure reset().
+        GymEnv doesn't need extra state wiring beyond what init_state() does.
+        The dataset 'info' is used later, inside `rollout()`->`_make_env()`
+        and `rollout()`->`env.reset()`.
         """
         return state
 
@@ -338,10 +423,10 @@ class GymBaseEnv(Environment):
         # Initialize State from RolloutInput
         state = await self.init_state(input, client, model, sampling_args)
         state = await self.setup_state(state)
-        state.setdefault("responses", [])
         state["completion"] = None
 
-        # Fresh env per rollout
+        # Fresh env per rollout.
+        # This call now uses the logic (Homogeneous, Heterogeneous, or Custom)
         env = self._make_env(state)
 
         # Episode-local variables
@@ -349,17 +434,22 @@ class GymBaseEnv(Environment):
         terminated = False
         truncated = False
 
-        # Start episode
-        obs, reset_info = _normalize_reset(env.reset())
+        # --- Start episode ---
+        # We pass dataset info to reset()
+        # (e.g., info={'seed': 123} -> env.reset(seed=123))
+        # This is the primary way the dataset "initializes" the env.
+        input_dict = state["input"]
+        input_info = input_dict.get("info") if isinstance(input_dict, dict) else {}
+        if not isinstance(input_info, dict):
+            input_info = {}
+
+        # In Heterogeneous mode, 'info' was used in _make_env.
+        # In Homogeneous mode, 'info' is used here in reset().
+        obs, reset_info = _normalize_reset(env.reset(**input_info))
         last_obs = obs
 
         # Merge reset_info with existing input["info"]
-        input_dict = state["input"]
-        input_info = input_dict.get("info") if isinstance(input_dict, dict) else None
-        if isinstance(input_info, dict):
-            merged_info = {**input_info, "reset_info": reset_info}
-        else:
-            merged_info = {"reset_info": reset_info}
+        merged_info = {**input_info, "reset_info": reset_info}
         state["info"] = merged_info
 
         limit = self._episode_limit_for_env(env)
@@ -417,17 +507,14 @@ class GymBaseEnv(Environment):
                     {"role": "user", "content": self.obs_to_text(last_obs)}
                 )
 
-                state["responses"].append(
-                    {
-                        "t": t,
-                        "text": text_out,
-                        "action": action,
-                        "reward": float(reward),
-                        "terminated": terminated,
-                        "truncated": truncated,
-                        "info": step_info,
-                    }
-                )
+                # Update the TrajectoryStep with RL info
+                step["reward"] = float(reward)
+                step["extras"]["action"] = action
+                step["extras"]["text_out"] = text_out
+                step["extras"]["terminated"] = terminated
+                step["extras"]["truncated"] = truncated
+                step["extras"]["step_info"] = step_info
+                step["extras"]["t"] = t
 
             # For logging/debugging, expose full conversation if desired
             state["completion"] = history
@@ -471,22 +558,19 @@ class GymBaseEnv(Environment):
                 terminated, truncated = bool(term), bool(trunc)
                 last_obs = obs
 
-                state["responses"].append(
-                    {
-                        "t": t,
-                        "text": text_out,
-                        "action": action,
-                        "reward": float(reward),
-                        "terminated": terminated,
-                        "truncated": truncated,
-                        "info": step_info,
-                    }
-                )
+                # Update the TrajectoryStep with RL info
+                step["reward"] = float(reward)
+                step["extras"]["action"] = action
+                step["extras"]["text_out"] = text_out
+                step["extras"]["terminated"] = terminated
+                step["extras"]["truncated"] = truncated
+                step["extras"]["step_info"] = step_info
+                step["extras"]["t"] = t
 
             if comp_text:
                 state["completion"] = comp_text
 
-        # Reward is computed later by rubric.score_group from state["responses"]
+        # Reward is computed later by rubric.score_group from state["trajectory"]
         return state
 
     # -------- Customizable evaluation layer --------
@@ -684,89 +768,3 @@ class GymBaseEnv(Environment):
         except Exception:
             pass
         return results
-
-
-# ---------- GymEnv: env_cls + env_kwargs wrapper ----------
-class GymEnv(GymBaseEnv):
-    """
-    Wrap an external env *by spec* (env_cls + env_kwargs) and create a fresh
-    env instance for each rollout. This makes concurrent rollouts safe.
-
-    Usage:
-        env = GymEnv(
-            env_cls=SomeGymEnv,
-            env_kwargs={"arg": 1},
-            action_parser=parse_action,
-            obs_to_text=lambda obs: f"state: {obs}",
-            ...
-        )
-
-    You can still pass dataset/eval_dataset if you want verifiers-style control
-    via state["input"]["info"], and override _make_env if env construction
-    should depend on the dataset row.
-    """
-
-    def __init__(
-        self,
-        env_cls: type,
-        env_kwargs: Dict[str, Any] | None = None,
-        *,
-        action_parser: Callable[[str], Any],
-        # optional datasets
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
-        auto_dummy_eval: bool = True,
-        message_type: MessageType = "chat",
-        obs_to_text: Callable[[Any], str] | None = None,
-        max_episode_steps: Optional[int] = None,
-        # env_setup_fn is called on each fresh env instance; can optionally
-        # accept (env, state) or just (env)
-        env_setup_fn: Optional[Callable[..., None]] = None,
-        rubric: Optional[Rubric] = None,
-        eval_runner: Optional[Callable[..., Any]] = None,
-        **env_kwargs_rest: Any,
-    ):
-        self._env_cls = env_cls
-        self._env_kwargs = dict(env_kwargs or {})
-        self._env_setup_fn = env_setup_fn
-
-        super().__init__(
-            action_parser=action_parser,
-            dataset=dataset,
-            eval_dataset=eval_dataset,
-            auto_dummy_eval=auto_dummy_eval,
-            message_type=message_type,
-            obs_to_text=obs_to_text,
-            max_episode_steps=max_episode_steps,
-            rubric=rubric,
-            eval_runner=eval_runner,
-            **env_kwargs_rest,
-        )
-
-        # Fill env_id/env_args for metadata if user didn't set them
-        if not getattr(self, "env_id", ""):
-            try:
-                self.env_id = getattr(env_cls, "__name__", "gym_env")
-            except Exception:
-                self.env_id = "gym_env"
-        if not getattr(self, "env_args", {}):
-            try:
-                self.env_args = {"env_cls": str(env_cls), "env_kwargs": self._env_kwargs}
-            except Exception:
-                self.env_args = {}
-
-    def _make_env(self, state: State | None = None) -> StepResetEnv:
-        """Create and (optionally) set up a fresh env instance for this rollout."""
-        env = self._env_cls(**self._env_kwargs)  # type: ignore[call-arg]
-
-        # Call user-provided setup if any; support (env, state) or (env)
-        if self._env_setup_fn is not None:
-            try:
-                self._env_setup_fn(env, state)
-            except TypeError:
-                # user wrote setup_fn(env) only, ignore state
-                self._env_setup_fn(env)  # type: ignore[misc]
-        elif hasattr(env, "setup") and callable(getattr(env, "setup")):
-            env.setup()  # type: ignore[attr-defined]
-
-        return env  # type: ignore[return-value]
