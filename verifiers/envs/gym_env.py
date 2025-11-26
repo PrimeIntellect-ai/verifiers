@@ -23,6 +23,7 @@ from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
 )
+from verifiers.utils.message_utils import concat_messages
 
 # ---------- Protocol: anything with reset/step ----------
 ResetOut = Union[Any, Tuple[Any, Dict[str, Any]]]
@@ -467,6 +468,9 @@ class GymEnv(Environment):
             # initial observation
             history.append({"role": "user", "content": self.obs_to_text(last_obs)})
 
+            # Base prompt for this rollout (mirrors MultiTurnEnv convention)
+            state["prompt"] = list(history)
+
             while not (terminated or truncated) and t < limit:
                 prompt_messages: Messages = list(history)
 
@@ -517,7 +521,18 @@ class GymEnv(Environment):
                 step["extras"]["t"] = t
 
             # For logging/debugging, expose full conversation if desired
-            state["completion"] = history
+            if state["trajectory"]:
+                last_step = state["trajectory"][-1]
+                last_prompt = last_step["prompt"]
+                last_completion = last_step["completion"]
+                full_conversation = concat_messages([last_prompt, last_completion])
+                base_prompt = state.get("prompt", [])
+                if isinstance(base_prompt, list):
+                    state["completion"] = full_conversation[len(base_prompt) :]
+                else:
+                    state["completion"] = full_conversation
+            else:
+                state["completion"] = []
 
         else:
             # completion mode: prompt is always the latest observation text
