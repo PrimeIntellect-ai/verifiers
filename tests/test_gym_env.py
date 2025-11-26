@@ -718,3 +718,171 @@ def test_non_dummy_eval_no_mapping(toy_env_class, client):
     assert len(res["state"]) == 2
     assert res["metadata"]["num_examples"] == 2
     assert res["metadata"]["rollouts_per_example"] == 1
+
+# ----------------- Auto-dataset and dataset semantics tests -----------------
+
+
+def test_auto_dataset_created_when_no_datasets(toy_env_class):
+    """
+    If neither dataset nor eval_dataset is provided, GymEnv should:
+      - auto-build a train dataset with num_train_episodes rows
+      - create a 1-row dummy eval_dataset
+      - still behave as a valid Environment (dataset non-None)
+    """
+    num_train = 37
+    env = GymEnv(
+        env_cls=toy_env_class,
+        action_parser=parse_action,
+        message_type="chat",
+        num_train_episodes=num_train,
+        # rely on auto_dummy_eval=True (default)
+    )
+
+    # Environment must have both dataset and eval_dataset
+    assert env.dataset is not None
+    assert env.eval_dataset is not None
+
+    # Train dataset should have num_train rows, eval should be the 1-row dummy
+    train_ds = env.dataset
+    eval_ds = env.eval_dataset
+    assert len(train_ds) == num_train
+    assert len(eval_ds) == 1
+
+    # Columns should match what _build_auto_dataset/_default_eval_ds produce
+    assert set(train_ds.column_names) == {"prompt", "answer", "info", "task", "example_id"}
+    assert set(eval_ds.column_names) == {"prompt", "answer", "info", "task", "example_id"}
+
+    # Chat mode: prompts are lists (here empty lists)
+    assert isinstance(train_ds[0]["prompt"], list)
+    assert train_ds[0]["prompt"] == []
+
+    # Info should be a dict per row
+    assert isinstance(train_ds[0]["info"], dict)
+
+
+def test_auto_dataset_completion_prompt_shape(toy_env_class):
+    """
+    In completion mode, auto-built train dataset should have string prompts (""), not lists.
+    """
+    env = GymEnv(
+        env_cls=toy_env_class,
+        action_parser=parse_action,
+        message_type="completion",
+        num_train_episodes=5,
+        # no datasets passed -> auto dataset + dummy eval
+    )
+
+    assert env.dataset is not None
+    ds = env.dataset
+    assert len(ds) == 5
+
+    # Completion mode uses plain string prompts
+    assert isinstance(ds[0]["prompt"], str)
+    assert ds[0]["prompt"] == ""
+
+
+def test_eval_dataset_is_mirrored_into_dataset(toy_env_class, eval_dataset):
+    """
+    If user passes only eval_dataset, GymEnv should mirror it into dataset so
+    trainers that expect env.dataset (like Orchestrator) don't explode.
+    """
+    env = GymEnv(
+        env_cls=toy_env_class,
+        action_parser=parse_action,
+        message_type="chat",
+        eval_dataset=eval_dataset,
+    )
+
+    # Both datasets should be present and have same length/contents
+    assert env.eval_dataset is not None
+    assert env.dataset is not None
+
+    assert len(env.eval_dataset) == len(env.dataset)
+    # Quick sanity check on first row fields
+    assert env.dataset[0]["example_id"] == env.eval_dataset[0]["example_id"]
+    assert env.dataset[0]["task"] == env.eval_dataset[0]["task"]
+
+
+def test_user_dataset_prevents_auto_dataset(toy_env_class):
+    """
+    If user provides a dataset explicitly, GymEnv must use it and not override it
+    with an auto-generated one.
+    """
+    ds = Dataset.from_dict(
+        {
+            "prompt": [[]],
+            "task": ["toy"],
+            "info": [{"start": 42}],
+            "answer": [""],
+            "example_id": [7],
+        }
+    )
+
+    env = GymEnv(
+        env_cls=toy_env_class,
+        action_parser=parse_action,
+        message_type="chat",
+        dataset=ds,
+        # no eval_dataset -> Environment will allow eval_dataset=None
+    )
+
+    assert env.dataset is not None
+    assert len(env.dataset) == 1
+    row = env.dataset[0]
+    assert row["example_id"] == 7
+    assert row["info"]["start"] == 42
+
+
+def test_auto_dataset_registry_and_info_builder(client):
+    """
+    In heterogeneous mode, _build_auto_dataset should:
+      - create info.env_type cycling over registry keys
+      - include info_builder(i) into info
+    """
+
+    class DummyEnvForRegistry:
+        def __init__(self, tag: str = "z", **kwargs):
+            self.tag = tag
+
+        def reset(self, **kwargs):
+            return f"{self.tag}=0", {}
+
+        def step(self, action: int):
+            return f"{self.tag}=1", 0.0, True, {}
+
+    REGISTRY = {
+        "env_a": ToyEnv,
+        "env_b": DummyEnvForRegistry,
+    }
+
+    def info_builder(i: int) -> Dict[str, Any]:
+        # Just mark the row so we can assert it's wired through
+        return {"builder_idx": i}
+
+    num_train = 6
+    env = GymEnv(
+        env_registry=REGISTRY,
+        action_parser=parse_action,
+        message_type="chat",
+        num_train_episodes=num_train,
+        info_builder=info_builder,
+        # no datasets -> auto dataset + dummy eval
+    )
+
+    assert env.dataset is not None
+    ds = env.dataset
+    assert len(ds) == num_train
+
+    infos = ds["info"]
+    assert len(infos) == num_train
+
+    # env_type should cycle through registry keys in order
+    keys = list(REGISTRY.keys())
+    for i, info in enumerate(infos):
+        assert info["env_type"] == keys[i % len(keys)]
+        # info_builder contribution must be present and correct
+        assert info["builder_idx"] == i
+
+    # Sanity: running a tiny eval should still work with this auto dataset
+    res = env.evaluate_sync(client=client, model="mock", num_examples=2)
+    assert len(res["state"]) == 2

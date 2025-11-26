@@ -40,6 +40,27 @@ StepOut = Union[
 
 
 class StepResetEnv(Protocol):
+    """
+    Minimal protocol for GymEnv-compatible environments.
+
+    The key assumptions are:
+
+    - `reset(**kwargs)`:
+        * Must accept **kwargs, because we always splat a dict coming from
+          the dataset row's `info` field. For heterogeneous mode, that is
+          the *full* `info` dict (including e.g. `env_type`,
+          `env_kwargs`, and anything produced by `info_builder`).
+        * May return either:
+            - `obs`
+            - `(obs, info_dict)`
+          where `info_dict` is merged into the rollout state's `info`.
+
+    - `step(action)`:
+        * Must return either:
+            - `(obs, reward, done, info)`
+            - `(obs, reward, terminated, truncated, info)`
+          which is then normalized into a 5-tuple internally.
+    """
     def reset(self, **kwargs) -> ResetOut: ...
     def step(self, action: Any) -> StepOut: ...
 
@@ -135,6 +156,55 @@ class GymEnv(Environment):
     3. Custom Mode:
        Do not pass `env_cls` or `env_registry`. Subclass GymEnv
        and implement your own `_make_env(state)` logic.
+
+    ------------------------ Dataset semantics ------------------------
+
+    - At least one of (`dataset`, `eval_dataset`) must be provided, as required
+      by `Environment`. GymEnv smooths this in the common RL case by
+      auto-generating a dataset when you don't pass one and `auto_dummy_eval`
+      is True.
+
+    - Homogeneous mode (env_cls is set, env_registry is None):
+        * If you do NOT pass `dataset` / `eval_dataset` and `auto_dummy_eval=True`:
+            - `dataset` is auto-generated with `num_train_episodes` rows via
+              `_build_auto_dataset(...)`. Each row's `info` dict is passed
+              to `env.reset(**info)`.
+            - `eval_dataset` is a 1-row dummy dataset (`_default_eval_ds`)
+              so that evaluation behaves like "episodes mode" where
+              `num_examples` maps naturally onto `rollouts_per_example`.
+
+    - Heterogeneous mode (env_registry is set):
+        * If you pass your own dataset:
+            - Each row's `info` MUST include:
+                - `env_type` (a key in `env_registry`)
+                - `env_kwargs` (a dict passed to `env_cls(**env_kwargs)`)
+              plus any extra metadata you want; the whole `info` dict is later
+              splatted into `reset(**info)`.
+        * If you do NOT pass `dataset` / `eval_dataset` and `auto_dummy_eval=True`:
+            - We auto-generate a dataset of length `num_train_episodes` via
+              `_build_auto_dataset(...)`.
+            - For each row `i`, `info.env_type` is chosen in a round-robin over
+              `env_registry.keys()`, and `env_kwargs={}` by default, optionally
+              augmented by `info_builder(i)`.
+            - This auto dataset is used for BOTH `dataset` and `eval_dataset`.
+              That means that, in the heterogeneous/no-dataset case, rollouts
+              will alternate between the registered envs with default args
+              (unless you override via `info_builder`).
+
+    ------------------------ Env interface assumptions ------------------------
+
+    - All env classes used with GymEnv are expected to:
+        * Implement `reset(self, **kwargs) -> obs or (obs, info)`:
+            - We always pass a dict of keyword arguments coming from the
+              dataset row's `info`. For heterogeneous mode, that includes
+              things like `env_type`, `env_kwargs`, and any extra fields
+              produced by `info_builder`.
+        * Implement `step(self, action) -> (obs, reward, done, info)` or
+          `(obs, reward, terminated, truncated, info)`.
+        * If you register envs in `env_registry`, their `__init__` should
+          accept the keys stored in `info["env_kwargs"]`. In practice it is
+          often simplest to include a trailing `**kwargs` in your env
+          constructor to be robust to extra dataset-driven fields.
     """
 
     def __init__(
@@ -153,6 +223,8 @@ class GymEnv(Environment):
         eval_dataset: Dataset | None = None,
         # if True and no dataset/eval_dataset given, create 1-row dummy eval dataset
         auto_dummy_eval: bool = True,
+        num_train_episodes: int = 1024,
+        info_builder: Optional[Callable[[int], Dict[str, Any]]] = None,
         message_type: MessageType = "chat",
         obs_to_text: Callable[[Any], str] | None = None,
         max_episode_steps: Optional[int] = None,
@@ -165,6 +237,8 @@ class GymEnv(Environment):
         self._env_kwargs = dict(env_kwargs or {})
         self._env_registry = env_registry
         self._env_setup_fn = env_setup_fn
+        self._info_builder = info_builder
+        self._num_train_episodes = num_train_episodes
 
         # Ensure modes are mutually exclusive
         if self._env_cls and self._env_registry:
@@ -184,13 +258,33 @@ class GymEnv(Environment):
         if eval_dataset is not None:
             final_env_kwargs["eval_dataset"] = eval_dataset
 
-        # If neither dataset nor eval_dataset, optionally inject dummy eval set
+        # If neither dataset nor eval_dataset, optionally inject auto-generated train
+        # dataset plus eval set (homogeneous: dummy eval; heterogeneous: same auto dataset)
         if (
             auto_dummy_eval
             and "dataset" not in final_env_kwargs
             and "eval_dataset" not in final_env_kwargs
         ):
-            final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
+            auto_ds = self._build_auto_dataset(
+                num_samples=num_train_episodes,
+                message_type=message_type,
+            )
+            if self._env_registry is not None:
+                # Heterogeneous: eval must have valid env_type entries
+                # We therefore reuse the auto-generated train dataset so that
+                # every row's `info.env_type`/`env_kwargs` is consistent with the registry.
+                final_env_kwargs["dataset"] = auto_ds
+                final_env_kwargs["eval_dataset"] = auto_ds
+            else:
+                # Homogeneous: keep episodes-mode semantics via 1-row dummy eval
+                final_env_kwargs["dataset"] = auto_ds
+                final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
+
+        # If eval_dataset is provided but dataset is not, mirror eval->dataset
+        # This keeps trainers (which expect env.dataset) happy even if the user
+        # only configures an eval dataset.
+        if "dataset" not in final_env_kwargs and "eval_dataset" in final_env_kwargs:
+            final_env_kwargs["dataset"] = final_env_kwargs["eval_dataset"]
 
         super().__init__(**final_env_kwargs)
 
@@ -233,6 +327,10 @@ class GymEnv(Environment):
           - if obs_to_text was passed in __init__, use it
           - else if obs is str, return it
           - else raise: user must define a mapping
+
+        In other words, for non-string observations you must either:
+          * pass `obs_to_text=...` when constructing GymEnv, or
+          * subclass GymEnv and override `obs_to_text()`.
         """
         if self._obs_to_text_fn is not None:
             return self._obs_to_text_fn(obs)
@@ -258,10 +356,28 @@ class GymEnv(Environment):
         Create a fresh env instance for a rollout based on __init__ mode.
 
         This method can be overridden by subclasses for custom env creation.
+
+        Contracts:
+
+        - Homogeneous:
+            `env_cls` must construct an object implementing StepResetEnv.
+            The constructor is called as: `env_cls(**self._env_kwargs)`.
+
+        - Heterogeneous:
+            The dataset row's `info` must contain:
+              * `env_type` (a key in `self._env_registry`)
+              * `env_kwargs` (a dict)
+            We then do:
+              `env_cls = env_registry[env_type]; env_cls(**env_kwargs)`
+
+            It is therefore recommended that registered env classes have a
+            constructor that can safely accept the keys you put into
+            `env_kwargs` (including a trailing `**kwargs` if you want to be
+            robust to future changes in the dataset).
         """
         # Mode 1: Homogeneous (env_cls was given)
         if self._env_cls is not None:
-            env = self._env_cls(**self._env_kwargs)  # type: ignore[call-arg]
+            env = self._env_cls(**self._env_kwargs)  # type: ignore[call-attr]
 
             # Call user-provided setup if any
             if self._env_setup_fn is not None:
@@ -328,6 +444,86 @@ class GymEnv(Environment):
                 return spec_limit
 
         return 10_000
+
+    # ---- auto dataset generation ----
+    def _build_auto_dataset(
+        self,
+        num_samples: int,
+        message_type: MessageType,
+    ) -> Dataset:
+        """
+        Build a simple dataset of "hidden state" descriptors, used when the user
+        doesn't provide a dataset. The `info` per row describes how to init the env.
+
+        - Homogeneous mode (no env_registry):
+            * Each row's `info` is:
+                - `{}` by default, or
+                - `info_builder(i)` merged into that dict if `info_builder`
+                  is provided.
+            * That dict is later splatted into `reset(**info)`.
+
+        - Heterogeneous mode (env_registry is not None):
+            * Let `keys = list(env_registry.keys())`.
+            * For row `i`, we set:
+                - `info["env_type"] = keys[i % len(keys)]`
+                - `info["env_kwargs"] = {}`
+              so that rows alternate between the registered envs in a simple
+              round-robin pattern when a dataset is not explicitly provided.
+            * If `info_builder` is provided, its return dict is merged into
+              this base `info`. This is the hook you use to:
+                - inject per-row `env_kwargs` (e.g. difficulty, seeds), or
+                - add extra metadata that `reset(**info)` might care about.
+
+        In all cases:
+
+        - `prompt` is a dummy column ("" or [] depending on message_type) to
+          satisfy Environment's expectations; GymEnv ignores it for dynamics.
+        - `task` is set to "default".
+        - `example_id` is a simple 0..num_samples-1 range so that the trainer
+          can shard/group rollouts by example.
+        """
+        infos: list[dict[str, Any]] = []
+
+        if self._env_registry is not None:
+            registry_keys = list(self._env_registry.keys())
+            if not registry_keys:
+                raise ValueError("env_registry is empty; cannot auto-build dataset")
+            for i in range(num_samples):
+                env_type_name = registry_keys[i % len(registry_keys)]
+                base_info: Dict[str, Any] = {
+                    "env_type": env_type_name,
+                    "env_kwargs": {},
+                }
+                if self._info_builder is not None:
+                    extra = self._info_builder(i)
+                    if not isinstance(extra, dict):
+                        raise TypeError("info_builder must return a dict")
+                    base_info.update(extra)
+                infos.append(base_info)
+        else:
+            for i in range(num_samples):
+                base_info: Dict[str, Any] = {}
+                if self._info_builder is not None:
+                    extra = self._info_builder(i)
+                    if not isinstance(extra, dict):
+                        raise TypeError("info_builder must return a dict")
+                    base_info.update(extra)
+                infos.append(base_info)
+
+        if message_type == "completion":
+            prompts = ["" for _ in range(num_samples)]
+        else:
+            prompts = [[] for _ in range(num_samples)]
+
+        return Dataset.from_dict(
+            {
+                "prompt": prompts,
+                "answer": ["" for _ in range(num_samples)],
+                "info": infos,
+                "task": ["default" for _ in range(num_samples)],
+                "example_id": list(num_samples for _ in range(num_samples)),
+            }
+        )
 
     # -------- Environment API: state setup --------
     async def setup_state(self, state: State) -> State:
