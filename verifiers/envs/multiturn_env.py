@@ -1,4 +1,7 @@
+import asyncio
 import logging
+from copy import deepcopy
+from json import JSONDecodeError
 from abc import abstractmethod
 
 from openai import AsyncOpenAI
@@ -22,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class MultiTurnEnv(vf.Environment):
-    def __init__(self, max_turns: int = -1, **kwargs):
+    def __init__(self, max_turns: int = -1, max_retries: int = 3, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.max_retries = max_retries
 
     async def setup_state(self, state: State) -> State:
         return state
@@ -93,15 +97,28 @@ class MultiTurnEnv(vf.Environment):
         """
         state = await self.init_state(input, client, model, sampling_args)
         state = await self.setup_state(state)
+        retry_count = 0
         while not await self.is_completed(state):
-            prompt_messages = await self.get_prompt_messages(state)
-            response = await self.get_model_response(
-                client,
-                model,
-                prompt_messages,
-                oai_tools=state["oai_tools"],
-                sampling_args=sampling_args,
-                message_type=self.message_type,
-            )
-            await self.add_model_response(state, prompt_messages, response)
+            old_state = deepcopy(state)
+            try:
+                prompt_messages = await self.get_prompt_messages(state)
+                response = await self.get_model_response(
+                    client,
+                    model,
+                    prompt_messages,
+                    oai_tools=state["oai_tools"],
+                    sampling_args=sampling_args,
+                    message_type=self.message_type,
+                )
+                await self.add_model_response(state, prompt_messages, response)
+            # Sometimes, OpenAI will return the start of a valid JSON response,
+            # then cut it off and finish with >30k newlines instead.
+            # This causes a JSONDecodeError, but is rare enough that retrying solves the issue.
+            except JSONDecodeError as e:
+                state = old_state
+                retry_count += 1
+                if retry_count > self.max_retries:
+                    raise e
+                await asyncio.sleep(1)
+                continue
         return state
