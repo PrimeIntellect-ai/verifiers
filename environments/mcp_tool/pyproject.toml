@@ -1,0 +1,19 @@
+[project]
+name = "mcp-tool"
+version = "0.1.0"
+description = "MCP tool environment with Prime sandboxes"
+tags = ["mcp", "tools", "multi-turn", "sandbox"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.2.post0",
+    "prime>=0.3.29",
+    "python-dotenv",
+    "fastmcp>=2.12.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mcp_tool.py"]
