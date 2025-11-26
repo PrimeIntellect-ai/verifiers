@@ -115,10 +115,9 @@ class MultiTurnEnv(vf.Environment):
             # then cut it off and finish with >30k newlines instead.
             # This causes a JSONDecodeError, but is rare enough that retrying solves the issue.
             except JSONDecodeError as e:
-                state = old_state
                 retry_count += 1
                 if retry_count > self.max_retries:
                     raise e
+                state = deepcopy(old_state)
                 await asyncio.sleep(1)
-                continue
         return state
