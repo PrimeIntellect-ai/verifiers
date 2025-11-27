@@ -9,6 +9,24 @@ from openai.types.completion_choice import CompletionChoice
 from verifiers.types import ChatMessage, Messages, MessageType, ModelResponse
 
 
+def concat_messages(messages_list: list[Messages | ChatMessage]) -> Messages:
+    all_str = all(isinstance(m, str) for m in messages_list)
+    if all_str:
+        out = ""
+        for m in messages_list:
+            assert isinstance(m, str)
+            out += str(m)
+        return out
+    else:
+        out = []
+        for m in messages_list:
+            if isinstance(m, list):
+                out.extend(m)
+            else:
+                out.append(m)
+        return out
+
+
 def message_to_printable(message: ChatMessage) -> ChatMessage:
     """
     Removes image_url objects from message content.
@@ -45,7 +63,7 @@ def messages_to_printable(messages: Messages) -> Messages:
     """
     if isinstance(messages, str):
         return messages
-    return [message_to_printable(m) for m in messages]
+    return [message_to_printable(m) for m in messages or []]
 
 
 def cleanup_message(message: ChatMessage) -> ChatMessage:
@@ -111,7 +129,7 @@ def sanitize_tool_calls(messages: Messages):
                 "role": m["role"],
                 "content": m.get("content", ""),
                 "tool_calls": [
-                    json.dumps(tc.model_dump())  # type: ignore
+                    json.dumps(tc if isinstance(tc, dict) else tc.model_dump())
                     for tc in m.get("tool_calls", [])
                 ],
             }

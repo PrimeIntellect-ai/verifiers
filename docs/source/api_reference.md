@@ -19,6 +19,7 @@ class GenerateInputs(BaseModel):
     info: list[dict] | None = None
     task: list[str] | None = None
     completion: list[Messages] | None = None
+    id: list[int] | None = None
 
 class GenerateOutputs(BaseModel):
     """Pydantic model for generation outputs."""
@@ -29,8 +30,10 @@ class GenerateOutputs(BaseModel):
     state: list[State]
     info: list[Info]
     task: list[str]
+    id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]] = Field(default_factory=dict)
+    metadata: GenerateMetadata
 
 class RolloutScore(BaseModel):
     """Pydantic model for rollout scores."""
@@ -57,6 +60,8 @@ class ProcessedOutputs(BaseModel):
     rewards: list[float]
 ```
 
+`GenerateOutputs.metadata` captures run-level context (environment + arguments, model + sampling configuration, summary statistics, and the resolved save path) so downstream tooling can reproduce or resume evaluations without guessing defaults.
+
 ### State Dictionary
 
 The `State` object tracks rollout information throughout an interaction:
@@ -72,6 +77,8 @@ State = dict[str, Any]
     "task": str,                      # Task identifier (for EnvGroup)
     "info": dict[str, Any],          # Additional metadata from dataset
     "responses": list[Any],          # Raw LLM response objects
+    "example_id": int,                # Row identifier from the dataset
+    "timing": dict[str, float],       # Timing information for generation and scoring
     
     # Custom fields added by specific environments:
     "turn": int,                     # Current turn number (MultiTurnEnv)
@@ -119,7 +126,9 @@ completion = "Q: What is 2+2?\nA: 4"
 All reward functions must follow this signature:
 
 ```python
-RewardFunc = Callable[..., float]
+from collections.abc import Awaitable, Callable
+
+RewardFunc = Callable[..., float | Awaitable[float]]
 
 def my_reward_func(
     completion: Messages,            # Model's response (chat or string)
@@ -220,12 +229,19 @@ async def rollout(...) -> tuple[Messages, State]:
     """Returns (completion, final_state)"""
 
 # Evaluation results
-def evaluate(...) -> GenerateOutputs:
-    """Returns GenerateOutputs with prompts, completions, rewards, states, etc."""
+async def evaluate(...) -> GenerateOutputs:
+    """Async interface that returns GenerateOutputs."""
 
-# Generation results  
-def generate(...) -> GenerateOutputs:
-    """Returns GenerateOutputs containing rollout data"""
+# Synchronous convenience wrappers
+def evaluate_sync(...) -> GenerateOutputs:
+    """Blocking helper that wraps the async evaluate coroutine."""
+
+# Generation results
+async def generate(...) -> GenerateOutputs:
+    """Async interface that returns GenerateOutputs containing rollout data"""
+
+def generate_sync(...) -> GenerateOutputs:
+    """Blocking helper for integrate-with-sync-code scenarios"""
 ```
 
 ### Parser Types

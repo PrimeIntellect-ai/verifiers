@@ -1,17 +1,15 @@
-from verifiers.envs.multiturn_env import MultiTurnEnv
-from verifiers.types import Messages, State
+import verifiers as vf
 
 
-class SingleTurnEnv(MultiTurnEnv):
+class SingleTurnEnv(vf.MultiTurnEnv):
     """
     Environment for single-turn tasks (chat or completion).
     """
 
-    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        return len(state["responses"]) > 0
+    def __init__(self, **kwargs):
+        super().__init__(max_turns=1, **kwargs)
 
     async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> tuple[Messages, State]:
-        # never called in MultiTurnEnv.rollout
-        return [{"role": "user", "content": ""}], state
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
+        raise NotImplementedError("env_response is not implemented for SingleTurnEnv")

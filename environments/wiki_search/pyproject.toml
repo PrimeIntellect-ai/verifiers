@@ -1,14 +1,14 @@
 [project]
 name = "wiki-search"
-description = "Agentic RAG over local wiki pages for trivia Q&A"
-tags = ["wiki-search", "multi-turn", "agentic-search", "rag", "train", "eval"]
+description = "Agentic RAG over Wikipedia pages for trivia Q&A"
+tags = ["wikipedia", "multi-turn", "agentic-search", "rag", "train", "eval", "llm-judge"]
 requires-python = ">=3.11"
-version = "0.1.2"
+version = "0.1.21"
 dependencies = [
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.8",
     "chromadb",
     "datasets",
-    "openai"
+    "openai",
 ]
 
 [build-system]
@@ -16,4 +16,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["wiki_search.py"]
+include = ["wiki_search.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 10
+rollouts_per_example = 2

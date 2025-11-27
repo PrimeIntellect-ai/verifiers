@@ -1,1 +1,0 @@
-{"env": "mmmu", "model": "gpt-4.1-mini", "num_examples": 5, "rollouts_per_example": 3, "sampling_args": {"max_tokens": null}, "date": "2025-08-26", "time": "02:57:51", "avg_reward": 1.0, "avg_correct_answer": 1.0}

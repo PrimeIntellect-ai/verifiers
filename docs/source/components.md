@@ -25,6 +25,12 @@ judge_rubric = vf.JudgeRubric(
 )
 ```
 
+**Note on Concurrency and Caching**
+
+When multiple reward functions rely on the same judge call, `JudgeRubric` avoids making redundant API requests by caching the judge's response within the `state` dictionary for each rollout.
+
+To make this caching effective, `JudgeRubric` defaults to `parallelize_scoring=False`. This forces its reward functions to run sequentially, ensuring that the first function makes the API call and populates the cache, while subsequent functions get an instant cache hit.
+
 **Example: Multi-Step Math with Judge Evaluation**
 
 ```python

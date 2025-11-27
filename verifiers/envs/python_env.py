@@ -7,6 +7,7 @@ from typing_extensions import TypedDict
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
+from verifiers.utils.decorators import cleanup
 
 
 class PythonWorkerState(TypedDict):
@@ -111,6 +112,8 @@ class PythonEnv(SandboxEnv):
 
         rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
+        pip install -q numpy sympy scipy
+
         python - <<'PY'
 import base64
 from pathlib import Path
@@ -197,13 +200,9 @@ PY
         sandbox_response = await self._send_worker_request(sandbox_id, {"code": code})
         return self._format_response(python_state, sandbox_response)
 
-    async def is_completed(
-        self, messages: vf.Messages, state: vf.State, **kwargs: Any
-    ) -> bool:
-        completed = await super().is_completed(messages, state, **kwargs)
-        if completed:
-            state.pop("python_env", None)
-        return completed
+    @cleanup
+    async def cleanup_python_env(self, state: vf.State):
+        state.pop("python_env", None)
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)

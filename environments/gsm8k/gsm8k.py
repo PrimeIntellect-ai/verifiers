@@ -7,7 +7,6 @@ from verifiers.utils.data_utils import (
 
 
 def load_environment(
-    use_think: bool = True,
     system_prompt: str = BOXED_SYSTEM_PROMPT,
     num_train_examples=-1,
     num_eval_examples=-1,
@@ -19,10 +18,7 @@ def load_environment(
     if num_eval_examples != -1:
         eval_dataset = eval_dataset.select(range(num_eval_examples))
 
-    if use_think:
-        parser = vf.ThinkParser(extract_fn=extract_boxed_answer)
-    else:
-        parser = vf.Parser(extract_fn=extract_boxed_answer)
+    parser = vf.Parser(extract_fn=extract_boxed_answer)
 
     def correct_answer_reward_func(parser, completion, answer, **kwargs):
         response = parser.parse_answer(completion) or ""

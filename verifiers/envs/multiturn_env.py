@@ -1,156 +1,107 @@
 import logging
-import time
 from abc import abstractmethod
 
 from openai import AsyncOpenAI
 
-from verifiers.envs.environment import Environment
+import verifiers as vf
 from verifiers.types import (
-    ChatCompletion,
-    ChatMessage,
-    Completion,
-    Info,
     Messages,
+    ModelResponse,
+    RolloutInput,
     SamplingArgs,
     State,
+    TrajectoryStep,
 )
-from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.response_utils import (
+    parse_response_messages,
+    parse_response_tokens,
+)
 
-logger = logging.getLogger("verifiers.envs.multiturn_env")
+logger = logging.getLogger(__name__)
 
 
-class MultiTurnEnv(Environment):
+class MultiTurnEnv(vf.Environment):
     def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
+    async def setup_state(self, state: State) -> State:
+        return state
+
+    @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
 
+    @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         """Check if the maximum number of turns has been reached."""
-        return state["turn"] >= self.max_turns and self.max_turns > 0
-
-    async def setup_state(self, state: State, **kwargs) -> State:
-        return state
-
-    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        """When overriding, call self.max_turns_reached(state) to check if turn limit reached."""
-        max_turns_reached = await self.max_turns_reached(state)
-        prompt_too_long = await self.prompt_too_long(state)
-        return max_turns_reached or prompt_too_long
+        return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
 
     @abstractmethod
     async def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> tuple[Messages, State]:
+    ) -> Messages:
         """
-        Generate a response from the environment (messages, state).
+        Generate a response from the environment.
         """
         pass
 
+    async def get_prompt_messages(self, state: State) -> Messages:
+        if len(state["trajectory"]) == 0:
+            return state["prompt"]
+        else:
+            prev_turn_prompt = state["trajectory"][-1]["prompt"]
+            prev_turn_completion = state["trajectory"][-1]["completion"]
+            messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+            env_response = await self.env_response(messages, state)
+            return concat_messages([messages, env_response])
+
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: ModelResponse,
+    ):
+        if response is not None and response.id == "overlong-prompt":
+            state["prompt_too_long"] = True
+        completion_messages = await parse_response_messages(response, self.message_type)
+        tokens = await parse_response_tokens(
+            response, self.message_type, self.max_seq_len
+        )
+        trajectory_step = TrajectoryStep(
+            prompt=prompt_messages,
+            completion=completion_messages,
+            response=response,
+            tokens=tokens,
+            reward=None,
+            advantage=None,
+            extras={},
+        )
+        trajectory_step["completion"] = completion_messages
+        state["trajectory"].append(trajectory_step)
+
     async def rollout(
         self,
+        input: RolloutInput,
         client: AsyncOpenAI,
         model: str,
-        prompt: Messages,
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
         sampling_args: SamplingArgs | None = None,
-        **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> State:
         """
-        Generate a multi-turn rollout with the environment (messages, state).
+        Generate a multi-turn rollout with the environment.
         """
-        info = info or {}
-        is_completed = False
-        state = {
-            "id": 0,  # TODO: add id
-            "prompt": prompt,
-            "completion": [],
-            "answer": answer,
-            "task": task,
-            "info": info,
-            "responses": [],
-            "turn": 0,
-            "timing": {
-                "generation_ms": 0.0,
-                "scoring_ms": 0.0,
-                "total_ms": 0.0,
-            },
-        }
-        start_time = time.time()
-        state = await maybe_await(self.setup_state, state, **kwargs)
-        if self.message_type == "chat":
-            assert isinstance(prompt, list)
-            completion = []
-        else:
-            assert isinstance(prompt, str)
-            completion = ""
-            state["responses_start_idx"] = []
-        rollout = list(prompt) if not isinstance(prompt, str) else prompt
-        while not is_completed:
-            if await maybe_await(self.is_completed, rollout, state, **kwargs):
-                is_completed = True
-                break
+        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.setup_state(state)
+        while not await self.is_completed(state):
+            prompt_messages = await self.get_prompt_messages(state)
             response = await self.get_model_response(
                 client,
                 model,
-                rollout,
-                oai_tools=info.get("oai_tools", None),
+                prompt_messages,
+                oai_tools=state["oai_tools"],
                 sampling_args=sampling_args,
                 message_type=self.message_type,
-                initial_prompt=len(state["responses"]) == 0,
-                **kwargs,
             )
-            if response is not None and response.id == "overlong-prompt":
-                state["prompt_too_long"] = True
-                break
-            state["responses"].append(response)
-            if self.message_type == "chat":
-                assert isinstance(rollout, list)
-                assert isinstance(completion, list)
-                assert isinstance(response, ChatCompletion)
-                response_text: str = response.choices[0].message.content or ""  # type: ignore
-                response_message: ChatMessage = {
-                    "role": "assistant",
-                    "content": response_text,
-                }
-                if response.choices[0].message.tool_calls:
-                    response_message["tool_calls"] = response.choices[  # type: ignore
-                        0
-                    ].message.tool_calls
-                rollout.append(response_message)
-                completion.append(response_message)
-            else:
-                assert isinstance(rollout, str)
-                assert isinstance(completion, str)
-                assert isinstance(response, Completion)
-                state["responses_start_idx"].append(len(completion))
-                response_text: str = response.choices[0].text or ""  # type: ignore
-                rollout += response_text
-                completion += response_text
-            state["turn"] += 1
-            if await maybe_await(self.is_completed, rollout, state, **kwargs):
-                is_completed = True
-                end_time = time.time()
-                state["timing"]["generation_ms"] = (end_time - start_time) * 1000
-                state["timing"]["total_ms"] = (end_time - start_time) * 1000
-            else:
-                env_msgs, state = await maybe_await(
-                    self.env_response, rollout, state, **kwargs
-                )
-                if self.message_type == "chat":
-                    assert isinstance(env_msgs, list)
-                    assert isinstance(rollout, list)
-                    assert isinstance(completion, list)
-                    rollout += env_msgs
-                    completion += env_msgs
-                else:
-                    assert isinstance(env_msgs, str)
-                    assert isinstance(rollout, str)
-                    assert isinstance(completion, str)
-                    rollout += env_msgs
-                    completion += env_msgs
-        return completion, state
+            await self.add_model_response(state, prompt_messages, response)
+        return state

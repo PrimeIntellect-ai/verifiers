@@ -1,7 +1,6 @@
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
-from openai import APIError, RateLimitError, APITimeoutError
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -34,15 +33,12 @@ class JudgeRubric(Rubric):
         self,
         parser: Parser | None = None,
         parallelize_scoring: bool = False,
-        judge_client: OpenAI | AsyncOpenAI | None = None,
+        judge_client: AsyncOpenAI | None = None,
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
-        **kwargs,
     ):
-        super().__init__(
-            parser=parser, parallelize_scoring=parallelize_scoring, **kwargs
-        )
+        super().__init__(parser=parser)
         self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
         self.judge_model = judge_model
         self.judge_prompt = judge_prompt
@@ -62,7 +58,6 @@ class JudgeRubric(Rubric):
         completion: Messages,
         answer: str,
         state: State,
-        **kwargs,
     ) -> str:
         if isinstance(prompt, list):
             last_msg = prompt[-1]

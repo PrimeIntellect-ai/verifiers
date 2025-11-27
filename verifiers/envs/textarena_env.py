@@ -2,17 +2,20 @@ import random
 from copy import deepcopy
 from typing import Any, Callable
 
+from datasets import Dataset
+
+import verifiers as vf
+
 try:
     import nltk  # type: ignore
 except ImportError:
     print("nltk is not installed. Please install it with `uv pip install nltk`.")
     exit(1)
 
-from datasets import Dataset
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
-nltk.download = lambda *args, **kwargs: _original_nltk_download(
+nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore[invalid-assignment]
     *args, **{**kwargs, "quiet": True}
 )
 
@@ -24,16 +27,8 @@ except ImportError:
     )
     exit(1)
 
-from verifiers.envs.multiturn_env import MultiTurnEnv  # noqa: E402
-from verifiers.parsers.xml_parser import XMLParser  # noqa: E402
-from verifiers.rubrics.rubric import Rubric  # noqa: E402
-from verifiers.types import (  # noqa: E402
-    Messages,
-    State,
-)
 
-
-class TextArenaEnv(MultiTurnEnv):
+class TextArenaEnv(vf.MultiTurnEnv):
     """
     Wrapper for TextArena environments.
     """
@@ -44,14 +39,14 @@ class TextArenaEnv(MultiTurnEnv):
         num_train_examples: int = 1000,
         num_eval_examples: int = 0,
         system_prompt: str | None = None,
-        parser: XMLParser | None = None,
-        rubric: Rubric | None = None,
+        parser: vf.XMLParser | None = None,
+        rubric: vf.Rubric | None = None,
         feedback_fn: Callable[[str], str] = lambda x: x,
         seed: int = 0,
         **kwargs,
     ):
         # default parser in textarena is XMLParser
-        parser = parser or XMLParser(fields=["think", "guess"], answer_field="guess")
+        parser = parser or vf.XMLParser(fields=["think", "guess"], answer_field="guess")
 
         self.game = game
         self.ta_env = ta.make(env_id=game)
@@ -74,18 +69,17 @@ class TextArenaEnv(MultiTurnEnv):
             **kwargs,
         )
 
-    async def is_completed(
-        self, messages: Messages, state: State, **kwargs: Any
-    ) -> bool:
-        completed = await super().is_completed(messages, state, **kwargs)
-        if "is_completed" in state and state["is_completed"]:
-            state.pop("ta_env")
-            return state["is_completed"]
-        return False or completed
+    @vf.cleanup
+    async def cleanup_ta_env(self, state: vf.State):
+        state.pop("ta_env")
+
+    @vf.stop
+    async def game_completed(self, state: vf.State) -> bool:
+        return state.get("game_completed", False)
 
     async def env_response(
-        self, messages: Messages, state: State, **kwargs: Any
-    ) -> tuple[Messages, State]:
+        self, messages: vf.Messages, state: vf.State, **kwargs: Any
+    ) -> vf.Messages:
         # load env
         if "ta_env" not in state:
             ta_env = deepcopy(self.ta_env)
@@ -95,14 +89,13 @@ class TextArenaEnv(MultiTurnEnv):
         else:
             ta_env = state["ta_env"]
         # parse guess
-        assert isinstance(messages[-1], dict)
         guess = self.parser.parse_answer(messages)
         # step env
-        is_completed, _ = ta_env.step(str(guess))
-        state["is_completed"] = is_completed
+        game_completed, _ = ta_env.step(str(guess))
+        state["game_completed"] = game_completed
         _, observation = ta_env.get_observation()
         feedback = self.feedback_fn(observation)
-        return [{"role": "user", "content": str(feedback)}], state
+        return [{"role": "user", "content": str(feedback)}]
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []

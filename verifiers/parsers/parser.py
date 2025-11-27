@@ -10,7 +10,7 @@ class Parser:
 
     Default behavior:
     - `parse` returns text as-is
-    - `get_final_answer` returns the last message's content (or text if string)
+    - `parse_answer` returns the last message's content (or text if string)
     """
 
     def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
@@ -42,7 +42,8 @@ class Parser:
         if isinstance(completion, str):
             return self.parse(completion)
         else:
-            return self.parse(completion[-1]["content"])  # type: ignore
+            ans = str(self.get_assistant_messages(completion)[-1].get("content", ""))
+            return self.parse(ans)
 
     def get_format_reward_func(self) -> Callable:
         """

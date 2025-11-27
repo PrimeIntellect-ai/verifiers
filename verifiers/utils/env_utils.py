@@ -10,7 +10,7 @@ def load_environment(env_id: str, **env_args) -> Environment:
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
-    module_name = env_id.replace("-", "_")
+    module_name = env_id.replace("-", "_").split("/")[-1]
     try:
         module = importlib.import_module(module_name)
 
@@ -67,6 +67,8 @@ def load_environment(env_id: str, **env_args) -> Environment:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
         env_instance: Environment = env_load_func(**env_args)
+        env_instance.env_id = env_instance.env_id or env_id
+        env_instance.env_args = env_instance.env_args or env_args
 
         logger.info(f"Successfully loaded environment '{env_id}'")
 

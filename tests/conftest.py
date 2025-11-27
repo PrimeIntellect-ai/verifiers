@@ -6,14 +6,18 @@ import pytest
 from datasets import Dataset
 
 from verifiers import (
+    MaybeThinkParser,
+    Messages,
     MultiTurnEnv,
     Parser,
     Rubric,
     SingleTurnEnv,
+    State,
     StatefulToolEnv,
     ThinkParser,
     ToolEnv,
     XMLParser,
+    stop,
 )
 
 
@@ -33,6 +37,12 @@ def xml_parser():
 def xml_parser_with_alternatives():
     """Return an XMLParser instance with alternative field names."""
     return XMLParser(fields=["reasoning", ("code", "answer")], answer_field="answer")
+
+
+@pytest.fixture
+def maybe_think_parser():
+    """Return a MaybeThinkParser instance."""
+    return MaybeThinkParser()
 
 
 @pytest.fixture
@@ -177,8 +187,8 @@ class MockAsyncOpenAI:
         # Create a simplified representation for hashing
         key_parts = []
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+            role = msg["role"]
+            content = msg["content"]
             key_parts.append(f"{role}:{content}")
         return tuple(key_parts)
 
@@ -210,6 +220,7 @@ def sample_chat_dataset():
                 [{"role": "user", "content": "What is the capital of France?"}],
             ],
             "answer": ["4", "Paris"],
+            "example_id": [0, 1],
         }
     )
 
@@ -259,45 +270,54 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
         )
         self.env_response_count = 0
 
-    async def is_completed(self, messages, state, **kwargs):
-        """Simple completion logic for testing."""
-        if await self.max_turns_reached(state):
-            return True
+    @stop
+    async def done_condition(self, state: State) -> bool:
+        """Complete when assistant says 'DONE'."""
         if self.completion_condition == "answer":
-            # Complete when assistant says "DONE"
-            if messages and messages[-1].get("role") == "assistant":
-                return "DONE" in messages[-1].get("content", "")
-        elif self.completion_condition == "max_turns":
-            # Never complete naturally (test max_turns)
-            return False
-        elif self.completion_condition == "error":
-            # Complete on any error
-            if messages and messages[-1].get("role") == "assistant":
-                return messages[-1].get("content", "").startswith("[ERROR]")
+            if state["trajectory"]:
+                last_completion = state["trajectory"][-1]["completion"]
+                if isinstance(last_completion, list) and last_completion:
+                    return "DONE" in str(last_completion[-1].get("content", ""))
+                elif isinstance(last_completion, str):
+                    return "DONE" in last_completion
         return False
 
-    def env_response(self, messages, state, **kwargs):
+    @stop
+    async def error_condition(self, state: State) -> bool:
+        """Complete on any error."""
+        if self.completion_condition == "error":
+            if state["trajectory"]:
+                last_completion = state["trajectory"][-1]["completion"]
+                if isinstance(last_completion, list) and last_completion:
+                    return str(last_completion[-1].get("content", "")).startswith(
+                        "[ERROR]"
+                    )
+                elif isinstance(last_completion, str):
+                    return last_completion.startswith("[ERROR]")
+        return False
+
+    async def env_response(self, messages, state, **kwargs) -> Messages:
         """Simple environment response for testing."""
         self.env_response_count += 1
 
         if self.completion_condition == "answer":
             # Encourage completion after a few turns
             if self.env_response_count >= 2:
-                return [{"role": "user", "content": "Please finish with DONE"}], state
+                return [{"role": "user", "content": "Please finish with DONE"}]
             else:
                 return [
                     {
                         "role": "user",
                         "content": f"Continue (turn {self.env_response_count})",
                     }
-                ], state
+                ]
         else:
             return [
                 {
                     "role": "user",
                     "content": f"Environment response {self.env_response_count}",
                 }
-            ], state
+            ]
 
 
 @pytest.fixture

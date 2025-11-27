@@ -1,1 +1,0 @@
-{"env": "arc-agi-3", "model": "gpt-4.1-mini", "num_examples": 1, "rollouts_per_example": 3, "sampling_args": {"max_tokens": null}, "date": "2025-09-19 22:19:53", "time_ms": 12932.491064071655, "avg_reward": 0.0, "avg_success": 0.0}

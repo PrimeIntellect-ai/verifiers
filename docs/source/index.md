@@ -20,7 +20,7 @@ Verifiers enables you to:
 - Define custom interaction protocols between models and environments
 - Build agents, multi-turn conversations, tool-augmented reasoning, and interactive games
 - Create reusable evaluation environments with multi-criteria reward functions
-- Train models with the included HF GRPO trainer or integrate with other RL frameworks
+- Train models with the included RL trainer (via `vf-rl`) or integrate with other RL frameworks
 
 Key features:
 - **First-class OpenAI-compatibility** for `ChatCompletions` and `Completions`
@@ -42,9 +42,14 @@ uv add verifiers
 
 ### Training Support
 
-For GPU training with `vf.GRPOTrainer`:
+For RL training with the included trainer:
 ```bash
-uv add 'verifiers[all]' && uv pip install flash-attn --no-build-isolation
+uv add 'verifiers[rl]'
+```
+
+To use the latest `main` with RL extras:
+```bash
+uv add 'verifiers[rl] @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main'
 ```
 
 ### Latest Development Version
@@ -84,7 +89,7 @@ Coming soon.
 
 **[Components](components.md)** — Advanced rubrics, tools, parsers, with practical examples. Covers judge rubrics, tool design, and complex workflows.
 
-**[Training](training.md)** — GRPO training and hyperparameter tuning. Read this when you're ready to train models with your environments.
+**[Training](training.md)** — RL training and hyperparameter tuning. Read this when you're ready to train models with your environments.
 
 ### Reference
 
