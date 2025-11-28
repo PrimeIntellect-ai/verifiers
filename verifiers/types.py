@@ -234,3 +234,5 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+    include_ids: list[str] | None = None
+    exclude_ids: list[str] | None = None
