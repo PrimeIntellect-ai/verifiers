@@ -28,17 +28,29 @@ async def parse_response_tokens(
             return None
         if response.choices[0].logprobs is None:
             return None
-        if not hasattr(response.choices[0].logprobs, "content"):
-            return None
-        if response.choices[0].logprobs.content is None:
+        has_logprobs_obj = (
+            hasattr(response.choices[0].logprobs, "content")
+            and response.choices[0].logprobs.content is not None
+        )
+        has_logprobs_dict = (
+            isinstance(response.choices[0].logprobs, dict)
+            and "content" in response.choices[0].logprobs.keys()
+            and response.choices[0].logprobs["content"] is not None
+        )
+        if not (has_logprobs_obj or has_logprobs_dict):
             return None
         prompt_ids = getattr(response, "prompt_token_ids")
         prompt_mask = [0] * len(prompt_ids)
         completion_ids = getattr(response.choices[0], "token_ids")
         completion_mask = [1] * len(completion_ids)
-        completion_logprobs = [
-            token.logprob for token in response.choices[0].logprobs.content
-        ]
+        if has_logprobs_obj:
+            assert response.choices[0].logprobs.content is not None
+            logprobs_content = response.choices[0].logprobs.content
+            completion_logprobs = [token.logprob for token in logprobs_content]
+        else:
+            assert isinstance(response.choices[0].logprobs, dict)
+            logprobs_content = response.choices[0].logprobs["content"]
+            completion_logprobs = [token["logprob"] for token in logprobs_content]
     elif message_type == "completion":
         assert isinstance(response, Completion)
         if not hasattr(response.choices[0], "prompt_token_ids"):
