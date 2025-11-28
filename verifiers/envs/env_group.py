@@ -1,7 +1,7 @@
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Mapping
+from typing import TYPE_CHECKING, AsyncContextManager, Literal, Mapping
 
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset, concatenate_datasets, interleave_datasets
 from openai import AsyncOpenAI
 
 import verifiers as vf
@@ -130,6 +130,8 @@ class EnvGroup(vf.Environment):
         self,
         envs: list[vf.Environment],
         env_names: list[str] | None = None,
+        env_mix_strategy: Literal["interleave", "concatenate"] = "concatenate",
+        env_mix_kwargs: dict = {},
         map_kwargs: dict = {},
         **kwargs,
     ):
@@ -177,9 +179,16 @@ class EnvGroup(vf.Environment):
                     env_eval_dataset = env_eval_dataset.remove_columns(["task"])
                 env_eval_dataset = env_eval_dataset.map(add_task, **map_kwargs)
                 eval_datasets.append(env_eval_dataset)
-        dataset = concatenate_datasets(datasets) if datasets else None
-        eval_dataset = concatenate_datasets(eval_datasets) if eval_datasets else None
-        # wrap rubrics in EnvGroupRubric
+        mix_datasets = (
+            interleave_datasets
+            if env_mix_strategy == "interleave"
+            else concatenate_datasets
+        )
+        dataset = mix_datasets(datasets, **env_mix_kwargs) if datasets else None
+        eval_dataset = (
+            mix_datasets(eval_datasets, **env_mix_kwargs) if eval_datasets else None
+        )
+        # wrap rubrics
         rubric = EnvGroupRubric(self.env_map)
 
         # don't set oai_tools at the group level since different sub-environments

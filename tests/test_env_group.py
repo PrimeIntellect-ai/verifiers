@@ -270,6 +270,77 @@ class TestEnvGroup:
         assert tasks[1] == "math"
         assert tasks[2] == "code"
 
+    def test_env_group_dataset_interleaving_first_exhausted(self, mock_openai_client):
+        """Test that EnvGroup properly interleaves datasets with task labels."""
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict(
+                {"question": ["q1", "q2"], "answer": ["a1", "a2"]}
+            ),
+            rubric=Rubric(),
+        )
+
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q3"], "answer": ["a3"]}),
+            rubric=Rubric(),
+        )
+
+        env_group = EnvGroup(
+            envs=[env1, env2],
+            env_names=["math", "code"],
+            env_mix_strategy="interleave",
+        )
+
+        # Check concatenated dataset
+        dataset = env_group.get_dataset()
+        assert len(dataset) == 2
+        assert "task" in dataset.column_names
+
+        # Check task labels
+        tasks = dataset["task"]
+        assert tasks[0] == "math"
+        assert tasks[1] == "code"
+
+    def test_env_group_dataset_interleaving_all_exhausted(self, mock_openai_client):
+        """Test that EnvGroup properly interleaves datasets with task labels."""
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict(
+                {"question": ["q1", "q2"], "answer": ["a1", "a2"]}
+            ),
+            rubric=Rubric(),
+        )
+
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q3"], "answer": ["a3"]}),
+            rubric=Rubric(),
+        )
+
+        env_group = EnvGroup(
+            envs=[env1, env2],
+            env_names=["math", "code"],
+            env_mix_strategy="interleave",
+            env_mix_kwargs=dict(stopping_strategy="all_exhausted"),
+        )
+
+        # Check concatenated dataset
+        dataset = env_group.get_dataset()
+        assert len(dataset) == 4
+        assert "task" in dataset.column_names
+
+        # Check task labels
+        tasks = dataset["task"]
+        assert tasks[0] == "math"
+        assert tasks[1] == "code"
+        assert tasks[2] == "math"
+        assert tasks[1] == "code"
+
     def test_env_group_rubric_type(self, mock_openai_client):
         """Test that EnvGroup creates EnvGroupRubric."""
         env1 = SingleTurnEnv(
