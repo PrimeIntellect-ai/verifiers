@@ -80,6 +80,9 @@ envs = [
     "nltk",
     "textarena",
 ]
+gepa = [
+    "gepa>=0.0.22",
+]
 all = [
     "torch>=2.8.0",
     "transformers",
@@ -95,6 +98,7 @@ all = [
     "brave-search",
     "nltk",
     "textarena",
+    "gepa>=0.0.22",
 ]
 docs = [
     "sphinx",
@@ -110,6 +114,7 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
+vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"

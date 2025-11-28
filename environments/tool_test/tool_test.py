@@ -65,7 +65,7 @@ tool_name_list = [tool.__name__ for tool in tool_list]
 def tool_call_reward_func(completion, info):
     # check if completion tool calls exactly matches info tool calls
     tool_calls = completion[-1].get("tool_calls", [])
-    called_tool_names = sorted([call.function.name for call in tool_calls])
+    called_tool_names = sorted([call["function"]["name"] for call in tool_calls])
     expected_tool_names = sorted(info["tool_names"])
     if called_tool_names == expected_tool_names:
         return 1.0

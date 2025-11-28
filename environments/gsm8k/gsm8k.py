@@ -1,4 +1,5 @@
 import verifiers as vf
+from verifiers.types import RewardResult
 from verifiers.utils.data_utils import (
     BOXED_SYSTEM_PROMPT,
     extract_boxed_answer,
@@ -20,9 +21,25 @@ def load_environment(
 
     parser = vf.Parser(extract_fn=extract_boxed_answer)
 
-    def correct_answer_reward_func(parser, completion, answer, **kwargs):
+    def correct_answer_reward_func(
+        parser, completion, answer, **kwargs
+    ) -> RewardResult:
         response = parser.parse_answer(completion) or ""
-        return 1.0 if response == answer else 0.0
+        is_correct = response == answer
+
+        # Build feedback for GEPA optimization
+        if is_correct:
+            feedback = f"Correct! The model correctly computed {answer}."
+        else:
+            if not response:
+                feedback = (
+                    f"Incorrect. The model did not provide an answer in \\boxed{{}}. "
+                    f"Expected: {answer}"
+                )
+            else:
+                feedback = f"Incorrect. The model answered {response} but the correct answer is {answer}."
+
+        return {"score": 1.0 if is_correct else 0.0, "feedback": feedback}
 
     rubric = vf.Rubric(
         parser=parser,
