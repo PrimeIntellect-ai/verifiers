@@ -66,6 +66,19 @@ def get_env_eval_defaults(env_id: str) -> Dict[str, Any]:
     return defaults
 
 
+def _parse_ids(s: str) -> list[str]:
+    if not s:
+        return []
+    s = s.strip()
+    if s.startswith("["):
+        try:
+            vals = json.loads(s)
+            return [str(v) for v in vals]
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Could not parse IDs JSON array: {e}") from e
+    return [p.strip() for p in s.split(",") if p.strip()]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -218,6 +231,24 @@ def main():
         default="",
         help="Name of dataset to save to Hugging Face Hub",
     )
+    parser.add_argument(
+        "--include-ids",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated or JSON array of example IDs to include. "
+            "If provided, only these IDs will be evaluated."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-ids",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated or JSON array of example IDs to exclude. "
+            "If provided, these IDs will be skipped during evaluation."
+        ),
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -284,6 +315,13 @@ def main():
             raise ValueError("--header name cannot be empty")
         merged_headers[k] = v
 
+    include_ids = _parse_ids(args.include_ids)
+    exclude_ids = _parse_ids(args.exclude_ids)
+    if include_ids and exclude_ids:
+        logger.warning(
+            "--include-ids and --exclude-ids both provided; exclude_ids will be ignored"
+        )
+
     client_config = ClientConfig(
         api_key_var=api_key_var,
         api_base_url=api_base_url,
@@ -305,6 +343,9 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
+        # id selection
+        include_ids=include_ids,
+        exclude_ids=exclude_ids,
         # logging
         print_results=True,
         verbose=args.verbose,
