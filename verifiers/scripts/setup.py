@@ -2,6 +2,11 @@ import os
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
@@ -123,10 +128,39 @@ def download_configs(configs):
             print(f"{dst} already exists")
 
 
+def setup_uv_workspace():
+    """Ensure prime-rl is excluded from uv workspace."""
+    uv_toml_path = "uv.toml"
+    exclude_entry = "prime-rl"
+
+    if os.path.exists(uv_toml_path):
+        with open(uv_toml_path, "rb") as f:
+            config = tomllib.load(f)
+        workspace = config.get("workspace", {})
+        excludes = workspace.get("exclude", [])
+        if exclude_entry in excludes:
+            print(f"{uv_toml_path} already excludes {exclude_entry}")
+            return
+        if "workspace" not in config:
+            with open(uv_toml_path, "a") as f:
+                f.write(f'\n[workspace]\nexclude = ["{exclude_entry}"]\n')
+            print(f"Added workspace.exclude to {uv_toml_path}")
+        else:
+            print(
+                f"Warning: {uv_toml_path} has a [workspace] section but {exclude_entry} "
+                f"is not in exclude list. Please add it manually."
+            )
+    else:
+        with open(uv_toml_path, "w") as f:
+            f.write(f'[workspace]\nexclude = ["{exclude_entry}"]\n')
+        print(f'Created {uv_toml_path} with workspace.exclude = ["{exclude_entry}"]')
+
+
 def main():
     os.makedirs("configs", exist_ok=True)
 
     install_prime_rl()
+    setup_uv_workspace()
 
     if not os.path.exists(ENDPOINTS_DST):
         wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)
