@@ -2,10 +2,10 @@
 name = "doublecheck"
 description = "Test environment for double-checking math answers"
 tags = ["doublecheck", "multi-turn", "math", "hendrycks", "train", "eval", "example"]
-version = "0.1.5"
+version = "0.1.6"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.8",
 ]
 
 [build-system]

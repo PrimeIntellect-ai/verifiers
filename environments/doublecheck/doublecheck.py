@@ -1,14 +1,5 @@
-from typing import Dict, List, Tuple
-
-from datasets import Dataset
-from openai import OpenAI
-
-from verifiers import (
-    Messages,
-    MultiTurnEnv,
-    RewardFunc,
-    State,
-)
+import verifiers as vf
+from verifiers.types import Messages, State
 from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.utils.data_utils import load_example_dataset
 
@@ -24,43 +15,19 @@ Respond in the following format, using careful step-by-step reasoning.
 """
 
 
-class DoubleCheckEnv(MultiTurnEnv):
-    def __init__(
-        self,
-        client: OpenAI | None = None,
-        model: str | None = None,
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
-        system_prompt: str = SIMPLE_PROMPT,
-        few_shot: List[Dict[str, str]] = [],
-        **kwargs,
-    ):
-        super().__init__(
-            client=client,
-            model=model,
-            dataset=dataset,
-            eval_dataset=eval_dataset,
-            system_prompt=system_prompt,
-            few_shot=few_shot,
-            **kwargs,
-        )
-        self.rubric = MathRubric()
+class DoubleCheckEnv(vf.MultiTurnEnv):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-    def get_reward_funcs(self, **kwargs) -> List[RewardFunc]:
-        return self.rubric.get_reward_funcs()
-
-    def get_reward_weights(self, **kwargs) -> List[float]:
-        return self.rubric.get_reward_weights()
-
-    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        """Check if the environment is completed."""
-        return len(state["responses"]) == 1
+    @vf.stop
+    async def double_checked(self, state: State) -> bool:
+        return len(state["trajectory"]) == 2
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Tuple[Messages, State]:
+    ) -> Messages:
         """Generate a response from the environment."""
-        return [{"role": "user", "content": "Are you sure?"}], state
+        return [{"role": "user", "content": "Are you sure?"}]
 
 
 def load_environment(
@@ -69,5 +36,12 @@ def load_environment(
     num_train_examples: int = -1,
 ):
     dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
-    vf_env = DoubleCheckEnv(dataset=dataset, system_prompt=SIMPLE_PROMPT, few_shot=[])
+    rubric = MathRubric()
+    vf_env = DoubleCheckEnv(
+        dataset=dataset,
+        system_prompt=SIMPLE_PROMPT,
+        few_shot=[],
+        parser=rubric.parser,
+        rubric=rubric,
+    )
     return vf_env

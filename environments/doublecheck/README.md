@@ -44,5 +44,4 @@ Notes:
 ### Metrics
 | Metric | Meaning |
 | ------ | ------- |
-| `reward` | Math answer correctness (symbolic/numeric equivalence) |
-| `format_reward` | Adherence to `<think>`/`<answer>` XML format |
+| `reward` | Math answer correctness (symbolic/numeric equivalence) | 
