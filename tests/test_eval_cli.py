@@ -50,6 +50,8 @@ def _run_cli(monkeypatch, overrides):
         "save_every": -1,
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
+        "include_ids": None,
+        "exclude_ids": None,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)
@@ -65,7 +67,10 @@ def _run_cli(monkeypatch, overrides):
     monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: {})
 
     async def fake_run_evaluation(config):
+        # capture sampling args and id selection fields passed into EvalConfig
         captured["sampling_args"] = dict(config.sampling_args)
+        captured["include_ids"] = list(config.include_ids or [])
+        captured["exclude_ids"] = list(config.exclude_ids or [])
         metadata = _make_metadata(config)
         return GenerateOutputs(
             prompt=[[{"role": "user", "content": "p"}]],
@@ -126,3 +131,17 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
     assert sa["max_tokens"] == 55
     assert sa["temperature"] == 0.8
     assert sa["enable_thinking"] is True
+
+
+def test_cli_include_ids_parsing(monkeypatch):
+    # JSON array input
+    captured = _run_cli(monkeypatch, {"include_ids": '["0","1","2"]'})
+    assert captured["include_ids"] == ["0", "1", "2"]
+    assert captured["exclude_ids"] == []
+
+
+def test_cli_exclude_ids_parsing(monkeypatch):
+    # Comma-separated input
+    captured = _run_cli(monkeypatch, {"exclude_ids": "3,4,5"})
+    assert captured["include_ids"] == []
+    assert captured["exclude_ids"] == ["3", "4", "5"]
