@@ -162,17 +162,20 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())
-        await with_retry(
-            sandbox_client.bulk_delete,
-            global_ids,
-            logger=self.logger,
-            max_retries=self.max_retries,
-            base_delay=self.base_delay,
-            backoff_factor=self.backoff_factor,
-            max_backoff_seconds=self.max_backoff_seconds,
-        )
-        self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
-        self.active_sandboxes.difference_update(global_ids)
+        try:
+            await with_retry(
+                sandbox_client.bulk_delete,
+                global_ids,
+                logger=self.logger,
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                backoff_factor=self.backoff_factor,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
+            self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
+            self.active_sandboxes.difference_update(global_ids)
+        except Exception as e:
+            self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
     @vf.teardown  # type: ignore
     async def teardown_sandboxes(self):
@@ -199,9 +202,14 @@ class SandboxEnv(vf.StatefulToolEnv):
                 max_backoff_seconds=self.max_backoff_seconds,
             )
 
-        await asyncio.gather(
-            *[
-                _delete_sandbox_with_retry(sandbox_id)
-                for sandbox_id in self.active_sandboxes
-            ]
-        )
+        try:
+            await asyncio.gather(
+                *[
+                    _delete_sandbox_with_retry(sandbox_id)
+                    for sandbox_id in self.active_sandboxes
+                ]
+            )
+        except Exception:
+            self.logger.error(
+                f"Unable to delete remaining sandboxes: {self.active_sandboxes}"
+            )
