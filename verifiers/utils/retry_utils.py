@@ -24,6 +24,7 @@ async def with_retry(
         except Exception as e:
             if attempt == max_retries - 1:
                 raise
-            logger.error(f"Error calling {func.__qualname__}: {e}")
+            name = func.__name__ if hasattr(func, "__name__") else str(func)
+            logger.error(f"Error calling {name}: {e}")
             await asyncio.sleep(min(delay, max_backoff_seconds))
             delay *= backoff_factor
