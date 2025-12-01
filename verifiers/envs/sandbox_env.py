@@ -3,6 +3,7 @@ import time
 from typing import Any
 
 import verifiers as vf
+from verifiers.utils.retry_utils import with_retry
 
 try:
     from prime_sandboxes import (
@@ -33,6 +34,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        max_retries: int = 5,
+        base_delay: float = 0.5,
+        backoff_factor: float = 2.0,
+        max_backoff_seconds: float = 30.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -52,6 +57,10 @@ class SandboxEnv(vf.StatefulToolEnv):
             advanced_configs=advanced_configs,
         )
         self.active_sandboxes = set()
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.backoff_factor = backoff_factor
+        self.max_backoff_seconds = max_backoff_seconds
         self.add_tool(self.bash, args_to_skip=["sandbox_id"])
 
     async def bash(self, command: str, sandbox_id: str) -> str:
@@ -100,16 +109,36 @@ class SandboxEnv(vf.StatefulToolEnv):
         sandbox_id = state.get("sandbox_id")
         if sandbox_id is None:
             return
-        try:
+
+        async def _delete_sandbox(sandbox_id: str):
             await self.sandbox_client.delete(sandbox_id)
             self.active_sandboxes.discard(sandbox_id)
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
+
+        try:
+            await with_retry(
+                _delete_sandbox,
+                sandbox_id,
+                logger=self.logger,
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                backoff_factor=self.backoff_factor,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
         except Exception as e:
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await self.sandbox_client.create(self.sandbox_request)
+        sandbox = await with_retry(
+            self.sandbox_client.create,
+            self.sandbox_request,
+            logger=self.logger,
+            max_retries=self.max_retries,
+            base_delay=self.base_delay,
+            backoff_factor=self.backoff_factor,
+            max_backoff_seconds=self.max_backoff_seconds,
+        )
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
@@ -134,7 +163,15 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())
         try:
-            sandbox_client.bulk_delete(global_ids)
+            await with_retry(
+                sandbox_client.bulk_delete,
+                global_ids,
+                logger=self.logger,
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                backoff_factor=self.backoff_factor,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -147,23 +184,32 @@ class SandboxEnv(vf.StatefulToolEnv):
             return
         self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
         sandbox_client = SandboxClient(APIClient())
+
         # TODO: Use the SandboxClient.bulk_delete method once it is more stable and faster
-        while self.active_sandboxes:
-            successfully_deleted = set()
-            for sandbox_id in self.active_sandboxes:
-                try:
-                    self.logger.debug(f"Deleting sandbox {sandbox_id}")
-                    sandbox_client.delete(sandbox_id)
-                    successfully_deleted.add(sandbox_id)
-                    self.logger.debug(f"Successfully deleted sandbox {sandbox_id}")
-                except Exception as e:
-                    self.logger.error(f"Failed to delete sandbox {sandbox_id}: {e}")
+        async def _delete_sandbox(sandbox_id: str):
+            sandbox_client.delete(sandbox_id)
+            self.active_sandboxes.discard(sandbox_id)
+            self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
-            self.active_sandboxes -= successfully_deleted
+        async def _delete_sandbox_with_retry(sandbox_id: str):
+            await with_retry(
+                _delete_sandbox,
+                sandbox_id,
+                logger=self.logger,
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                backoff_factor=self.backoff_factor,
+                max_backoff_seconds=self.max_backoff_seconds,
+            )
 
-            # If no sandboxes were deleted in this pass, break to avoid infinite loop
-            if not successfully_deleted:
-                self.logger.error(
-                    f"Unable to delete remaining sandboxes: {self.active_sandboxes}"
-                )
-                break
+        try:
+            await asyncio.gather(
+                *[
+                    _delete_sandbox_with_retry(sandbox_id)
+                    for sandbox_id in self.active_sandboxes
+                ]
+            )
+        except Exception:
+            self.logger.error(
+                f"Unable to delete remaining sandboxes: {self.active_sandboxes}"
+            )

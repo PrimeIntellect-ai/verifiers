@@ -1,8 +1,11 @@
 import json
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, cast
 
-from openai.types.chat import ChatCompletionFunctionToolParam
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionFunctionToolParam,
+)
 
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
@@ -41,18 +44,19 @@ class StatefulToolEnv(vf.ToolEnv):
         for arg in args_to_skip:
             assert "function" in oai_tool
             assert "parameters" in oai_tool["function"]
+            params = oai_tool["function"]["parameters"]
             if (
-                "properties" in oai_tool["function"]["parameters"]
-                and isinstance(oai_tool["function"]["parameters"]["properties"], dict)
-                and arg in oai_tool["function"]["parameters"]["properties"]
+                "properties" in params
+                and isinstance(params["properties"], dict)
+                and arg in params["properties"]
             ):
-                oai_tool["function"]["parameters"]["properties"].pop(arg)
+                cast(dict[str, object], params["properties"]).pop(arg)
             if (
-                "required" in oai_tool["function"]["parameters"]
-                and isinstance(oai_tool["function"]["parameters"]["required"], list)
-                and arg in oai_tool["function"]["parameters"]["required"]
+                "required" in params
+                and isinstance(params["required"], list)
+                and arg in params["required"]
             ):
-                oai_tool["function"]["parameters"]["required"].remove(arg)
+                cast(list[str], params["required"]).remove(arg)
         if self.oai_tools is None:
             self.oai_tools = []
         self.oai_tools.append(oai_tool)
@@ -90,17 +94,19 @@ class StatefulToolEnv(vf.ToolEnv):
         try:
             tool_func = self.tool_map[tool_name]
             result = await maybe_await(tool_func, **tool_args)
-            return {
-                "role": "tool",
-                "content": str(result),
-                "tool_call_id": tool_call_id,
-            }
+            return cast(
+                vf.Message,
+                {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+            )
         except Exception as e:
-            return {
-                "role": "tool",
-                "content": self.error_formatter(e),
-                "tool_call_id": tool_call_id,
-            }
+            return cast(
+                vf.Message,
+                {
+                    "role": "tool",
+                    "content": self.error_formatter(e),
+                    "tool_call_id": tool_call_id,
+                },
+            )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
@@ -108,7 +114,8 @@ class StatefulToolEnv(vf.ToolEnv):
         assert isinstance(messages, list)
         assert "tool_calls" in messages[-1]
         tool_messages = []
-        for tool_call in messages[-1]["tool_calls"]:
+        last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
+        for tool_call in last_msg.get("tool_calls", []):
             tool_name: str = tool_call.get("function", {}).get("name", "")
             tool_args: dict = json.loads(
                 tool_call.get("function", {}).get("arguments", "")

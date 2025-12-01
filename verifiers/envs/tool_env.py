@@ -1,5 +1,7 @@
 import json
-from typing import Callable
+from typing import Callable, cast
+
+from openai.types.chat import ChatCompletionAssistantMessageParam
 
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
@@ -57,17 +59,19 @@ class ToolEnv(vf.MultiTurnEnv):
         try:
             tool_func = self.tool_map[tool_name]
             result = await maybe_await(tool_func, **tool_args)
-            return {
-                "role": "tool",
-                "content": str(result),
-                "tool_call_id": tool_call_id,
-            }
+            return cast(
+                vf.Message,
+                {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+            )
         except Exception as e:
-            return {
-                "role": "tool",
-                "content": self.error_formatter(e),
-                "tool_call_id": tool_call_id,
-            }
+            return cast(
+                vf.Message,
+                {
+                    "role": "tool",
+                    "content": self.error_formatter(e),
+                    "tool_call_id": tool_call_id,
+                },
+            )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
@@ -75,7 +79,8 @@ class ToolEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         assert "tool_calls" in messages[-1]
         tool_messages = []
-        for tool_call in messages[-1]["tool_calls"]:
+        last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
+        for tool_call in last_msg.get("tool_calls", []):
             tool_name: str = tool_call.get("function", {}).get("name", "")
             try:
                 tool_args: dict = json.loads(

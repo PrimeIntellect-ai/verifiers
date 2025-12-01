@@ -22,7 +22,7 @@ def sandbox_env():
     mock_async_client.return_value = mock_async_client_instance
 
     try:
-        env = SandboxEnv(dataset=mock_dataset)
+        env = SandboxEnv(dataset=mock_dataset, max_retries=1, base_delay=0.1)
         env.logger = MagicMock()
         env.active_sandboxes = {"sandbox1", "sandbox2", "sandbox3"}
         yield env

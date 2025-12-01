@@ -381,7 +381,7 @@ class RLTrainer(Trainer):
             def __len__(self):
                 return self.n
 
-            def __getitem__(self, idx):
+            def __getitem__(self, idx):  # type: ignore[override]
                 return {"labels": 0}
 
         return DataLoader(StepsDataset(self.max_steps))
@@ -467,7 +467,7 @@ class RLTrainer(Trainer):
             reward_values = rewards_dict[reward_key]
             self._textual_logs["rewards"][reward_key].extend(reward_values)  # type: ignore[union-attr]
 
-    def log_metrics(
+    def log_metrics(  # type: ignore[override]
         self,
         mode: str,
         batch_metrics: Dict[str, float],

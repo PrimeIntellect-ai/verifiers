@@ -2,6 +2,7 @@ __version__ = "0.1.8.post1"
 
 import importlib
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Optional
 
@@ -72,7 +73,7 @@ def setup_logging(
     logger.propagate = False
 
 
-setup_logging()
+setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
     "Parser",

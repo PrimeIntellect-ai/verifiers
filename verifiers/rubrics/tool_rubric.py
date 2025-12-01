@@ -1,4 +1,6 @@
-from typing import Callable
+from typing import Callable, cast
+
+from openai.types.chat import ChatCompletionAssistantMessageParam
 
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages
@@ -31,7 +33,8 @@ class ToolRubric(Rubric):
         assert isinstance(completion, list)
         for msg in completion:
             if msg["role"] == "assistant" and "tool_calls" in msg:
-                tool_calls = msg["tool_calls"]
+                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
+                tool_calls = assistant_msg.get("tool_calls", [])
                 if isinstance(tool_calls, list):
                     total += len(tool_calls)
         return float(total)
@@ -46,7 +49,8 @@ class ToolRubric(Rubric):
             assert isinstance(completion, list)
             for msg in completion:
                 if msg["role"] == "assistant" and "tool_calls" in msg:
-                    tool_calls = msg["tool_calls"]
+                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
+                    tool_calls = assistant_msg.get("tool_calls", [])
                     for tool_call in tool_calls:
                         if tool_call.get("function", {}).get("name") == tool_name:
                             count += 1
