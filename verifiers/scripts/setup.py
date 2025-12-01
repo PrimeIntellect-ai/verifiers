@@ -180,11 +180,14 @@ def install_environments_to_prime_rl():
         return
 
     print(f"Installing {len(env_modules)} environments into prime-rl workspace...")
-    env_paths = " ".join(f"-e ../environments/{m}" for m in sorted(env_modules))
+    env_paths = [f"-e environments/{m}" for m in sorted(env_modules)]
     install_cmd = [
-        "bash",
-        "-c",
-        f"cd prime-rl && uv pip install {env_paths}",
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "prime-rl/.venv/bin/python",
+        *env_paths,
     ]
     result = subprocess.run(install_cmd, check=False)
     if result.returncode != 0:
