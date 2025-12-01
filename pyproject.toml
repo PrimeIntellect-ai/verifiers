@@ -61,13 +61,13 @@ dev = [
 
 [project.optional-dependencies]
 rl = [
-    "torch>=2.8.0",
+    "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
     "accelerate>=1.4.0",
     "requests",
     "peft",
     "wandb",
-    "vllm>=0.11.0",
+    "vllm>=0.10.0,<0.11.0",
     "liger-kernel>=0.5.10",
     "deepspeed>=0.17.6",
     "flash-attn>=2.8.3",
@@ -77,22 +77,6 @@ envs = [
     "duckduckgo-search",
     "brave-search",
     "reasoning-gym",
-    "nltk",
-    "textarena",
-]
-all = [
-    "torch>=2.8.0",
-    "transformers",
-    "accelerate>=1.4.0",
-    "requests",
-    "peft",
-    "wandb",
-    "vllm>=0.11.0",
-    "liger-kernel>=0.5.10",
-    "deepspeed",
-    "math-verify>=0.8.0",
-    "duckduckgo-search",
-    "brave-search",
     "nltk",
     "textarena",
 ]
