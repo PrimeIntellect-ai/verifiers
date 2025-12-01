@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-from functools import wraps
 from typing import AsyncContextManager, Callable, Optional
 
 
@@ -9,14 +8,6 @@ async def maybe_await(func: Callable, *args, **kwargs):
     if inspect.isawaitable(result):
         return await result
     return result
-
-
-def make_awaitable(func: Callable):
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        return await maybe_await(func, *args, **kwargs)
-
-    return wrapper
 
 
 class NullAsyncContext:
