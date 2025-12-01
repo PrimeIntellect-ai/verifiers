@@ -1,9 +1,11 @@
 import asyncio
 import time
+import logging
 from typing import Any
 
+import tenacity as tc
 import verifiers as vf
-from verifiers.utils.retry_utils import with_retry
+from verifiers.utils.async_utils import maybe_await
 
 try:
     from prime_sandboxes import (
@@ -38,6 +40,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         base_delay: float = 0.5,
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
+        jitter: float = 1e-3,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -57,10 +60,17 @@ class SandboxEnv(vf.StatefulToolEnv):
             advanced_configs=advanced_configs,
         )
         self.active_sandboxes = set()
-        self.max_retries = max_retries
-        self.base_delay = base_delay
-        self.backoff_factor = backoff_factor
-        self.max_backoff_seconds = max_backoff_seconds
+        self.with_retry = tc.retry(
+            stop=tc.stop_after_attempt(max_retries),
+            wait=tc.wait_exponential_jitter(
+                initial=base_delay,
+                exp_base=backoff_factor,
+                max=max_backoff_seconds,
+                jitter=jitter,
+            ),
+            before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
+            reraise=True,
+        )
         self.add_tool(self.bash, args_to_skip=["sandbox_id"])
 
     async def bash(self, command: str, sandbox_id: str) -> str:
@@ -116,28 +126,14 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         try:
-            await with_retry(
-                _delete_sandbox,
-                sandbox_id,
-                logger=self.logger,
-                max_retries=self.max_retries,
-                base_delay=self.base_delay,
-                backoff_factor=self.backoff_factor,
-                max_backoff_seconds=self.max_backoff_seconds,
-            )
+            await maybe_await(self.with_retry(_delete_sandbox), sandbox_id)
         except Exception as e:
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await with_retry(
-            self.sandbox_client.create,
-            self.sandbox_request,
-            logger=self.logger,
-            max_retries=self.max_retries,
-            base_delay=self.base_delay,
-            backoff_factor=self.backoff_factor,
-            max_backoff_seconds=self.max_backoff_seconds,
+        sandbox = await maybe_await(
+            self.with_retry(self.sandbox_client.create), self.sandbox_request
         )
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
@@ -163,15 +159,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())
         try:
-            await with_retry(
-                sandbox_client.bulk_delete,
-                global_ids,
-                logger=self.logger,
-                max_retries=self.max_retries,
-                base_delay=self.base_delay,
-                backoff_factor=self.backoff_factor,
-                max_backoff_seconds=self.max_backoff_seconds,
-            )
+            await maybe_await(self.with_retry(sandbox_client.bulk_delete), global_ids)
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -192,15 +180,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         async def _delete_sandbox_with_retry(sandbox_id: str):
-            await with_retry(
-                _delete_sandbox,
-                sandbox_id,
-                logger=self.logger,
-                max_retries=self.max_retries,
-                base_delay=self.base_delay,
-                backoff_factor=self.backoff_factor,
-                max_backoff_seconds=self.max_backoff_seconds,
-            )
+            await maybe_await(self.with_retry(_delete_sandbox), sandbox_id)
 
         try:
             await asyncio.gather(

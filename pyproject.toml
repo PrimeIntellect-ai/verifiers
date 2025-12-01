@@ -35,6 +35,7 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "requests",
     "rich",
+    "tenacity>=8.5.0",
     "textual",
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
