@@ -24,9 +24,9 @@ This environment integrates with MCP (Model Context Protocol) servers to provide
 
 #### Exa & Fetch Tools
 
-- **Exa MCP Server**: Search and discovery tool for finding relevant web content
-  - Command: `npx -y exa-mcp-server`
-  - Required: `EXA_API_KEY` environment variable
+- **Exa MCP Server**: Search and discovery tool for finding relevant web content (via Smithery)
+  - Command: `npx -y @smithery/cli@latest run exa --key <KEY> --profile <PROFILE>`
+  - Note: Authentication is handled via Smithery CLI key/profile
 
 - **Fetch MCP Server**: Fetches and retrieves web content from URLs
   - Command: `uvx mcp-server-fetch`
@@ -69,8 +69,9 @@ Export the required API keys for the judge LLM and MCP tools:
 # Required for judge-based evaluation
 export OPENAI_API_KEY=your_openai_key
 
-# Required for Exa MCP server (search/discovery)
-export EXA_API_KEY=your_exa_key
+# Required for Exa MCP server (via Smithery)
+export SMITHERY_KEY=your_smithery_key
+export SMITHERY_PROFILE=your_smithery_profile
 
 # Required for Browserbase MCP server (browser automation)
 export BROWSERBASE_API_KEY=your_browserbase_key

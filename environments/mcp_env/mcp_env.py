@@ -15,7 +15,6 @@ from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import Message
 
 load_dotenv()
-print("Please export OPENAI_API_KEY to the environment")
 
 EXA_FETCH_TOOLS = [
     {
@@ -24,11 +23,14 @@ EXA_FETCH_TOOLS = [
         "command": "npx",
         "args": [
             "-y",
-            "exa-mcp-server",
+            "@smithery/cli@latest",
+            "run",
+            "exa",
+            "--key",
+            os.getenv("SMITHERY_KEY", ""),
+            "--profile",
+            os.getenv("SMITHERY_PROFILE", ""),
         ],
-        "env": {
-            "EXA_API_KEY": os.getenv("EXA_API_KEY"),
-        },
         "description": "Exa MCP server",
     },
     {
