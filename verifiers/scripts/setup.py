@@ -156,11 +156,52 @@ def setup_uv_workspace():
         print(f'Created {uv_toml_path} with workspace.exclude = ["{exclude_entry}"]')
 
 
+def install_environments_to_prime_rl():
+    """Install all environments from environments/ folder into prime-rl workspace."""
+    envs_dir = "environments"
+    if not os.path.exists(envs_dir):
+        print(f"{envs_dir}/ not found, skipping environment installation")
+        return
+
+    if not os.path.exists("prime-rl"):
+        print("prime-rl/ not found, skipping environment installation")
+        return
+
+    env_modules = []
+    for entry in os.listdir(envs_dir):
+        env_path = os.path.join(envs_dir, entry)
+        if os.path.isdir(env_path) and os.path.exists(
+            os.path.join(env_path, "pyproject.toml")
+        ):
+            env_modules.append(entry)
+
+    if not env_modules:
+        print(f"No installable environments found in {envs_dir}/")
+        return
+
+    print(f"Installing {len(env_modules)} environments into prime-rl workspace...")
+    env_paths = " ".join(f"-e ../environments/{m}" for m in sorted(env_modules))
+    install_cmd = [
+        "bash",
+        "-c",
+        f"cd prime-rl && uv pip install {env_paths}",
+    ]
+    result = subprocess.run(install_cmd, check=False)
+    if result.returncode != 0:
+        print(
+            f"Error: Failed to install environments with exit code {result.returncode}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Installed {len(env_modules)} environments")
+
+
 def main():
     os.makedirs("configs", exist_ok=True)
 
     install_prime_rl()
     setup_uv_workspace()
+    install_environments_to_prime_rl()
 
     if not os.path.exists(ENDPOINTS_DST):
         wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)
