@@ -5,7 +5,7 @@ from typing import Any
 
 import tenacity as tc
 import verifiers as vf
-from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.async_utils import make_awaitable
 
 try:
     from prime_sandboxes import (
@@ -60,7 +60,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             advanced_configs=advanced_configs,
         )
         self.active_sandboxes = set()
-        self.with_retry = tc.retry(
+        self.with_retry = tc.AsyncRetrying(
             stop=tc.stop_after_attempt(max_retries),
             wait=tc.wait_exponential_jitter(
                 initial=base_delay,
@@ -70,7 +70,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             ),
             before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
-        )
+        ).wraps
         self.add_tool(self.bash, args_to_skip=["sandbox_id"])
 
     async def bash(self, command: str, sandbox_id: str) -> str:
@@ -126,14 +126,14 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         try:
-            await maybe_await(self.with_retry(_delete_sandbox), sandbox_id)
+            await self.with_retry((make_awaitable(_delete_sandbox)))(sandbox_id)
         except Exception as e:
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await maybe_await(
-            self.with_retry(self.sandbox_client.create), self.sandbox_request
+        sandbox = await self.with_retry((make_awaitable(self.sandbox_client.create)))(
+            self.sandbox_request
         )
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
@@ -159,7 +159,9 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Delete multiple sandboxes by their global IDs"""
         sandbox_client = SandboxClient(APIClient())
         try:
-            await maybe_await(self.with_retry(sandbox_client.bulk_delete), global_ids)
+            await self.with_retry((make_awaitable(sandbox_client.bulk_delete)))(
+                global_ids
+            )
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -180,7 +182,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         async def _delete_sandbox_with_retry(sandbox_id: str):
-            await maybe_await(self.with_retry(_delete_sandbox), sandbox_id)
+            await self.with_retry((make_awaitable(_delete_sandbox)))(sandbox_id)
 
         try:
             await asyncio.gather(
