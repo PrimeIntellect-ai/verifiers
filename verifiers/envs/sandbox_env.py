@@ -5,7 +5,6 @@ from typing import Any
 
 import tenacity as tc
 import verifiers as vf
-from verifiers.utils.async_utils import make_awaitable
 
 try:
     from prime_sandboxes import (
@@ -124,13 +123,13 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         try:
-            await self.with_retry(make_awaitable(_delete_sandbox))(sandbox_id)
+            await self.with_retry(_delete_sandbox)(sandbox_id)
         except Exception as e:
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await self.with_retry(make_awaitable(self.sandbox_client.create))(
+        sandbox = await self.with_retry(self.sandbox_client.create)(
             self.sandbox_request
         )
         self.active_sandboxes.add(sandbox.id)
@@ -156,7 +155,7 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         try:
-            await self.with_retry(make_awaitable(self.sandbox_client.bulk_delete))(
+            await self.with_retry(self.sandbox_client.bulk_delete)(
                 global_ids
             )
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
@@ -176,7 +175,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         async def _delete_sandbox_with_retry(sandbox_id: str):
             async with semaphore:
                 try:
-                    await self.with_retry(make_awaitable(self.sandbox_client.delete))(
+                    await self.with_retry(self.sandbox_client.delete)(
                         sandbox_id
                     )
                     self.active_sandboxes.discard(sandbox_id)
