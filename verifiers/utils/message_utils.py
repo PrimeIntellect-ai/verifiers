@@ -98,9 +98,7 @@ def cleanup_message(message: ChatMessage) -> ChatMessage:
                 new_c.pop("image_url")
                 content_list.append(new_c)
             elif (
-                "image_url" in c_dict
-                and "type" in c_dict
-                and c_dict["type"] == "image_url"
+                "text" in c_dict and "type" in c_dict and c_dict["type"] == "image_url"
             ):
                 new_c.pop("text")
                 content_list.append(new_c)
