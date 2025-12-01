@@ -39,7 +39,7 @@ dependencies = [
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
-    "prime-sandboxes>=0.2.2",
+    "prime-sandboxes>=0.2.4",
     "wget>=3.2",
 ]
 
