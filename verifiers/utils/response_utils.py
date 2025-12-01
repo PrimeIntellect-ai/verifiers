@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import cast
 
 from verifiers.types import (
     ChatCompletion,
@@ -9,9 +9,6 @@ from verifiers.types import (
     ModelResponse,
     TrajectoryStepTokens,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 async def parse_response_tokens(
@@ -108,7 +105,7 @@ async def parse_response_messages(
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
             response_text = response.choices[0].message.content or ""
-        response_message: ChatMessage = {
+        response_message: dict[str, object] = {
             "role": "assistant",
             "content": response_text,
         }
@@ -118,10 +115,10 @@ async def parse_response_messages(
             and response.choices[0].message.tool_calls
         ):
             tool_calls = response.choices[0].message.tool_calls
-            response_message["tool_calls"] = [  # type: ignore
+            response_message["tool_calls"] = [
                 tool_call.model_dump() for tool_call in tool_calls
             ]
-        completion_messages = list[ChatMessage]([response_message])
+        completion_messages = list[ChatMessage]([cast(ChatMessage, response_message)])
     else:
         assert isinstance(response, Completion)
         if response.choices and response.choices[0]:

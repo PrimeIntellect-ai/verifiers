@@ -1,6 +1,6 @@
 import random
 from copy import deepcopy
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from datasets import Dataset
 
@@ -95,7 +95,7 @@ class TextArenaEnv(vf.MultiTurnEnv):
         state["game_completed"] = game_completed
         _, observation = ta_env.get_observation()
         feedback = self.feedback_fn(observation)
-        return [{"role": "user", "content": str(feedback)}]
+        return cast(vf.Messages, [{"role": "user", "content": str(feedback)}])
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []
