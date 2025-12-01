@@ -1,5 +1,6 @@
 import verifiers as vf
 from verifiers.envs.textarena_env import TextArenaEnv
+from verifiers.types import RewardResult
 
 ### prompt
 
@@ -18,15 +19,26 @@ def wordle_feedback_fn(observation: str) -> str:
 
 
 ### reward functions
-def check_answer_reward_func(parser, completion, answer, **kwargs) -> float:
+def check_answer_reward_func(parser, completion, answer, **kwargs) -> RewardResult:
+    """Check if the guess is correct and provide feedback."""
     guess = parser.parse_answer(completion)
-    return 1.0 if guess == "[" + answer + "]" else 0.0
+    correct = guess == "[" + answer + "]"
+
+    # Return dict with score and feedback (for GEPA optimization)
+    return {
+        "score": 1.0 if correct else 0.0,
+        "feedback": (
+            f"{'✓ Correct!' if correct else '✗ Incorrect.'} "
+            f"Expected: {answer}, Got: {guess}"
+        ),
+    }
 
 
 def count_turns_reward_func(parser, completion, answer, **kwargs) -> float:
     num_turns = len([x for x in completion if x["role"] == "assistant"])
-    is_correct = check_answer_reward_func(parser, completion, answer, **kwargs)
-    return is_correct / (num_turns + 1)
+    result = check_answer_reward_func(parser, completion, answer, **kwargs)
+    score = result["score"] if isinstance(result, dict) else result
+    return score / (num_turns + 1)
 
 
 def partial_credit_reward_func(parser, completion, answer, **kwargs) -> float:

@@ -104,6 +104,7 @@ class State(dict):
     reward: float | None
     advantage: float | None
     metrics: dict[str, float] | None
+    feedbacks: list[str] | None
     timing: RolloutTiming | None
 
     def __getitem__(self, key: str) -> Any:
@@ -174,6 +175,18 @@ class RolloutScore(TypedDict):
     metrics: dict[str, float]
 
 
+class RewardResult(TypedDict, total=False):
+    """Result from a reward function with optional feedback.
+
+    Reward functions can return either:
+    - float: backward compatible (no feedback)
+    - RewardResult: {"score": float, "feedback": str}
+    """
+
+    score: float  # required
+    feedback: str  # optional
+
+
 class RolloutScores(TypedDict):
     """TypedDict for rubric outputs."""
 
@@ -234,3 +247,51 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+
+
+class GEPAConfig(BaseModel):
+    """Pydantic model for GEPA optimization configuration."""
+
+    # environment
+    env_id: str
+    env_args: dict
+    env_dir_path: str
+    # task model
+    model: str
+    client_config: ClientConfig
+    sampling_args: SamplingArgs
+    # reflection model
+    reflection_model: str
+    reflection_api_key: str
+    reflection_base_url: str
+    reflection_temperature: float
+    reflection_max_tokens: int
+    reflection_minibatch_size: int
+    # datasets
+    num_examples: int
+    num_val: int
+    rollouts_per_example: int
+    trainset: list[dict]
+    valset: list[dict]
+    # optimization
+    components_to_optimize: list[str]
+    seed_candidate: dict[str, str]
+    max_metric_calls: int
+    # execution
+    max_concurrent: int
+    seed: int
+    # output
+    save_results: bool
+    save_every: int
+    track_stats: bool
+    verbose: bool
+    # experiment tracking
+    use_wandb: bool = False
+    wandb_api_key_var: str = "WANDB_API_KEY"
+    wandb_project: str | None = None
+    wandb_entity: str | None = None
+    wandb_name: str | None = None
+    wandb_init_kwargs: dict | None = None
+    use_mlflow: bool = False
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment_name: str | None = None
