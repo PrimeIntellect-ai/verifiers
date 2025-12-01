@@ -10,10 +10,8 @@ from verifiers.utils.async_utils import make_awaitable
 try:
     from prime_sandboxes import (
         AdvancedConfigs,
-        APIClient,
         AsyncSandboxClient,
         CreateSandboxRequest,
-        SandboxClient,
     )
 except ImportError:
     raise ImportError(
@@ -157,9 +155,8 @@ class SandboxEnv(vf.StatefulToolEnv):
 
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
-        sandbox_client = SandboxClient(APIClient())
         try:
-            await self.with_retry(make_awaitable(sandbox_client.bulk_delete))(
+            await self.with_retry(make_awaitable(self.sandbox_client.bulk_delete))(
                 global_ids
             )
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
@@ -168,27 +165,30 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
     @vf.teardown  # type: ignore
-    async def teardown_sandboxes(self):
-        """Delete all active sandboxes"""
+    async def teardown_sandboxes(self, max_concurrent: int = 50):
+        """Delete all active sandboxes with controlled concurrency"""
         if len(self.active_sandboxes) == 0:
             return
         self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
-        sandbox_client = SandboxClient(APIClient())
 
-        # TODO: Use the SandboxClient.bulk_delete method once it is more stable and faster
-        async def _delete_sandbox(sandbox_id: str):
-            sandbox_client.delete(sandbox_id)
-            self.active_sandboxes.discard(sandbox_id)
-            self.logger.debug(f"Deleted sandbox {sandbox_id}")
+        semaphore = asyncio.Semaphore(max_concurrent)
 
         async def _delete_sandbox_with_retry(sandbox_id: str):
-            await self.with_retry(make_awaitable(_delete_sandbox))(sandbox_id)
+            async with semaphore:
+                try:
+                    await self.with_retry(make_awaitable(self.sandbox_client.delete))(
+                        sandbox_id
+                    )
+                    self.active_sandboxes.discard(sandbox_id)
+                    self.logger.debug(f"Deleted sandbox {sandbox_id}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
         try:
             await asyncio.gather(
                 *[
                     _delete_sandbox_with_retry(sandbox_id)
-                    for sandbox_id in self.active_sandboxes
+                    for sandbox_id in list(self.active_sandboxes)  # copy to avoid mutation during iteration
                 ]
             )
         except Exception:
