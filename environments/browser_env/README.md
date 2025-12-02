@@ -74,7 +74,7 @@ env = load_environment(
 | `wait(time_ms)` | Wait for specified time |
 | `screenshot()` | Capture current page |
 
-## Reward Functions
+## Reward Functions # TODO
 
 ### Built-in Rewards
 
@@ -82,7 +82,7 @@ env = load_environment(
 
 2. **task_completion_reward** (weight: 1.0): Placeholder for task-specific completion reward.
 
-### Custom Rewards
+### Custom Rewards 
 
 Override `task_completion_reward` or add custom reward functions:
 
@@ -108,17 +108,21 @@ browser_rubric.add_reward_func(my_custom_reward, weight=1.0)
 
 
 # TODO
+######
 
 - Reward function - overall browser trajectory + "how are we getting closer after each step" (hard-ish)
 - Custom LLM client - via vLLM (easy)
 - DOM-based option - I started with CUA (vision-based) since there seems to be more near-term market demand with full understanding verifier's has been not focused on multimodal training much yet (afaik)
+- Dataset structure (get some examples from our evals suite in Stagehand)
+- 
 
 ## Architecture
 
 ```
 ┌─────────────────┐     HTTP/REST     ┌──────────────────┐
-│   BrowserEnv    │ ◄──────────────► │   CUA Server      │
-│   (Python)      │                   │   (Fastify/TS)   │
+│   BrowserEnv    │ ◄──────────────►  │  CUA Server      │
+│   (Python/      │                   │   (Fastify/TS)   │
+│     verifiers)  │                   │                  │
 └─────────────────┘                   └──────────────────┘
         │                                      │
         │                                      ▼
