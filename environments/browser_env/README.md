@@ -106,18 +106,25 @@ browser_rubric.add_reward_func(my_custom_reward, weight=1.0)
 - `BROWSERBASE_API_KEY`: API key for Browserbase cloud browsers (optional)
 - `BROWSERBASE_PROJECT_ID`: Project ID for Browserbase (optional)
 
+
+# TODO
+
+- Reward function - overall browser trajectory + "how are we getting closer after each step" (hard-ish)
+- Custom LLM client - via vLLM (easy)
+- DOM-based option - I started with CUA (vision-based) since there seems to be more near-term market demand with full understanding verifier's has been not focused on multimodal training much yet (afaik)
+
 ## Architecture
 
 ```
 ┌─────────────────┐     HTTP/REST     ┌──────────────────┐
-│   BrowserEnv    │ ◄──────────────► │   CUA Server     │
+│   BrowserEnv    │ ◄──────────────► │   CUA Server      │
 │   (Python)      │                   │   (Fastify/TS)   │
 └─────────────────┘                   └──────────────────┘
         │                                      │
         │                                      ▼
         │                             ┌──────────────────┐
-        │                             │   Stagehand      │
-        │                             │   (Playwright)   │
+        │                             │   Stagehand V3   │
+        │                             │   (Direct CDP)   │
         ▼                             └──────────────────┘
 ┌─────────────────┐                           │
 │   Model (LLM)   │                           ▼
