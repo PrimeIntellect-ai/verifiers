@@ -1,9 +1,10 @@
 import asyncio
-import time
 import logging
+import time
 from typing import Any
 
 import tenacity as tc
+
 import verifiers as vf
 
 try:
@@ -157,9 +158,7 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         try:
-            await self.with_retry(self.sandbox_client.bulk_delete)(
-                global_ids
-            )
+            await self.with_retry(self.sandbox_client.bulk_delete)(global_ids)
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -183,7 +182,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         # Delete in batches of 100
         batch_size = 100
         for i in range(0, len(sandbox_ids), batch_size):
-            batch = sandbox_ids[i:i + batch_size]
+            batch = sandbox_ids[i : i + batch_size]
             try:
                 sync_client.bulk_delete(sandbox_ids=batch)
                 for sandbox_id in batch:
