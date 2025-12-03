@@ -47,9 +47,7 @@ class StepResetEnv(Protocol):
 
     - `reset(**kwargs)`:
         * Must accept **kwargs, because we always splat a dict coming from
-          the dataset row's `info` field. For heterogeneous mode, that is
-          the *full* `info` dict (including e.g. `env_type`,
-          `env_kwargs`, and anything produced by `info_builder`).
+          the dataset row's `info` field.
         * May return either:
             - `obs`
             - `(obs, info_dict)`
@@ -108,7 +106,7 @@ def _default_eval_ds(message_type: str) -> Dataset:
 
     We only ever use this to satisfy Environment's requirement that at least
     one of (dataset, eval_dataset) is set; the contents do not drive dynamics
-    unless 'auto_dummy_eval' is used with heterogeneous mode.
+    unless 'auto_dummy_eval' is used.
     """
     if message_type == "completion":
         return Dataset.from_dict(
@@ -117,7 +115,7 @@ def _default_eval_ds(message_type: str) -> Dataset:
                 "answer": [""],
                 "info": [
                     {"env_type": "default", "env_kwargs": {}}
-                ],  # For heterogeneous
+                ],
                 "task": ["default"],
                 "example_id": [0],
             }
@@ -129,7 +127,7 @@ def _default_eval_ds(message_type: str) -> Dataset:
             "answer": [""],
             "info": [
                 {"env_type": "default", "env_kwargs": {}}
-            ],  # For heterogeneous
+            ],
             "task": ["default"],
             "example_id": [0],
         }
@@ -141,20 +139,15 @@ class GymEnv(Environment):
     """
     Concrete class for running Gym-style RL environments driven by LLMs.
 
-    This class is a "batteries-included" runner that supports three modes:
+    This class is a "batteries-included" runner that supports two modes:
 
     1. Homogeneous Mode:
        Pass `env_cls` and `env_kwargs`. Every rollout will use a
        fresh instance of this single env type. The dataset's 'info'
        column is passed to `env.reset()` for initialization (e.g., seeds).
 
-    2. Heterogeneous Mode:
-       Pass `env_registry` and a `dataset`. The dataset's 'info'
-       column *must* specify the 'env_type' (key in registry)
-       and 'env_kwargs' (for __init__) for each rollout.
-
-    3. Custom Mode:
-       Do not pass `env_cls` or `env_registry`. Subclass GymEnv
+    2. Custom Mode:
+       Do not pass `env_cls`. Subclass GymEnv
        and implement your own `_make_env(state)` logic.
 
     ------------------------ Dataset semantics ------------------------
@@ -164,7 +157,7 @@ class GymEnv(Environment):
       auto-generating a dataset when you don't pass one and `auto_dummy_eval`
       is True.
 
-    - Homogeneous mode (env_cls is set, env_registry is None):
+    - Homogeneous mode (env_cls is set):
         * If you do NOT pass `dataset` / `eval_dataset` and `auto_dummy_eval=True`:
             - `dataset` is auto-generated with `num_train_episodes` rows via
               `_build_auto_dataset(...)`. Each row's `info` dict is passed
@@ -179,41 +172,14 @@ class GymEnv(Environment):
               `num_train_episodes` rows via `_build_auto_dataset(...)`.
               We deliberately do **not** mirror eval into train.
 
-    - Heterogeneous mode (env_registry is set):
-        * If you pass your own dataset:
-            - Each row's `info` MUST include:
-                - `env_type` (a key in `env_registry`)
-                - `env_kwargs` (for __init__) for that env type
-              plus any extra metadata you want; the whole `info` dict is later
-              splatted into `reset(**info)`.
-        * If you do NOT pass `dataset` / `eval_dataset` and `auto_dummy_eval=True`:
-            - We auto-generate a dataset of length `num_train_episodes` via
-              `_build_auto_dataset(...)`.
-            - For each row `i`, `info.env_type` is chosen in a round-robin over
-              `env_registry.keys()`, and `env_kwargs={}` by default, optionally
-              augmented by `info_builder(i)`.
-            - This auto dataset is used for BOTH `dataset` and `eval_dataset`.
-              That means that, in the heterogeneous/no-dataset case, rollouts
-              will alternate between the registered envs with default args
-              (unless you override via `info_builder`).
-
-        * If you pass ONLY `eval_dataset` in heterogeneous mode, GymEnv does
-          **not** try to guess a train dataset; `dataset` simply remains unset.
-
     ------------------------ Env interface assumptions ------------------------
 
     - All env classes used with GymEnv are expected to:
         * Implement `reset(self, **kwargs) -> obs or (obs, info)`:
             - We always pass a dict of keyword arguments coming from the
-              dataset row's `info`. For heterogeneous mode, that includes
-              things like `env_type`, `env_kwargs`, and any extra fields
-              produced by `info_builder`.
+              dataset row's `info`.
         * Implement `step(self, action) -> (obs, reward, done, info)` or
           `(obs, reward, terminated, truncated, info)`.
-        * If you register envs in `env_registry`, their `__init__` should
-          accept the keys stored in `info["env_kwargs"]`. In practice it is
-          often simplest to include a trailing `**kwargs` in your env
-          constructor to be robust to extra dataset-driven fields.
     """
 
     def __init__(
@@ -223,8 +189,6 @@ class GymEnv(Environment):
         # Mode 1: Homogeneous
         env_cls: Optional[type] = None,
         env_kwargs: Dict[str, Any] | None = None,
-        # Mode 2: Heterogeneous
-        env_registry: Optional[Dict[str, type]] = None,
         # env_setup_fn is for Homogeneous mode (Mode 1)
         env_setup_fn: Optional[Callable[..., None]] = None,
         # optional datasets (verifiers-style)
@@ -238,23 +202,14 @@ class GymEnv(Environment):
         obs_to_text: Callable[[Any], str] | None = None,
         max_episode_steps: Optional[int] = None,
         rubric: Optional[Rubric] = None,  # defaults to EpisodicSumRubric
-        eval_runner: Optional[Callable[..., Any]] = None,
         **env_kwargs_rest: Any,
     ):
         # --- Store env factory info ---
         self._env_cls = env_cls
         self._env_kwargs = dict(env_kwargs or {})
-        self._env_registry = env_registry
         self._env_setup_fn = env_setup_fn
         self._info_builder = info_builder
         self._num_train_episodes = num_train_episodes
-
-        # Ensure modes are mutually exclusive
-        if self._env_cls and self._env_registry:
-            raise ValueError(
-                "Cannot provide both 'env_cls' (Homogeneous Mode) and "
-                "'env_registry' (Heterogeneous Mode) at the same time."
-            )
 
         # --- Prepare args for Environment.__init__ ---
         final_env_kwargs = dict(env_kwargs_rest)
@@ -268,7 +223,7 @@ class GymEnv(Environment):
             final_env_kwargs["eval_dataset"] = eval_dataset
 
         # If neither dataset nor eval_dataset, optionally inject auto-generated train
-        # dataset plus eval set (homogeneous: dummy eval; heterogeneous: same auto dataset)
+        # dataset plus dummy eval set
         if (
             auto_dummy_eval
             and "dataset" not in final_env_kwargs
@@ -278,16 +233,9 @@ class GymEnv(Environment):
                 num_samples=num_train_episodes,
                 message_type=message_type,
             )
-            if self._env_registry is not None:
-                # Heterogeneous: eval must have valid env_type entries
-                # We therefore reuse the auto-generated train dataset so that
-                # every row's `info.env_type`/`env_kwargs` is consistent with the registry.
-                final_env_kwargs["dataset"] = auto_ds
-                final_env_kwargs["eval_dataset"] = auto_ds
-            else:
-                # Homogeneous: keep episodes-mode semantics via 1-row dummy eval
-                final_env_kwargs["dataset"] = auto_ds
-                final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
+            # Homogeneous: keep episodes-mode semantics via 1-row dummy eval
+            final_env_kwargs["dataset"] = auto_ds
+            final_env_kwargs["eval_dataset"] = _default_eval_ds(message_type)
 
         # If the user passes only eval_dataset (no dataset), we do NOT mirror
         # eval into train (that would be a surprising leakage). In homogeneous
@@ -296,7 +244,6 @@ class GymEnv(Environment):
             auto_dummy_eval
             and "dataset" not in final_env_kwargs
             and "eval_dataset" in final_env_kwargs
-            and self._env_registry is None
         ):
             final_env_kwargs["dataset"] = self._build_auto_dataset(
                 num_samples=num_train_episodes,
@@ -307,9 +254,6 @@ class GymEnv(Environment):
 
         self.action_parser = action_parser
         self.max_episode_steps = max_episode_steps
-
-        # optional custom evaluator (full override)
-        self._eval_runner = eval_runner
 
         # optional obs_to_text callback; if None, strings are accepted, others error
         self._obs_to_text_fn: Callable[[Any], str] | None = obs_to_text
@@ -329,11 +273,6 @@ class GymEnv(Environment):
                     }
                 except Exception:
                     self.env_args = {}
-        elif self._env_registry:
-            self.env_id = self.env_id or "dataset_driven_env"
-            self.env_args = self.env_args or {
-                "registry_keys": list(self._env_registry.keys())
-            }
 
     # ----- hooks for concrete envs -----
     def obs_to_text(self, obs: Any) -> str:
@@ -379,18 +318,6 @@ class GymEnv(Environment):
         - Homogeneous:
             `env_cls` must construct an object implementing StepResetEnv.
             The constructor is called as: `env_cls(**self._env_kwargs)`.
-
-        - Heterogeneous:
-            The dataset row's `info` must contain:
-              * `env_type` (a key in `self._env_registry`)
-              * `env_kwargs` (a dict)
-            We then do:
-              `env_cls = env_registry[env_type]; env_cls(**env_kwargs)`
-
-            It is therefore recommended that registered env classes have a
-            constructor that can safely accept the keys you put into
-            `env_kwargs` (including a trailing `**kwargs` if you want to be
-            robust to future changes in the dataset).
         """
         # Mode 1: Homogeneous (env_cls was given)
         if self._env_cls is not None:
@@ -407,33 +334,10 @@ class GymEnv(Environment):
 
             return env  # type: ignore[return-value]
 
-        # Mode 2: Heterogeneous (env_registry was given)
-        if self._env_registry is not None:
-            if not state:
-                raise ValueError("State is required for Heterogeneous Mode")
-
-            info = state["input"].get("info")
-            if not isinstance(info, dict):
-                raise ValueError("Dataset 'info' must be a dict for Heterogeneous Mode")
-
-            env_type_name = info.get("env_type")
-            if not env_type_name or env_type_name not in self._env_registry:
-                raise ValueError(
-                    f"Dataset 'info.env_type' missing or '{env_type_name}' "
-                    f"not in registry. Available: {list(self._env_registry.keys())}"
-                )
-
-            env_cls = self._env_registry[env_type_name]
-            env_kwargs = info.get("env_kwargs", {})
-            if not isinstance(env_kwargs, dict):
-                raise ValueError("Dataset 'info.env_kwargs' must be a dict")
-
-            return env_cls(**env_kwargs)  # type: ignore[return-value]
-
         # Mode 3: Custom (must be subclassed)
         raise NotImplementedError(
-            "GymEnv must be initialized with 'env_cls' (Mode 1) or "
-            "'env_registry' (Mode 2), or you must subclass it and "
+            "GymEnv must be initialized with 'env_cls' (Mode 1), "
+            "or you must subclass it and "
             "implement your own _make_env(state) method."
         )
 
@@ -472,24 +376,12 @@ class GymEnv(Environment):
         Build a simple dataset of "hidden state" descriptors, used when the user
         doesn't provide a dataset. The `info` per row describes how to init the env.
 
-        - Homogeneous mode (no env_registry):
+        - Homogeneous mode:
             * Each row's `info` is:
                 - `{}` by default, or
                 - `info_builder(i)` merged into that dict if `info_builder`
                   is provided.
             * That dict is later splatted into `reset(**info)`.
-
-        - Heterogeneous mode (env_registry is not None):
-            * Let `keys = list(env_registry.keys())`.
-            * For row `i`, we set:
-                - `info["env_type"] = keys[i % len(keys)]`
-                - `info["env_kwargs"] = {}`
-              so that rows alternate between the registered envs in a simple
-              round-robin pattern when a dataset is not explicitly provided.
-            * If `info_builder` is provided, its return dict is merged into
-              this base `info`. This is the hook you use to:
-                - inject per-row `env_kwargs` (e.g. difficulty, seeds), or
-                - add extra metadata that `reset(**info)` might care about.
 
         In all cases:
 
@@ -501,31 +393,14 @@ class GymEnv(Environment):
         """
         infos: list[dict[str, Any]] = []
 
-        if self._env_registry is not None:
-            registry_keys = list(self._env_registry.keys())
-            if not registry_keys:
-                raise ValueError("env_registry is empty; cannot auto-build dataset")
-            for i in range(num_samples):
-                env_type_name = registry_keys[i % len(registry_keys)]
-                base_info: Dict[str, Any] = {
-                    "env_type": env_type_name,
-                    "env_kwargs": {},
-                }
-                if self._info_builder is not None:
-                    extra = self._info_builder(i)
-                    if not isinstance(extra, dict):
-                        raise TypeError("info_builder must return a dict")
-                    base_info.update(extra)
-                infos.append(base_info)
-        else:
-            for i in range(num_samples):
-                base_info: Dict[str, Any] = {}
-                if self._info_builder is not None:
-                    extra = self._info_builder(i)
-                    if not isinstance(extra, dict):
-                        raise TypeError("info_builder must return a dict")
-                    base_info.update(extra)
-                infos.append(base_info)
+        for i in range(num_samples):
+            base_info: Dict[str, Any] = {}
+            if self._info_builder is not None:
+                extra = self._info_builder(i)
+                if not isinstance(extra, dict):
+                    raise TypeError("info_builder must return a dict")
+                base_info.update(extra)
+            infos.append(base_info)
 
         if message_type == "completion":
             prompts = ["" for _ in range(num_samples)]
@@ -550,42 +425,6 @@ class GymEnv(Environment):
         and `rollout()`->`env.reset()`.
         """
         return state
-
-    # ---- dummy-eval detection ----
-    def _is_dummy_eval_ds(self) -> bool:
-        """
-        Heuristic to detect the built-in dummy eval dataset we create via
-        _default_eval_ds(). We only treat that special case as "episodes mode".
-        """
-        try:
-            ds = self.get_eval_dataset(n=-1)
-        except Exception:
-            return False
-
-        if len(ds) != 1:
-            return False
-
-        cols = set(ds.column_names)
-        expected = {"prompt", "answer", "info", "task", "example_id"}
-        if not expected.issubset(cols):
-            return False
-
-        row = ds[0]
-        if row.get("task", "default") != "default":
-            return False
-        if row.get("example_id", 0) != 0:
-            return False
-
-        # prompt structure from _default_eval_ds
-        prompt = row.get("prompt")
-        if self.message_type == "completion":
-            if prompt != "":
-                return False
-        else:  # chat
-            if prompt != []:
-                return False
-
-        return True
 
     async def _add_trajectory_step(
         self,
@@ -640,7 +479,7 @@ class GymEnv(Environment):
         state["completion"] = None
 
         # Fresh env per rollout.
-        # This call now uses the logic (Homogeneous, Heterogeneous, or Custom)
+        # This call now uses the logic (Homogeneous or Custom)
         env = self._make_env(state)
 
         # Episode-local variables
@@ -657,7 +496,6 @@ class GymEnv(Environment):
         if not isinstance(input_info, dict):
             input_info = {}
 
-        # In Heterogeneous mode, 'info' was used in _make_env.
         # In Homogeneous mode, 'info' is used here in reset().
         obs, reset_info = _normalize_reset(env.reset(**input_info))
         last_obs = obs
@@ -800,199 +638,3 @@ class GymEnv(Environment):
 
         # Reward is computed later by rubric.score_group from state["trajectory"]
         return state
-
-    # -------- Customizable evaluation layer --------
-    async def evaluate(
-        self,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-        num_examples: int = -1,
-        rollouts_per_example: int = 1,
-        max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
-        results_path: Path | None = None,
-        state_columns: list[str] | None = None,
-        save_results: bool = False,
-        save_every: int = -1,
-        **kwargs: Any,
-    ):
-        """
-        Evaluate model on this RL environment.
-
-        If a user-supplied eval_runner exists, delegate to it.
-
-        Otherwise:
-          - When using the built-in 1-row dummy eval dataset, treat
-            num_examples > 1 as "episodes" (map to rollouts_per_example) and
-            always set num_examples=1 (explicit RPE still wins).
-          - On real datasets, num_examples counts dataset rows
-            (capped to dataset size as usual).
-        """
-        # Full delegation if user supplied their own evaluation runner
-        if self._eval_runner is not None:
-            maybe = self._eval_runner(
-                self,
-                client=client,
-                model=model,
-                sampling_args=sampling_args,
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
-                max_concurrent=max_concurrent,
-                max_concurrent_generation=max_concurrent_generation,
-                max_concurrent_scoring=max_concurrent_scoring,
-                results_path=results_path,
-                state_columns=state_columns,
-                save_results=save_results,
-                save_every=save_every,
-                **kwargs,
-            )
-            if hasattr(maybe, "__await__"):
-                return await maybe  # type: ignore[no-any-return]
-            return maybe  # type: ignore[no-any-return]
-
-        is_dummy = self._is_dummy_eval_ds()
-        try:
-            ds = self.get_eval_dataset(n=-1)
-            ds_len = len(ds)
-        except Exception:
-            ds_len = 0
-            is_dummy = False
-
-        # Mapping rules:
-        # - Dummy:
-        #     * If num_examples > 1 and RPE==1 -> set RPE = num_examples, NE = 1
-        #     * If num_examples > 1 and RPE>1  -> keep RPE, force NE = 1
-        # - Non-dummy: no mapping; NE is capped to dataset size by Environment
-        mapped_ne = num_examples
-        mapped_rpe = rollouts_per_example
-        if is_dummy and num_examples > 1:
-            if rollouts_per_example <= 1:
-                mapped_rpe = num_examples
-            mapped_ne = 1
-
-        results = await super().evaluate(
-            client=client,
-            model=model,
-            sampling_args=sampling_args,
-            num_examples=mapped_ne,
-            rollouts_per_example=mapped_rpe,
-            max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
-            results_path=results_path,
-            state_columns=state_columns,
-            save_results=save_results,
-            save_every=save_every,
-            **kwargs,
-        )
-
-        # Correct metadata to reflect the actual evaluation configuration
-        try:
-            if is_dummy:
-                # Always 1 unique example in dummy mode
-                results.metadata.num_examples = 1
-            else:
-                if mapped_ne < 0:
-                    results.metadata.num_examples = ds_len
-                else:
-                    results.metadata.num_examples = min(mapped_ne, ds_len)
-            results.metadata.rollouts_per_example = mapped_rpe
-        except Exception:
-            pass
-        return results
-
-    def evaluate_sync(
-        self,
-        client: OpenAI | AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-        num_examples: int = -1,
-        rollouts_per_example: int = 1,
-        max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
-        results_path: Path | None = None,
-        state_columns: list[str] | None = None,
-        save_results: bool = False,
-        save_every: int = -1,
-        **kwargs: Any,
-    ):
-        """
-        Sync wrapper with the same delegation/mapping semantics as the async one.
-        """
-        # If client is sync OpenAI, adapt to AsyncOpenAI (Environment.generate_sync does this too)
-        if isinstance(client, OpenAI):
-            client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
-
-        if self._eval_runner is not None:
-            maybe = self._eval_runner(
-                self,
-                client=client,
-                model=model,
-                sampling_args=sampling_args,
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
-                max_concurrent=max_concurrent,
-                max_concurrent_generation=max_concurrent_generation,
-                max_concurrent_scoring=max_concurrent_scoring,
-                results_path=results_path,
-                state_columns=state_columns,
-                save_results=save_results,
-                save_every=save_every,
-                **kwargs,
-            )
-            if inspect.isawaitable(maybe):
-                try:
-                    loop = asyncio.get_running_loop()
-                    import nest_asyncio  # type: ignore
-
-                    nest_asyncio.apply()
-                    return loop.run_until_complete(maybe)  # type: ignore[no-any-return]
-                except RuntimeError:
-                    return asyncio.run(maybe)  # type: ignore[no-any-return]
-            return maybe  # type: ignore[no-any-return]
-
-        is_dummy = self._is_dummy_eval_ds()
-        try:
-            ds = self.get_eval_dataset(n=-1)
-            ds_len = len(ds)
-        except Exception:
-            ds_len = 0
-            is_dummy = False
-
-        mapped_ne = num_examples
-        mapped_rpe = rollouts_per_example
-        if is_dummy and num_examples > 1:
-            if rollouts_per_example <= 1:
-                mapped_rpe = num_examples
-            mapped_ne = 1
-
-        results = super().evaluate_sync(
-            client=client,
-            model=model,
-            sampling_args=sampling_args,
-            num_examples=mapped_ne,
-            rollouts_per_example=mapped_rpe,
-            max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
-            results_path=results_path,
-            state_columns=state_columns,
-            save_results=save_results,
-            save_every=save_every,
-        )
-
-        try:
-            if is_dummy:
-                results.metadata.num_examples = 1
-            else:
-                if mapped_ne < 0:
-                    results.metadata.num_examples = ds_len
-                else:
-                    results.metadata.num_examples = min(mapped_ne, ds_len)
-            results.metadata.rollouts_per_example = mapped_rpe
-        except Exception:
-            pass
-        return results
