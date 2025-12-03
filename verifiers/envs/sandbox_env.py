@@ -155,9 +155,7 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         try:
-            await self.with_retry(self.sandbox_client.bulk_delete)(
-                global_ids
-            )
+            await self.with_retry(self.sandbox_client.bulk_delete)(global_ids)
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -175,9 +173,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         async def _delete_sandbox_with_retry(sandbox_id: str):
             async with semaphore:
                 try:
-                    await self.with_retry(self.sandbox_client.delete)(
-                        sandbox_id
-                    )
+                    await self.with_retry(self.sandbox_client.delete)(sandbox_id)
                     self.active_sandboxes.discard(sandbox_id)
                     self.logger.debug(f"Deleted sandbox {sandbox_id}")
                 except Exception as e:
@@ -187,7 +183,9 @@ class SandboxEnv(vf.StatefulToolEnv):
             await asyncio.gather(
                 *[
                     _delete_sandbox_with_retry(sandbox_id)
-                    for sandbox_id in list(self.active_sandboxes)  # copy to avoid mutation during iteration
+                    for sandbox_id in list(
+                        self.active_sandboxes
+                    )  # copy to avoid mutation during iteration
                 ]
             )
         except Exception:
