@@ -1,13 +1,13 @@
 import base64
 import json
 import textwrap
+import shlex
 from typing import Any
 
 from typing_extensions import TypedDict
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
-from verifiers.utils.decorators import cleanup
 
 
 class PythonWorkerState(TypedDict):
@@ -112,7 +112,7 @@ class PythonEnv(SandboxEnv):
 
         rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
-        pip install -q numpy sympy scipy
+        {pip_install_command}
 
         python - <<'PY'
 import base64
@@ -130,7 +130,7 @@ PY
     _READY_WAIT_SCRIPT = textwrap.dedent(
         """
         bash -lc '
-        for i in $(seq 1 200); do
+        for i in $(seq 1 {ready_wait_iterations}); do
           if [ -f "{ready_flag}" ]; then
             exit 0
           fi
@@ -142,7 +142,23 @@ PY
         """
     )
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        comma_separated_packages: str = "",
+        startup_wait_seconds: int = 10,
+        **kwargs: Any,
+    ) -> None:
+        self.startup_wait_seconds = startup_wait_seconds
+
+        pip_install_command = ""
+        packages = [
+            pkg.strip() for pkg in comma_separated_packages.split(",") if pkg.strip()
+        ]
+        if packages:
+            # Quote each package to handle version specifiers like ">=1.0.0"
+            quoted = " ".join(shlex.quote(pkg) for pkg in packages)
+            pip_install_command = f"pip install -q {quoted}"
+
         start_command = self._START_COMMAND_TEMPLATE.format(
             command_fifo=self._COMMAND_FIFO,
             response_fifo=self._RESPONSE_FIFO,
@@ -155,6 +171,7 @@ PY
                     ready_flag=self._READY_FLAG,
                 ).encode("utf-8")
             ).decode("utf-8"),
+            pip_install_command=pip_install_command,
         )
         super().__init__(
             sandbox_name="python-env",
@@ -200,13 +217,26 @@ PY
         sandbox_response = await self._send_worker_request(sandbox_id, {"code": code})
         return self._format_response(python_state, sandbox_response)
 
-    @cleanup
+    @vf.cleanup
     async def cleanup_python_env(self, state: vf.State):
         state.pop("python_env", None)
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
-        wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
-        await self.bash(wait_script, sandbox_id=sandbox_id)
+        # Potentially wait longer for startup than for execution in LLM calls.
+        ready_wait_iterations = max(1, int(self.startup_wait_seconds / 0.05))
+        wait_script = self._READY_WAIT_SCRIPT.format(
+            ready_flag=self._READY_FLAG, ready_wait_iterations=ready_wait_iterations
+        )
+        try:
+            timeout_per_command_seconds = self.timeout_per_command_seconds
+            self.timeout_per_command_seconds = self.startup_wait_seconds
+            out = await self.bash(wait_script, sandbox_id=sandbox_id)
+        finally:
+            self.timeout_per_command_seconds = timeout_per_command_seconds
+
+        # On success, the script prints nothing at all
+        if out.strip() not in ["", "(no output)"]:
+            raise RuntimeError(f"Python worker failed to start: {out}")
 
     async def _send_worker_request(
         self, sandbox_id: str, payload: dict[str, Any]
@@ -231,6 +261,15 @@ PY
         raw_response = await self.bash(command, sandbox_id=sandbox_id)
         if not raw_response:
             raise RuntimeError("Python worker returned no output")
+
+        # Quick sanity check for known error formats from bash()
+        if (
+            raw_response.startswith("Error: ")
+            or raw_response.startswith("stderr:")
+            or raw_response == "(no output)"
+        ):
+            raise RuntimeError(f"Python worker failed: {raw_response}")
+
         return json.loads(raw_response)
 
     def _format_response(
