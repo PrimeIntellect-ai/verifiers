@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
-from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Protocol, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple, Union, List
 
 from datasets import Dataset
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI
 
 from verifiers.envs.environment import Environment
 from verifiers.rubrics.rubric import Rubric
@@ -199,7 +196,8 @@ class GymEnv(Environment):
         num_train_episodes: int = 1024,
         info_builder: Optional[Callable[[int], Dict[str, Any]]] = None,
         message_type: MessageType = "chat",
-        obs_to_text: Callable[[Any], str] | None = None,
+        # obs_to_text can return str or List[dict] for multimodal
+        obs_to_text: Callable[[Any], str | List[Dict[str, Any]]] | None = None,
         max_episode_steps: Optional[int] = None,
         rubric: Optional[Rubric] = None,  # defaults to EpisodicSumRubric
         **env_kwargs_rest: Any,
@@ -256,7 +254,7 @@ class GymEnv(Environment):
         self.max_episode_steps = max_episode_steps
 
         # optional obs_to_text callback; if None, strings are accepted, others error
-        self._obs_to_text_fn: Callable[[Any], str] | None = obs_to_text
+        self._obs_to_text_fn = obs_to_text
 
         # --- Metadata (moved from old GymEnv) ---
         if self._env_cls:
@@ -275,9 +273,9 @@ class GymEnv(Environment):
                     self.env_args = {}
 
     # ----- hooks for concrete envs -----
-    def obs_to_text(self, obs: Any) -> str:
+    def obs_to_text(self, obs: Any) -> str | List[Dict[str, Any]]:
         """
-        Convert env observation to a string for the LLM.
+        Convert env observation to a string (or multimodal list) for the LLM.
 
         Default behavior:
           - if obs_to_text was passed in __init__, use it
@@ -297,13 +295,16 @@ class GymEnv(Environment):
             "either pass obs_to_text=... in __init__ or override obs_to_text()."
         )
 
-    def _build_initial_prompt(self, obs_text: str) -> list[ChatMessage]:
+    def _build_initial_prompt(
+        self, obs_content: str | List[Dict[str, Any]]
+    ) -> list[ChatMessage]:
         msgs: list[ChatMessage] = []
         if self.system_prompt:
             msgs.append({"role": "system", "content": self.system_prompt})
         if self.few_shot:
             msgs.extend(self.few_shot)
-        msgs.append({"role": "user", "content": obs_text})
+        # Type ignore: chat messages can technically support lists for multimodal
+        msgs.append({"role": "user", "content": obs_content})  # type: ignore
         return msgs
 
     # ---- concrete env factory ----
@@ -329,6 +330,7 @@ class GymEnv(Environment):
                     self._env_setup_fn(env, state)
                 except TypeError:
                     self._env_setup_fn(env)  # type: ignore[misc]
+            # Safely check if setup exists before calling
             elif hasattr(env, "setup") and callable(getattr(env, "setup")):
                 env.setup()  # type: ignore[attr-defined]
 
@@ -482,159 +484,203 @@ class GymEnv(Environment):
         # This call now uses the logic (Homogeneous or Custom)
         env = self._make_env(state)
 
-        # Episode-local variables
-        t = 0
-        terminated = False
-        truncated = False
+        # Wrap in try/finally to ensure proper cleanup if env.close() exists
+        try:
+            # Episode-local variables
+            t = 0
+            terminated = False
+            truncated = False
 
-        # --- Start episode ---
-        # We pass dataset info to reset()
-        # (e.g., info={'seed': 123} -> env.reset(seed=123))
-        # This is the primary way the dataset "initializes" the env.
-        input_dict = state["input"]
-        input_info = input_dict.get("info") if isinstance(input_dict, dict) else {}
-        if not isinstance(input_info, dict):
-            input_info = {}
+            # --- Start episode ---
+            # We pass dataset info to reset()
+            # (e.g., info={'seed': 123} -> env.reset(seed=123))
+            # This is the primary way the dataset "initializes" the env.
+            input_dict = state["input"]
+            input_info = input_dict.get("info") if isinstance(input_dict, dict) else {}
+            if not isinstance(input_info, dict):
+                input_info = {}
 
-        # In Homogeneous mode, 'info' is used here in reset().
-        obs, reset_info = _normalize_reset(env.reset(**input_info))
-        last_obs = obs
+            # In Homogeneous mode, 'info' is used here in reset().
+            obs, reset_info = _normalize_reset(env.reset(**input_info))
+            last_obs = obs
 
-        # Merge reset_info with existing input["info"]
-        merged_info = {**input_info, "reset_info": reset_info}
-        state["info"] = merged_info
+            # Merge reset_info with existing input["info"]
+            merged_info = {**input_info, "reset_info": reset_info}
+            state["info"] = merged_info
 
-        limit = self._episode_limit_for_env(env)
+            limit = self._episode_limit_for_env(env)
 
-        # Use the oai_tools resolved in init_state (info > env.oai_tools)
-        oai_tools = state.get("oai_tools")
+            # Use the oai_tools resolved in init_state (info > env.oai_tools)
+            oai_tools = state.get("oai_tools")
 
-        if self.message_type == "chat":
-            history: list[ChatMessage] = []
-            if self.system_prompt:
-                history.append({"role": "system", "content": self.system_prompt})
-            if self.few_shot:
-                history.extend(self.few_shot)
+            if self.message_type == "chat":
+                history: list[ChatMessage] = []
+                if self.system_prompt:
+                    history.append({"role": "system", "content": self.system_prompt})
+                if self.few_shot:
+                    history.extend(self.few_shot)
 
-            # initial observation
-            history.append({"role": "user", "content": self.obs_to_text(last_obs)})
-
-            # Base prompt for this rollout (mirrors MultiTurnEnv convention)
-            state["prompt"] = list(history)
-
-            while not (terminated or truncated) and t < limit:
-                prompt_messages: Messages = list(history)
-
-                resp = await self.get_model_response(
-                    client=client,
-                    model=model,
-                    prompt=prompt_messages,
-                    oai_tools=oai_tools,
-                    sampling_args=sampling_args or state.get("sampling_args"),
-                    message_type="chat",
-                )
-                assert resp is not None
-
-                step = await self._add_trajectory_step(state, prompt_messages, resp)
-                if step is None:
-                    # overlong prompt, bailout
-                    truncated = True
-                    break
-
-                # for action parsing, use the raw response content
-                text_out = resp.choices[0].message.content or ""  # type: ignore[attr-defined]
-                history.append({"role": "assistant", "content": text_out})
-
-                try:
-                    action = self.action_parser(text_out)
-                except Exception as e:
-                    state.setdefault("errors", []).append(f"action_parse_error: {e}")
-                    truncated = True
-                    break
-
-                obs, reward, term, trunc, step_info = _normalize_step(env.step(action))
-                t += 1
-                terminated, truncated = bool(term), bool(trunc)
-                last_obs = obs
-
-                # new observation as user message
+                # initial observation
+                # cast logic: we trust obs_to_text returns something chat-friendly (str or list)
                 history.append(
-                    {"role": "user", "content": self.obs_to_text(last_obs)}
+                    {"role": "user", "content": self.obs_to_text(last_obs)}  # type: ignore
                 )
 
-                # Update the TrajectoryStep with RL info
-                step["reward"] = float(reward)
-                step["extras"]["action"] = action
-                step["extras"]["text_out"] = text_out
-                step["extras"]["terminated"] = terminated
-                step["extras"]["truncated"] = truncated
-                step["extras"]["step_info"] = step_info
-                step["extras"]["t"] = t
+                # Base prompt for this rollout (mirrors MultiTurnEnv convention)
+                state["prompt"] = list(history)
 
-            # For logging/debugging, expose full conversation if desired
-            if state["trajectory"]:
-                last_step = state["trajectory"][-1]
-                last_prompt = last_step["prompt"]
-                last_completion = last_step["completion"]
-                full_conversation = concat_messages([last_prompt, last_completion])
-                base_prompt = state.get("prompt", [])
-                if isinstance(base_prompt, list):
-                    state["completion"] = full_conversation[len(base_prompt) :]
+                # We obey:
+                # 1. Gym flags (terminated, truncated)
+                # 2. Episode limit (t < limit)
+                # 3. Environment/Verifiers stops (is_completed)
+                while (
+                    not (terminated or truncated)
+                    and t < limit
+                    and not await self.is_completed(state)
+                ):
+                    prompt_messages: Messages = list(history)
+
+                    resp = await self.get_model_response(
+                        client=client,
+                        model=model,
+                        prompt=prompt_messages,
+                        oai_tools=oai_tools,
+                        sampling_args=sampling_args or state.get("sampling_args"),
+                        message_type="chat",
+                    )
+                    assert resp is not None
+
+                    step = await self._add_trajectory_step(state, prompt_messages, resp)
+                    if step is None:
+                        # overlong prompt, bailout
+                        truncated = True
+                        break
+
+                    # for action parsing, use the raw response content
+                    text_out = resp.choices[0].message.content or ""  # type: ignore[attr-defined]
+                    history.append({"role": "assistant", "content": text_out})
+
+                    try:
+                        action = self.action_parser(text_out)
+                    except Exception as e:
+                        state.setdefault("errors", []).append(
+                            f"action_parse_error: {e}"
+                        )
+                        truncated = True
+                        break
+
+                    obs, reward, term, trunc, step_info = _normalize_step(
+                        env.step(action)
+                    )
+                    t += 1
+                    terminated, truncated = bool(term), bool(trunc)
+                    last_obs = obs
+
+                    # new observation as user message
+                    history.append(
+                        {"role": "user", "content": self.obs_to_text(last_obs)}  # type: ignore
+                    )
+
+                    # Update the TrajectoryStep with RL info
+                    step["reward"] = float(reward)
+                    step["extras"]["action"] = action
+                    step["extras"]["text_out"] = text_out
+                    step["extras"]["terminated"] = terminated
+                    step["extras"]["truncated"] = truncated
+                    step["extras"]["step_info"] = step_info
+                    step["extras"]["t"] = t
+
+                # For logging/debugging, expose full conversation if desired
+                if state["trajectory"]:
+                    last_step = state["trajectory"][-1]
+                    last_prompt = last_step["prompt"]
+                    last_completion = last_step["completion"]
+                    full_conversation = concat_messages([last_prompt, last_completion])
+                    base_prompt = state.get("prompt", [])
+                    if isinstance(base_prompt, list):
+                        state["completion"] = full_conversation[len(base_prompt) :]
+                    else:
+                        state["completion"] = full_conversation
                 else:
-                    state["completion"] = full_conversation
+                    state["completion"] = []
+
             else:
-                state["completion"] = []
+                # completion mode: prompt is always the latest observation text
+                comp_text: str = ""
+                # local last_obs already set from reset
 
-        else:
-            # completion mode: prompt is always the latest observation text
-            comp_text: str = ""
-            # local last_obs already set from reset
+                while (
+                    not (terminated or truncated)
+                    and t < limit
+                    and not await self.is_completed(state)
+                ):
+                    # For completion mode, we assume obs_to_text returns a simple str
+                    prompt_text = str(self.obs_to_text(last_obs))
+                    prompt_messages: Messages = prompt_text  # completion API uses str
 
-            while not (terminated or truncated) and t < limit:
-                prompt_text = self.obs_to_text(last_obs)
-                prompt_messages: Messages = prompt_text  # completion API uses str
+                    resp = await self.get_model_response(
+                        client=client,
+                        model=model,
+                        prompt=prompt_text,
+                        oai_tools=None,
+                        sampling_args=sampling_args or state.get("sampling_args"),
+                        message_type="completion",
+                    )
+                    assert resp is not None
 
-                resp = await self.get_model_response(
-                    client=client,
-                    model=model,
-                    prompt=prompt_text,
-                    oai_tools=None,
-                    sampling_args=sampling_args or state.get("sampling_args"),
-                    message_type="completion",
-                )
-                assert resp is not None
+                    step = await self._add_trajectory_step(state, prompt_messages, resp)
+                    if step is None:
+                        truncated = True
+                        break
 
-                step = await self._add_trajectory_step(state, prompt_messages, resp)
-                if step is None:
-                    truncated = True
-                    break
+                    text_out = resp.choices[0].text or ""  # type: ignore[attr-defined]
+                    comp_text = comp_text + text_out if comp_text else text_out
 
-                text_out = resp.choices[0].text or ""  # type: ignore[attr-defined]
-                comp_text = comp_text + text_out if comp_text else text_out
+                    try:
+                        action = self.action_parser(text_out)
+                    except Exception as e:
+                        state.setdefault("errors", []).append(
+                            f"action_parse_error: {e}"
+                        )
+                        truncated = True
+                        break
 
-                try:
-                    action = self.action_parser(text_out)
-                except Exception as e:
-                    state.setdefault("errors", []).append(f"action_parse_error: {e}")
-                    truncated = True
-                    break
+                    obs, reward, term, trunc, step_info = _normalize_step(
+                        env.step(action)
+                    )
+                    t += 1
+                    terminated, truncated = bool(term), bool(trunc)
+                    last_obs = obs
 
-                obs, reward, term, trunc, step_info = _normalize_step(env.step(action))
-                t += 1
-                terminated, truncated = bool(term), bool(trunc)
-                last_obs = obs
+                    # Update the TrajectoryStep with RL info
+                    step["reward"] = float(reward)
+                    step["extras"]["action"] = action
+                    step["extras"]["text_out"] = text_out
+                    step["extras"]["terminated"] = terminated
+                    step["extras"]["truncated"] = truncated
+                    step["extras"]["step_info"] = step_info
+                    step["extras"]["t"] = t
 
-                # Update the TrajectoryStep with RL info
-                step["reward"] = float(reward)
-                step["extras"]["action"] = action
-                step["extras"]["text_out"] = text_out
-                step["extras"]["terminated"] = terminated
-                step["extras"]["truncated"] = truncated
-                step["extras"]["step_info"] = step_info
-                step["extras"]["t"] = t
+                if comp_text:
+                    state["completion"] = comp_text
 
-            if comp_text:
-                state["completion"] = comp_text
+            # --- Post-Rollout Metrics Extraction ---
+            # Automatically lift scalar values from the FINAL step's info dict into state["metrics"].
+            if state["trajectory"]:
+                final_step = state["trajectory"][-1]
+                final_info = final_step["extras"].get("step_info", {})
+
+                if "metrics" not in state or state["metrics"] is None:
+                    state["metrics"] = {}
+
+                for k, v in final_info.items():
+                    if isinstance(v, (int, float, bool)):
+                        state["metrics"][k] = float(v)
+
+        finally:
+            # Gracefully handle cleanup if the environment supports it
+            if hasattr(env, "close") and callable(getattr(env, "close")):
+                env.close()  # type: ignore
 
         # Reward is computed later by rubric.score_group from state["trajectory"]
         return state
