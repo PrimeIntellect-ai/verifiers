@@ -11,6 +11,7 @@ try:
         AdvancedConfigs,
         AsyncSandboxClient,
         CreateSandboxRequest,
+        SandboxClient,
     )
 except ImportError:
     raise ImportError(
@@ -164,33 +165,34 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
     @vf.teardown  # type: ignore
-    async def teardown_sandboxes(self, max_concurrent: int = 50):
-        """Delete all active sandboxes with controlled concurrency"""
+    async def teardown_sandboxes(self):
+        """Delete all active sandboxes using sync client.
+
+        Uses the synchronous SandboxClient for teardown to avoid event loop issues
+        during signal handling and interpreter shutdown.
+        """
         if len(self.active_sandboxes) == 0:
             return
         self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
 
-        semaphore = asyncio.Semaphore(max_concurrent)
+        # Use sync client for teardown - avoids event loop issues during shutdown
+        sync_client = SandboxClient()
+        sandbox_ids = list(self.active_sandboxes)
 
-        async def _delete_sandbox_with_retry(sandbox_id: str):
-            async with semaphore:
-                try:
-                    await self.with_retry(self.sandbox_client.delete)(
-                        sandbox_id
-                    )
-                    self.active_sandboxes.discard(sandbox_id)
-                    self.logger.debug(f"Deleted sandbox {sandbox_id}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
-
+        # Try bulk delete first (most efficient)
         try:
-            await asyncio.gather(
-                *[
-                    _delete_sandbox_with_retry(sandbox_id)
-                    for sandbox_id in list(self.active_sandboxes)  # copy to avoid mutation during iteration
-                ]
-            )
-        except Exception:
-            self.logger.error(
-                f"Unable to delete remaining sandboxes: {self.active_sandboxes}"
-            )
+            sync_client.bulk_delete(sandbox_ids=sandbox_ids)
+            self.active_sandboxes.clear()
+            self.logger.info(f"Bulk deleted {len(sandbox_ids)} sandboxes")
+            return
+        except Exception as e:
+            self.logger.warning(f"Bulk delete failed, falling back to individual deletes: {e}")
+
+        # Fall back to individual deletes
+        for sandbox_id in sandbox_ids:
+            try:
+                sync_client.delete(sandbox_id)
+                self.active_sandboxes.discard(sandbox_id)
+                self.logger.debug(f"Deleted sandbox {sandbox_id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
