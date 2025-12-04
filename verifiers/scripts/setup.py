@@ -5,7 +5,7 @@ import sys
 try:
     import tomllib
 except ImportError:
-    import tomli as tomllib
+    pass
 
 import wget
 
@@ -68,7 +68,7 @@ def install_prime_rl():
     if os.path.exists("prime-rl"):
         print("prime-rl directory already exists, skipping installation")
     else:
-        print(f"Installing prime-rl (will checkout commit: {PRIME_RL_COMMIT})...")
+        print(f"Installing prime-rl (commit ref: {PRIME_RL_COMMIT})...")
         install_url = f"https://raw.githubusercontent.com/{PRIME_RL_REPO}/{PRIME_RL_INSTALL_SCRIPT_REF}/scripts/install.sh"
         install_cmd = [
             "bash",
@@ -128,34 +128,6 @@ def download_configs(configs):
             print(f"{dst} already exists")
 
 
-def setup_uv_workspace():
-    """Ensure prime-rl is excluded from uv workspace."""
-    uv_toml_path = "uv.toml"
-    exclude_entry = "prime-rl"
-
-    if os.path.exists(uv_toml_path):
-        with open(uv_toml_path, "rb") as f:
-            config = tomllib.load(f)
-        workspace = config.get("workspace", {})
-        excludes = workspace.get("exclude", [])
-        if exclude_entry in excludes:
-            print(f"{uv_toml_path} already excludes {exclude_entry}")
-            return
-        if "workspace" not in config:
-            with open(uv_toml_path, "a") as f:
-                f.write(f'\n[workspace]\nexclude = ["{exclude_entry}"]\n')
-            print(f"Added workspace.exclude to {uv_toml_path}")
-        else:
-            print(
-                f"Warning: {uv_toml_path} has a [workspace] section but {exclude_entry} "
-                f"is not in exclude list. Please add it manually."
-            )
-    else:
-        with open(uv_toml_path, "w") as f:
-            f.write(f'[workspace]\nexclude = ["{exclude_entry}"]\n')
-        print(f'Created {uv_toml_path} with workspace.exclude = ["{exclude_entry}"]')
-
-
 def install_environments_to_prime_rl():
     """Install all environments from environments/ folder into prime-rl workspace."""
     envs_dir = "environments"
@@ -203,7 +175,6 @@ def main():
     os.makedirs("configs", exist_ok=True)
 
     install_prime_rl()
-    setup_uv_workspace()
     install_environments_to_prime_rl()
 
     if not os.path.exists(ENDPOINTS_DST):
