@@ -87,8 +87,10 @@ class ToolEnv(vf.MultiTurnEnv):
                     tool_call.get("function", {}).get("arguments", "")
                 )
             except Exception as e:
-                self.logger.error(f"Error parsing tool arguments: {e}")
-                tool_args = {}
+                state["error"] = vf.ToolError(
+                    cause=e, message=f"Error parsing tool arguments: {e}"
+                )
+                return []
             tool_call_id: str = tool_call.get("id", "")
             tool_message: vf.Message = await self.call_tool(
                 tool_name, tool_args, tool_call_id
