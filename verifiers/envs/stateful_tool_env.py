@@ -117,9 +117,15 @@ class StatefulToolEnv(vf.ToolEnv):
         last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
         for tool_call in last_msg.get("tool_calls", []):
             tool_name: str = tool_call.get("function", {}).get("name", "")
-            tool_args: dict = json.loads(
-                tool_call.get("function", {}).get("arguments", "")
-            )
+            try:
+                tool_args: dict = json.loads(
+                    tool_call.get("function", {}).get("arguments", "")
+                )
+            except Exception as e:
+                state["error"] = vf.ToolError(
+                    message=f"Error parsing tool arguments: {e}", cause=e
+                )
+                return []
             tool_call_id: str = tool_call.get("id", "")
             tool_args = self.update_tool_args(
                 tool_name, tool_args, messages, state, **kwargs
