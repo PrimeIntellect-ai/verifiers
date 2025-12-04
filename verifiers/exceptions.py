@@ -8,3 +8,6 @@ class ToolError(Error):
     def __init__(self, message: str, cause: Exception):
         self.message = message
         self.cause = cause
+
+    def __repr__(self) -> str:
+        return f"ToolError(message={self.message}, cause={repr(self.cause)})"
