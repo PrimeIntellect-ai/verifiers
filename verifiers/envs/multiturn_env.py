@@ -93,8 +93,10 @@ class MultiTurnEnv(vf.Environment):
         """
         state = await self.init_state(input, client, model, sampling_args)
         state = await self.setup_state(state)
-        while not await self.is_completed(state):
+        while not await self.is_completed(state) and not await self.has_error(state):
             prompt_messages = await self.get_prompt_messages(state)
+            if await self.has_error(state):
+                break
             response = await self.get_model_response(
                 client,
                 model,
@@ -103,5 +105,7 @@ class MultiTurnEnv(vf.Environment):
                 sampling_args=sampling_args,
                 message_type=self.message_type,
             )
+            if await self.has_error(state):
+                break
             await self.add_model_response(state, prompt_messages, response)
         return state
