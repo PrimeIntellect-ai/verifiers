@@ -177,7 +177,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
 
         # Use sync client for teardown - avoids event loop issues during shutdown
-        sync_client = SandboxClient(APIClient(api_key=self.sandbox_client.client.api_key))
+        sync_client = SandboxClient(APIClient())
         sandbox_ids = list(self.active_sandboxes)
 
         # Try bulk delete first (most efficient)
