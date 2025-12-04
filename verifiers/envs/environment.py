@@ -2,9 +2,10 @@ import asyncio
 import atexit
 import inspect
 import json
-import logging
 import signal
 import time
+
+import structlog
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -73,7 +74,9 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         **kwargs,
     ):
-        self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
+        self.logger = structlog.stdlib.get_logger(
+            component=f"verifiers.envs.{self.__class__.__name__}"
+        )
         self.message_type: Literal["chat", "completion"] = message_type
         self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
         self.system_prompt = system_prompt

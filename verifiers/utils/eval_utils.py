@@ -1,7 +1,8 @@
 import importlib.util
 import json
-import logging
 import time
+
+import structlog
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -17,7 +18,7 @@ from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(component=__name__)
 
 
 def load_endpoints(endpoints_path: str):

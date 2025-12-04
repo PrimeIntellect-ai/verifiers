@@ -1,5 +1,6 @@
-import logging
 import time
+
+import structlog
 from collections import defaultdict, deque
 from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
@@ -47,7 +48,7 @@ class RLTrainer(Trainer):
         processing_class: Optional[PreTrainedTokenizerBase] = None,
         **kwargs,
     ):
-        self.logger = logging.getLogger(__name__)
+        self.logger = structlog.stdlib.get_logger(component=__name__)
 
         # model + tokenizer
         if isinstance(model, str):
