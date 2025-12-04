@@ -2,11 +2,6 @@ import os
 import subprocess
 import sys
 
-try:
-    import tomllib  # noqa: F401
-except ImportError:
-    pass
-
 import wget
 
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
