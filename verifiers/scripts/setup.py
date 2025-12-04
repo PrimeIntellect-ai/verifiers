@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 try:
-    import tomllib
+    import tomllib  # noqa: F401
 except ImportError:
     pass
 
