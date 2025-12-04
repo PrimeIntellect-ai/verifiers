@@ -1,7 +1,7 @@
 import base64
 import json
-import textwrap
 import shlex
+import textwrap
 from typing import Any
 
 from typing_extensions import TypedDict
@@ -144,7 +144,7 @@ PY
 
     def __init__(
         self,
-        comma_separated_packages: str = "",
+        comma_separated_packages: str = "numpy,sympy,scipy",
         startup_wait_seconds: int = 10,
         **kwargs: Any,
     ) -> None:
