@@ -23,7 +23,6 @@ from typing import (
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
-import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -454,10 +453,6 @@ class Environment(ABC):
         """
         pass
 
-    @vf.stop
-    async def has_error(self, state: State) -> bool:
-        return state.get("error") is not None
-
     async def _cleanup(self, state: State):
         """
         Clean up rollout resources.
@@ -500,6 +495,14 @@ class Environment(ABC):
                 await self._cleanup(state)
                 return True
         return False
+
+    async def has_error(self, state: State, **kwargs) -> bool:
+        """Checks if an error has occurred in the environment."""
+        has_error = state.get("error") is not None
+        if has_error:
+            print(state["error"])
+            self.logger.error(f"An error has occurred: {state['error']!r}. Exiting...")
+        return has_error
 
     async def run_rollout(
         self,
