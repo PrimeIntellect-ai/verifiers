@@ -180,20 +180,14 @@ class SandboxEnv(vf.StatefulToolEnv):
         sync_client = SandboxClient(APIClient())
         sandbox_ids = list(self.active_sandboxes)
 
-        # Try bulk delete first (most efficient)
-        try:
-            sync_client.bulk_delete(sandbox_ids=sandbox_ids)
-            self.active_sandboxes.clear()
-            self.logger.info(f"Bulk deleted {len(sandbox_ids)} sandboxes")
-            return
-        except Exception as e:
-            self.logger.warning(f"Bulk delete failed, falling back to individual deletes: {e}")
-
-        # Fall back to individual deletes
-        for sandbox_id in sandbox_ids:
+        # Delete in batches of 100
+        batch_size = 100
+        for i in range(0, len(sandbox_ids), batch_size):
+            batch = sandbox_ids[i:i + batch_size]
             try:
-                sync_client.delete(sandbox_id)
-                self.active_sandboxes.discard(sandbox_id)
-                self.logger.debug(f"Deleted sandbox {sandbox_id}")
+                sync_client.bulk_delete(sandbox_ids=batch)
+                for sandbox_id in batch:
+                    self.active_sandboxes.discard(sandbox_id)
+                self.logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
             except Exception as e:
-                self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+                self.logger.warning(f"Bulk delete failed for batch: {e}")
