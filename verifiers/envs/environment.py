@@ -23,6 +23,7 @@ from typing import (
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
+import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -452,6 +453,10 @@ class Environment(ABC):
         Run a rollout for a given input.
         """
         pass
+
+    @vf.stop
+    async def has_error(self, state: State) -> bool:
+        return state.get("error") is not None
 
     async def _cleanup(self, state: State):
         """
