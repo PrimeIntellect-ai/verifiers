@@ -379,11 +379,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 # Check if agent signaled completion
                 if await self.agent_signaled_completion(state):
                     logger.debug("Agent signaled completion while waiting for request")
-                    raise StopAsyncIteration("Agent completed")
+                    # Set flag for early exit - stop conditions will handle termination
+                    state["_cli_agent_completed"] = True
+                    return []  # Return empty messages, stop condition will trigger
                 # Check timeout
                 if await self.timeout_reached(state):
                     logger.debug("Timeout reached while waiting for request")
-                    raise StopAsyncIteration("Timeout reached")
+                    state["_cli_agent_completed"] = True
+                    return []
 
         if request_id is None:
             raise asyncio.TimeoutError(
@@ -454,6 +457,29 @@ class CliAgentEnv(vf.MultiTurnEnv):
         Return cached response if available (set by get_prompt_messages).
         Otherwise fall back to parent implementation.
         """
+        # If prompt is empty, we're in early-exit mode - return a dummy response
+        # The stop condition will terminate the rollout on the next iteration
+        if not prompt:
+            from openai.types.chat import ChatCompletion, ChatCompletionMessage
+            from openai.types.chat.chat_completion import Choice
+
+            return ChatCompletion(
+                id="cli_agent_early_exit",
+                choices=[
+                    Choice(
+                        finish_reason="stop",
+                        index=0,
+                        message=ChatCompletionMessage(
+                            role="assistant",
+                            content="",
+                        ),
+                    )
+                ],
+                created=int(time.time()),
+                model=model,
+                object="chat.completion",
+            )
+
         for request_id, intercept in list(self.intercepts.items()):
             rollout_id = intercept.get("rollout_id")
             if rollout_id and rollout_id in self.active_rollouts:
@@ -718,6 +744,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
                             0, tunnel["active_rollouts"] - 1
                         )
                         break
+
+    @vf.stop
+    async def early_exit_flag_set(self, state: State) -> bool:
+        """Check if early exit flag was set (by completion detection in get_prompt_messages)"""
+        return state.get("_cli_agent_completed", False)
 
     @vf.stop
     async def agent_signaled_completion(self, state: State) -> bool:
