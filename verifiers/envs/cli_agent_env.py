@@ -362,10 +362,33 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self._request_counts[rollout_id] += 1
         req_num = self._request_counts[rollout_id]
 
-        request_id = await asyncio.wait_for(
-            request_id_queue.get(),
-            timeout=self.request_timeout,
-        )
+        # Poll for requests while checking completion periodically
+        # This avoids blocking for the full request_timeout when agent finishes
+        poll_interval = 5.0  # Check completion every 5 seconds
+        elapsed = 0.0
+        request_id = None
+        while elapsed < self.request_timeout:
+            try:
+                request_id = await asyncio.wait_for(
+                    request_id_queue.get(),
+                    timeout=poll_interval,
+                )
+                break  # Got a request, continue processing
+            except asyncio.TimeoutError:
+                elapsed += poll_interval
+                # Check if agent signaled completion
+                if await self.agent_signaled_completion(state):
+                    logger.debug("Agent signaled completion while waiting for request")
+                    raise StopAsyncIteration("Agent completed")
+                # Check timeout
+                if await self.timeout_reached(state):
+                    logger.debug("Timeout reached while waiting for request")
+                    raise StopAsyncIteration("Timeout reached")
+
+        if request_id is None:
+            raise asyncio.TimeoutError(
+                f"No request received within {self.request_timeout}s"
+            )
 
         intercept = self.intercepts[request_id]
         messages = intercept["messages"]
