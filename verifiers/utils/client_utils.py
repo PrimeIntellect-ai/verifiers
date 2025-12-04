@@ -31,6 +31,7 @@ def setup_client(
         api_key=os.getenv(config.api_key_var, "EMPTY"),
         max_retries=config.max_retries,
         http_client=http_client,
+        default_headers=config.extra_headers,
     )
 
     return client
