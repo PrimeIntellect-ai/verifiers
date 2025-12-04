@@ -49,9 +49,11 @@ class SandboxEnv(vf.StatefulToolEnv):
             advanced_configs=advanced_configs,
         )
         self.active_sandboxes = set()
-        self.add_tool(self.bash, args_to_skip=["sandbox_id"])
+        self.add_tool(self.bash, args_to_skip=["sandbox_id", "working_dir"])
 
-    async def bash(self, command: str, sandbox_id: str) -> str:
+    async def bash(
+        self, command: str, sandbox_id: str, working_dir: str | None = None
+    ) -> str:
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
         s = time.time()
@@ -60,8 +62,15 @@ class SandboxEnv(vf.StatefulToolEnv):
         )  # wait for sandbox to be created
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
-        self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
-        results = await self.sandbox_client.execute_command(sandbox_id, command)
+        # Execute command with optional working directory
+        if working_dir:
+            self.logger.debug(f"Executing command in {working_dir}: {command}")
+            results = await self.sandbox_client.execute_command(
+                sandbox_id, command, working_dir=working_dir
+            )
+        else:
+            self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
+            results = await self.sandbox_client.execute_command(sandbox_id, command)
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
@@ -128,7 +137,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         except Exception as e:
             self.logger.error(f"Failed to bulk delete sandboxes {global_ids}: {e}")
 
-    @vf.teardown                            # type: ignore
+    @vf.teardown  # type: ignore
     async def teardown_sandboxes(self):
         """Delete all active sandboxes"""
         if len(self.active_sandboxes) == 0:
