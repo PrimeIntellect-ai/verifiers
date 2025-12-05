@@ -64,51 +64,53 @@ Name: Diana Evans | Age: 41 | Department: Marketing | Salary: $80000
 
 def load_environment(**kwargs) -> vf.Environment:
     """Load the dummy RLM environment."""
-    
+
     # Create dataset from example data
     # Note: prompt comes from the normal "prompt" field
     # Context is optional and goes in info["context"]
     dataset_rows = []
     for i, example in enumerate(_EXAMPLE_DATA):
-        dataset_rows.append({
-            "example_id": i,
-            # The query goes in the normal prompt field
-            "prompt": [{"role": "user", "content": example["query"]}],
-            "task": "dummy-rlm",
-            "answer": example["answer"],
-            # Large context goes in info (optional)
-            "info": {
-                "context": example["context"],
-            },
-        })
-    
+        dataset_rows.append(
+            {
+                "example_id": i,
+                # The query goes in the normal prompt field
+                "prompt": [{"role": "user", "content": example["query"]}],
+                "task": "dummy-rlm",
+                "answer": example["answer"],
+                # Large context goes in info (optional)
+                "info": {
+                    "context": example["context"],
+                },
+            }
+        )
+
     dataset = Dataset.from_list(dataset_rows)
-    
+
     # ==========================================================================
     # User-defined reward functions
-    # 
+    #
     # The RLM environment provides:
     # - state["final_answer"]: The model's final answer (string, empty if none)
     # - state["answer"]: The expected answer from the dataset
     # ==========================================================================
-    
+
     def exact_match_reward(state: vf.State) -> float:
         """Reward for exact match with expected answer."""
         final_answer = state.get("final_answer", "").strip()
         expected = state.get("answer", "").strip()
         return 1.0 if final_answer == expected else 0.0
-    
+
     def contains_answer_reward(state: vf.State) -> float:
         """Reward if the final answer contains the expected value."""
         final_answer = state.get("final_answer", "").strip()
         expected = state.get("answer", "").strip()
         return 1.0 if expected in final_answer else 0.0
-    
+
     rubric = vf.Rubric(
         funcs=[exact_match_reward, contains_answer_reward],
         weights=[1.0, 0.0],  # Only exact_match contributes to reward
     )
-    
+
     env = RLMEnv(
         max_turns=30,
         max_iterations=20,
@@ -120,5 +122,5 @@ def load_environment(**kwargs) -> vf.Environment:
         rubric=rubric,
         interception_host=kwargs.get("interception_host"),
     )
-    
+
     return env

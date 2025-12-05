@@ -322,15 +322,15 @@ PY
 class RLMEnv(CliAgentEnv):
     """
     Recursive Language Model Environment.
-    
+
     Extends CliAgentEnv to provide a Python REPL environment where the model can:
     - Interact with large context stored as a variable
     - Make recursive sub-LLM calls
     - Return final answers via an answer variable
-    
+
     Works with any dataset that has a normal prompt. Context can optionally
     be provided in info[context_key] for large data that shouldn't be in the prompt.
-    
+
     Args:
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         max_iterations: Maximum REPL iterations before stopping
@@ -339,7 +339,7 @@ class RLMEnv(CliAgentEnv):
         system_prompt: Custom system prompt (default: RLM standard prompt)
         **kwargs: Additional arguments passed to CliAgentEnv
     """
-    
+
     def __init__(
         self,
         sub_model: str | None = None,
@@ -354,48 +354,51 @@ class RLMEnv(CliAgentEnv):
         self.max_output_length = max_output_length
         self.context_key = context_key
         self.custom_system_prompt = system_prompt
-        
+
         # Generate the agent script
-        agent_b64 = base64.b64encode(
-            _RLM_AGENT_SCRIPT_TEMPLATE.encode("utf-8")
-        ).decode("utf-8")
-        
+        agent_b64 = base64.b64encode(_RLM_AGENT_SCRIPT_TEMPLATE.encode("utf-8")).decode(
+            "utf-8"
+        )
+
         start_command = _START_COMMAND_TEMPLATE.format(
             agent_path="/tmp/rlm_agent.py",
             agent_b64=agent_b64,
         )
-        
+
         # Build environment variables
         env_vars = kwargs.pop("environment_vars", None) or {}
-        env_vars.update({
-            "RLM_MAX_ITERATIONS": str(max_iterations),
-            "RLM_MAX_OUTPUT_LENGTH": str(max_output_length),
-        })
+        env_vars.update(
+            {
+                "RLM_MAX_ITERATIONS": str(max_iterations),
+                "RLM_MAX_OUTPUT_LENGTH": str(max_output_length),
+            }
+        )
         if sub_model:
             env_vars["RLM_SUB_MODEL"] = sub_model
-        
+
         super().__init__(
             start_command=start_command,
             environment_vars=env_vars,
             **kwargs,
         )
-    
+
     async def setup_state(self, state: State) -> State:
         """Setup sandbox with messages, context, and answer files."""
         state = await super().setup_state(state)
-        
+
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
             raise RuntimeError("Sandbox ID not set")
-        
+
         from prime_sandboxes import AsyncSandboxClient
+
         sandbox_client = AsyncSandboxClient()
         await sandbox_client.wait_for_creation(sandbox_id)
-        
+
         # Get optional context from info
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
-        
+
         # Build context dict
         if context_data is not None:
             context_dict = {
@@ -407,48 +410,47 @@ class RLMEnv(CliAgentEnv):
                 "input_data": None,
                 "input_data_metadata": {"type": "none", "size": 0},
             }
-        
+
         # Build messages from state["prompt"]
         prompt = state.get("prompt", [])
         if isinstance(prompt, str):
             prompt = [{"role": "user", "content": prompt}]
-        
+
         # Build system prompt
         if self.custom_system_prompt:
             system_prompt = self.custom_system_prompt
         else:
             system_prompt = _RLM_SYSTEM_PROMPT_TEMPLATE
-        
+
         # Prepend system prompt to messages if not already present
         messages = list(prompt)  # Copy
         if not messages or messages[0].get("role") != "system":
             messages.insert(0, {"role": "system", "content": system_prompt})
-        
+
         # Write messages file
         messages_json = json.dumps(messages)
         await sandbox_client.execute_command(
             sandbox_id,
-            f"cat > /tmp/rlm_messages.json << 'MESSAGES_EOF'\n{messages_json}\nMESSAGES_EOF"
+            f"cat > /tmp/rlm_messages.json << 'MESSAGES_EOF'\n{messages_json}\nMESSAGES_EOF",
         )
-        
+
         # Write context file
         context_json = json.dumps(context_dict)
         await sandbox_client.execute_command(
             sandbox_id,
-            f"cat > /tmp/rlm_context.json << 'CONTEXT_EOF'\n{context_json}\nCONTEXT_EOF"
+            f"cat > /tmp/rlm_context.json << 'CONTEXT_EOF'\n{context_json}\nCONTEXT_EOF",
         )
-        
+
         # Write initial answer file
         answer_json = json.dumps({"ready": False, "content": ""})
         await sandbox_client.execute_command(
-            sandbox_id,
-            f"echo '{answer_json}' > /tmp/rlm_answer.json"
+            sandbox_id, f"echo '{answer_json}' > /tmp/rlm_answer.json"
         )
-        
+
         state["rlm_context"] = context_dict
-        
+
         return state
-    
+
     def _build_context_metadata(self, context_data: Any) -> dict[str, Any]:
         """Build minimal metadata dictionary for the context."""
         metadata: dict[str, Any] = {}
@@ -464,13 +466,13 @@ class RLMEnv(CliAgentEnv):
             metadata["size"] = len(context_data)
         else:
             metadata["size"] = "unknown"
-        
+
         return metadata
-    
+
     async def post_rollout(self, state: State):
         """
         Read final answer from sandbox before destruction.
-        
+
         Sets state["final_answer"] to the model's answer string.
         Empty string if no answer was provided.
         """
@@ -478,19 +480,20 @@ class RLMEnv(CliAgentEnv):
         if not sandbox_id:
             state["final_answer"] = ""
             return
-        
+
         try:
             from prime_sandboxes import AsyncSandboxClient
+
             sandbox_client = AsyncSandboxClient()
-            
+
             result = await sandbox_client.execute_command(
                 sandbox_id,
-                "cat /tmp/rlm_answer.json 2>/dev/null || echo '{\"content\": \"\"}'"
+                'cat /tmp/rlm_answer.json 2>/dev/null || echo \'{"content": ""}\'',
             )
-            
+
             answer = json.loads(result.stdout.strip())
             state["final_answer"] = answer.get("content", "")
-            
+
         except Exception as e:
             logger.warning(f"Failed to read RLM answer: {e}")
             state["final_answer"] = ""
