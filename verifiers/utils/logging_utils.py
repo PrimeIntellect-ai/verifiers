@@ -135,7 +135,7 @@ def setup_logging(
                 structlog.processors.MaybeTimeStamper(fmt="iso"),
                 functools.partial(
                     _remove_fields_except,
-                    ["timestamp", "level", "event", "component", "exc_info"],
+                    ["timestamp", "level", "event", "exc_info"],
                 ),
                 structlog.dev.ConsoleRenderer(),
             ],

@@ -176,6 +176,9 @@ def main():
         "--verbose", "-v", default=False, action="store_true", help="Verbose output"
     )
     parser.add_argument(
+        "--detailed", "-d", default=False, action="store_true", help="Show detailed stats (timing, turns, errors)"
+    )
+    parser.add_argument(
         "--no-interleave-scoring",
         "-N",
         default=False,
@@ -316,7 +319,11 @@ def main():
         hf_hub_dataset_name=args.hf_hub_dataset_name,
     )
     logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
-    asyncio.run(run_evaluation(eval_config))
+    results = asyncio.run(run_evaluation(eval_config))
+
+    if args.detailed:
+        from verifiers.utils.eval_utils import print_detailed_stats
+        print_detailed_stats(results)
 
 
 if __name__ == "__main__":

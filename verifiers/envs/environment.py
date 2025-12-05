@@ -674,11 +674,7 @@ class Environment(ABC):
         # wrap run group with log context
         with log_context(env_id=self.env_id, model=model):
             self.logger.info(
-                "Starting generation",
-                num_groups=len(group_list),
-                num_rollouts=len(inputs_list),
-                max_concurrent_gen=gen_limit,
-                max_concurrent_score=score_limit,
+                f"Starting generation: {len(inputs_list)} total rollouts",
                 _print=True,
             )
             group_tasks = {

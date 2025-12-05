@@ -128,6 +128,82 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     console.print(results_table)
 
 
+def print_detailed_stats(results: GenerateOutputs):
+    """Print detailed statistics table for evaluation results."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    states = results["state"]
+
+    # Extract timing data (convert ms to seconds)
+    total_times = [
+        s["timing"]["total_ms"] / 1000
+        for s in states
+        if s.get("timing") and "total_ms" in s["timing"]
+    ]
+    gen_times = [
+        s["timing"]["generation_ms"] / 1000
+        for s in states
+        if s.get("timing") and "generation_ms" in s["timing"]
+    ]
+    score_times = [
+        s["timing"]["scoring_ms"] / 1000
+        for s in states
+        if s.get("timing") and "scoring_ms" in s["timing"]
+    ]
+
+    # Extract turn data from trajectory
+    turns_used = [len(s.get("trajectory", [])) for s in states]
+
+    # Count exceptions based on stop_condition
+    n_exceptions = sum(
+        1 for s in states
+        if s.get("stop_condition") and "error" in s.get("stop_condition", "").lower()
+    )
+
+    detailed_table = Table(show_header=True, header_style="bold")
+    detailed_table.add_column("Stat")
+    detailed_table.add_column("Avg", justify="right")
+    detailed_table.add_column("Min", justify="right")
+    detailed_table.add_column("Max", justify="right")
+
+    if total_times:
+        detailed_table.add_row(
+            "Total time (s)",
+            f"{np.mean(total_times):.2f}",
+            f"{min(total_times):.2f}",
+            f"{max(total_times):.2f}",
+        )
+    if gen_times:
+        detailed_table.add_row(
+            "Generation time (s)",
+            f"{np.mean(gen_times):.2f}",
+            f"{min(gen_times):.2f}",
+            f"{max(gen_times):.2f}",
+        )
+    if score_times:
+        detailed_table.add_row(
+            "Scoring time (s)",
+            f"{np.mean(score_times):.2f}",
+            f"{min(score_times):.2f}",
+            f"{max(score_times):.2f}",
+        )
+    if turns_used:
+        detailed_table.add_row(
+            "Turns used",
+            f"{np.mean(turns_used):.1f}",
+            f"{min(turns_used)}",
+            f"{max(turns_used)}",
+        )
+
+    detailed_table.add_row("Exceptions", str(n_exceptions), "-", "-")
+
+    console.print()
+    console.print("[bold]Detailed Stats[/bold]")
+    console.print(detailed_table)
+
+
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
     client = setup_client(
@@ -144,10 +220,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     results_path = get_eval_results_path(config)
     with log_context(env_id=config.env_id, model=config.model):
         logger.info(
-            "Starting evaluation",
-            num_examples=config.num_examples,
-            rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=config.max_concurrent,
+            f"Starting evaluation: {config.num_examples} examples x {config.rollouts_per_example} rollouts",
             _print=True
         )
         start_time = time.time()
