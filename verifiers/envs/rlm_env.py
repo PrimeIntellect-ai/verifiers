@@ -382,6 +382,49 @@ class RLMEnv(CliAgentEnv):
             **kwargs,
         )
 
+    async def _write_file_to_sandbox(
+        self, sandbox_client: Any, sandbox_id: str, filepath: str, content: str
+    ) -> None:
+        """
+        Write content to a file in the sandbox, handling large content safely.
+        
+        Uses base64 encoding and chunked writing to avoid command-line length limits.
+        """
+        content_bytes = content.encode("utf-8")
+        content_b64 = base64.b64encode(content_bytes).decode("ascii")
+        
+        # For small content, write directly
+        # Command length limit is typically around 128KB, but we use a conservative threshold
+        # to account for the Python wrapper overhead
+        chunk_size = 50000  # ~50KB chunks (base64 encoded)
+        
+        if len(content_b64) <= chunk_size:
+            # Small content: write in one command
+            cmd = f"""python3 -c "
+import base64
+from pathlib import Path
+Path('{filepath}').write_bytes(base64.b64decode('{content_b64}'))
+" """
+            await sandbox_client.execute_command(sandbox_id, cmd)
+        else:
+            # Large content: write in chunks
+            # First, create an empty file
+            await sandbox_client.execute_command(
+                sandbox_id, f"python3 -c \"from pathlib import Path; Path('{filepath}').write_text('')\""
+            )
+            
+            # Write chunks
+            for i in range(0, len(content_b64), chunk_size):
+                chunk = content_b64[i:i + chunk_size]
+                cmd = f"""python3 -c "
+import base64
+from pathlib import Path
+chunk = base64.b64decode('{chunk}')
+with open('{filepath}', 'ab') as f:
+    f.write(chunk)
+" """
+                await sandbox_client.execute_command(sandbox_id, cmd)
+
     async def setup_state(self, state: State) -> State:
         """Setup sandbox with messages, context, and answer files."""
         state = await super().setup_state(state)
@@ -427,24 +470,20 @@ class RLMEnv(CliAgentEnv):
         if not messages or messages[0].get("role") != "system":
             messages.insert(0, {"role": "system", "content": system_prompt})
 
-        # Write messages file
+        # Write files to sandbox using safe chunked method
         messages_json = json.dumps(messages)
-        await sandbox_client.execute_command(
-            sandbox_id,
-            f"cat > /tmp/rlm_messages.json << 'MESSAGES_EOF'\n{messages_json}\nMESSAGES_EOF",
+        await self._write_file_to_sandbox(
+            sandbox_client, sandbox_id, "/tmp/rlm_messages.json", messages_json
         )
 
-        # Write context file
         context_json = json.dumps(context_dict)
-        await sandbox_client.execute_command(
-            sandbox_id,
-            f"cat > /tmp/rlm_context.json << 'CONTEXT_EOF'\n{context_json}\nCONTEXT_EOF",
+        await self._write_file_to_sandbox(
+            sandbox_client, sandbox_id, "/tmp/rlm_context.json", context_json
         )
 
-        # Write initial answer file
         answer_json = json.dumps({"ready": False, "content": ""})
-        await sandbox_client.execute_command(
-            sandbox_id, f"echo '{answer_json}' > /tmp/rlm_answer.json"
+        await self._write_file_to_sandbox(
+            sandbox_client, sandbox_id, "/tmp/rlm_answer.json", answer_json
         )
 
         state["rlm_context"] = context_dict
