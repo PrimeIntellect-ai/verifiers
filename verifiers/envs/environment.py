@@ -674,7 +674,8 @@ class Environment(ABC):
         # wrap run group with log context
         with log_context(env_id=self.env_id, model=model):
             self.logger.info(
-                f"Starting generation: {len(inputs_list)} total rollouts",
+                "Starting generation",
+                total_rollouts=len(inputs_list),
                 _print=True,
             )
             group_tasks = {
@@ -693,14 +694,23 @@ class Environment(ABC):
 
 
             # process groups as they complete
-            pbar = None
+            progress = None
+            progress_task = None
             if use_tqdm:
-                from tqdm import tqdm
+                from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
 
-                pbar = tqdm(
-                    total=len(group_list),
-                    desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+                progress = Progress(
+                    TextColumn("  "),
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(bar_width=None),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TextColumn("  "),
+                    expand=True,
                 )
+                progress.start()
+                progress_task = progress.add_task("Run", total=len(group_list))
 
             groups_completed = 0
             all_states: list[State] = []
@@ -710,8 +720,8 @@ class Environment(ABC):
                     all_states.extend(group_states)
                     groups_completed += 1
 
-                    if pbar is not None:
-                        pbar.update(1)
+                    if progress is not None:
+                        progress.update(progress_task, advance=1)
 
                     # save intermediate results
                     if (
@@ -733,15 +743,20 @@ class Environment(ABC):
                         )
                         save_rollout_results(temp_results)
             finally:
-                if pbar is not None:
-                    pbar.close()
+                if progress is not None:
+                    progress.stop()
 
-            rewards = [s.get("reward", 0.0) for s in all_states]
+            # Calculate generation stats
+            gen_times = [
+                s["timing"]["generation_ms"] / 1000
+                for s in all_states
+                if s.get("timing") and "generation_ms" in s["timing"]
+            ]
+            turns = [len(s.get("trajectory", [])) for s in all_states]
             self.logger.info(
                 "Generation complete",
-                total_rollouts=len(all_states),
-                avg_reward=sum(r for r in rewards if r) / len(rewards) if rewards else 0,
-                duration_s=round(time.time() - start_time, 2),
+                avg_time_s=round(sum(gen_times) / len(gen_times), 2) if gen_times else 0,
+                avg_turns=round(sum(turns) / len(turns), 1) if turns else 0,
                 _print=True
             )
 

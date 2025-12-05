@@ -220,7 +220,9 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     results_path = get_eval_results_path(config)
     with log_context(env_id=config.env_id, model=config.model):
         logger.info(
-            f"Starting evaluation: {config.num_examples} examples x {config.rollouts_per_example} rollouts",
+            "Starting evaluation",
+            examples=config.num_examples,
+            rollouts=config.rollouts_per_example,
             _print=True
         )
         start_time = time.time()
@@ -238,11 +240,17 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
             save_results=config.save_results,
             save_every=config.save_every,
         )
-        end_time = time.time()
+        # Calculate scoring stats
+        score_times = [
+            s["timing"]["scoring_ms"] / 1000
+            for s in results["state"]
+            if s.get("timing") and "scoring_ms" in s["timing"]
+        ]
+        avg_score_time = round(sum(score_times) / len(score_times), 2) if score_times else 0
         logger.info(
             "Evaluation complete",
             avg_reward=round(results["metadata"]["avg_reward"], 3),
-            duration_s=round(end_time - start_time, 2),
+            avg_score_time_s=avg_score_time,
             _print=True
         )
     if config.print_results:

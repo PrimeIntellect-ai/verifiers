@@ -53,13 +53,20 @@ def _rename_field(
     return event_dict
 
 
-def _remove_fields_except(
-    to_keep: list[str], logger: logging.Logger, name: str, event_dict: EventDict
+def _filter_fields(
+    logger: logging.Logger, name: str, event_dict: EventDict
 ) -> EventDict:
-    """Keep only specified fields in the event dict, plus remove internal _ fields."""
+    """Keep core fields plus explicitly passed extras, remove context and internal fields."""
     del logger, name
+    # Core fields that structlog needs
+    core_fields = {"timestamp", "level", "event", "exc_info"}
+    # Fields added by log_context or logger binding that we want to hide by default
+    context_fields = {"component", "env_id", "model"}
+
     for key in list(event_dict.keys()):
-        if key not in to_keep or key.startswith("_"):
+        if key.startswith("_"):
+            del event_dict[key]
+        elif key in context_fields:
             del event_dict[key]
     return event_dict
 
@@ -133,10 +140,7 @@ def setup_logging(
                 structlog.contextvars.merge_contextvars,
                 structlog.processors.add_log_level,
                 structlog.processors.MaybeTimeStamper(fmt="iso"),
-                functools.partial(
-                    _remove_fields_except,
-                    ["timestamp", "level", "event", "exc_info"],
-                ),
+                _filter_fields,
                 structlog.dev.ConsoleRenderer(),
             ],
             foreign_pre_chain=[
