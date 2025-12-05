@@ -117,28 +117,6 @@ def llm(prompt: str, **kwargs) -> str:
         return f"Error in sub-LLM call: {e}"
 
 
-def rlm(prompt: str, sub_context=None, **kwargs) -> str:
-    """
-    Make a recursive RLM call with optional sub-context.
-    
-    Args:
-        prompt: The query for the recursive RLM
-        sub_context: Context to pass (prepended to prompt)
-        **kwargs: Additional arguments
-    
-    Returns:
-        The response as a string
-    """
-    if sub_context is not None:
-        context_str = str(sub_context)
-        if len(context_str) > MAX_OUTPUT_LENGTH:
-            context_str = context_str[:MAX_OUTPUT_LENGTH] + "... [truncated]"
-        full_prompt = f"Context:\\n{context_str}\\n\\nQuery: {prompt}"
-    else:
-        full_prompt = prompt
-    return llm(full_prompt, **kwargs)
-
-
 def execute_code(code: str) -> str:
     """Execute Python code and capture output."""
     global answer
@@ -147,7 +125,6 @@ def execute_code(code: str) -> str:
         "context": context,
         "answer": answer,
         "llm": llm,
-        "rlm": rlm,
         "print": print,
         "__builtins__": __builtins__,
     }
@@ -252,49 +229,75 @@ print("[RLM] REPL complete", flush=True)
 
 
 # System prompt for RLM - added to user's messages
-_RLM_SYSTEM_PROMPT_TEMPLATE = """You are operating in a Recursive Language Model (RLM) environment.
+_RLM_SYSTEM_PROMPT_TEMPLATE = """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
 
-You have access to a Python REPL with the following:
+## Critical: This is an ITERATIVE environment
 
-## Available Variables and Functions:
+You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one code block.** Each code block executes and returns output before you continue.
+
+**You MUST wrap all code in markdown code blocks** using triple backticks with `python`:
+```python
+# your code here
+```
+Only code inside these blocks will be executed. Text outside code blocks is for your reasoning.
+
+## Available Variables and Functions
 
 - `context`: A dictionary containing:
-  - `context["input_data"]`: {context_description}
-  - `context["input_data_metadata"]`: Metadata about the input (type, size, etc.)
+  - `context["input_data_metadata"]`: Metadata about the input (type, size, structure, etc.)
+  - `context["input_data"]`: The actual input data
 
-- `answer`: A dictionary you must modify to return your final answer:
-  - `answer["ready"]`: Set to `True` when you have the final answer
-  - `answer["content"]`: Your final answer (as a string)
+- `answer`: A dictionary for your final answer:
+  - `answer["content"]`: Your answer (string) - write and update this throughout execution
+  - `answer["ready"]`: Set to `True` to finish - **this immediately terminates execution**
 
 - `llm(prompt, **kwargs)`: Call a sub-LLM for help with subtasks
-  - Returns the sub-LLM's response as a string
-  - Use for semantic understanding, classification, summarization, etc.
+  - Returns the response as a string
+  - Useful for semantic understanding, summarization, complex reasoning
+  - Include any context you need directly in the prompt string
 
-- `rlm(prompt, sub_context=None, **kwargs)`: Make a recursive RLM call
-  - Can pass a subset of context to the sub-RLM
-  - Use for recursively processing chunks of data
+## Workflow
 
-## How to Respond:
-
-1. Output Python code blocks to interact with the environment:
+**Step 1: Inspect metadata first**
 ```python
-# Your code here
+print(context["input_data_metadata"])
 ```
+Wait for output. This tells you the data type, size, and structure before you look at the actual data.
 
-2. The code will be executed and you'll see the output.
-
-3. When you have the final answer, set:
+**Step 2: Explore the data based on what you learned**
 ```python
+# Look at a sample of the actual data
+data = context["input_data"]
+print(type(data))
+print(data[:500] if isinstance(data, str) else data[:3])  # First part only
+```
+Wait for output. Now you know the actual format.
+
+**Step 3: Process and build your answer**
+```python
+# Based on what you've seen, write code to solve the task
+# ...
+answer["content"] = "your current best answer"
+```
+You can update `answer["content"]` multiple times as you refine your solution.
+
+**Step 4: Verify and finalize (only after reviewing output)**
+```python
+print(f"My answer: {{answer['content']}}")
+# Only after confirming this looks correct:
 answer["ready"] = True
-answer["content"] = "Your final answer here"
 ```
 
-## Tips:
+## Important Rules
 
-- Start by peeking at the context to understand its structure
-- Use `len()`, `type()`, slicing to explore the data
-- For large contexts, partition and use `llm()` for sub-queries
-- Build up your answer incrementally
+1. **Always use markdown code blocks** - wrap code in triple backticks with `python`, or it won't execute
+2. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
+3. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
+4. **One step at a time** - write small code blocks, see output, then continue
+5. **Use `llm()` for semantic tasks** - summarization, understanding text, classification, etc.
+6. You can think in natural language between code blocks - reasoning and planning are encouraged
+
+The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
 
 
@@ -399,13 +402,11 @@ class RLMEnv(CliAgentEnv):
                 "input_data": context_data,
                 "input_data_metadata": self._build_context_metadata(context_data),
             }
-            context_description = f"The input data (type: {context_dict['input_data_metadata'].get('type', 'unknown')}, size: {context_dict['input_data_metadata'].get('size', 'unknown')})"
         else:
             context_dict = {
                 "input_data": None,
                 "input_data_metadata": {"type": "none", "size": 0},
             }
-            context_description = "No additional context provided"
         
         # Build messages from state["prompt"]
         prompt = state.get("prompt", [])
@@ -416,9 +417,7 @@ class RLMEnv(CliAgentEnv):
         if self.custom_system_prompt:
             system_prompt = self.custom_system_prompt
         else:
-            system_prompt = _RLM_SYSTEM_PROMPT_TEMPLATE.format(
-                context_description=context_description,
-            )
+            system_prompt = _RLM_SYSTEM_PROMPT_TEMPLATE
         
         # Prepend system prompt to messages if not already present
         messages = list(prompt)  # Copy
@@ -451,32 +450,20 @@ class RLMEnv(CliAgentEnv):
         return state
     
     def _build_context_metadata(self, context_data: Any) -> dict[str, Any]:
-        """Build metadata dictionary for the context."""
+        """Build minimal metadata dictionary for the context."""
         metadata: dict[str, Any] = {}
-        
+
+        # Expressive type-name; can e.g. distinguish between pandas and polars DataFrames
+        metadata["type"] = str(type(context_data))
+
+        # Simple size estimation.
+        # If __len__ is not defined, the type will tell the model how to approach the data.
         if context_data is None:
-            metadata["type"] = "none"
             metadata["size"] = 0
-        elif isinstance(context_data, str):
-            metadata["type"] = "string"
+        elif hasattr(context_data, "__len__"):
             metadata["size"] = len(context_data)
-            metadata["num_chars"] = len(context_data)
-            metadata["num_lines"] = context_data.count("\n") + 1
-            metadata["estimated_tokens"] = len(context_data) // 4
-        elif isinstance(context_data, list):
-            metadata["type"] = "list"
-            metadata["size"] = len(context_data)
-            metadata["num_items"] = len(context_data)
-            if context_data and isinstance(context_data[0], dict):
-                metadata["item_type"] = "dict"
-                metadata["sample_keys"] = list(context_data[0].keys())[:5]
-        elif isinstance(context_data, dict):
-            metadata["type"] = "dict"
-            metadata["size"] = len(context_data)
-            metadata["keys"] = list(context_data.keys())[:10]
         else:
-            metadata["type"] = type(context_data).__name__
-            metadata["size"] = len(str(context_data))
+            metadata["size"] = "unknown"
         
         return metadata
     
