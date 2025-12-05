@@ -56,10 +56,10 @@ def _rename_field(
 def _remove_fields_except(
     to_keep: list[str], logger: logging.Logger, name: str, event_dict: EventDict
 ) -> EventDict:
-    """Keep only specified fields in the event dict."""
+    """Keep only specified fields in the event dict, plus remove internal _ fields."""
     del logger, name
     for key in list(event_dict.keys()):
-        if key not in to_keep:
+        if key not in to_keep or key.startswith("_"):
             del event_dict[key]
     return event_dict
 

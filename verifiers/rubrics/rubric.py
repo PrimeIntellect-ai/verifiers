@@ -312,3 +312,10 @@ class Rubric:
             }
             state["timing"]["scoring_ms"] = scoring_ms
             state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
+
+        self.logger.info(
+            "Scored group",
+            num_states=num_states,
+            avg_reward=round(avg_reward, 3),
+            scoring_ms=round(scoring_ms, 1)
+        )

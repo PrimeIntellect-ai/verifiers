@@ -46,6 +46,7 @@ from verifiers.utils.message_utils import (
     get_overlong_prompt_dummy_response,
 )
 from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.logging_utils import log_context
 
 if TYPE_CHECKING:
     pass
@@ -391,7 +392,13 @@ class Environment(ABC):
                     return get_overlong_prompt_dummy_response(
                         message_type or self.message_type
                     )
-            self.logger.error(f"Error getting model response: {e} \n\nExiting...")
+            self.logger.error(
+                "Model response failed",
+                error_type=type(e).__name__,
+                error=str(e),
+                model=model,
+                prompt_len=len(str(prompt)),
+            )
             raise e
 
     async def init_state(
@@ -664,63 +671,83 @@ class Environment(ABC):
 
         # create tasks for all groups
         start_time = time.time()
-        group_tasks = {
-            asyncio.create_task(
-                self.run_group(
-                    group,
-                    client,
-                    model,
-                    gen_sampling_args,
-                    gen_sem,
-                    score_sem,
-                )
-            ): i
-            for i, group in enumerate(group_list)
-        }
-
-        # process groups as they complete
-        pbar = None
-        if use_tqdm:
-            from tqdm import tqdm
-
-            pbar = tqdm(
-                total=len(group_list),
-                desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+        # wrap run group with log context
+        with log_context(env_id=self.env_id, model=model):
+            self.logger.info(
+                "Starting generation",
+                num_groups=len(group_list),
+                num_rollouts=len(inputs_list),
+                max_concurrent_gen=gen_limit,
+                max_concurrent_score=score_limit,
+                _print=True,
             )
-
-        groups_completed = 0
-        all_states: list[State] = []
-        try:
-            for coro in asyncio.as_completed(group_tasks.keys()):
-                group_states = await coro
-                all_states.extend(group_states)
-                groups_completed += 1
-
-                if pbar is not None:
-                    pbar.update(1)
-
-                # save intermediate results
-                if (
-                    save_results
-                    and save_every > 0
-                    and groups_completed % save_every == 0
-                ):
-                    temp_results = self._prepare_rollout_results(
-                        all_states,
-                        model,
+            group_tasks = {
+                asyncio.create_task(
+                    self.run_group(
+                        group,
                         client,
-                        state_columns,
-                        results_path,
+                        model,
                         gen_sampling_args,
-                        start_time,
+                        gen_sem,
+                        score_sem,
                     )
-                    self.logger.debug(
-                        f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
-                    )
-                    save_rollout_results(temp_results)
-        finally:
-            if pbar is not None:
-                pbar.close()
+                ): i
+                for i, group in enumerate(group_list)
+            }
+
+
+            # process groups as they complete
+            pbar = None
+            if use_tqdm:
+                from tqdm import tqdm
+
+                pbar = tqdm(
+                    total=len(group_list),
+                    desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+                )
+
+            groups_completed = 0
+            all_states: list[State] = []
+            try:
+                for coro in asyncio.as_completed(group_tasks.keys()):
+                    group_states = await coro
+                    all_states.extend(group_states)
+                    groups_completed += 1
+
+                    if pbar is not None:
+                        pbar.update(1)
+
+                    # save intermediate results
+                    if (
+                        save_results
+                        and save_every > 0
+                        and groups_completed % save_every == 0
+                    ):
+                        temp_results = self._prepare_rollout_results(
+                            all_states,
+                            model,
+                            client,
+                            state_columns,
+                            results_path,
+                            gen_sampling_args,
+                            start_time,
+                        )
+                        self.logger.debug(
+                            f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                        )
+                        save_rollout_results(temp_results)
+            finally:
+                if pbar is not None:
+                    pbar.close()
+
+            rewards = [s.get("reward", 0.0) for s in all_states]
+            self.logger.info(
+                "Generation complete",
+                total_rollouts=len(all_states),
+                avg_reward=sum(r for r in rewards if r) / len(rewards) if rewards else 0,
+                duration_s=round(time.time() - start_time, 2),
+                _print=True
+            )
 
         # sort by example_id to ensure deterministic ordering regardless of completion order
         all_states.sort(key=lambda s: s.get("example_id", 0))
