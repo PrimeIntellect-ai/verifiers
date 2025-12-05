@@ -1,7 +1,6 @@
 import atexit
+import logging
 import time
-
-import structlog
 
 import requests
 import torch  # type: ignore
@@ -14,7 +13,7 @@ from vllm.distributed.device_communicators.pynccl import (  # type: ignore
 )
 from vllm.distributed.utils import StatelessProcessGroup  # type: ignore
 
-logger = structlog.stdlib.get_logger(component=__name__)
+logger = logging.getLogger(__name__)
 
 
 class VLLMClient(AsyncOpenAI):

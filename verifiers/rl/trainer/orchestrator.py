@@ -1,7 +1,6 @@
 import asyncio
+import logging
 import queue
-
-import structlog
 import threading
 import time
 from typing import Any
@@ -97,7 +96,7 @@ class Orchestrator:
 
         self.worker_thread = None
         self.stop_event = threading.Event()
-        self.logger = structlog.stdlib.get_logger(component=__name__)
+        self.logger = logging.getLogger(__name__)
         self.is_generating = False
         self.worker_loop = None
 
