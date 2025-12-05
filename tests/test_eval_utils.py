@@ -71,14 +71,14 @@ def test_print_results_rollout_indexing(capsys):
     captured = capsys.readouterr()
 
     # Verify rollout groupings are correct
-    # r1 should have rewards [0.1, 0.3, 0.5] (first rollout of each example)
-    assert "r1: [0.1, 0.3, 0.5]" in captured.out
-    # r2 should have rewards [0.2, 0.4, 0.6] (second rollout of each example)
-    assert "r2: [0.2, 0.4, 0.6]" in captured.out
+    # r1 should have rewards [0.1, 0.3, 0.5] (first rollout of each example) -> avg 0.3
+    assert "0.300" in captured.out
+    # r2 should have rewards [0.2, 0.4, 0.6] (second rollout of each example) -> avg 0.4
+    assert "0.400" in captured.out
 
     # Same for metrics
-    assert "r1: [1.0, 3.0, 5.0]" in captured.out
-    assert "r2: [2.0, 4.0, 6.0]" in captured.out
+    assert "3.000" in captured.out
+    assert "4.000" in captured.out
 
 
 def test_print_results_single_rollout(capsys):
@@ -109,7 +109,7 @@ def test_print_results_single_rollout(capsys):
     captured = capsys.readouterr()
 
     # With single rollout, r1 should have all rewards
-    assert "r1: [0.1, 0.2, 0.3]" in captured.out
+    assert "0.200" in captured.out
 
 
 def test_print_results_three_rollouts(capsys):
@@ -141,8 +141,8 @@ def test_print_results_three_rollouts(capsys):
     captured = capsys.readouterr()
 
     # r1 should have [0.1, 0.4] (first rollout of each example)
-    assert "r1: [0.1, 0.4]" in captured.out
+    assert "0.250" in captured.out
     # r2 should have [0.2, 0.5] (second rollout of each example)
-    assert "r2: [0.2, 0.5]" in captured.out
+    assert "0.350" in captured.out
     # r3 should have [0.3, 0.6] (third rollout of each example)
-    assert "r3: [0.3, 0.6]" in captured.out
+    assert "0.450" in captured.out

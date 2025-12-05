@@ -1,5 +1,6 @@
-import logging
 from abc import abstractmethod
+
+import structlog
 
 from openai import AsyncOpenAI
 
@@ -18,7 +19,7 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(component=__name__)
 
 
 class MultiTurnEnv(vf.Environment):

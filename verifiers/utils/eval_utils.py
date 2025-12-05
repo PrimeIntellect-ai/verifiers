@@ -1,7 +1,8 @@
 import importlib.util
 import json
-import logging
 import time
+
+import structlog
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -13,11 +14,11 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.client_utils import setup_client
-from verifiers.utils.logging_utils import print_prompt_completions_sample
+from verifiers.utils.logging_utils import print_prompt_completions_sample, log_context
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(component=__name__)
 
 
 def load_endpoints(endpoints_path: str):
@@ -58,14 +59,29 @@ def load_endpoints(endpoints_path: str):
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
-    print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
-    print(f"Model: {results['metadata']['model']}")
-    print(f"Provider: {results['metadata']['base_url']}")
-    print(f"Examples: {results['metadata']['num_examples']}")
-    print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
-    print("--- Example ---")
 
+    # Use rich console for structured output
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+
+    # Config table
+    config_table = Table(show_header=False, box=None, padding=(0, 2))
+    config_table.add_column("Key", style="dim")
+    config_table.add_column("Value", style="bold")
+    config_table.add_row("Environment", results['metadata']['env_id'])
+    config_table.add_row("Model", results['metadata']['model'])
+    config_table.add_row("Provider", results['metadata']['base_url'])
+    config_table.add_row("Examples", str(results['metadata']['num_examples']))
+    config_table.add_row("Rollouts", str(results['metadata']['rollouts_per_example']))
+
+    console.print()
+    console.print("[bold]Evaluation Config[/bold]")
+    console.print(config_table)
+    console.print()
+
+    # Sample output
     printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
     printable_completions = [messages_to_printable(c) for c in results["completion"]]
     print_prompt_completions_sample(
@@ -75,25 +91,117 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
         step=0,
         num_samples=num_samples,
     )
-    print("--- All ---")
-    print("Rewards:")
-    print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
-    )
+
+    # Results table
     r = results["metadata"]["rollouts_per_example"]
     n = len(results["reward"]) // r
-    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
+
+    results_table = Table(show_header=True, header_style="bold")
+    results_table.add_column("Metric")
+    results_table.add_column("Avg", justify="right")
+    results_table.add_column("Std", justify="right")
     for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
-        out = f"r{i + 1}: {trials}"
-        print(out)
+        results_table.add_column(f"R{i+1}", justify="right")
+
+    # Reward row
+    avg_reward = sum(results['reward']) / len(results['reward'])
+    std_reward = float(np.std(results['reward']))
+    reward_row = ["reward", f"{avg_reward:.3f}", f"{std_reward:.3f}"]
+    for i in range(r):
+        trials = [results["reward"][i + (j * r)] for j in range(n)]
+        reward_row.append(f"{sum(trials)/len(trials):.3f}")
+    results_table.add_row(*reward_row, style="bold cyan")
+
+    # Metric rows
     for k in results["metrics"]:
         v = results["metrics"][k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        avg_v = sum(v) / len(v)
+        std_v = float(np.std(v))
+        metric_row = [k, f"{avg_v:.3f}", f"{std_v:.3f}"]
         for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
-            print(out)
+            trials = [v[i + (j * r)] for j in range(n)]
+            metric_row.append(f"{sum(trials)/len(trials):.3f}")
+        results_table.add_row(*metric_row)
+
+    console.print()
+    console.print("[bold]Results[/bold]")
+    console.print(results_table)
+
+
+def print_detailed_stats(results: GenerateOutputs):
+    """Print detailed statistics table for evaluation results."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    states = results["state"]
+
+    # Extract timing data (convert ms to seconds)
+    total_times = [
+        s["timing"]["total_ms"] / 1000
+        for s in states
+        if s.get("timing") and "total_ms" in s["timing"]
+    ]
+    gen_times = [
+        s["timing"]["generation_ms"] / 1000
+        for s in states
+        if s.get("timing") and "generation_ms" in s["timing"]
+    ]
+    score_times = [
+        s["timing"]["scoring_ms"] / 1000
+        for s in states
+        if s.get("timing") and "scoring_ms" in s["timing"]
+    ]
+
+    # Extract turn data from trajectory
+    turns_used = [len(s.get("trajectory", [])) for s in states]
+
+    # Count exceptions based on stop_condition
+    n_exceptions = sum(
+        1 for s in states
+        if s.get("stop_condition") and "error" in s.get("stop_condition", "").lower()
+    )
+
+    detailed_table = Table(show_header=True, header_style="bold")
+    detailed_table.add_column("Stat")
+    detailed_table.add_column("Avg", justify="right")
+    detailed_table.add_column("Min", justify="right")
+    detailed_table.add_column("Max", justify="right")
+
+    if total_times:
+        detailed_table.add_row(
+            "Total time (s)",
+            f"{np.mean(total_times):.2f}",
+            f"{min(total_times):.2f}",
+            f"{max(total_times):.2f}",
+        )
+    if gen_times:
+        detailed_table.add_row(
+            "Generation time (s)",
+            f"{np.mean(gen_times):.2f}",
+            f"{min(gen_times):.2f}",
+            f"{max(gen_times):.2f}",
+        )
+    if score_times:
+        detailed_table.add_row(
+            "Scoring time (s)",
+            f"{np.mean(score_times):.2f}",
+            f"{min(score_times):.2f}",
+            f"{max(score_times):.2f}",
+        )
+    if turns_used:
+        detailed_table.add_row(
+            "Turns used",
+            f"{np.mean(turns_used):.1f}",
+            f"{min(turns_used)}",
+            f"{max(turns_used)}",
+        )
+
+    detailed_table.add_row("Exceptions", str(n_exceptions), "-", "-")
+
+    console.print()
+    console.print("[bold]Detailed Stats[/bold]")
+    console.print(detailed_table)
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
@@ -110,27 +218,41 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # run evaluation
     results_path = get_eval_results_path(config)
-    logger.info(f"Starting evaluation with model: {config.model}")
-    logger.info(
-        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-    )
-    start_time = time.time()
-    results = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-    )
-    end_time = time.time()
-    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+    with log_context(env_id=config.env_id, model=config.model):
+        logger.info(
+            "Starting evaluation",
+            examples=config.num_examples,
+            rollouts=config.rollouts_per_example,
+            _print=True
+        )
+        start_time = time.time()
+        results = await vf_env.evaluate(
+            client=client,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=config.max_concurrent,
+            max_concurrent_generation=config.max_concurrent_generation,
+            max_concurrent_scoring=config.max_concurrent_scoring,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            save_every=config.save_every,
+        )
+        # Calculate scoring stats
+        score_times = [
+            s["timing"]["scoring_ms"] / 1000
+            for s in results["state"]
+            if s.get("timing") and "scoring_ms" in s["timing"]
+        ]
+        avg_score_time = round(sum(score_times) / len(score_times), 2) if score_times else 0
+        logger.info(
+            "Evaluation complete",
+            avg_reward=round(results["metadata"]["avg_reward"], 3),
+            avg_score_time_s=avg_score_time,
+            _print=True
+        )
     if config.print_results:
         print_results(results)
     if config.save_results:

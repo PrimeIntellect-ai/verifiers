@@ -1,7 +1,8 @@
 import asyncio
 import inspect
-import logging
 import time
+
+import structlog
 from typing import AsyncContextManager, cast
 
 import verifiers as vf
@@ -35,7 +36,9 @@ class Rubric:
         weights: list[float] | None = None,
         parser: vf.Parser | None = None,
     ):
-        self.logger = logging.getLogger(f"verifiers.rubrics.{self.__class__.__name__}")
+        self.logger = structlog.stdlib.get_logger(
+            component=f"verifiers.rubrics.{self.__class__.__name__}"
+        )
 
         self.funcs = funcs or []
         self.weights = weights or []
@@ -309,3 +312,10 @@ class Rubric:
             }
             state["timing"]["scoring_ms"] = scoring_ms
             state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
+
+        self.logger.info(
+            "Scored group",
+            num_states=num_states,
+            avg_reward=round(avg_reward, 3),
+            scoring_ms=round(scoring_ms, 1)
+        )
