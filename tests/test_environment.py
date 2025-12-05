@@ -155,7 +155,7 @@ class TestEnvironmentBase:
         think_parser = ThinkParser()
         rubric = Rubric()  # Different parser class
 
-        with patch("logging.getLogger") as mock_get_logger:
+        with patch("structlog.stdlib.get_logger") as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
 

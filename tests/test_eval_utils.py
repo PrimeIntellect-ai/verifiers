@@ -34,8 +34,8 @@ def test_print_results_rollout_indexing(capsys):
 
     Results are sorted by example_id, giving order: [ex0_r0, ex0_r1, ex1_r0, ex1_r1, ...]
     The indexing should correctly extract:
-    - r1: all first rollouts (indices 0, 2, 4, ...)
-    - r2: all second rollouts (indices 1, 3, 5, ...)
+    - R1: all first rollouts (indices 0, 2, 4, ...)
+    - R2: all second rollouts (indices 1, 3, 5, ...)
     """
     from verifiers.utils.eval_utils import print_results
 
@@ -45,12 +45,12 @@ def test_print_results_rollout_indexing(capsys):
     # Simulate results sorted by example_id (as generate() now does)
     # Order: [ex0_r0, ex0_r1, ex1_r0, ex1_r1, ex2_r0, ex2_r1]
     # Rewards are designed so we can verify correct grouping:
-    # - All r0 rewards: 0.1, 0.3, 0.5 (for examples 0, 1, 2)
-    # - All r1 rewards: 0.2, 0.4, 0.6 (for examples 0, 1, 2)
+    # - All r0 rewards: 0.1, 0.3, 0.5 (for examples 0, 1, 2) -> avg = 0.3
+    # - All r1 rewards: 0.2, 0.4, 0.6 (for examples 0, 1, 2) -> avg = 0.4
     rewards = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     example_ids = [0, 0, 1, 1, 2, 2]
 
-    # Metric follows same pattern
+    # Metric follows same pattern: avg of [1.0, 3.0, 5.0] = 3.0, avg of [2.0, 4.0, 6.0] = 4.0
     metric_values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
     results = GenerateOutputs(
@@ -70,15 +70,18 @@ def test_print_results_rollout_indexing(capsys):
     print_results(results)
     captured = capsys.readouterr()
 
-    # Verify rollout groupings are correct
-    # r1 should have rewards [0.1, 0.3, 0.5] (first rollout of each example)
-    assert "r1: [0.1, 0.3, 0.5]" in captured.out
-    # r2 should have rewards [0.2, 0.4, 0.6] (second rollout of each example)
-    assert "r2: [0.2, 0.4, 0.6]" in captured.out
+    # Verify Rich table contains correct rollout column headers
+    assert "R1" in captured.out
+    assert "R2" in captured.out
 
-    # Same for metrics
-    assert "r1: [1.0, 3.0, 5.0]" in captured.out
-    assert "r2: [2.0, 4.0, 6.0]" in captured.out
+    # Verify rollout averages are correct (displayed as formatted decimals)
+    # R1 avg = 0.3, R2 avg = 0.4 for reward row
+    assert "0.300" in captured.out  # R1 reward avg
+    assert "0.400" in captured.out  # R2 reward avg
+
+    # Metric R1 avg = 3.0, R2 avg = 4.0
+    assert "3.000" in captured.out  # R1 metric avg
+    assert "4.000" in captured.out  # R2 metric avg
 
 
 def test_print_results_single_rollout(capsys):
@@ -108,8 +111,9 @@ def test_print_results_single_rollout(capsys):
     print_results(results)
     captured = capsys.readouterr()
 
-    # With single rollout, r1 should have all rewards
-    assert "r1: [0.1, 0.2, 0.3]" in captured.out
+    # With single rollout, R1 column should show average of all rewards (0.2)
+    assert "R1" in captured.out
+    assert "0.200" in captured.out  # avg of [0.1, 0.2, 0.3] = 0.2
 
 
 def test_print_results_three_rollouts(capsys):
@@ -140,9 +144,14 @@ def test_print_results_three_rollouts(capsys):
     print_results(results)
     captured = capsys.readouterr()
 
-    # r1 should have [0.1, 0.4] (first rollout of each example)
-    assert "r1: [0.1, 0.4]" in captured.out
-    # r2 should have [0.2, 0.5] (second rollout of each example)
-    assert "r2: [0.2, 0.5]" in captured.out
-    # r3 should have [0.3, 0.6] (third rollout of each example)
-    assert "r3: [0.3, 0.6]" in captured.out
+    # Verify Rich table has columns for all three rollouts
+    assert "R1" in captured.out
+    assert "R2" in captured.out
+    assert "R3" in captured.out
+
+    # R1 avg = avg([0.1, 0.4]) = 0.25
+    assert "0.250" in captured.out
+    # R2 avg = avg([0.2, 0.5]) = 0.35
+    assert "0.350" in captured.out
+    # R3 avg = avg([0.3, 0.6]) = 0.45
+    assert "0.450" in captured.out
