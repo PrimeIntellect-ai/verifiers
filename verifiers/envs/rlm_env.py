@@ -28,13 +28,15 @@ import subprocess
 import textwrap
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
 from verifiers.types import Messages, State
+from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +355,9 @@ class RLMEnv(SandboxEnv):
 
     Args:
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
+        sub_tools: List of Python functions that sub-LLMs can use as tools.
+                   These tools are NOT available to the root model.
+        sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
@@ -374,6 +379,8 @@ class RLMEnv(SandboxEnv):
     def __init__(
         self,
         sub_model: str | None = None,
+        sub_tools: list[Callable] | None = None,
+        sub_tool_max_turns: int = 5,
         max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
@@ -384,6 +391,8 @@ class RLMEnv(SandboxEnv):
         **kwargs,
     ):
         self.sub_model = sub_model
+        self.sub_tools = sub_tools or []
+        self.sub_tool_max_turns = sub_tool_max_turns
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
@@ -391,6 +400,13 @@ class RLMEnv(SandboxEnv):
         self.custom_system_prompt = system_prompt
         self.interception_host = interception_host
         self.interception_port = interception_port
+
+        # Convert sub_tools to OAI format (reusing existing infrastructure)
+        self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
+        self.sub_tool_map = {
+            getattr(tool, "__name__", tool.__class__.__name__): tool
+            for tool in self.sub_tools
+        }
 
         # Build worker script
         worker_script = _RLM_WORKER_SCRIPT.format(
@@ -432,6 +448,113 @@ class RLMEnv(SandboxEnv):
         # Remove bash tool from parent - we use our own code execution
         if hasattr(self, "tool_map") and "bash" in self.tool_map:
             self.remove_tool(self.bash)
+
+    # =========================================================================
+    # Sub-Agent Tool Infrastructure
+    # =========================================================================
+
+    def _generate_sub_tools_documentation(self) -> str:
+        """Generate documentation for sub-agent tools to include in system prompt."""
+        if not self.sub_tools:
+            return ""
+
+        lines = ["\n## Sub-Agent Tools\n"]
+        lines.append(
+            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
+        )
+
+        for oai_tool in self.sub_oai_tools:
+            func_def = oai_tool["function"]
+            name = func_def["name"]
+            desc = func_def.get("description", "No description")
+            params = func_def.get("parameters", {}).get("properties", {})
+
+            lines.append(f"### `{name}`")
+            lines.append(f"{desc}\n")
+
+            if params:
+                lines.append("**Parameters:**")
+                for param_name, param_info in params.items():
+                    param_type = param_info.get("type", "any")
+                    param_desc = param_info.get("description", "")
+                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
+                lines.append("")
+
+        lines.append(
+            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
+            "tools autonomously."
+        )
+        lines.append(
+            "You do NOT need to manage tool calls yourself - just describe the task "
+            "in your prompt.\n"
+        )
+
+        return "\n".join(lines)
+
+    async def _call_sub_tool(
+        self, tool_name: str, tool_args: dict, tool_call_id: str
+    ) -> dict:
+        """Execute a sub-agent tool call. Returns tool message dict."""
+        try:
+            tool_func = self.sub_tool_map[tool_name]
+            result = await maybe_await(tool_func, **tool_args)
+            return {"role": "tool", "content": str(result), "tool_call_id": tool_call_id}
+        except Exception as e:
+            return {"role": "tool", "content": f"Error: {e}", "tool_call_id": tool_call_id}
+
+    async def _run_sub_llm_with_tools(
+        self, client: Any, model: str, messages: list[dict]
+    ) -> dict:
+        """
+        Run a sub-LLM call with tool-calling loop.
+
+        Returns the final response dict in OAI format.
+        """
+        current_messages = list(messages)
+
+        for _ in range(self.sub_tool_max_turns):
+            # Make LLM call with tools
+            response = await client.chat.completions.create(
+                model=model,
+                messages=current_messages,
+                tools=self.sub_oai_tools if self.sub_oai_tools else None,
+            )
+
+            assistant_message = response.choices[0].message
+            tool_calls = getattr(assistant_message, "tool_calls", None)
+
+            # If no tool calls, we're done
+            if not tool_calls:
+                return (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else dict(response)
+                )
+
+            # Add assistant message with tool calls to conversation
+            current_messages.append(assistant_message.model_dump())
+
+            # Execute all tool calls
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                try:
+                    tool_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                tool_result = await self._call_sub_tool(
+                    tool_name, tool_args, tool_call.id
+                )
+                current_messages.append(tool_result)
+
+        # Max turns reached - make final call without tools
+        response = await client.chat.completions.create(
+            model=model,
+            messages=current_messages,
+        )
+        return (
+            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        )
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from sandbox code)
@@ -611,11 +734,23 @@ class RLMEnv(SandboxEnv):
         messages = request_body.get("messages", [])
 
         try:
-            response = await client.chat.completions.create(
-                model=sub_model,
-                messages=messages,
-            )
-            response_dict = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            # Use tool-calling loop if sub_tools are configured
+            if self.sub_tools:
+                response_dict = await self._run_sub_llm_with_tools(
+                    client, sub_model, messages
+                )
+            else:
+                # Original simple path
+                response = await client.chat.completions.create(
+                    model=sub_model,
+                    messages=messages,
+                )
+                response_dict = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else dict(response)
+                )
+
             return web.json_response(response_dict)
         except Exception as e:
             logger.error(f"Sub-LLM call failed: {e}")
@@ -852,17 +987,27 @@ PY
     # =========================================================================
 
     async def get_prompt_messages(self, state: State) -> Messages:
-        """Build prompt messages, adding system prompt on first turn."""
+        """Build prompt messages, adding system prompt with tool docs on first turn."""
         if len(state["trajectory"]) == 0:
             # First turn: add system prompt
             prompt = state.get("prompt", [])
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
-            system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+            # Build system prompt with sub-tool documentation
+            base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+            sub_tools_docs = self._generate_sub_tools_documentation()
+            system_prompt = base_system_prompt + sub_tools_docs
+
             messages = list(prompt)
             if not messages or messages[0].get("role") != "system":
                 messages.insert(0, {"role": "system", "content": system_prompt})
+            else:
+                # Append tool docs to existing system prompt
+                messages[0] = {
+                    "role": "system",
+                    "content": messages[0]["content"] + sub_tools_docs,
+                }
             return messages
         else:
             # Subsequent turns: use parent implementation
