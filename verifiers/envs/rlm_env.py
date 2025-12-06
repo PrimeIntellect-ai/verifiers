@@ -34,6 +34,8 @@ from aiohttp import web
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
+from verifiers.rubrics.rubric import Rubric
+from verifiers.rubrics.rubric_group import RubricGroup
 from verifiers.types import Messages, State
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
@@ -388,6 +390,7 @@ class RLMEnv(SandboxEnv):
         system_prompt: str | None = None,
         interception_host: str | None = None,
         interception_port: int = 8766,
+        rubric: Rubric | None = None,
         **kwargs,
     ):
         self.sub_model = sub_model
@@ -438,16 +441,44 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
+        # Create internal metrics rubric and combine with user rubric
+        internal_rubric = self._create_metrics_rubric()
+        if rubric is not None:
+            combined_rubric = RubricGroup(rubrics=[internal_rubric, rubric])
+        else:
+            combined_rubric = internal_rubric
+
         super().__init__(
             sandbox_name="rlm-env",
             start_command=start_command,
             max_turns=max_iterations,
+            rubric=combined_rubric,
             **kwargs,
         )
 
         # Remove bash tool from parent - we use our own code execution
         if hasattr(self, "tool_map") and "bash" in self.tool_map:
             self.remove_tool(self.bash)
+
+    def _create_metrics_rubric(self) -> Rubric:
+        """Create internal rubric with 0-weighted sub-LLM metrics."""
+
+        def sub_llm_calls(state: State) -> float:
+            """Number of sub-LLM calls made during rollout."""
+            return float(state.get("sub_llm_call_count", 0))
+
+        def sub_llm_prompt_tokens(state: State) -> float:
+            """Total prompt tokens consumed by sub-LLM calls."""
+            return float(state.get("sub_llm_prompt_tokens", 0))
+
+        def sub_llm_completion_tokens(state: State) -> float:
+            """Total completion tokens from sub-LLM calls."""
+            return float(state.get("sub_llm_completion_tokens", 0))
+
+        return Rubric(
+            funcs=[sub_llm_calls, sub_llm_prompt_tokens, sub_llm_completion_tokens],
+            weights=[0.0, 0.0, 0.0],
+        )
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -504,13 +535,16 @@ class RLMEnv(SandboxEnv):
 
     async def _run_sub_llm_with_tools(
         self, client: Any, model: str, messages: list[dict]
-    ) -> dict:
+    ) -> tuple[dict, int, int]:
         """
         Run a sub-LLM call with tool-calling loop.
 
-        Returns the final response dict in OAI format.
+        Returns:
+            Tuple of (response_dict, total_prompt_tokens, total_completion_tokens)
         """
         current_messages = list(messages)
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
 
         for _ in range(self.sub_tool_max_turns):
             # Make LLM call with tools
@@ -520,16 +554,23 @@ class RLMEnv(SandboxEnv):
                 tools=self.sub_oai_tools if self.sub_oai_tools else None,
             )
 
+            # Accumulate tokens from this call
+            usage = getattr(response, "usage", None)
+            if usage:
+                total_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+                total_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+
             assistant_message = response.choices[0].message
             tool_calls = getattr(assistant_message, "tool_calls", None)
 
             # If no tool calls, we're done
             if not tool_calls:
-                return (
+                response_dict = (
                     response.model_dump()
                     if hasattr(response, "model_dump")
                     else dict(response)
                 )
+                return response_dict, total_prompt_tokens, total_completion_tokens
 
             # Add assistant message with tool calls to conversation
             current_messages.append(assistant_message.model_dump())
@@ -552,9 +593,17 @@ class RLMEnv(SandboxEnv):
             model=model,
             messages=current_messages,
         )
-        return (
+
+        # Accumulate tokens from final call
+        usage = getattr(response, "usage", None)
+        if usage:
+            total_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            total_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+
+        response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
+        return response_dict, total_prompt_tokens, total_completion_tokens
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from sandbox code)
@@ -736,7 +785,7 @@ class RLMEnv(SandboxEnv):
         try:
             # Use tool-calling loop if sub_tools are configured
             if self.sub_tools:
-                response_dict = await self._run_sub_llm_with_tools(
+                response_dict, prompt_tokens, completion_tokens = await self._run_sub_llm_with_tools(
                     client, sub_model, messages
                 )
             else:
@@ -750,6 +799,15 @@ class RLMEnv(SandboxEnv):
                     if hasattr(response, "model_dump")
                     else dict(response)
                 )
+                # Extract tokens from simple path
+                usage = response_dict.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0) or 0
+                completion_tokens = usage.get("completion_tokens", 0) or 0
+
+            # Track metrics
+            context["sub_llm_call_count"] = context.get("sub_llm_call_count", 0) + 1
+            context["sub_llm_prompt_tokens"] = context.get("sub_llm_prompt_tokens", 0) + prompt_tokens
+            context["sub_llm_completion_tokens"] = context.get("sub_llm_completion_tokens", 0) + completion_tokens
 
             return web.json_response(response_dict)
         except Exception as e:
@@ -802,11 +860,15 @@ class RLMEnv(SandboxEnv):
         state["interception_url"] = interception_url
         state["tunnel_url"] = tunnel_url if self.interception_host is None else None
 
-        # Register rollout for sub-LLM routing
+        # Register rollout for sub-LLM routing with metrics tracking
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
+            # Metrics tracking
+            "sub_llm_call_count": 0,
+            "sub_llm_prompt_tokens": 0,
+            "sub_llm_completion_tokens": 0,
         }
 
         # Build context dict
@@ -830,6 +892,21 @@ class RLMEnv(SandboxEnv):
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get('model', '')}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
+
+# Sync filesystem and verify worker script exists
+sync 2>/dev/null || true
+for i in $(seq 1 50); do
+    if [ -f "{self._WORKER_PATH}" ]; then
+        break
+    fi
+    sleep 0.1
+done
+
+if [ ! -f "{self._WORKER_PATH}" ]; then
+    echo "Worker script not found at {self._WORKER_PATH}" >&2
+    exit 1
+fi
+
 nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
 """
         await self.sandbox_client.execute_command(sandbox_id, start_worker_cmd)
@@ -1084,6 +1161,11 @@ PY
         """Cleanup RLM-specific state."""
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
+            context = self.active_rollouts[rollout_id]
+            # Copy metrics to state before cleanup
+            state["sub_llm_call_count"] = context.get("sub_llm_call_count", 0)
+            state["sub_llm_prompt_tokens"] = context.get("sub_llm_prompt_tokens", 0)
+            state["sub_llm_completion_tokens"] = context.get("sub_llm_completion_tokens", 0)
             del self.active_rollouts[rollout_id]
 
         # Decrement tunnel usage

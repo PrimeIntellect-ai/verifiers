@@ -8,6 +8,7 @@ import pytest
 from datasets import Dataset
 
 from verifiers.envs.rlm_env import RLMEnv
+from verifiers.rubrics.rubric import Rubric
 
 
 # =============================================================================
@@ -752,7 +753,7 @@ class TestRunSubLLMWithTools:
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
-        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        result, prompt_tokens, completion_tokens = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
@@ -1003,4 +1004,267 @@ class TestPostRollout:
         await rlm_env.post_rollout(state)
 
         assert state["final_answer"] == ""
+
+
+# =============================================================================
+# 8. Sub-LLM Metrics Tracking
+# =============================================================================
+
+
+class TestSubLLMMetricsInitialization:
+    """Tests for sub-LLM metrics initialization."""
+
+    @pytest.mark.asyncio
+    async def test_initializes_metrics_in_active_rollouts(self, rlm_env):
+        """Initializes sub-LLM metrics tracking in active_rollouts."""
+        rlm_env._ensure_interception_server = AsyncMock()
+        rlm_env._get_tunnel_url = AsyncMock(return_value="https://test.trycloudflare.com")
+        rlm_env._write_context_to_sandbox = AsyncMock()
+        rlm_env._write_answer_to_sandbox = AsyncMock()
+        rlm_env._wait_for_worker_ready = AsyncMock()
+
+        state = {"info": {}, "model": "test-model", "client": MagicMock()}
+        result = await rlm_env.setup_state(state)
+
+        rollout_context = rlm_env.active_rollouts[result["rollout_id"]]
+        assert rollout_context["sub_llm_call_count"] == 0
+        assert rollout_context["sub_llm_prompt_tokens"] == 0
+        assert rollout_context["sub_llm_completion_tokens"] == 0
+
+
+class TestSubLLMMetricsTracking:
+    """Tests for sub-LLM metrics tracking in _handle_sub_llm_request."""
+
+    @pytest.mark.asyncio
+    async def test_increments_call_count(self, rlm_env):
+        """Increments call count for each sub-LLM request."""
+        rollout_id = "rlm_test123"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.model_dump = MagicMock(return_value={
+            "choices": [{"message": {"content": "response"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        })
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env.active_rollouts[rollout_id] = {
+            "client": mock_client,
+            "model": "test-model",
+            "sub_model": "gpt-4",
+            "sub_llm_call_count": 0,
+            "sub_llm_prompt_tokens": 0,
+            "sub_llm_completion_tokens": 0,
+        }
+
+        mock_request = MagicMock()
+        mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.json = AsyncMock(return_value={
+            "messages": [{"role": "user", "content": "test"}],
+        })
+
+        await rlm_env._handle_sub_llm_request(mock_request)
+
+        context = rlm_env.active_rollouts[rollout_id]
+        assert context["sub_llm_call_count"] == 1
+        assert context["sub_llm_prompt_tokens"] == 10
+        assert context["sub_llm_completion_tokens"] == 20
+
+    @pytest.mark.asyncio
+    async def test_accumulates_across_requests(self, rlm_env):
+        """Accumulates metrics across multiple sub-LLM requests."""
+        rollout_id = "rlm_test123"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.model_dump = MagicMock(return_value={
+            "choices": [{"message": {"content": "response"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        })
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env.active_rollouts[rollout_id] = {
+            "client": mock_client,
+            "model": "test-model",
+            "sub_model": "gpt-4",
+            "sub_llm_call_count": 5,
+            "sub_llm_prompt_tokens": 100,
+            "sub_llm_completion_tokens": 200,
+        }
+
+        mock_request = MagicMock()
+        mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.json = AsyncMock(return_value={
+            "messages": [{"role": "user", "content": "test"}],
+        })
+
+        await rlm_env._handle_sub_llm_request(mock_request)
+
+        context = rlm_env.active_rollouts[rollout_id]
+        assert context["sub_llm_call_count"] == 6
+        assert context["sub_llm_prompt_tokens"] == 110
+        assert context["sub_llm_completion_tokens"] == 220
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_usage(self, rlm_env):
+        """Handles responses without usage data gracefully."""
+        rollout_id = "rlm_test123"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.model_dump = MagicMock(return_value={
+            "choices": [{"message": {"content": "response"}}],
+            # No "usage" field
+        })
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env.active_rollouts[rollout_id] = {
+            "client": mock_client,
+            "model": "test-model",
+            "sub_model": "gpt-4",
+            "sub_llm_call_count": 0,
+            "sub_llm_prompt_tokens": 0,
+            "sub_llm_completion_tokens": 0,
+        }
+
+        mock_request = MagicMock()
+        mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.json = AsyncMock(return_value={
+            "messages": [{"role": "user", "content": "test"}],
+        })
+
+        await rlm_env._handle_sub_llm_request(mock_request)
+
+        context = rlm_env.active_rollouts[rollout_id]
+        assert context["sub_llm_call_count"] == 1
+        assert context["sub_llm_prompt_tokens"] == 0
+        assert context["sub_llm_completion_tokens"] == 0
+
+
+class TestSubLLMMetricsWithTools:
+    """Tests for sub-LLM metrics with tool-calling loop."""
+
+    @pytest.mark.asyncio
+    async def test_accumulates_tokens_across_tool_turns(self, rlm_env_with_sub_tools):
+        """Accumulates tokens across multiple tool-calling turns."""
+        mock_client = MagicMock()
+
+        # First response with tool call
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_1"
+        mock_tool_call.function.name = "sample_tool"
+        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
+
+        mock_message1 = MagicMock()
+        mock_message1.tool_calls = [mock_tool_call]
+        mock_message1.content = None
+        mock_message1.model_dump = MagicMock(return_value={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_1", "function": {"name": "sample_tool", "arguments": '{"x": 2, "y": 3}'}}]
+        })
+
+        mock_response1 = MagicMock()
+        mock_response1.choices = [MagicMock(message=mock_message1)]
+        mock_response1.usage = MagicMock(prompt_tokens=50, completion_tokens=30)
+
+        # Second response without tool calls
+        mock_message2 = MagicMock()
+        mock_message2.tool_calls = None
+        mock_message2.content = "The result is 5"
+
+        mock_response2 = MagicMock()
+        mock_response2.choices = [MagicMock(message=mock_message2)]
+        mock_response2.usage = MagicMock(prompt_tokens=100, completion_tokens=20)
+        mock_response2.model_dump = MagicMock(return_value={
+            "choices": [{"message": {"content": "The result is 5"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+        })
+
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[mock_response1, mock_response2]
+        )
+
+        messages = [{"role": "user", "content": "Add 2 and 3"}]
+        response_dict, prompt_tokens, completion_tokens = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+            mock_client, "gpt-4", messages
+        )
+
+        # Should accumulate tokens from both calls
+        assert prompt_tokens == 150  # 50 + 100
+        assert completion_tokens == 50  # 30 + 20
+
+
+class TestSubLLMMetricsCleanup:
+    """Tests for metrics cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_copies_metrics_to_state(self, rlm_env):
+        """Copies sub-LLM metrics from active_rollouts to state."""
+        rollout_id = "rlm_test123"
+        rlm_env.active_rollouts[rollout_id] = {
+            "client": MagicMock(),
+            "sub_llm_call_count": 5,
+            "sub_llm_prompt_tokens": 150,
+            "sub_llm_completion_tokens": 300,
+        }
+
+        state = {"rollout_id": rollout_id}
+        await rlm_env.cleanup_rlm_state(state)
+
+        assert state["sub_llm_call_count"] == 5
+        assert state["sub_llm_prompt_tokens"] == 150
+        assert state["sub_llm_completion_tokens"] == 300
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_metrics_gracefully(self, rlm_env):
+        """Handles missing metrics in active_rollouts gracefully."""
+        rollout_id = "rlm_test123"
+        rlm_env.active_rollouts[rollout_id] = {
+            "client": MagicMock(),
+            # No metrics fields
+        }
+
+        state = {"rollout_id": rollout_id}
+        await rlm_env.cleanup_rlm_state(state)
+
+        assert state["sub_llm_call_count"] == 0
+        assert state["sub_llm_prompt_tokens"] == 0
+        assert state["sub_llm_completion_tokens"] == 0
+
+
+class TestSubLLMMetricsRubric:
+    """Tests for automatic sub-LLM metrics rubric."""
+
+    def test_rubric_includes_metric_functions(self, rlm_env):
+        """Rubric includes 0-weighted metric functions."""
+        func_names = rlm_env.rubric._get_reward_func_names()
+        assert "sub_llm_calls" in func_names
+        assert "sub_llm_prompt_tokens" in func_names
+        assert "sub_llm_completion_tokens" in func_names
+
+    def test_metric_weights_are_zero(self, rlm_env):
+        """Metric functions have weight 0."""
+        names = rlm_env.rubric._get_reward_func_names()
+        weights = rlm_env.rubric._get_reward_weights()
+        name_to_weight = dict(zip(names, weights))
+        assert name_to_weight["sub_llm_calls"] == 0.0
+        assert name_to_weight["sub_llm_prompt_tokens"] == 0.0
+        assert name_to_weight["sub_llm_completion_tokens"] == 0.0
+
+    def test_user_rubric_combined(self, mock_sandbox_client, mock_dataset):
+        """User rubric is combined with internal metrics rubric."""
+        def custom_reward(state) -> float:
+            return 1.0
+
+        user_rubric = Rubric(funcs=[custom_reward], weights=[1.0])
+
+        with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
+             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(dataset=mock_dataset, rubric=user_rubric)
+
+            func_names = env.rubric._get_reward_func_names()
+            # Should have both internal metrics and user reward
+            assert "sub_llm_calls" in func_names
+            assert "sub_llm_prompt_tokens" in func_names
+            assert "sub_llm_completion_tokens" in func_names
+            assert "custom_reward" in func_names
 
