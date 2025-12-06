@@ -1,0 +1,13 @@
+[project]
+name = "test-rlm-subllm"
+version = "0.1.0"
+description = "Test environment for RLM async sub-LLM calls"
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

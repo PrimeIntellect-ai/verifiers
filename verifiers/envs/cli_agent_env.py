@@ -425,12 +425,15 @@ class CliAgentEnv(vf.MultiTurnEnv):
             )
 
         request_id = f"req_{uuid.uuid4().hex[:8]}"
+        # Store full request body so subclasses can access custom fields
+        # (e.g. extra_body fields like rlm_call_type)
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
             "messages": request_body["messages"],
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
+            "request_body": request_body,
             "response_future": asyncio.Future(),
         }
 

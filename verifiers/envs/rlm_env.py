@@ -22,7 +22,7 @@ import textwrap
 from typing import Any
 
 from verifiers.envs.cli_agent_env import CliAgentEnv
-from verifiers.types import State
+from verifiers.types import Messages, ModelResponse, State
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ import sys
 import re
 import json
 import time
+import asyncio
 import traceback
 from io import StringIO
 from pathlib import Path
@@ -45,6 +46,7 @@ ROOT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 SUB_MODEL = os.environ.get("RLM_SUB_MODEL", ROOT_MODEL)
 MAX_ITERATIONS = int(os.environ.get("RLM_MAX_ITERATIONS", "50"))
 MAX_OUTPUT_LENGTH = int(os.environ.get("RLM_MAX_OUTPUT_LENGTH", "8192"))
+MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "10"))
 CONTEXT_FILE = "/tmp/rlm_context.json"
 MESSAGES_FILE = "/tmp/rlm_messages.json"
 ANSWER_FILE = "/tmp/rlm_answer.json"
@@ -70,9 +72,16 @@ if not BASE_URL:
     sys.exit(1)
 
 # Import OpenAI after file check (gives pip install more time if needed)
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
+# Sync client for root model calls in the REPL loop
 client = OpenAI(base_url=BASE_URL, api_key="dummy-key")
+
+# Async client for sub-LLM calls (used by the llm() function)
+async_client = AsyncOpenAI(base_url=BASE_URL, api_key="dummy-key")
+
+# Semaphore to control parallelism of sub-LLM calls
+_sub_llm_semaphore = asyncio.Semaphore(MAX_SUB_LLM_PARALLELISM)
 
 # Load context from file (may be empty if no context provided)
 with open(CONTEXT_FILE, "r") as f:
@@ -86,9 +95,11 @@ with open(MESSAGES_FILE, "r") as f:
 answer = {"ready": False, "content": ""}
 
 
-def llm(prompt: str, **kwargs) -> str:
+async def llm(prompt: str, **kwargs) -> str:
     """
-    Make a sub-LLM call. Available in the REPL for recursive queries.
+    Make an async sub-LLM call. Use with asyncio.gather() for parallel execution.
+    
+    Parallelism is controlled by a semaphore (configurable via max_sub_llm_parallelism).
     
     Args:
         prompt: The prompt/query for the sub-LLM
@@ -111,7 +122,8 @@ def llm(prompt: str, **kwargs) -> str:
             api_kwargs[k] = v
     
     try:
-        response = client.chat.completions.create(**api_kwargs)
+        async with _sub_llm_semaphore:
+            response = await async_client.chat.completions.create(**api_kwargs)
         return response.choices[0].message.content or ""
     except Exception as e:
         return f"Error in sub-LLM call: {e}"
@@ -251,10 +263,27 @@ Only code inside these blocks will be executed. Text outside code blocks is for 
   - `answer["content"]`: Your answer (string) - write and update this throughout execution
   - `answer["ready"]`: Set to `True` to finish - **this immediately terminates execution**
 
-- `llm(prompt, **kwargs)`: Call a sub-LLM for help with subtasks
+- `llm(prompt, **kwargs)`: Async function to call a sub-LLM for help with subtasks
   - Returns the response as a string
   - Useful for semantic understanding, summarization, complex reasoning
   - Include any context you need directly in the prompt string
+  - **This is an async function** - use with `asyncio.run()`:
+    ```python
+    import asyncio
+    # Single call
+    result = asyncio.run(llm("What is the main theme of this text?"))
+    ```
+  - Use `asyncio.gather()` to execute multiple calls in parallel:
+    ```python
+    import asyncio
+    results = asyncio.run(asyncio.gather(
+        llm("Summarize section 1: " + section1),
+        llm("Summarize section 2: " + section2),
+        llm("Summarize section 3: " + section3),
+    ))
+    # results is a list of responses in the same order as the calls
+    ```
+  - Parallelism is automatically rate-limited to prevent API overload
 
 ## Workflow
 
@@ -295,7 +324,8 @@ answer["ready"] = True
 3. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
 4. **One step at a time** - write small code blocks, see output, then continue
 5. **Use `llm()` for semantic tasks** - summarization, understanding text, classification, etc.
-6. You can think in natural language between code blocks - reasoning and planning are encouraged
+6. **`llm()` is async** - always use `asyncio.run(llm(...))` or `asyncio.run(asyncio.gather(llm(...), ...))`
+7. You can think in natural language between code blocks - reasoning and planning are encouraged
 
 The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
@@ -335,6 +365,7 @@ class RLMEnv(CliAgentEnv):
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         max_iterations: Maximum REPL iterations before stopping
         max_output_length: Maximum length of code execution output
+        max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls (default: 10)
         context_key: Key in info containing optional context data (default: "context")
         system_prompt: Custom system prompt (default: RLM standard prompt)
         **kwargs: Additional arguments passed to CliAgentEnv
@@ -345,6 +376,7 @@ class RLMEnv(CliAgentEnv):
         sub_model: str | None = None,
         max_iterations: int = 50,
         max_output_length: int = 8192,
+        max_sub_llm_parallelism: int = 5,
         context_key: str = "context",
         system_prompt: str | None = None,
         **kwargs,
@@ -352,6 +384,7 @@ class RLMEnv(CliAgentEnv):
         self.sub_model = sub_model
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
+        self.max_sub_llm_parallelism = max_sub_llm_parallelism
         self.context_key = context_key
         self.custom_system_prompt = system_prompt
 
@@ -371,6 +404,7 @@ class RLMEnv(CliAgentEnv):
             {
                 "RLM_MAX_ITERATIONS": str(max_iterations),
                 "RLM_MAX_OUTPUT_LENGTH": str(max_output_length),
+                "RLM_MAX_SUB_LLM_PARALLELISM": str(max_sub_llm_parallelism),
             }
         )
         if sub_model:
@@ -508,6 +542,36 @@ with open('{filepath}', 'ab') as f:
 
         return metadata
 
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: ModelResponse,
+    ):
+        """
+        Override to skip adding sub-LLM calls to the trajectory.
+        
+        Sub-LLM calls are internal helper calls that should not be part of
+        the visible conversation trajectory. They are identified by
+        rlm_call_type: "sub" in the intercepted request.
+        """
+        # Check if this is a sub-LLM call
+        request_id = state.get("current_request_id")
+        call_type = "unknown"
+        if request_id and request_id in self.intercepts:
+            request_body = self.intercepts[request_id].get("request_body", {})
+            call_type = request_body.get("rlm_call_type") or "unknown"
+        
+        if call_type == "sub":
+            # Skip adding sub-LLM calls to trajectory
+            logger.debug(f"Skipping sub-LLM call {request_id}")
+            if request_id in self.intercepts:
+                del self.intercepts[request_id]
+            return
+        
+        # For root calls, add to trajectory normally
+        await super().add_model_response(state, prompt_messages, response)
+
     async def post_rollout(self, state: State):
         """
         Read final answer from sandbox before destruction.
@@ -536,3 +600,9 @@ with open('{filepath}', 'ab') as f:
         except Exception as e:
             logger.warning(f"Failed to read RLM answer: {e}")
             state["final_answer"] = ""
+
+# TODO: Improve system prompt
+# TODO: Add logging for sub-LLM calls
+# TODO: Add support for additional tools, usable by the sub-LLMs
+# TODO: Experiment with putting the user query inside the `context`
+# TODO: Simplify usage of the `llm` function for the RLM agent
