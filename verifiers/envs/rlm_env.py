@@ -94,29 +94,9 @@ with open(MESSAGES_FILE, "r") as f:
 # Initialize answer structure
 answer = {"ready": False, "content": ""}
 
-# Persistent execution namespace - survives across code blocks within a rollout
-exec_globals = {
-    "context": context,
-    "answer": answer,
-    "llm": None,  # Will be set after llm() is defined
-    "print": print,
-    "__builtins__": __builtins__,
-}
-
-
-async def llm(prompt: str, **kwargs) -> str:
-    """
-    Make an async sub-LLM call. Use with asyncio.gather() for parallel execution.
-    
-    Parallelism is controlled by a semaphore (configurable via max_sub_llm_parallelism).
-    
-    Args:
-        prompt: The prompt/query for the sub-LLM
-        **kwargs: Additional arguments (e.g., max_tokens)
-    
-    Returns:
-        The sub-LLM's response as a string
-    """
+# Internal async implementation for sub-LLM calls (keeps semaphore control)
+async def _llm_async(prompt: str, **kwargs) -> str:
+    """Internal async sub-LLM call with semaphore control."""
     sub_messages = [{"role": "user", "content": prompt}]
     
     api_kwargs = {
@@ -138,8 +118,32 @@ async def llm(prompt: str, **kwargs) -> str:
         return f"Error in sub-LLM call: {e}"
 
 
-# Now that llm is defined, add it to the persistent namespace
-exec_globals["llm"] = llm
+def llm_batch(prompts: list, **kwargs) -> list:
+    """
+    Make multiple sub-LLM calls in parallel.
+    
+    Parallelism is automatically rate-limited by the configured semaphore.
+    
+    Args:
+        prompts: List of prompts for the sub-LLMs
+        **kwargs: Additional arguments applied to all calls
+    
+    Returns:
+        List of responses in the same order as the input prompts
+    """
+    async def _run_batch():
+        return await asyncio.gather(*[_llm_async(p, **kwargs) for p in prompts])
+    return asyncio.run(_run_batch())
+
+
+# Persistent execution namespace - survives across code blocks within a rollout
+exec_globals = {
+    "context": context,
+    "answer": answer,
+    "llm_batch": llm_batch,
+    "print": print,
+    "__builtins__": __builtins__,
+}
 
 
 def execute_code(code: str) -> str:
@@ -276,27 +280,25 @@ Only code inside these blocks will be executed. Text outside code blocks is for 
   - `answer["content"]`: Your answer (string) - write and update this throughout execution
   - `answer["ready"]`: Set to `True` to finish - **this immediately terminates execution**
 
-- `llm(prompt, **kwargs)`: Async function to call a sub-LLM for help with subtasks
-  - Returns the response as a string
+- `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
+  - Takes a list of prompts, returns a list of responses (same order)
   - Useful for semantic understanding, summarization, complex reasoning
-  - Include any context you need directly in the prompt string
-  - **This is an async function** - use with `asyncio.run()`:
+  - Include any context you need directly in the prompt strings
+  - Parallelism is automatically rate-limited
+  - Examples:
     ```python
-    import asyncio
-    # Single call
-    result = asyncio.run(llm("What is the main theme of this text?"))
+    # Single sub-LLM call
+    result = llm_batch(["What is the main theme of this text?"])[0]
+    print(result)
+    
+    # Multiple parallel sub-LLM calls
+    results = llm_batch([
+        "Summarize section 1: " + section1,
+        "Summarize section 2: " + section2,
+        "Summarize section 3: " + section3,
+    ])
+    # results[0] = response for section 1, results[1] = response for section 2, etc.
     ```
-  - Use `asyncio.gather()` to execute multiple calls in parallel:
-    ```python
-    import asyncio
-    results = asyncio.run(asyncio.gather(
-        llm("Summarize section 1: " + section1),
-        llm("Summarize section 2: " + section2),
-        llm("Summarize section 3: " + section3),
-    ))
-    # results is a list of responses in the same order as the calls
-    ```
-  - Parallelism is automatically rate-limited to prevent API overload
 
 ## Workflow
 
@@ -336,9 +338,8 @@ answer["ready"] = True
 2. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
 3. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
 4. **One step at a time** - write small code blocks, see output, then continue
-5. **Use `llm()` for semantic tasks** - summarization, understanding text, classification, etc.
-6. **`llm()` is async** - always use `asyncio.run(llm(...))` or `asyncio.run(asyncio.gather(llm(...), ...))`
-7. You can think in natural language between code blocks - reasoning and planning are encouraged
+5. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+6. You can think in natural language between code blocks - reasoning and planning are encouraged
 
 The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
@@ -618,4 +619,3 @@ with open('{filepath}', 'ab') as f:
 # TODO: Add logging for sub-LLM calls
 # TODO: Add support for additional tools, usable by the sub-LLMs
 # TODO: Experiment with putting the user query inside the `context`
-# TODO: Simplify usage of the `llm` function for the RLM agent

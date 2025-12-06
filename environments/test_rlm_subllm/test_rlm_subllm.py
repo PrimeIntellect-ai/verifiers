@@ -1,15 +1,15 @@
 """
 Test RLM Sub-LLM Calls Environment.
 
-This environment is designed to explicitly test the async sub-LLM call functionality
+This environment is designed to explicitly test the sub-LLM call functionality
 in RLMEnv. It presents a multi-section summarization task that CANNOT be solved with
-pure Python code - the model MUST use llm() calls for semantic understanding.
+pure Python code - the model MUST use llm_batch() calls for semantic understanding.
 
 The task:
 1. Context contains multiple distinct text sections (articles/paragraphs)
-2. Model must summarize each section using llm() calls
+2. Model must summarize each section using llm_batch() calls
 3. Summaries are combined into a final structured answer
-4. Tests both single calls and parallel execution via asyncio.gather()
+4. Tests parallel execution via llm_batch()
 """
 
 from datasets import Dataset
@@ -123,28 +123,24 @@ def load_environment(
                         "role": "user",
                         "content": f"""You have {num_sections} text sections in the context. Your task is to:
 
-1. Use the llm() function to summarize EACH section in exactly one sentence
-2. You MUST use llm() for summarization - do NOT try to summarize manually
-3. For efficiency, use asyncio.gather() to summarize all sections in parallel
+1. Use the llm_batch() function to summarize EACH section in exactly one sentence
+2. You MUST use llm_batch() for summarization - do NOT try to summarize manually
+3. llm_batch() takes a list of prompts and returns a list of responses (executed in parallel)
 4. Format your final answer as a numbered list of summaries
 
 Example code pattern:
 ```python
-import asyncio
-
-# Get summaries in parallel
-summaries = asyncio.run(asyncio.gather(
-    llm(f"Summarize this in one sentence: {{section1}}"),
-    llm(f"Summarize this in one sentence: {{section2}}"),
+# Get summaries in parallel using llm_batch
+summaries = llm_batch([
+    f"Summarize this in one sentence: {{section1}}",
+    f"Summarize this in one sentence: {{section2}}",
     # ... etc
-))
+])
 
 # Build the final answer
 answer["content"] = "\\n".join([f"{{i+1}}. {{s}}" for i, s in enumerate(summaries)])
 answer["ready"] = True
-```
-
-Remember: The llm() function is async, so you must use asyncio.run() to execute it.""",
+```""",
                     }
                 ],
                 "task": "multi-section-summary",
