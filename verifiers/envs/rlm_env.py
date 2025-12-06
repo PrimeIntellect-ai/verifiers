@@ -94,6 +94,15 @@ with open(MESSAGES_FILE, "r") as f:
 # Initialize answer structure
 answer = {"ready": False, "content": ""}
 
+# Persistent execution namespace - survives across code blocks within a rollout
+exec_globals = {
+    "context": context,
+    "answer": answer,
+    "llm": None,  # Will be set after llm() is defined
+    "print": print,
+    "__builtins__": __builtins__,
+}
+
 
 async def llm(prompt: str, **kwargs) -> str:
     """
@@ -129,17 +138,21 @@ async def llm(prompt: str, **kwargs) -> str:
         return f"Error in sub-LLM call: {e}"
 
 
+# Now that llm is defined, add it to the persistent namespace
+exec_globals["llm"] = llm
+
+
 def execute_code(code: str) -> str:
-    """Execute Python code and capture output."""
-    global answer
+    """Execute Python code and capture output.
     
-    exec_globals = {
-        "context": context,
-        "answer": answer,
-        "llm": llm,
-        "print": print,
-        "__builtins__": __builtins__,
-    }
+    Uses a persistent namespace (exec_globals) so variables defined in one
+    code block are available in subsequent code blocks within the same rollout.
+    """
+    global answer, exec_globals
+    
+    # Update core objects (they may have changed)
+    exec_globals["context"] = context
+    exec_globals["answer"] = answer
     
     old_stdout = sys.stdout
     sys.stdout = captured_output = StringIO()
