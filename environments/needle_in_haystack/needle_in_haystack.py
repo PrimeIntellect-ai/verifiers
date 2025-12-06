@@ -117,10 +117,7 @@ def load_environment(
     )
 
     env = RLMEnv(
-        max_turns=30,
-        max_iterations=20,
-        timeout_seconds=600.0,
-        request_timeout=120.0,
+        max_iterations=30,
         max_output_length=8192,
         context_key="context",
         dataset=dataset,
