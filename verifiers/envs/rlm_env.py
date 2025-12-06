@@ -1118,5 +1118,4 @@ PY
 
 # TODO: Improve system prompt
 # TODO: Add logging for sub-LLM calls
-# TODO: Add support for additional tools, usable by the sub-LLMs
 # TODO: Experiment with putting the user query inside the `context`
