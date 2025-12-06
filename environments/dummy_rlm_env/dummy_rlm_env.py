@@ -112,10 +112,7 @@ def load_environment(**kwargs) -> vf.Environment:
     )
 
     env = RLMEnv(
-        max_turns=30,
         max_iterations=20,
-        timeout_seconds=300.0,
-        request_timeout=60.0,
         max_output_length=4096,
         context_key="context",  # Key in info where context lives
         dataset=dataset,

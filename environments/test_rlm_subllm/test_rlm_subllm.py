@@ -217,10 +217,7 @@ answer["ready"] = True
     )
 
     env = RLMEnv(
-        max_turns=30,
         max_iterations=25,
-        timeout_seconds=600.0,
-        request_timeout=240.0,
         max_output_length=8192,
         max_sub_llm_parallelism=max_sub_llm_parallelism,
         context_key="context",
