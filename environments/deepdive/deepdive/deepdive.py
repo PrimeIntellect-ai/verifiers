@@ -177,7 +177,7 @@ def load_environment(
     # === RLM Mode ===
     if use_rlm:
         # Create stateless tools for sub-LLMs (they don't share state between calls)
-        async def rlm_search(query: str, num_results: int = 10) -> str:
+        async def search(query: str, num_results: int = 10) -> str:
             """Search Google, getting up to 10 results and search metadata.
             Returns formatted search results including titles, snippets, and URLs."""
             t0 = perf_counter()
@@ -205,7 +205,7 @@ def load_environment(
                 print(f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}")
             return result
 
-        async def rlm_open(urls: list[str]) -> str:
+        async def open(urls: list[str]) -> str:
             """Get the content of webpages given a list of URLs.
             Returns the text content of each webpage."""
             t0 = perf_counter()
@@ -233,7 +233,7 @@ def load_environment(
 
         env = DeepDiveRLMEnv(
             sub_model=rlm_sub_model,
-            sub_tools=[rlm_search, rlm_open],
+            sub_tools=[search, open],
             max_iterations=rlm_max_iterations,
             max_output_length=rlm_max_output_length,
             max_sub_llm_parallelism=rlm_max_sub_llm_parallelism,

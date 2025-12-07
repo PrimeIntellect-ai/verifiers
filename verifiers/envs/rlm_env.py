@@ -38,6 +38,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.rubrics.rubric_group import RubricGroup
 from verifiers.types import Messages, State
 from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,13 @@ _RLM_READY_WAIT_SCRIPT = textwrap.dedent(
 )
 
 
+# System prompt for sub-LLMs (called via llm_batch)
+_SUB_LLM_SYSTEM_PROMPT = """You are a sub-agent being called by a parent model to help with a specific task.
+Answer the query directly and concisely. Put your final answer inside \\boxed{}.
+
+Example: If asked "What is 2+2?", respond with reasoning then \\boxed{4}."""
+
+
 # System prompt for RLM
 _RLM_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
 
@@ -274,7 +282,8 @@ Only code inside these blocks will be executed. Text outside code blocks is for 
   - `answer["ready"]`: Set to `True` to finish - **this immediately terminates execution**
 
 - `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
-  - Takes a list of prompts, returns a list of responses (same order)
+  - Takes a list of prompts, returns a list of focused answers (same order)
+  - Sub-LLMs are instructed to provide concise answers, so responses are typically brief
   - Useful for semantic understanding, summarization, complex reasoning
   - Include any context you need directly in the prompt strings
   - Parallelism is automatically rate-limited
@@ -596,7 +605,14 @@ class RLMEnv(SandboxEnv):
                 )
                 current_messages.append(tool_result)
 
-        # Max turns reached - make final call without tools
+        # Max turns reached - add prompt for final answer and make call without tools
+        current_messages.append(
+            {
+                "role": "user",
+                "content": "You've reached the maximum number of tool calls. "
+                "Based on the information gathered, provide your final answer inside \\boxed{}.",
+            }
+        )
         response = await client.chat.completions.create(
             model=model,
             messages=current_messages,
@@ -793,6 +809,12 @@ class RLMEnv(SandboxEnv):
 
         messages = request_body.get("messages", [])
 
+        # Prepend system message with \boxed{} instruction
+        messages_with_system = [
+            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
+            *messages,
+        ]
+
         try:
             # Use tool-calling loop if sub_tools are configured
             if self.sub_tools:
@@ -800,12 +822,14 @@ class RLMEnv(SandboxEnv):
                     response_dict,
                     prompt_tokens,
                     completion_tokens,
-                ) = await self._run_sub_llm_with_tools(client, sub_model, messages)
+                ) = await self._run_sub_llm_with_tools(
+                    client, sub_model, messages_with_system
+                )
             else:
                 # Original simple path
                 response = await client.chat.completions.create(
                     model=sub_model,
-                    messages=messages,
+                    messages=messages_with_system,
                 )
                 response_dict = (
                     response.model_dump()
@@ -816,6 +840,14 @@ class RLMEnv(SandboxEnv):
                 usage = response_dict.get("usage", {})
                 prompt_tokens = usage.get("prompt_tokens", 0) or 0
                 completion_tokens = usage.get("completion_tokens", 0) or 0
+
+            # Extract boxed answer from response (falls back to full content if no \boxed{})
+            if response_dict.get("choices"):
+                for choice in response_dict["choices"]:
+                    message = choice.get("message", {})
+                    content = message.get("content", "")
+                    if content:
+                        message["content"] = extract_boxed_answer(content)
 
             # Track metrics
             context["sub_llm_call_count"] = context.get("sub_llm_call_count", 0) + 1
