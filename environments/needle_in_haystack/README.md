@@ -7,6 +7,7 @@ A needle-in-haystack environment using the RLM (Recursive Language Model) REPL.
 This environment tests a model's ability to find specific information hidden in a large body of text using programmatic exploration. A random 7-digit "magic number" is hidden among thousands of lines of random filler text.
 
 The model operates in an RLM REPL environment where it can:
+
 - Write Python code to explore the context
 - Search through lines efficiently
 - Make recursive sub-LLM calls if needed
@@ -39,6 +40,7 @@ uv run vf-eval -s needle-in-haystack -m gpt-4.1-mini --env-kwargs '{"num_lines":
 ## Example Task
 
 The model receives:
+
 - **Query**: "I'm looking for a magic number hidden in the context. Find it and return just the number."
 - **Context**: ~10,000 lines of random text with one line containing "The magic number is 4829173"
 

@@ -24,27 +24,29 @@ def mock_sandbox_client():
     client.delete = AsyncMock()
     client.bulk_delete = AsyncMock()
     client.wait_for_creation = AsyncMock()
-    client.execute_command = AsyncMock(
-        return_value=MagicMock(stdout="", stderr="")
-    )
+    client.execute_command = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
     return client
 
 
 @pytest.fixture
 def mock_dataset():
     """Create a mock dataset for RLMEnv."""
-    return Dataset.from_dict({
-        "question": ["What is 2+2?"],
-        "answer": ["4"],
-        "info": [{}],
-    })
+    return Dataset.from_dict(
+        {
+            "question": ["What is 2+2?"],
+            "answer": ["4"],
+            "info": [{}],
+        }
+    )
 
 
 @pytest.fixture
 def rlm_env(mock_sandbox_client, mock_dataset):
     """Create an RLMEnv instance with mocked dependencies."""
-    with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-         patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
         mock_client_cls.return_value = mock_sandbox_client
         env = RLMEnv(
             dataset=mock_dataset,
@@ -60,6 +62,7 @@ def rlm_env(mock_sandbox_client, mock_dataset):
 @pytest.fixture
 def rlm_env_with_sub_tools(mock_sandbox_client, mock_dataset):
     """Create an RLMEnv instance with sub_tools configured."""
+
     def sample_tool(x: int, y: int) -> int:
         """Add two numbers together."""
         return x + y
@@ -68,8 +71,10 @@ def rlm_env_with_sub_tools(mock_sandbox_client, mock_dataset):
         """Reverse a string."""
         return text[::-1]
 
-    with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-         patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
         mock_client_cls.return_value = mock_sandbox_client
         env = RLMEnv(
             dataset=mock_dataset,
@@ -219,7 +224,9 @@ class TestFormatExecutionOutput:
             "execution_count": 1,
         }
         output = rlm_env._format_execution_output(result)
-        assert len(output) <= rlm_env.max_output_length + 50  # Allow for truncation message
+        assert (
+            len(output) <= rlm_env.max_output_length + 50
+        )  # Allow for truncation message
         assert "[output truncated]" in output
 
     def test_empty_output(self, rlm_env):
@@ -320,7 +327,9 @@ class TestExtractTunnelUrlFromLine:
 
     def test_extract_valid_url(self, rlm_env):
         """Extract valid trycloudflare.com URL."""
-        line = "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
+        line = (
+            "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
+        )
         url = rlm_env._extract_tunnel_url_from_line(line)
         assert url == "https://random-words.trycloudflare.com"
 
@@ -355,8 +364,10 @@ class TestRLMEnvInitialization:
 
     def test_default_initialization(self, mock_sandbox_client, mock_dataset):
         """Default initialization with minimal args."""
-        with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
             mock_client_cls.return_value = mock_sandbox_client
             env = RLMEnv(dataset=mock_dataset)
 
@@ -369,11 +380,14 @@ class TestRLMEnvInitialization:
 
     def test_custom_configuration(self, mock_sandbox_client, mock_dataset):
         """Custom sub_model, sub_tools, max_iterations, max_output_length."""
+
         def dummy_tool(x: int) -> int:
             return x * 2
 
-        with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
             mock_client_cls.return_value = mock_sandbox_client
             env = RLMEnv(
                 dataset=mock_dataset,
@@ -395,8 +409,10 @@ class TestRLMEnvInitialization:
     def test_system_prompt_customization(self, mock_sandbox_client, mock_dataset):
         """System prompt customization."""
         custom_prompt = "You are a custom RLM assistant."
-        with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
             mock_client_cls.return_value = mock_sandbox_client
             env = RLMEnv(
                 dataset=mock_dataset,
@@ -424,7 +440,9 @@ class TestSetupState:
         """Creates rollout_id and registers in active_rollouts."""
         # Mock the interception server and tunnel
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(return_value="https://test.trycloudflare.com")
+        rlm_env._get_tunnel_url = AsyncMock(
+            return_value="https://test.trycloudflare.com"
+        )
         rlm_env._write_context_to_sandbox = AsyncMock()
         rlm_env._write_answer_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
@@ -445,7 +463,9 @@ class TestSetupState:
     async def test_sets_up_interception_url(self, rlm_env):
         """Sets up interception_url in state."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(return_value="https://test.trycloudflare.com")
+        rlm_env._get_tunnel_url = AsyncMock(
+            return_value="https://test.trycloudflare.com"
+        )
         rlm_env._write_context_to_sandbox = AsyncMock()
         rlm_env._write_answer_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
@@ -465,7 +485,9 @@ class TestSetupState:
     async def test_stores_rlm_context(self, rlm_env):
         """Stores rlm_context in state."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(return_value="https://test.trycloudflare.com")
+        rlm_env._get_tunnel_url = AsyncMock(
+            return_value="https://test.trycloudflare.com"
+        )
         rlm_env._write_context_to_sandbox = AsyncMock()
         rlm_env._write_answer_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
@@ -533,7 +555,10 @@ class TestEnvResponse:
 
         assert len(response) == 1
         assert response[0]["role"] == "user"
-        assert "Python code" in response[0]["content"] or "code block" in response[0]["content"]
+        assert (
+            "Python code" in response[0]["content"]
+            or "code block" in response[0]["content"]
+        )
 
     @pytest.mark.asyncio
     async def test_executes_single_code_block(self, rlm_env):
@@ -544,14 +569,16 @@ class TestEnvResponse:
         state = {"sandbox_id": "sandbox_123"}
 
         # Mock execution
-        rlm_env._execute_code = AsyncMock(return_value={
-            "status": "ok",
-            "stdout": "hello",
-            "stderr": "",
-            "result": None,
-            "execution_count": 1,
-            "answer": {"ready": False, "content": ""},
-        })
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "hello",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
 
         response = await rlm_env.env_response(messages, state)
 
@@ -563,11 +590,15 @@ class TestEnvResponse:
     async def test_executes_multiple_code_blocks(self, rlm_env):
         """Executes multiple code blocks sequentially."""
         messages = [
-            {"role": "assistant", "content": "```python\nx = 1\n```\n```python\ny = 2\n```"},
+            {
+                "role": "assistant",
+                "content": "```python\nx = 1\n```\n```python\ny = 2\n```",
+            },
         ]
         state = {"sandbox_id": "sandbox_123"}
 
         call_count = 0
+
         async def mock_execute(sandbox_id, code):
             nonlocal call_count
             call_count += 1
@@ -596,14 +627,16 @@ class TestEnvResponse:
         ]
         state = {"sandbox_id": "sandbox_123"}
 
-        rlm_env._execute_code = AsyncMock(return_value={
-            "status": "ok",
-            "stdout": "",
-            "stderr": "",
-            "result": None,
-            "execution_count": 1,
-            "answer": {"ready": True, "content": "The answer is 4"},
-        })
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": True, "content": "The answer is 4"},
+            }
+        )
 
         await rlm_env.env_response(messages, state)
 
@@ -711,9 +744,7 @@ class TestCallSubTool:
     async def test_executes_tool_successfully(self, rlm_env_with_sub_tools):
         """Executes tool and returns result message."""
         result = await rlm_env_with_sub_tools._call_sub_tool(
-            "sample_tool",
-            {"x": 2, "y": 3},
-            "call_123"
+            "sample_tool", {"x": 2, "y": 3}, "call_123"
         )
 
         assert result["role"] == "tool"
@@ -725,9 +756,7 @@ class TestCallSubTool:
         """Handles tool execution errors gracefully."""
         # Call with wrong arguments
         result = await rlm_env_with_sub_tools._call_sub_tool(
-            "sample_tool",
-            {"x": "not_an_int", "y": 3},
-            "call_456"
+            "sample_tool", {"x": "not_an_int", "y": 3}, "call_456"
         )
 
         assert result["role"] == "tool"
@@ -747,13 +776,17 @@ class TestRunSubLLMWithTools:
         mock_message.tool_calls = None
         mock_message.content = "Final answer"
         mock_response.choices = [MagicMock(message=mock_message)]
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "Final answer"}}]
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={"choices": [{"message": {"content": "Final answer"}}]}
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
-        result, prompt_tokens, completion_tokens = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        (
+            result,
+            prompt_tokens,
+            completion_tokens,
+        ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
@@ -773,11 +806,21 @@ class TestRunSubLLMWithTools:
         mock_message1 = MagicMock()
         mock_message1.tool_calls = [mock_tool_call]
         mock_message1.content = None
-        mock_message1.model_dump = MagicMock(return_value={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "call_1", "function": {"name": "sample_tool", "arguments": '{"x": 2, "y": 3}'}}]
-        })
+        mock_message1.model_dump = MagicMock(
+            return_value={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "sample_tool",
+                            "arguments": '{"x": 2, "y": 3}',
+                        },
+                    }
+                ],
+            }
+        )
 
         # Second response without tool calls
         mock_message2 = MagicMock()
@@ -789,9 +832,9 @@ class TestRunSubLLMWithTools:
 
         mock_response2 = MagicMock()
         mock_response2.choices = [MagicMock(message=mock_message2)]
-        mock_response2.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "The result is 5"}}]
-        })
+        mock_response2.model_dump = MagicMock(
+            return_value={"choices": [{"message": {"content": "The result is 5"}}]}
+        )
 
         mock_client.chat.completions.create = AsyncMock(
             side_effect=[mock_response1, mock_response2]
@@ -818,11 +861,21 @@ class TestRunSubLLMWithTools:
         mock_message = MagicMock()
         mock_message.tool_calls = [mock_tool_call]
         mock_message.content = None
-        mock_message.model_dump = MagicMock(return_value={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "call_1", "function": {"name": "sample_tool", "arguments": '{"x": 1, "y": 1}'}}]
-        })
+        mock_message.model_dump = MagicMock(
+            return_value={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "sample_tool",
+                            "arguments": '{"x": 1, "y": 1}',
+                        },
+                    }
+                ],
+            }
+        )
 
         mock_response_with_tools = MagicMock()
         mock_response_with_tools.choices = [MagicMock(message=mock_message)]
@@ -834,12 +887,14 @@ class TestRunSubLLMWithTools:
 
         mock_final_response = MagicMock()
         mock_final_response.choices = [MagicMock(message=mock_final_message)]
-        mock_final_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "Done"}}]
-        })
+        mock_final_response.model_dump = MagicMock(
+            return_value={"choices": [{"message": {"content": "Done"}}]}
+        )
 
         # Return tool calls for max_turns, then final response
-        responses = [mock_response_with_tools] * rlm_env_with_sub_tools.sub_tool_max_turns
+        responses = [
+            mock_response_with_tools
+        ] * rlm_env_with_sub_tools.sub_tool_max_turns
         responses.append(mock_final_response)
         mock_client.chat.completions.create = AsyncMock(side_effect=responses)
 
@@ -849,7 +904,10 @@ class TestRunSubLLMWithTools:
         )
 
         # Should be max_turns + 1 (final call without tools)
-        assert mock_client.chat.completions.create.call_count == rlm_env_with_sub_tools.sub_tool_max_turns + 1
+        assert (
+            mock_client.chat.completions.create.call_count
+            == rlm_env_with_sub_tools.sub_tool_max_turns + 1
+        )
 
 
 # =============================================================================
@@ -881,7 +939,9 @@ class TestHandleSubLLMRequest:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(side_effect=json.JSONDecodeError("test", "doc", 0))
+        mock_request.json = AsyncMock(
+            side_effect=json.JSONDecodeError("test", "doc", 0)
+        )
 
         response = await rlm_env._handle_sub_llm_request(mock_request)
 
@@ -893,9 +953,9 @@ class TestHandleSubLLMRequest:
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "response"}}]
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={"choices": [{"message": {"content": "response"}}]}
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env.active_rollouts[rollout_id] = {
@@ -906,10 +966,12 @@ class TestHandleSubLLMRequest:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(return_value={
-            "model": "gpt-4",
-            "messages": [{"role": "user", "content": "test"}],
-        })
+        mock_request.json = AsyncMock(
+            return_value={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "test"}],
+            }
+        )
 
         response = await rlm_env._handle_sub_llm_request(mock_request)
 
@@ -929,9 +991,9 @@ class TestHandleSubLLMRequest:
         mock_message.content = "response"
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=mock_message)]
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "response"}}]
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={"choices": [{"message": {"content": "response"}}]}
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env_with_sub_tools.active_rollouts[rollout_id] = {
@@ -942,10 +1004,12 @@ class TestHandleSubLLMRequest:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(return_value={
-            "model": "gpt-4",
-            "messages": [{"role": "user", "content": "test"}],
-        })
+        mock_request.json = AsyncMock(
+            return_value={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "test"}],
+            }
+        )
 
         response = await rlm_env_with_sub_tools._handle_sub_llm_request(mock_request)
 
@@ -976,7 +1040,9 @@ class TestPostRollout:
     async def test_reads_answer_from_sandbox(self, rlm_env):
         """Reads answer from sandbox if not set."""
         rlm_env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(stdout='{"content": "read from sandbox", "ready": true}')
+            return_value=MagicMock(
+                stdout='{"content": "read from sandbox", "ready": true}'
+            )
         )
         state = {"sandbox_id": "sandbox_123"}
 
@@ -1018,7 +1084,9 @@ class TestSubLLMMetricsInitialization:
     async def test_initializes_metrics_in_active_rollouts(self, rlm_env):
         """Initializes sub-LLM metrics tracking in active_rollouts."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(return_value="https://test.trycloudflare.com")
+        rlm_env._get_tunnel_url = AsyncMock(
+            return_value="https://test.trycloudflare.com"
+        )
         rlm_env._write_context_to_sandbox = AsyncMock()
         rlm_env._write_answer_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
@@ -1041,10 +1109,12 @@ class TestSubLLMMetricsTracking:
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "response"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={
+                "choices": [{"message": {"content": "response"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env.active_rollouts[rollout_id] = {
@@ -1058,9 +1128,11 @@ class TestSubLLMMetricsTracking:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(return_value={
-            "messages": [{"role": "user", "content": "test"}],
-        })
+        mock_request.json = AsyncMock(
+            return_value={
+                "messages": [{"role": "user", "content": "test"}],
+            }
+        )
 
         await rlm_env._handle_sub_llm_request(mock_request)
 
@@ -1075,10 +1147,12 @@ class TestSubLLMMetricsTracking:
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "response"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={
+                "choices": [{"message": {"content": "response"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env.active_rollouts[rollout_id] = {
@@ -1092,9 +1166,11 @@ class TestSubLLMMetricsTracking:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(return_value={
-            "messages": [{"role": "user", "content": "test"}],
-        })
+        mock_request.json = AsyncMock(
+            return_value={
+                "messages": [{"role": "user", "content": "test"}],
+            }
+        )
 
         await rlm_env._handle_sub_llm_request(mock_request)
 
@@ -1109,10 +1185,12 @@ class TestSubLLMMetricsTracking:
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "response"}}],
-            # No "usage" field
-        })
+        mock_response.model_dump = MagicMock(
+            return_value={
+                "choices": [{"message": {"content": "response"}}],
+                # No "usage" field
+            }
+        )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env.active_rollouts[rollout_id] = {
@@ -1126,9 +1204,11 @@ class TestSubLLMMetricsTracking:
 
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(return_value={
-            "messages": [{"role": "user", "content": "test"}],
-        })
+        mock_request.json = AsyncMock(
+            return_value={
+                "messages": [{"role": "user", "content": "test"}],
+            }
+        )
 
         await rlm_env._handle_sub_llm_request(mock_request)
 
@@ -1155,11 +1235,21 @@ class TestSubLLMMetricsWithTools:
         mock_message1 = MagicMock()
         mock_message1.tool_calls = [mock_tool_call]
         mock_message1.content = None
-        mock_message1.model_dump = MagicMock(return_value={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "call_1", "function": {"name": "sample_tool", "arguments": '{"x": 2, "y": 3}'}}]
-        })
+        mock_message1.model_dump = MagicMock(
+            return_value={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "sample_tool",
+                            "arguments": '{"x": 2, "y": 3}',
+                        },
+                    }
+                ],
+            }
+        )
 
         mock_response1 = MagicMock()
         mock_response1.choices = [MagicMock(message=mock_message1)]
@@ -1173,17 +1263,23 @@ class TestSubLLMMetricsWithTools:
         mock_response2 = MagicMock()
         mock_response2.choices = [MagicMock(message=mock_message2)]
         mock_response2.usage = MagicMock(prompt_tokens=100, completion_tokens=20)
-        mock_response2.model_dump = MagicMock(return_value={
-            "choices": [{"message": {"content": "The result is 5"}}],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-        })
+        mock_response2.model_dump = MagicMock(
+            return_value={
+                "choices": [{"message": {"content": "The result is 5"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            }
+        )
 
         mock_client.chat.completions.create = AsyncMock(
             side_effect=[mock_response1, mock_response2]
         )
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
-        response_dict, prompt_tokens, completion_tokens = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        (
+            response_dict,
+            prompt_tokens,
+            completion_tokens,
+        ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
@@ -1251,13 +1347,16 @@ class TestSubLLMMetricsRubric:
 
     def test_user_rubric_combined(self, mock_sandbox_client, mock_dataset):
         """User rubric is combined with internal metrics rubric."""
+
         def custom_reward(state) -> float:
             return 1.0
 
         user_rubric = Rubric(funcs=[custom_reward], weights=[1.0])
 
-        with patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls, \
-             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
             mock_client_cls.return_value = mock_sandbox_client
             env = RLMEnv(dataset=mock_dataset, rubric=user_rubric)
 
@@ -1267,4 +1366,3 @@ class TestSubLLMMetricsRubric:
             assert "sub_llm_prompt_tokens" in func_names
             assert "sub_llm_completion_tokens" in func_names
             assert "custom_reward" in func_names
-

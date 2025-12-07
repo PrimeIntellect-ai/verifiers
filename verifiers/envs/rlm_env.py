@@ -529,9 +529,17 @@ class RLMEnv(SandboxEnv):
         try:
             tool_func = self.sub_tool_map[tool_name]
             result = await maybe_await(tool_func, **tool_args)
-            return {"role": "tool", "content": str(result), "tool_call_id": tool_call_id}
+            return {
+                "role": "tool",
+                "content": str(result),
+                "tool_call_id": tool_call_id,
+            }
         except Exception as e:
-            return {"role": "tool", "content": f"Error: {e}", "tool_call_id": tool_call_id}
+            return {
+                "role": "tool",
+                "content": f"Error: {e}",
+                "tool_call_id": tool_call_id,
+            }
 
     async def _run_sub_llm_with_tools(
         self, client: Any, model: str, messages: list[dict]
@@ -652,8 +660,7 @@ class RLMEnv(SandboxEnv):
             return cloudflared_path
         else:
             raise RuntimeError(
-                f"Unsupported platform: {system}. "
-                "Please install cloudflared manually."
+                f"Unsupported platform: {system}. Please install cloudflared manually."
             )
 
     def _extract_tunnel_url_from_line(self, line: str) -> str | None:
@@ -724,11 +731,13 @@ class RLMEnv(SandboxEnv):
             while len(self._tunnels) < required_tunnels:
                 try:
                     url, process = self._start_cloudflared_tunnel()
-                    self._tunnels.append({
-                        "url": url,
-                        "process": process,
-                        "active_rollouts": 0,
-                    })
+                    self._tunnels.append(
+                        {
+                            "url": url,
+                            "process": process,
+                            "active_rollouts": 0,
+                        }
+                    )
                 except Exception as e:
                     logger.error(f"Failed to create tunnel: {e}")
                     raise
@@ -759,7 +768,9 @@ class RLMEnv(SandboxEnv):
             self._server_runner = runner
             self._server_site = site
 
-            logger.debug(f"Started RLM interception server on port {self.interception_port}")
+            logger.debug(
+                f"Started RLM interception server on port {self.interception_port}"
+            )
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from sandbox code."""
@@ -785,9 +796,11 @@ class RLMEnv(SandboxEnv):
         try:
             # Use tool-calling loop if sub_tools are configured
             if self.sub_tools:
-                response_dict, prompt_tokens, completion_tokens = await self._run_sub_llm_with_tools(
-                    client, sub_model, messages
-                )
+                (
+                    response_dict,
+                    prompt_tokens,
+                    completion_tokens,
+                ) = await self._run_sub_llm_with_tools(client, sub_model, messages)
             else:
                 # Original simple path
                 response = await client.chat.completions.create(
@@ -806,8 +819,12 @@ class RLMEnv(SandboxEnv):
 
             # Track metrics
             context["sub_llm_call_count"] = context.get("sub_llm_call_count", 0) + 1
-            context["sub_llm_prompt_tokens"] = context.get("sub_llm_prompt_tokens", 0) + prompt_tokens
-            context["sub_llm_completion_tokens"] = context.get("sub_llm_completion_tokens", 0) + completion_tokens
+            context["sub_llm_prompt_tokens"] = (
+                context.get("sub_llm_prompt_tokens", 0) + prompt_tokens
+            )
+            context["sub_llm_completion_tokens"] = (
+                context.get("sub_llm_completion_tokens", 0) + completion_tokens
+            )
 
             return web.json_response(response_dict)
         except Exception as e:
@@ -890,7 +907,7 @@ class RLMEnv(SandboxEnv):
         # This must happen AFTER writing context/answer files
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
-export RLM_SUB_MODEL="{self.sub_model or state.get('model', '')}"
+export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
 
 # Sync filesystem and verify worker script exists
@@ -944,7 +961,9 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
             metadata["size"] = "unknown"
         return metadata
 
-    async def _write_context_to_sandbox(self, sandbox_id: str, context_dict: dict) -> None:
+    async def _write_context_to_sandbox(
+        self, sandbox_id: str, context_dict: dict
+    ) -> None:
         """Write context to sandbox file."""
         context_json = json.dumps(context_dict)
         context_b64 = base64.b64encode(context_json.encode("utf-8")).decode("utf-8")
@@ -970,14 +989,20 @@ Path('{self._ANSWER_FILE}').write_bytes(base64.b64decode('{answer_b64}'))
         """Wait for worker to signal ready."""
         wait_script = _RLM_READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
         result = await self.sandbox_client.execute_command(sandbox_id, wait_script)
-        if "failed to start" in result.stdout or "failed to start" in (result.stderr or ""):
+        if "failed to start" in result.stdout or "failed to start" in (
+            result.stderr or ""
+        ):
             # Debug: get more info about why it failed
             debug_result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                "ls -la /tmp/rlm* 2>&1; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1"
+                "ls -la /tmp/rlm* 2>&1; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1",
             )
-            logger.error(f"RLM worker failed to start. Debug info:\n{debug_result.stdout}")
-            raise RuntimeError(f"RLM worker failed to start: {debug_result.stdout[:500]}")
+            logger.error(
+                f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
+            )
+            raise RuntimeError(
+                f"RLM worker failed to start: {debug_result.stdout[:500]}"
+            )
 
     # =========================================================================
     # Code Execution
@@ -1055,7 +1080,7 @@ PY
 
         # Truncate if too long
         if len(output) > self.max_output_length:
-            output = output[:self.max_output_length] + "\n... [output truncated]"
+            output = output[: self.max_output_length] + "\n... [output truncated]"
 
         return output
 
@@ -1090,7 +1115,9 @@ PY
             # Subsequent turns: use parent implementation
             return await super().get_prompt_messages(state)
 
-    async def env_response(self, messages: Messages, state: State, **kwargs) -> Messages:
+    async def env_response(
+        self, messages: Messages, state: State, **kwargs
+    ) -> Messages:
         """
         Parse code blocks from LLM response and execute in sandbox.
         Returns execution output as user message.
@@ -1112,15 +1139,19 @@ PY
         if not code_blocks:
             # No code blocks - prompt for code
             if "answer" in last_content.lower() and "ready" in last_content.lower():
-                return [{
-                    "role": "user",
-                    "content": 'Please set your answer using a Python code block:\n```python\nanswer["ready"] = True\nanswer["content"] = "your answer"\n```'
-                }]
+                return [
+                    {
+                        "role": "user",
+                        "content": 'Please set your answer using a Python code block:\n```python\nanswer["ready"] = True\nanswer["content"] = "your answer"\n```',
+                    }
+                ]
             else:
-                return [{
-                    "role": "user",
-                    "content": "Please provide Python code in markdown code blocks to explore the context or set your answer."
-                }]
+                return [
+                    {
+                        "role": "user",
+                        "content": "Please provide Python code in markdown code blocks to explore the context or set your answer.",
+                    }
+                ]
 
         # Execute all code blocks
         all_outputs = []
@@ -1165,7 +1196,9 @@ PY
             # Copy metrics to state before cleanup
             state["sub_llm_call_count"] = context.get("sub_llm_call_count", 0)
             state["sub_llm_prompt_tokens"] = context.get("sub_llm_prompt_tokens", 0)
-            state["sub_llm_completion_tokens"] = context.get("sub_llm_completion_tokens", 0)
+            state["sub_llm_completion_tokens"] = context.get(
+                "sub_llm_completion_tokens", 0
+            )
             del self.active_rollouts[rollout_id]
 
         # Decrement tunnel usage
@@ -1174,7 +1207,9 @@ PY
             async with self._tunnel_lock:
                 for tunnel in self._tunnels:
                     if tunnel["url"] == tunnel_url:
-                        tunnel["active_rollouts"] = max(0, tunnel["active_rollouts"] - 1)
+                        tunnel["active_rollouts"] = max(
+                            0, tunnel["active_rollouts"] - 1
+                        )
                         break
 
     async def post_rollout(self, state: State):
@@ -1190,13 +1225,14 @@ PY
         try:
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\''
+                f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
             )
             answer = json.loads(result.stdout.strip())
             state["final_answer"] = answer.get("content", "")
         except Exception as e:
             logger.warning(f"Failed to read RLM answer: {e}")
             state["final_answer"] = ""
+
 
 # TODO: Improve system prompt
 # TODO: Add logging for sub-LLM calls

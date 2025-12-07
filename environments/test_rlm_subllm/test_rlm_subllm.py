@@ -187,8 +187,10 @@ answer["ready"] = True
         if not final_answer:
             return 0.0
 
-        lines = [l.strip() for l in final_answer.split("\n") if l.strip()]
-        numbered_lines = [l for l in lines if l and l[0].isdigit() and "." in l[:3]]
+        lines = [line.strip() for line in final_answer.split("\n") if line.strip()]
+        numbered_lines = [
+            line for line in lines if line and line[0].isdigit() and "." in line[:3]
+        ]
 
         if not numbered_lines:
             return 0.0
