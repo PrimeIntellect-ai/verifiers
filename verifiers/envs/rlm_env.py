@@ -90,10 +90,16 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
             answer = json.load(f)
 
-    def _single_llm_call(prompt: str, **kwargs) -> str:
-        """Make a single sub-LLM call via interception server."""
+    def _single_llm_call(prompt: str, **kwargs) -> dict:
+        """Make a single sub-LLM call via interception server.
+        
+        Returns a dict with 'content' and 'metadata' keys.
+        """
         if not INTERCEPTION_URL:
-            return "Error: Sub-LLM interception URL not configured"
+            return {{
+                "content": "Error: Sub-LLM interception URL not configured",
+                "metadata": {{"error": True}},
+            }}
         
         try:
             payload = {{
@@ -112,13 +118,20 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
+            content = data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
+            metadata = data.get("_rlm_metadata", {{}})
+            return {{"content": content, "metadata": metadata}}
         except Exception as e:
-            return f"Error in sub-LLM call: {{e}}"
+            return {{
+                "content": f"Error in sub-LLM call: {{e}}",
+                "metadata": {{"error": True}},
+            }}
 
     def llm_batch(prompts: list, **kwargs) -> list:
         """
         Make multiple sub-LLM calls in parallel.
+        
+        Prints a summary of each call's metadata, then returns the list of responses.
         
         Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
         
@@ -127,11 +140,27 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             **kwargs: Additional arguments applied to all calls
         
         Returns:
-            List of responses in the same order as the input prompts
+            List of response contents in the same order as the input prompts
         """
         with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
             futures = [executor.submit(_single_llm_call, p, **kwargs) for p in prompts]
-            return [f.result() for f in futures]
+            results = [f.result() for f in futures]
+        
+        # Print metadata summary
+        print(f"llm_batch: {{len(results)}} call(s)")
+        for i, r in enumerate(results):
+            meta = r.get("metadata", {{}})
+            if meta.get("error"):
+                print(f"  [{{i}}]: error")
+            else:
+                tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
+                tool_calls = meta.get("tool_call_count", 0)
+                max_turns = meta.get("max_turns_reached", False)
+                status = "⚠ max turns" if max_turns else "✓"
+                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls {{status}}")
+        
+        # Return just the content
+        return [r.get("content", "") for r in results]
 
     # Persistent execution namespace
     namespace: dict[str, object] = {{
@@ -287,19 +316,19 @@ Only code inside these blocks will be executed. Text outside code blocks is for 
   - Useful for semantic understanding, summarization, complex reasoning
   - Include any context you need directly in the prompt strings
   - Parallelism is automatically rate-limited
+  - **Prints a metadata summary** showing tokens and tool calls for each sub-LLM call
+    - "⚠ max turns" indicates the sub-LLM hit its tool call limit (answer may be incomplete)
+  - Save results to a variable and inspect specific items to avoid output truncation
   - Examples:
     ```python
-    # Single sub-LLM call
-    result = llm_batch(["What is the main theme of this text?"])[0]
-    print(result)
+    # Make calls and see metadata summary
+    results = llm_batch(["Query 1", "Query 2"])
+    # Prints: llm_batch: 2 call(s)
+    #   [0]: 234 tokens, 1 tool calls ✓
+    #   [1]: 1502 tokens, 5 tool calls ⚠ max turns
     
-    # Multiple parallel sub-LLM calls
-    results = llm_batch([
-        "Summarize section 1: " + section1,
-        "Summarize section 2: " + section2,
-        "Summarize section 3: " + section3,
-    ])
-    # results[0] = response for section 1, results[1] = response for section 2, etc.
+    # Then inspect specific results as needed
+    print(results[0])  # Check first result
     ```
 
 ## Workflow
@@ -552,16 +581,18 @@ class RLMEnv(SandboxEnv):
 
     async def _run_sub_llm_with_tools(
         self, client: Any, model: str, messages: list[dict]
-    ) -> tuple[dict, int, int]:
+    ) -> tuple[dict, int, int, int, bool]:
         """
         Run a sub-LLM call with tool-calling loop.
 
         Returns:
-            Tuple of (response_dict, total_prompt_tokens, total_completion_tokens)
+            Tuple of (response_dict, total_prompt_tokens, total_completion_tokens,
+                      tool_call_count, max_turns_reached)
         """
         current_messages = list(messages)
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        tool_call_count = 0
 
         for _ in range(self.sub_tool_max_turns):
             # Make LLM call with tools
@@ -587,13 +618,20 @@ class RLMEnv(SandboxEnv):
                     if hasattr(response, "model_dump")
                     else dict(response)
                 )
-                return response_dict, total_prompt_tokens, total_completion_tokens
+                return (
+                    response_dict,
+                    total_prompt_tokens,
+                    total_completion_tokens,
+                    tool_call_count,
+                    False,  # max_turns_reached
+                )
 
             # Add assistant message with tool calls to conversation
             current_messages.append(assistant_message.model_dump())
 
             # Execute all tool calls
             for tool_call in tool_calls:
+                tool_call_count += 1
                 tool_name = tool_call.function.name
                 try:
                     tool_args = json.loads(tool_call.function.arguments)
@@ -627,7 +665,13 @@ class RLMEnv(SandboxEnv):
         response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
-        return response_dict, total_prompt_tokens, total_completion_tokens
+        return (
+            response_dict,
+            total_prompt_tokens,
+            total_completion_tokens,
+            tool_call_count,
+            True,  # max_turns_reached
+        )
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from sandbox code)
@@ -822,6 +866,8 @@ class RLMEnv(SandboxEnv):
                     response_dict,
                     prompt_tokens,
                     completion_tokens,
+                    tool_call_count,
+                    max_turns_reached,
                 ) = await self._run_sub_llm_with_tools(
                     client, sub_model, messages_with_system
                 )
@@ -840,6 +886,8 @@ class RLMEnv(SandboxEnv):
                 usage = response_dict.get("usage", {})
                 prompt_tokens = usage.get("prompt_tokens", 0) or 0
                 completion_tokens = usage.get("completion_tokens", 0) or 0
+                tool_call_count = 0
+                max_turns_reached = False
 
             # Extract boxed answer from response (falls back to full content if no \boxed{})
             if response_dict.get("choices"):
@@ -857,6 +905,14 @@ class RLMEnv(SandboxEnv):
             context["sub_llm_completion_tokens"] = (
                 context.get("sub_llm_completion_tokens", 0) + completion_tokens
             )
+
+            # Add metadata to response for the worker to parse
+            response_dict["_rlm_metadata"] = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "tool_call_count": tool_call_count,
+                "max_turns_reached": max_turns_reached,
+            }
 
             return web.json_response(response_dict)
         except Exception as e:

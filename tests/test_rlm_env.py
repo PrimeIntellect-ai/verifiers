@@ -786,11 +786,15 @@ class TestRunSubLLMWithTools:
             result,
             prompt_tokens,
             completion_tokens,
+            tool_call_count,
+            max_turns_reached,
         ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
         assert "choices" in result
+        assert tool_call_count == 0
+        assert max_turns_reached is False
 
     @pytest.mark.asyncio
     async def test_executes_tool_calls(self, rlm_env_with_sub_tools):
@@ -1279,6 +1283,8 @@ class TestSubLLMMetricsWithTools:
             response_dict,
             prompt_tokens,
             completion_tokens,
+            tool_call_count,
+            max_turns_reached,
         ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
@@ -1286,6 +1292,8 @@ class TestSubLLMMetricsWithTools:
         # Should accumulate tokens from both calls
         assert prompt_tokens == 150  # 50 + 100
         assert completion_tokens == 50  # 30 + 20
+        assert tool_call_count == 1  # One tool call was made
+        assert max_turns_reached is False
 
 
 class TestSubLLMMetricsCleanup:
