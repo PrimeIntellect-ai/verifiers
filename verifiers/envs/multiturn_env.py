@@ -97,14 +97,7 @@ class MultiTurnEnv(vf.Environment):
             prompt_messages = await self.get_prompt_messages(state)
             if await self.has_error(state):
                 continue
-            response = await self.get_model_response(
-                client,
-                model,
-                prompt_messages,
-                oai_tools=state["oai_tools"],
-                sampling_args=sampling_args,
-                message_type=self.message_type,
-            )
+            response = await self.get_model_response(state, prompt_messages)
             if await self.has_error(state):
                 continue
             await self.add_model_response(state, prompt_messages, response)

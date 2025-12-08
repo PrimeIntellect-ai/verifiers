@@ -291,9 +291,10 @@ class Environment(ABC):
 
     async def get_model_response(
         self,
-        client: AsyncOpenAI,
-        model: str,
+        state: State,
         prompt: Messages,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
@@ -304,10 +305,16 @@ class Environment(ABC):
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
         """
-        sampling_args = sampling_args or {}
-        # resolve message type first
-        if message_type is None:
-            message_type = self.message_type
+        # resolve optional argument, fallback to state or class defaults
+        client = client or state["client"]
+        model = model or state["model"]
+        oai_tools = oai_tools or state["oai_tools"]
+        sampling_args = sampling_args or state["sampling_args"]
+        message_type = message_type or self.message_type
+        assert model is not None
+        assert client is not None
+        assert sampling_args is not None
+
         # normalize sampling args:
         # - if max_tokens is provided for chat, rename to max_completion_tokens
         # - drop any None-valued entries to avoid sending to the client
