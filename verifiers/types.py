@@ -7,7 +7,7 @@ from typing import (
     Literal,
 )
 
-from verifiers.exceptions import Error
+from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict

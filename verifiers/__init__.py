@@ -7,7 +7,7 @@ import sys
 from typing import TYPE_CHECKING, Optional
 
 # early imports to avoid circular dependencies
-from .exceptions import *  # noqa # isort: skip
+from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .utils.decorators import (  # noqa # isort: skip
     cleanup,

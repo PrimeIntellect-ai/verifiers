@@ -1,8 +1,6 @@
 class Error(Exception):
     """Base class for all errors."""
 
-    root: Exception
-
     def __init__(self, cause: Exception):
         self.cause = cause
 
