@@ -1053,15 +1053,48 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
     async def _write_context_to_sandbox(
         self, sandbox_id: str, context_dict: dict
     ) -> None:
-        """Write context to sandbox file."""
+        """Write context to sandbox file.
+        
+        For large contexts, writes in chunks to avoid shell command length limits.
+        """
         context_json = json.dumps(context_dict)
         context_b64 = base64.b64encode(context_json.encode("utf-8")).decode("utf-8")
-        cmd = f"""python3 -c "
+        
+        # Shell command length limit is typically ~128KB-256KB depending on OS
+        # Use conservative chunk size of 50KB to be safe
+        max_chunk_size = 50_000
+        
+        if len(context_b64) <= max_chunk_size:
+            # Small context - use simple single command
+            cmd = f"""python3 -c "
 import base64
 from pathlib import Path
 Path('{self._CONTEXT_FILE}').write_bytes(base64.b64decode('{context_b64}'))
 " """
-        await self.sandbox_client.execute_command(sandbox_id, cmd)
+            await self.sandbox_client.execute_command(sandbox_id, cmd)
+        else:
+            # Large context - write in chunks
+            # First, create empty file
+            await self.sandbox_client.execute_command(
+                sandbox_id, f"rm -f {self._CONTEXT_FILE} && touch {self._CONTEXT_FILE}"
+            )
+            
+            # Write base64 chunks to a temp file, then decode
+            temp_b64_file = "/tmp/rlm_context_b64.txt"
+            await self.sandbox_client.execute_command(
+                sandbox_id, f"rm -f {temp_b64_file} && touch {temp_b64_file}"
+            )
+            
+            # Write chunks
+            for i in range(0, len(context_b64), max_chunk_size):
+                chunk = context_b64[i:i + max_chunk_size]
+                # Use printf instead of echo to handle special characters better
+                cmd = f"printf '%s' '{chunk}' >> {temp_b64_file}"
+                await self.sandbox_client.execute_command(sandbox_id, cmd)
+            
+            # Decode the complete base64 file
+            cmd = f"base64 -d {temp_b64_file} > {self._CONTEXT_FILE} && rm -f {temp_b64_file}"
+            await self.sandbox_client.execute_command(sandbox_id, cmd)
 
     async def _write_answer_to_sandbox(self, sandbox_id: str, answer: dict) -> None:
         """Write answer to sandbox file."""
