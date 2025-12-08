@@ -23,7 +23,6 @@ import asyncio
 import base64
 import json
 import logging
-import re
 import subprocess
 import textwrap
 import time
@@ -292,15 +291,11 @@ _RLM_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) en
 
 ## Critical: This is an ITERATIVE environment
 
-You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one code block.** Each code block executes and returns output before you continue.
+You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
-**You MUST wrap all code in markdown code blocks** using triple backticks with `python`:
-```python
-# your code here
-```
-Only code inside these blocks will be executed. Text outside code blocks is for your reasoning.
+Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls.
 
-## Available Variables and Functions
+## Available Variables and Functions (inside the REPL)
 
 - `context`: A dictionary containing:
   - `context["input_data_metadata"]`: Metadata about the input (type, size, structure, etc.)
@@ -319,45 +314,30 @@ Only code inside these blocks will be executed. Text outside code blocks is for 
   - **Prints a metadata summary** showing tokens and tool calls for each sub-LLM call
     - "⚠ max turns" indicates the sub-LLM hit its tool call limit (answer may be incomplete)
   - Save results to a variable and inspect specific items to avoid output truncation
-  - Examples:
-    ```python
-    # Make calls and see metadata summary
-    results = llm_batch(["Query 1", "Query 2"])
-    # Prints: llm_batch: 2 call(s)
-    #   [0]: 234 tokens, 1 tool calls ✓
-    #   [1]: 1502 tokens, 5 tool calls ⚠ max turns
-    
-    # Then inspect specific results as needed
-    print(results[0])  # Check first result
-    ```
 
 ## Workflow
 
 **Step 1: Inspect metadata first**
-```python
-print(context["input_data_metadata"])
-```
+Call the tool with: `print(context["input_data_metadata"])`
 Wait for output. This tells you the data type, size, and structure before you look at the actual data.
 
 **Step 2: Explore the data based on what you learned**
-```python
-# Look at a sample of the actual data
+```
 data = context["input_data"]
 print(type(data))
-print(data[:500] if isinstance(data, str) else data[:3])  # First part only
+print(data[:500] if isinstance(data, str) else data[:3])
 ```
 Wait for output. Now you know the actual format.
 
 **Step 3: Process and build your answer**
-```python
+```
 # Based on what you've seen, write code to solve the task
-# ...
 answer["content"] = "your current best answer"
 ```
 You can update `answer["content"]` multiple times as you refine your solution.
 
 **Step 4: Verify and finalize (only after reviewing output)**
-```python
+```
 print(f"My answer: {answer['content']}")
 # Only after confirming this looks correct:
 answer["ready"] = True
@@ -365,12 +345,11 @@ answer["ready"] = True
 
 ## Important Rules
 
-1. **Always use markdown code blocks** - wrap code in triple backticks with `python`, or it won't execute
-2. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
-3. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
-4. **One step at a time** - write small code blocks, see output, then continue
-5. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
-6. You can think in natural language between code blocks - reasoning and planning are encouraged
+1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
+2. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
+3. **One step at a time** - make small tool calls, see output, then continue
+4. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+5. You can think in natural language between tool calls - reasoning and planning are encouraged
 
 The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
@@ -494,9 +473,12 @@ class RLMEnv(SandboxEnv):
             **kwargs,
         )
 
-        # Remove bash tool from parent - we use our own code execution
+        # Remove bash tool from parent - we use our own REPL tool
         if hasattr(self, "tool_map") and "bash" in self.tool_map:
             self.remove_tool(self.bash)
+
+        # Add the Python REPL tool (sandbox_id and state are injected via update_tool_args)
+        self.add_tool(self.call_python_repl, args_to_skip=["sandbox_id", "state"])
 
     def _create_metrics_rubric(self) -> Rubric:
         """Create internal rubric with 0-weighted sub-LLM metrics."""
@@ -941,6 +923,25 @@ class RLMEnv(SandboxEnv):
     # State Management
     # =========================================================================
 
+    def update_tool_args(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        messages: Messages,
+        state: State,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Inject sandbox_id and state into call_python_repl tool args."""
+        if tool_name == "call_python_repl":
+            updated_args = dict(tool_args)
+            updated_args["sandbox_id"] = state["sandbox_id"]
+            updated_args["state"] = state
+            return updated_args
+        else:
+            return super().update_tool_args(
+                tool_name, tool_args, messages, state, **kwargs
+            )
+
     async def setup_state(self, state: State) -> State:
         """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
         # Create sandbox via parent
@@ -1096,11 +1097,6 @@ Path('{self._ANSWER_FILE}').write_bytes(base64.b64decode('{answer_b64}'))
     # Code Execution
     # =========================================================================
 
-    def _extract_code_blocks(self, text: str) -> list[str]:
-        """Extract Python code blocks from model output."""
-        pattern = r"```(?:python)?\s*\n(.*?)\n```"
-        return re.findall(pattern, text, re.DOTALL)
-
     async def _execute_code(self, sandbox_id: str, code: str) -> dict[str, Any]:
         """Execute code in sandbox worker and return result."""
         payload = {"code": code}
@@ -1173,6 +1169,48 @@ PY
         return output
 
     # =========================================================================
+    # REPL Tool
+    # =========================================================================
+
+    async def call_python_repl(
+        self, code: str, sandbox_id: str, state: Any
+    ) -> str:
+        """
+        Execute Python code in a persistent REPL environment.
+
+        The REPL maintains state across calls and provides access to:
+
+        - `context`: A dictionary containing:
+          - `context["input_data_metadata"]`: Metadata about the input (type, size, etc.)
+          - `context["input_data"]`: The actual input data
+
+        - `answer`: A dictionary for your final answer:
+          - `answer["content"]`: Your answer (string) - update this as you work
+          - `answer["ready"]`: Set to `True` to finish (terminates execution immediately)
+
+        - `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
+          - Takes a list of prompts, returns a list of answers (same order)
+          - Useful for semantic understanding, summarization, complex reasoning
+          - Prints metadata summary showing tokens and tool calls per sub-LLM
+
+        Args:
+            code: Python code to execute in the persistent REPL
+
+        Returns:
+            Execution output including stdout, stderr, and expression results
+        """
+        result = await self._execute_code(sandbox_id, code)
+        output = self._format_execution_output(result)
+
+        # Check if answer is ready
+        answer = result.get("answer", {})
+        if answer.get("ready", False):
+            state["final_answer"] = answer.get("content", "")
+            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
+
+        return output
+
+    # =========================================================================
     # MultiTurnEnv Interface
     # =========================================================================
 
@@ -1203,60 +1241,6 @@ PY
             # Subsequent turns: use parent implementation
             return await super().get_prompt_messages(state)
 
-    async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
-        """
-        Parse code blocks from LLM response and execute in sandbox.
-        Returns execution output as user message.
-        """
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return [{"role": "user", "content": "Error: Sandbox not available"}]
-
-        # Get the last assistant message
-        last_content = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                last_content = msg.get("content", "")
-                break
-
-        # Extract code blocks
-        code_blocks = self._extract_code_blocks(last_content)
-
-        if not code_blocks:
-            # No code blocks - prompt for code
-            if "answer" in last_content.lower() and "ready" in last_content.lower():
-                return [
-                    {
-                        "role": "user",
-                        "content": 'Please set your answer using a Python code block:\n```python\nanswer["ready"] = True\nanswer["content"] = "your answer"\n```',
-                    }
-                ]
-            else:
-                return [
-                    {
-                        "role": "user",
-                        "content": "Please provide Python code in markdown code blocks to explore the context or set your answer.",
-                    }
-                ]
-
-        # Execute all code blocks
-        all_outputs = []
-        for i, code in enumerate(code_blocks):
-            result = await self._execute_code(sandbox_id, code)
-            output = self._format_execution_output(result)
-            all_outputs.append(f"[Code block {i + 1}]\n{output}")
-
-            # Check if answer is ready
-            answer = result.get("answer", {})
-            if answer.get("ready", False):
-                state["final_answer"] = answer.get("content", "")
-                logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
-
-        combined_output = "\n\n".join(all_outputs)
-        return [{"role": "user", "content": f"Execution output:\n{combined_output}"}]
-
     # =========================================================================
     # Stop Conditions
     # =========================================================================
@@ -1265,11 +1249,6 @@ PY
     async def answer_ready(self, state: State) -> bool:
         """Stop when model sets answer['ready'] = True."""
         return "final_answer" in state
-
-    async def no_tools_called(self, state: State) -> bool:
-        """Override ToolEnv's stop condition - RLMEnv uses code blocks, not OAI tools."""
-        # Never stop due to "no tools called" - we use markdown code blocks instead
-        return False
 
     # =========================================================================
     # Cleanup
