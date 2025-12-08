@@ -3,6 +3,9 @@
 import json
 
 import pytest
+from openai.types.chat.chat_completion_user_message_param import (
+    ChatCompletionUserMessageParam,
+)
 
 from tests.conftest import faulty_tool
 from verifiers.envs.tool_env import ToolEnv
@@ -31,7 +34,7 @@ class TestToolEnv:
             "content": None,
             "tool_calls": [tool_call],
         }
-        user_message = {"role": "user", "content": "Square 4"}
+        user_message = ChatCompletionUserMessageParam(content="Square 4", role="user")
 
         mock_openai_client.add_chat_response(
             messages=[user_message],
@@ -51,6 +54,7 @@ class TestToolEnv:
             input=RolloutInput(
                 prompt=[user_message],
                 answer="",
+                task="",
                 example_id=0,
             ),
             client=mock_openai_client,
@@ -77,6 +81,7 @@ class TestToolEnv:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="",
+                task="",
                 example_id=0,
             ),
             client=mock_openai_client,
@@ -114,6 +119,7 @@ class TestToolEnv:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "Invoke"}],
                 answer="",
+                task="",
                 example_id=0,
             ),
             client=mock_openai_client,
