@@ -7,7 +7,8 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 
-from tests.conftest import faulty_tool
+import verifiers as vf
+from tests.conftest import faulty_tool, square_tool
 from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import RolloutInput
 
@@ -94,9 +95,73 @@ class TestToolEnv:
         assert completion[-1]["content"] == "Hi"
 
     @pytest.mark.asyncio
-    async def test_tool_env_error_handling(
+    async def test_tool_env_tool_invalid_json_arguments(
         self, mock_openai_client, sample_chat_dataset
     ):
+        """Test that ToolEnv stops rollout when tool call is not JSON-parsable."""
+        from verifiers.envs.tool_env import ToolEnv
+
+        class TestToolEnv(ToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(tools=[square_tool], **kwargs)
+
+        env = TestToolEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=vf.Parser(),
+            rubric=vf.Rubric(),
+        )
+
+        # Create a tool call with invalid JSON arguments
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+            Function,
+        )
+
+        tool_call_with_invalid_json_arguments = ChatCompletionMessageToolCall(
+            id="call_0",
+            type="function",
+            function=Function(
+                name="square_tool",
+                arguments='{"x": invalid json}',  # Invalid JSON
+            ),
+        )
+
+        # First response triggers tool call with invalid JSON
+        mock_openai_client.add_chat_response(
+            messages=[{"role": "user", "content": "Square 4"}],
+            response="Using tool",
+            tool_calls=[tool_call_with_invalid_json_arguments],
+        )
+
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "Square 4"}],
+                answer="",
+                task="",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        # Should have error set
+        assert state.get("error") is not None
+        assert isinstance(state["error"], vf.ToolParseError)
+
+        # Should have partial trajectory (one step with the tool call attempt)
+        assert len(state["trajectory"]) == 1
+
+        # Should not be completed normally (error stopped it)
+        assert state["is_completed"] is False
+
+    @pytest.mark.asyncio
+    async def test_tool_env_tool_call_error(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that ToolEnv stops rollout when tool raises an exception."""
+
         class ErrorToolEnv(ToolEnv):
             def __init__(self, **kwargs):
                 super().__init__(tools=[faulty_tool], **kwargs)
@@ -125,7 +190,14 @@ class TestToolEnv:
             client=mock_openai_client,
             model="test-model",
         )
-        completion = state["completion"]
 
-        tool_messages = [m for m in completion if m.get("role") == "tool"]
-        assert tool_messages and "failure" in tool_messages[0]["content"]
+        # Should have error set
+        assert state.get("error") is not None
+        assert isinstance(state["error"], vf.ToolCallError)
+        assert isinstance(state["error"], vf.ToolError)
+
+        # Should have partial trajectory (one step with the tool call attempt)
+        assert len(state["trajectory"]) == 1
+
+        # Should not be completed normally (error stopped it)
+        assert state["is_completed"] is False

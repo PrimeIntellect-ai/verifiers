@@ -1,13 +1,28 @@
-class Error(Exception): ...
+class Error(Exception):
+    """Base class for all errors."""
 
+    root: Exception
 
-class ToolError(Error):
-    message: str
-    cause: Exception
-
-    def __init__(self, message: str, cause: Exception):
-        self.message = message
+    def __init__(self, cause: Exception):
         self.cause = cause
 
     def __repr__(self) -> str:
-        return f"ToolError(message={self.message}, cause={repr(self.cause)})"
+        return f"{self.__class__.__name__}(cause={repr(self.cause)})"
+
+
+class ToolError(Error):
+    """Parent class for all tool errors."""
+
+    pass
+
+
+class ToolParseError(ToolError):
+    """Used to catch errors while parsing tool calls."""
+
+    pass
+
+
+class ToolCallError(ToolError):
+    """Used to catch errors while calling tools."""
+
+    pass

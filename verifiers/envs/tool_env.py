@@ -13,12 +13,10 @@ class ToolEnv(vf.MultiTurnEnv):
         self,
         tools: list[Callable] | None = None,
         max_turns: int = 10,
-        error_formatter: Callable[[Exception], str] = lambda e: f"{str(e)}",
         **kwargs,
     ):
         self.tools = tools or []
         self.max_turns = max_turns
-        self.error_formatter = error_formatter
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
@@ -56,22 +54,12 @@ class ToolEnv(vf.MultiTurnEnv):
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
     ) -> vf.Message:
         """Call a tool based on JSON command."""
-        try:
-            tool_func = self.tool_map[tool_name]
-            result = await maybe_await(tool_func, **tool_args)
-            return cast(
-                vf.Message,
-                {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
-            )
-        except Exception as e:
-            return cast(
-                vf.Message,
-                {
-                    "role": "tool",
-                    "content": self.error_formatter(e),
-                    "tool_call_id": tool_call_id,
-                },
-            )
+        tool_func = self.tool_map[tool_name]
+        result = await maybe_await(tool_func, **tool_args)
+        return cast(
+            vf.Message,
+            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+        )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
@@ -81,19 +69,21 @@ class ToolEnv(vf.MultiTurnEnv):
         tool_messages = []
         last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
         for tool_call in last_msg.get("tool_calls", []):
-            tool_name: str = tool_call.get("function", {}).get("name", "")
             try:
+                tool_name: str = tool_call.get("function", {}).get("name", "")
                 tool_args: dict = json.loads(
                     tool_call.get("function", {}).get("arguments", "")
                 )
             except Exception as e:
-                state["error"] = vf.ToolError(
-                    cause=e, message=f"Error parsing tool arguments: {e}"
-                )
+                state["error"] = vf.ToolParseError(cause=e)
                 return []
             tool_call_id: str = tool_call.get("id", "")
-            tool_message: vf.Message = await self.call_tool(
-                tool_name, tool_args, tool_call_id
-            )
+            try:
+                tool_message: vf.Message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id
+                )
+            except Exception as e:
+                state["error"] = vf.ToolCallError(cause=e)
+                return []
             tool_messages.append(tool_message)
         return tool_messages
