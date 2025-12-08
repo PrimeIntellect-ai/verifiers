@@ -9,7 +9,6 @@ from openai.types.chat.chat_completion_user_message_param import (
 
 import verifiers as vf
 from tests.conftest import faulty_tool, square_tool
-from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import RolloutInput
 
 
@@ -99,9 +98,8 @@ class TestToolEnv:
         self, mock_openai_client, sample_chat_dataset
     ):
         """Test that ToolEnv stops rollout when tool call is not JSON-parsable."""
-        from verifiers.envs.tool_env import ToolEnv
 
-        class TestToolEnv(ToolEnv):
+        class TestToolEnv(vf.ToolEnv):
             def __init__(self, **kwargs):
                 super().__init__(tools=[square_tool], **kwargs)
 
@@ -149,12 +147,16 @@ class TestToolEnv:
         # Should have error set
         assert state.get("error") is not None
         assert isinstance(state["error"], vf.ToolParseError)
+        assert isinstance(state["error"], vf.ToolError)
 
         # Should have partial trajectory (one step with the tool call attempt)
         assert len(state["trajectory"]) == 1
 
-        # Should not be completed normally (error stopped it)
-        assert state["is_completed"] is False
+        # Should render completion conditions (e.g. is_completed, timing, stop_condition)
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "has_error"
+        assert state["timing"] is not None
+        assert state["completion"] is not None
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_call_error(
@@ -162,7 +164,7 @@ class TestToolEnv:
     ):
         """Test that ToolEnv stops rollout when tool raises an exception."""
 
-        class ErrorToolEnv(ToolEnv):
+        class ErrorToolEnv(vf.ToolEnv):
             def __init__(self, **kwargs):
                 super().__init__(tools=[faulty_tool], **kwargs)
 
@@ -199,5 +201,8 @@ class TestToolEnv:
         # Should have partial trajectory (one step with the tool call attempt)
         assert len(state["trajectory"]) == 1
 
-        # Should not be completed normally (error stopped it)
-        assert state["is_completed"] is False
+        # Should render completion conditions (e.g. is_completed, timing, stop_condition)
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "has_error"
+        assert state["timing"] is not None
+        assert state["completion"] is not None
