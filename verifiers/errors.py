@@ -26,13 +26,13 @@ class ToolCallError(ToolError):
     pass
 
 
-class InfrastructureError(Error):
+class InfraError(Error):
     """Used to catch errors while interacting with infrastructure."""
 
     pass
 
 
-class SandboxError(InfrastructureError):
+class SandboxError(InfraError):
     """Used to catch errors while interacting with sandboxes."""
 
     pass
