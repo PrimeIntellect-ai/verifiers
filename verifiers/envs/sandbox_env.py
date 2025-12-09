@@ -1,9 +1,9 @@
-import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 import tenacity as tc
+from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
 
@@ -19,6 +19,16 @@ except ImportError:
     raise ImportError(
         "prime-sandboxes is not installed. Please install it with `uv pip install prime-sandboxes`."
     )
+
+
+class SandboxState(TypedDict):
+    ready: bool
+
+
+class SandboxCreationError(vf.SandboxError): ...
+
+
+class SandboxNotReadyError(vf.SandboxError): ...
 
 
 class SandboxEnv(vf.StatefulToolEnv):
@@ -71,26 +81,33 @@ class SandboxEnv(vf.StatefulToolEnv):
             before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
         ).wraps
-        self.add_tool(self.bash, args_to_skip=["sandbox_id"])
+        self.add_tool(self.bash, args_to_skip=["sandbox_id", "sandbox_state"])
 
-    async def bash(self, command: str, sandbox_id: str) -> str:
-        """Execute `command` inside persistent sandbox container."""
-        # sandbox_id is passed via update_tool_args, not seen by model
+    async def _wait_for_sandbox_ready(self, sandbox_id: str):
+        """Wait for sandbox to be created"""
         s = time.time()
         try:
-            # wait for sandbox to be created
             await self.sandbox_client.wait_for_creation(sandbox_id)
         except Exception as e:
-            raise vf.SandboxError(cause=e)
+            raise SandboxNotReadyError(e)
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
+
+    async def bash(
+        self, command: str, sandbox_id: str, sandbox_state: SandboxState
+    ) -> str:
+        """Execute `command` inside persistent sandbox container."""
+        # sandbox_id is passed via update_tool_args, not seen by model
+        if not sandbox_state["ready"]:
+            await self._wait_for_sandbox_ready(sandbox_id)
+            sandbox_state["ready"] = True
+
         s = time.time()
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
         try:
-            results = await asyncio.wait_for(
-                self.sandbox_client.execute_command(sandbox_id, command),
-                timeout=self.timeout_per_command_seconds,
+            results = await self.sandbox_client.execute_command(
+                sandbox_id, command, timeout=self.timeout_per_command_seconds
             )
-        except asyncio.TimeoutError:
+        except CommandTimeoutError:
             e = time.time()
             timeout_msg = f"Command timed out after {self.timeout_per_command_seconds}s"
             self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
@@ -142,10 +159,11 @@ class SandboxEnv(vf.StatefulToolEnv):
                 self.sandbox_request
             )
         except Exception as e:
-            raise vf.SandboxError(cause=e)
+            raise SandboxCreationError(e)
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
+        state["sandbox_state"] = {"ready": False}
         return await super().setup_state(state, **kwargs)
 
     def update_tool_args(
@@ -156,12 +174,11 @@ class SandboxEnv(vf.StatefulToolEnv):
         state: vf.State,
         **kwargs,
     ) -> dict[str, Any]:
+        updated_args = dict(tool_args)
         if tool_name == "bash":
-            updated_args = dict(tool_args)
             updated_args["sandbox_id"] = state["sandbox_id"]
-            return updated_args
-        else:
-            return tool_args
+            updated_args["sandbox_state"] = state["sandbox_state"]
+        return updated_args
 
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
