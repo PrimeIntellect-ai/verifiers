@@ -8,6 +8,12 @@ class Error(Exception):
         return f"{self.__class__.__name__}({self.cause!r})"
 
 
+class ModelError(Error):
+    """Used to catch errors while interacting with the model."""
+
+    pass
+
+
 class ToolError(Error):
     """Parent class for all tool errors."""
 
