@@ -75,15 +75,13 @@ class ToolEnv(vf.MultiTurnEnv):
                     tool_call.get("function", {}).get("arguments", "")
                 )
             except Exception as e:
-                state["error"] = vf.ToolParseError(cause=e)
-                return []
+                raise vf.ToolParseError(cause=e)
             tool_call_id: str = tool_call.get("id", "")
             try:
                 tool_message: vf.Message = await self.call_tool(
                     tool_name, tool_args, tool_call_id
                 )
             except Exception as e:
-                state["error"] = vf.ToolCallError(cause=e)
-                return []
+                raise vf.ToolCallError(cause=e)
             tool_messages.append(tool_message)
         return tool_messages

@@ -92,13 +92,15 @@ class MultiTurnEnv(vf.Environment):
         Generate a multi-turn rollout with the environment.
         """
         state = await self.init_state(input, client, model, sampling_args)
-        state = await self.setup_state(state)
+        try:
+            state = await self.setup_state(state)
+        except vf.Error as e:
+            state["error"] = e
         while not await self.is_completed(state):
-            prompt_messages = await self.get_prompt_messages(state)
-            if state.get("error") is not None:
-                continue
-            response = await self.get_model_response(state, prompt_messages)
-            if state.get("error") is not None:
-                continue
-            await self.add_model_response(state, prompt_messages, response)
+            try:
+                prompt_messages = await self.get_prompt_messages(state)
+                response = await self.get_model_response(state, prompt_messages)
+                await self.add_model_response(state, prompt_messages, response)
+            except vf.Error as e:
+                state["error"] = e
         return state
