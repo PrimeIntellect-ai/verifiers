@@ -224,9 +224,11 @@ PY
         try:
             await self._wait_for_sandbox_ready(sandbox_id)
             wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
-            await self.sandbox_client.execute_command(
+            result = await self.sandbox_client.execute_command(
                 sandbox_id, wait_script, timeout=self.max_startup_wait_seconds
             )
+            if result.exit_code != 0:
+                raise RuntimeError(result.stderr)
         except Exception as e:
             raise PythonWorkerNotReadyError(e)
 
