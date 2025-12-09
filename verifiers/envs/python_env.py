@@ -118,7 +118,7 @@ class PythonEnv(SandboxEnv):
 
         rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
-        pip install -q numpy sympy scipy
+        pip install -q {pip_install_packages}
 
         python - <<'PY'
 import base64
@@ -149,6 +149,7 @@ PY
 
     def __init__(
         self,
+        pip_install_packages: str = "numpy sympy scipy",
         max_startup_wait_seconds: int = 30,
         **kwargs: Any,
     ) -> None:
@@ -164,6 +165,7 @@ PY
                     ready_flag=self._READY_FLAG,
                 ).encode("utf-8")
             ).decode("utf-8"),
+            pip_install_packages=pip_install_packages,
         )
         self.max_startup_wait_seconds = max_startup_wait_seconds
         super().__init__(
