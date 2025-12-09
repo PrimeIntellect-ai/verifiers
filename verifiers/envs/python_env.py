@@ -130,19 +130,29 @@ PY
     _READY_WAIT_SCRIPT = textwrap.dedent(
         """
         bash -lc '
-        for i in $(seq 1 200); do
+        start_time=$(date +%s)
+        
+        while true; do
           if [ -f "{ready_flag}" ]; then
             exit 0
           fi
+          current_time=$(date +%s)
+          elapsed=$((current_time - start_time))
+          if [ $elapsed -ge {max_wait_seconds} ]; then
+            echo "python worker failed to start within {max_wait_seconds}s" >&2
+            exit 1
+          fi
           sleep 0.05
         done
-        echo "python worker failed to start" >&2
-        exit 1
         '
         """
     )
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        max_startup_wait_seconds: int = 30,
+        **kwargs: Any,
+    ) -> None:
         start_command = self._START_COMMAND_TEMPLATE.format(
             command_fifo=self._COMMAND_FIFO,
             response_fifo=self._RESPONSE_FIFO,
@@ -156,6 +166,7 @@ PY
                 ).encode("utf-8")
             ).decode("utf-8"),
         )
+        self.max_startup_wait_seconds = max_startup_wait_seconds
         super().__init__(
             sandbox_name="python-env",
             docker_image="python:3.11-slim",
@@ -195,8 +206,11 @@ PY
     ) -> str:
         """Execute `code` inside persistent Python REPL."""
         if not python_state["ready"]:
-            await self._wait_for_worker_ready(sandbox_id)
-            python_state["ready"] = True
+            try:
+                await self._wait_for_worker_ready(sandbox_id)
+                python_state["ready"] = True
+            except Exception as e:
+                raise vf.SandboxError(cause=e)
         sandbox_response = await self._send_worker_request(sandbox_id, {"code": code})
         return self._format_response(python_state, sandbox_response)
 
@@ -205,7 +219,10 @@ PY
         state.pop("python_env", None)
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
-        wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
+        wait_script = self._READY_WAIT_SCRIPT.format(
+            ready_flag=self._READY_FLAG,
+            max_wait_seconds=self.timeout_per_command_seconds,
+        )
         await self.bash(wait_script, sandbox_id=sandbox_id)
 
     async def _send_worker_request(
