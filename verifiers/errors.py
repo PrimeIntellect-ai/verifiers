@@ -5,7 +5,7 @@ class Error(Exception):
         self.cause = cause
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(cause={repr(self.cause)})"
+        return f"{self.__class__.__name__}({self.cause!r})"
 
 
 class ToolError(Error):

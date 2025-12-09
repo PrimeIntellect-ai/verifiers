@@ -5,6 +5,7 @@ import json
 import logging
 import signal
 import time
+import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -481,8 +482,10 @@ class Environment(ABC):
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 self.logger.error(
-                    f"An error has occurred: {state['error']!r}. Exiting..."
+                    f"Got {state['error'].__class__.__name__}, caused by {state['error'].cause!r}"
                 )
+                cause = state["error"].cause
+                traceback.print_exception(type(cause), cause, cause.__traceback__)
             return True
         return False
 
