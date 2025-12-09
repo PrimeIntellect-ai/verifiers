@@ -1,9 +1,13 @@
 import base64
 import json
+import sys
 import textwrap
 from typing import Any
 
-from typing_extensions import TypedDict
+if sys.version_info < (3, 12):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv, SandboxState
