@@ -39,12 +39,7 @@ class SimpleEnvironment(Environment):
         state = await self.setup_state(state)
 
         prompt_messages = state["prompt"]
-        response = await self.get_model_response(
-            client=client,
-            model=model,
-            prompt=prompt_messages,
-            sampling_args=sampling_args or {},
-        )
+        response = await self.get_model_response(state, prompt_messages)
 
         from verifiers.utils.response_utils import parse_response_messages
 
@@ -201,11 +196,14 @@ class TestEnvironmentBase:
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
-        response = await env.get_model_response(
-            prompt=prompt,
+        state = await env.init_state(
+            input=RolloutInput(example_id=0, task="test", prompt=prompt),
             client=mock_openai_client,
             model="test-model",
-            message_type="chat",
+        )
+        response = await env.get_model_response(
+            state,
+            prompt,
         )
 
         # Check response structure
@@ -233,11 +231,14 @@ class TestEnvironmentBase:
         )
 
         prompt = "Complete this:"
-        response = await env.get_model_response(
-            prompt=prompt,
+        state = await env.init_state(
+            input=RolloutInput(example_id=0, task="test", prompt=prompt),
             client=mock_openai_client,
             model="test-model",
-            message_type="completion",
+        )
+        response = await env.get_model_response(
+            state,
+            prompt,
         )
 
         # Check response structure

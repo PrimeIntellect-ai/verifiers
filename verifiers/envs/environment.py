@@ -19,6 +19,7 @@ from typing import (
     List,
     Literal,
     TypeVar,
+    cast,
 )
 
 from datasets import Dataset
@@ -310,11 +311,12 @@ class Environment(ABC):
         client = client or state["client"]
         model = model or state["model"]
         oai_tools = oai_tools or state["oai_tools"]
-        sampling_args = sampling_args or state["sampling_args"]
+        sampling_args = cast(
+            SamplingArgs, sampling_args or state["sampling_args"] or {}
+        )
         message_type = message_type or self.message_type
         assert model is not None
         assert client is not None
-        assert sampling_args is not None
 
         # normalize sampling args:
         # - if max_tokens is provided for chat, rename to max_completion_tokens
