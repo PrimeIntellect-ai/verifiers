@@ -46,6 +46,14 @@ Oolong consists of two HuggingFace datasets:
 | `exact_match_reward` | 0.0 | 1.0 if the model's answer exactly matches the expected answer (metric only) |
 | `contains_answer_reward` | 0.0 | 1.0 if the model's answer contains the expected answer (metric only) |
 
+### Why Use a Judge?
+
+The dataset's prompts often require different formatting than the provided ground truth answers display. For example, a question might ask for a date in a specific format, but the ground truth stores it differently. A judge model can recognize semantic equivalence despite formatting differences.
+
+### Differences from the Paper
+
+The original Oolong paper uses `score = 0.75 ** abs(answer - response)` for numeric problems, allowing partial credit for close answers. This implementation uses only exact equality (via the judge) for simplicity and consistency across all problem types.
+
 ## Usage
 
 ```bash
