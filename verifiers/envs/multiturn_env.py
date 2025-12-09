@@ -95,10 +95,10 @@ class MultiTurnEnv(vf.Environment):
         state = await self.setup_state(state)
         while not await self.is_completed(state):
             prompt_messages = await self.get_prompt_messages(state)
-            if await self.has_error(state):
+            if state.get("error") is not None:
                 continue
             response = await self.get_model_response(state, prompt_messages)
-            if await self.has_error(state):
+            if state.get("error") is not None:
                 continue
             await self.add_model_response(state, prompt_messages, response)
         return state
