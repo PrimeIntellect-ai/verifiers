@@ -155,6 +155,11 @@ class GymEnv(vf.MultiTurnEnv):
         state["gym_done"] = term or trunc
 
         obs_text = self.obs_to_text(obs)
+        
+        # Append sentinel so the final observability step knows the episode is over
+        if state["gym_done"]:
+            obs_text = f"{obs_text}\nEpisode already ended."
+
         if self.message_type == "chat":
             return [{"role": "user", "content": obs_text}]
         return str(obs_text)

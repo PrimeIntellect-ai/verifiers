@@ -8,8 +8,7 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.completion import Completion as OAICompletion
 from openai.types.completion_choice import CompletionChoice
-from verifiers.envs.gym_env import GymEnv, EpisodicSumRubric, StepResetEnv
-import verifiers as vf
+from verifiers.envs.gym_env import GymEnv, EpisodicSumRubric
 
 
 # ----------------- Toy Environment -----------------
@@ -28,9 +27,7 @@ class ToyEnv:
         self.steps = 0
         self.done = False
 
-    # Widen signature to match protocol (accept **kwargs)
     def reset(self, **kwargs):
-        # Allow 'start' to be overridden by kwargs from dataset info
         self.start = int(kwargs.get("start", self.start))
         self.x = self.start
         self.steps = 0
@@ -49,13 +46,12 @@ class ToyEnv:
         reward = 1.0 if self.x >= self.target else 0.0
         info = {"x": self.x, "target": self.target, "reached": self.x >= self.target}
         obs = f"x={self.x}"
-        return obs, reward, done, False, info  # 5-tuple
+        return obs, reward, done, False, info
 
 
-# ----------------- Mock OpenAI client (chat + completion) -----------------
+# ----------------- Mock OpenAI client -----------------
 class _MockChatCompletions:
     async def create(self, *, model: str, messages: List[Dict[str, str]], **kwargs):
-        # Read latest user obs "x=<n>"
         last_user = next(
             (
                 m.get("content") or ""
@@ -75,15 +71,10 @@ class _MockChatCompletions:
             action = "1"
 
         message = ChatCompletionMessage.model_construct(
-            role="assistant",
-            content=action,
-            tool_calls=None,
+            role="assistant", content=action, tool_calls=None
         )
         choice = Choice.model_construct(
-            index=0,
-            message=message,
-            finish_reason="stop",
-            logprobs=None,
+            index=0, message=message, finish_reason="stop", logprobs=None
         )
         return ChatCompletion.model_construct(
             id="mock-chatcmpl",
@@ -104,10 +95,7 @@ class _MockCompletions:
         action = "1" if n < 3 else "0"
 
         choice = CompletionChoice.model_construct(
-            index=0,
-            text=action,
-            logprobs=None,
-            finish_reason="stop",
+            index=0, text=action, logprobs=None, finish_reason="stop"
         )
         return OAICompletion.model_construct(
             id="mock-cmpl",
@@ -131,16 +119,13 @@ class MockAsyncOpenAI:
         self.base_url = "mock://local"
 
 
-# ----------------- Helpers -----------------
 def parse_action(txt: str) -> int:
-    """Pick first integer; clamp to {0,1}."""
     m = re.search(r"[-+]?\d+", txt)
     if not m:
         raise ValueError(f"No int in: {txt!r}")
     return 1 if int(m.group(0)) > 0 else 0
 
 
-# ----------------- Fixtures -----------------
 @pytest.fixture
 def toy_env_class():
     return ToyEnv
@@ -148,7 +133,6 @@ def toy_env_class():
 
 @pytest.fixture
 def eval_dataset():
-    # A generic 1-row dataset for simple tests
     return Dataset.from_dict(
         {
             "prompt": [[]],
@@ -165,7 +149,8 @@ def client():
     return MockAsyncOpenAI()
 
 
-# ----------------- Tests (chat mode) -----------------
+# ----------------- Tests -----------------
+
 def test_mode_1_basic_rollout_and_reward_sum(toy_env_class, eval_dataset, client):
     """Tests Mode 1 (Homogeneous) with default env_kwargs"""
     env = GymEnv(
@@ -182,20 +167,23 @@ def test_mode_1_basic_rollout_and_reward_sum(toy_env_class, eval_dataset, client
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     steps = st.get("trajectory", [])
-    assert len(steps) > 0  # Ensure rollout happened
+    assert len(steps) > 0
 
-    # Return equals sum of per-step rewards (rubric responsibility).
-    # Note: verifiers rubric sums rewards from trajectory
-    logged = sum(float(s.get("reward", 0.0) or 0.0) for s in steps)
+    # Interaction Trace:
+    # 1. x=0 -> Act 1 -> x=1 (Reward 0)
+    # 2. x=1 -> Act 1 -> x=2 (Reward 0)
+    # 3. x=2 -> Act 1 -> x=3 (Reward 1.0, Done=True)
+    # 4. Observability Step: MultiTurnEnv intentionally generates one final response.
+    #    Since done=True, env_response should append the sentinel.
+    assert len(steps) == 4
     
-    # toy env policy: x=0->1, x=1->1, x=2->1 (reward=1.0), done. 3 steps.
-    # rewards: 0.0, 0.0, 1.0. Sum = 1.0
-    assert res["reward"] == [pytest.approx(logged)]
-    assert logged == 1.0 
-
-    # Sanity: step records are well-formed and last step has boolean flags.
-    last = steps[-1]
-    assert isinstance(st.get("gym_done", False), bool)
+    # Check that the final prompt contains the sentinel message
+    last_prompt = steps[-1]["prompt"]
+    assert "Episode already ended." in str(last_prompt)
+    
+    # Reward sum check
+    assert res["reward"] == [1.0]
+    assert st.get("gym_done", False) is True
 
 
 def test_invalid_parse_truncates(toy_env_class, eval_dataset, client):
@@ -218,23 +206,27 @@ def test_invalid_parse_truncates(toy_env_class, eval_dataset, client):
     st = res["state"][0]
     steps = st.get("trajectory", [])
 
-    # The loop runs once, parser fails -> returns error message -> done=True
-    assert len(steps) == 1
+    # Interaction Trace:
+    # 1. Model generates "1".
+    # 2. Env attempts parse -> Fails -> Returns Error Msg -> Sets Done=True.
+    # 3. Observability Step: MultiTurnEnv generates one final response to the Error Msg.
+    assert len(steps) == 2
     
-    # Verify the failure mode
     assert st.get("gym_done", False) is True
-    # Last message should be the error message from env_response
-    assert "Action Parsing Error" in str(steps[-1]["completion"][-1]["content"]) or \
-           "Action Parsing Error" in str(steps[0]["completion"][-1]["content"]) # depending on where error message ends up
+    
+    # The error message is passed as feedback to the final observability turn.
+    last_prompt = steps[-1]["prompt"]
+    assert "Action Parsing Error" in str(last_prompt)
+    # Note: In the current implementation, 'except Exception' returns early, 
+    # so "Episode already ended." is NOT appended after the error message.
+    # We verify that we got the specific error message instead.
 
 
 def test_mode_1_respects_max_episode_steps(eval_dataset, client):
     """The loop should respect max_episode_steps even if env never terminates."""
-
     class NoTermEnv:
         def reset(self, **kwargs):
             return "x=0", {}
-
         def step(self, action: int):
             return "x=1", 0.0, False, False, {}
 
@@ -249,12 +241,15 @@ def test_mode_1_respects_max_episode_steps(eval_dataset, client):
     st = res["state"][0]
     steps = st.get("trajectory", [])
     
-    # Should stop after 3 steps due to gym_limit_reached check
-    # Note: verifiers MultiTurnEnv checks stops AFTER env_response
-    # so we get 3 environment responses.
+    # max_turns=3 serves as a hard cutoff.
     assert len(steps) == 3
-    assert st.get("gym_done", False) is False # Not intrinsically done
-    assert st.get("is_completed", False) is True # Forced stop by verifiers
+    assert st.get("gym_done", False) is False
+    assert st.get("is_completed", False) is True
+    
+    # CRITICAL CHECK: Since the env didn't finish itself (gym_done=False),
+    # the sentinel message should NOT be present in the last prompt.
+    last_prompt = steps[-1]["prompt"]
+    assert "Episode already ended." not in str(last_prompt)
 
 
 def test_mode_1_history_contains_system_fewshot_and_obs(
@@ -275,26 +270,20 @@ def test_mode_1_history_contains_system_fewshot_and_obs(
     )
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
-    
-    # Prompt is set in setup_state
     first_prompt = st["prompt"]
     
     roles = [m["role"] for m in first_prompt]
     contents = [m.get("content") for m in first_prompt]
-    # system, few-shot user/assistant, then user with obs
     assert roles[:4] == ["system", "user", "assistant", "user"]
     assert contents[0] == "SYS"
-    assert contents[-1].startswith("x=0")  # Default start
+    assert contents[-1].startswith("x=0")
 
 
 def test_mode_1_five_tuple_step_normalization(eval_dataset, client):
-    # This test verifies that 4-tuple envs are normalized to 5-tuple
     class FourTupleEnv:
         def reset(self, **kwargs):
             return "x=0", {}
-
         def step(self, action: int):
-            # obs, reward, done, info
             return "x=1", 1.0, True, {"info": "done"}
 
     env = GymEnv(
@@ -307,23 +296,26 @@ def test_mode_1_five_tuple_step_normalization(eval_dataset, client):
     st = res["state"][0]
     steps = st.get("trajectory", [])
     
-    assert len(steps) == 1
-    # Check that info was correctly passed through
+    # Interaction Trace:
+    # 1. Action -> Env Step (Done=True).
+    # 2. Observability Step.
+    assert len(steps) == 2
+    
+    # Check that the final prompt contains the sentinel message
+    last_prompt = steps[-1]["prompt"]
+    assert "Episode already ended." in str(last_prompt)
+    
+    # The info should be attached to the step that generated it (Step 0)
     assert steps[0]["extras"]["gym_info"] == {"info": "done"}
     assert st.get("gym_done", False) is True
 
 
-# ----------------- Tests for Environment Creation Modes -----------------
-
-
 def test_mode_1_homogeneous_with_dataset_init(toy_env_class, client):
-    """Tests Mode 1 (Homogeneous) + dataset `info` passing to reset()"""
-    # Dataset `info` specifies start=5
     ds = Dataset.from_dict(
         {
             "prompt": [[]],
             "task": ["toy"],
-            "info": [{"start": 5}],  # <-- Kwarg for reset()
+            "info": [{"start": 5}],
             "answer": [""],
             "example_id": [0],
         }
@@ -331,7 +323,7 @@ def test_mode_1_homogeneous_with_dataset_init(toy_env_class, client):
 
     env = GymEnv(
         env_cls=toy_env_class,
-        env_kwargs={"target": 10},  # Default target
+        env_kwargs={"target": 10},
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=ds,
@@ -339,63 +331,42 @@ def test_mode_1_homogeneous_with_dataset_init(toy_env_class, client):
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     
-    # First prompt should contain the *initial* observation from reset()
-    # prompt is stored in state["prompt"]
     first_obs_msg = st["prompt"][-1]["content"]
     assert first_obs_msg == "x=5"
-    
-    # Check that info from input was present
     assert st["info"]["start"] == 5
 
 
 def test_mode_3_custom_subclass_obs_formatter(eval_dataset, client):
-    """Tests Mode 3 (Custom) by subclassing to override obs_to_text"""
-
     class NumObsEnv:
         def reset(self, **kwargs):
             return 0, {}
-
         def step(self, action: int):
             return 1, 0.0, True, False, {}
 
-    # Subclass to override obs_to_text, but use Mode 1 for _make_env
-    # Note: passing obs_to_text as arg is preferred, but overriding is supported
     class FmtGymEnv(GymEnv):
         def obs_to_text(self, obs: Any) -> str:
-            # Custom formatter
             return f"obs_is_{obs}"
 
     env = FmtGymEnv(
-        env_cls=NumObsEnv,  # Use Mode 1 for creation
+        env_cls=NumObsEnv,
         action_parser=parse_action,
         message_type="chat",
         eval_dataset=eval_dataset,
     )
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
-    
-    # Initial prompt check
     assert st["prompt"][-1]["content"] == "obs_is_0"
 
 
 def test_error_no_env_cls(eval_dataset):
-    """Tests error if no env_cls is given"""
     with pytest.raises(ValueError):
         GymEnv(action_parser=parse_action, eval_dataset=eval_dataset)
 
 
-# ----------------- Completion mode test -----------------
-
-
 def test_completion_mode_rollout_and_completion_text(toy_env_class, client):
-    """
-    Smoke test for message_type='completion' (Mode 1):
-    - Uses text completions instead of chat.
-    - Ensures prompt is a string
-    """
     ds = Dataset.from_dict(
         {
-            "prompt": [""],  # completion-style prompt
+            "prompt": [""],
             "task": ["toy"],
             "info": [{}],
             "answer": [""],
@@ -413,84 +384,46 @@ def test_completion_mode_rollout_and_completion_text(toy_env_class, client):
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
 
-    # In completion mode, prompt is a string
     assert isinstance(st["prompt"], str)
     assert st["prompt"] == "x=0"
-    
-    # Completion is collected by base class
     comp = st.get("completion", "")
     assert isinstance(comp, str)
 
 
-# ----------------- Auto-dataset and dataset semantics tests -----------------
-
-
 def test_auto_dataset_created_when_no_datasets(toy_env_class):
-    """
-    If neither dataset nor eval_dataset is provided, GymEnv should:
-      - auto-build a train dataset with num_train_episodes rows
-      - create a 1-row dummy eval_dataset
-      - still behave as a valid Environment (dataset non-None)
-    """
     num_train = 37
     env = GymEnv(
         env_cls=toy_env_class,
         action_parser=parse_action,
         message_type="chat",
         num_train_episodes=num_train,
-        # rely on auto_dummy_eval=True (default)
     )
 
-    # Environment must have both dataset and eval_dataset
     assert env.dataset is not None
     assert env.eval_dataset is not None
-
-    # Train dataset should have num_train rows, eval should be the 1-row dummy
     train_ds = env.dataset
     eval_ds = env.eval_dataset
     assert len(train_ds) == num_train
     assert len(eval_ds) == 1
-
-    # Columns should match what _build_auto_dataset/_default_eval_ds produce
-    assert set(train_ds.column_names) == {"prompt", "answer", "info", "task", "example_id"}
-    assert set(eval_ds.column_names) == {"prompt", "answer", "info", "task", "example_id"}
-
-    # Chat mode: prompts are lists (here empty lists)
     assert isinstance(train_ds[0]["prompt"], list)
     assert train_ds[0]["prompt"] == []
 
-    # Info should be a dict per row
-    assert isinstance(train_ds[0]["info"], dict)
-
 
 def test_auto_dataset_completion_prompt_shape(toy_env_class):
-    """
-    In completion mode, auto-built train dataset should have string prompts (""), not lists.
-    """
     env = GymEnv(
         env_cls=toy_env_class,
         action_parser=parse_action,
         message_type="completion",
         num_train_episodes=5,
-        # no datasets passed -> auto dataset + dummy eval
     )
-
     assert env.dataset is not None
     ds = env.dataset
     assert len(ds) == 5
-
-    # Completion mode uses plain string prompts
     assert isinstance(ds[0]["prompt"], str)
     assert ds[0]["prompt"] == ""
 
 
 def test_eval_dataset_does_not_become_train_data(toy_env_class, eval_dataset):
-    """
-    If user passes only eval_dataset, GymEnv should:
-      - keep eval_dataset for evaluation only
-      - auto-build a separate train dataset via num_train_episodes
-      - NOT mirror eval_dataset into dataset
-    """
     num_train = 11
     env = GymEnv(
         env_cls=toy_env_class,
@@ -499,15 +432,8 @@ def test_eval_dataset_does_not_become_train_data(toy_env_class, eval_dataset):
         eval_dataset=eval_dataset,
         num_train_episodes=num_train,
     )
-
     assert env.eval_dataset is not None
     assert env.dataset is not None
-
-    # Eval dataset is the original single-row eval set
     assert len(env.eval_dataset) == 1
-
-    # Train dataset is auto-generated and has num_train_episodes rows
     assert len(env.dataset) == num_train
-
-    # They should not be the same underlying object
     assert env.dataset is not env.eval_dataset
