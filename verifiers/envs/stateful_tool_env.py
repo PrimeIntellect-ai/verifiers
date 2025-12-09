@@ -116,8 +116,7 @@ class StatefulToolEnv(vf.ToolEnv):
                     tool_call.get("function", {}).get("arguments", "")
                 )
             except Exception as e:
-                state["error"] = vf.ToolParseError(cause=e)
-                return []
+                raise vf.ToolParseError(cause=e)
             tool_call_id: str = tool_call.get("id", "")
             tool_args = self.update_tool_args(
                 tool_name, tool_args, messages, state, **kwargs
@@ -127,7 +126,6 @@ class StatefulToolEnv(vf.ToolEnv):
                     tool_name, tool_args, tool_call_id
                 )
             except Exception as e:
-                state["error"] = vf.ToolCallError(cause=e)
-                return []
+                raise vf.ToolCallError(cause=e)
             tool_messages.append(tool_message)
         return tool_messages
