@@ -399,8 +399,7 @@ class Environment(ABC):
                     return get_overlong_prompt_dummy_response(
                         message_type or self.message_type
                     )
-            self.logger.error(f"Error getting model response: {e} \n\nExiting...")
-            raise e
+            raise vf.ModelError(e)
 
     async def init_state(
         self,
@@ -498,6 +497,9 @@ class Environment(ABC):
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 
     async def _render_completion(self, state: State):
+        if len(state["trajectory"]) == 0:
+            state["completion"] = []
+            return
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
         full_conversation = concat_messages([last_prompt, last_completion])
