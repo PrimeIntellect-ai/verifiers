@@ -1,9 +1,10 @@
 import asyncio
-import time
 import logging
+import time
 from typing import Any
 
 import tenacity as tc
+
 import verifiers as vf
 
 try:
@@ -76,9 +77,11 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
         s = time.time()
-        await self.sandbox_client.wait_for_creation(
-            sandbox_id
-        )  # wait for sandbox to be created
+        try:
+            # wait for sandbox to be created
+            await self.sandbox_client.wait_for_creation(sandbox_id)
+        except Exception as e:
+            raise vf.SandboxError(cause=e)
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
         s = time.time()
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
@@ -92,6 +95,8 @@ class SandboxEnv(vf.StatefulToolEnv):
             timeout_msg = f"Command timed out after {self.timeout_per_command_seconds}s"
             self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
             return f"Error: {timeout_msg}"
+        except Exception as e:
+            raise vf.SandboxError(cause=e)
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
@@ -127,13 +132,17 @@ class SandboxEnv(vf.StatefulToolEnv):
         try:
             await self.with_retry(_delete_sandbox)(sandbox_id)
         except Exception as e:
+            # only warn, not raise an error on deletion
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
-        sandbox = await self.with_retry(self.sandbox_client.create)(
-            self.sandbox_request
-        )
+        try:
+            sandbox = await self.with_retry(self.sandbox_client.create)(
+                self.sandbox_request
+            )
+        except Exception as e:
+            raise vf.SandboxError(cause=e)
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
@@ -157,9 +166,7 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
         """Delete multiple sandboxes by their global IDs"""
         try:
-            await self.with_retry(self.sandbox_client.bulk_delete)(
-                global_ids
-            )
+            await self.with_retry(self.sandbox_client.bulk_delete)(global_ids)
             self.logger.debug(f"Bulk deleted sandboxes: {global_ids}")
             self.active_sandboxes.difference_update(global_ids)
         except Exception as e:
@@ -183,7 +190,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         # Delete in batches of 100
         batch_size = 100
         for i in range(0, len(sandbox_ids), batch_size):
-            batch = sandbox_ids[i:i + batch_size]
+            batch = sandbox_ids[i : i + batch_size]
             try:
                 sync_client.bulk_delete(sandbox_ids=batch)
                 for sandbox_id in batch:
