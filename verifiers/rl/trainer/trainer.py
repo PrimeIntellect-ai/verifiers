@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import deepspeed
 import torch
+import wandb
 from accelerate.utils import (
     broadcast_object_list,
     is_peft_model,
@@ -19,7 +20,6 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
 
 import verifiers as vf
-import wandb
 from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.orchestrator import Orchestrator
@@ -125,6 +125,7 @@ class RLTrainer(Trainer):
         self._textual_logs = {
             "prompt": deque(),
             "completion": deque(),
+            "error": deque(),
             "rewards": defaultdict(lambda: deque()),
         }
 
@@ -409,6 +410,7 @@ class RLTrainer(Trainer):
             print_prompt_completions_sample(
                 list(self._textual_logs["prompt"]),  # type: ignore[arg-type]
                 list(self._textual_logs["completion"]),  # type: ignore[arg-type]
+                list(self._textual_logs["error"]),  # type: ignore[arg-type]
                 list(self._textual_logs["rewards"]["reward"]),  # type: ignore[arg-type]
                 self.state.global_step,
             )
