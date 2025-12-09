@@ -146,7 +146,7 @@ async def test_get_model_response_chat_with_tools(mock_openai_client):
 @pytest.mark.asyncio
 async def test_get_model_response_completion_rejects_tools(mock_openai_client):
     env = _make_env(mock_openai_client, message_type="completion")
-    with pytest.raises(ValueError, match="oai_tools are not supported for completion"):
+    with pytest.raises(vf.ModelError):
         state = await env.init_state(
             input=RolloutInput(example_id=0, task="test", prompt="Complete this"),
             client=mock_openai_client,
