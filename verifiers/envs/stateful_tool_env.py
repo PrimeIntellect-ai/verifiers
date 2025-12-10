@@ -62,6 +62,8 @@ class StatefulToolEnv(vf.ToolEnv):
                 and arg in params["required"]
             ):
                 cast(list[str], params["required"]).remove(arg)
+        if "$defs" in params and not params["$defs"]:
+            params.pop("$defs")
         if self.oai_tools is None:
             self.oai_tools = []
         self.oai_tools.append(oai_tool)
