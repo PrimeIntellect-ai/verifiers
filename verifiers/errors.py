@@ -14,6 +14,12 @@ class ModelError(Error):
     pass
 
 
+class OverlongPromptError(Error):
+    """Used to catch overlong prompt errors (e.g. prompt + requested number of tokens exceeds model context length)"""
+
+    pass
+
+
 class ToolError(Error):
     """Parent class for all tool errors."""
 

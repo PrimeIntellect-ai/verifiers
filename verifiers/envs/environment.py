@@ -43,10 +43,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
-from verifiers.utils.message_utils import (
-    concat_messages,
-    get_overlong_prompt_dummy_response,
-)
+from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.path_utils import get_results_path
 
 if TYPE_CHECKING:
@@ -396,9 +393,7 @@ class Environment(ABC):
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
                     self.logger.debug("Caught overlong prompt.")
-                    return get_overlong_prompt_dummy_response(
-                        message_type or self.message_type
-                    )
+                    raise vf.OverlongPromptError(e)
             raise vf.ModelError(e)
 
     async def init_state(
