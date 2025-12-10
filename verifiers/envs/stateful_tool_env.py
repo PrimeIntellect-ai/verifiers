@@ -54,7 +54,7 @@ class StatefulToolEnv(vf.ToolEnv):
                 if "$ref" in arg_properties:
                     refs = arg_properties["$ref"]
                     ref_type = refs.split("/")[-1]
-                    if "$defs" in params and ref_type in params["$defs"]:
+                    if "$defs" in params and ref_type in cast(dict, params["$defs"]):
                         params["$defs"].pop(ref_type)  # type: ignore
             if (
                 "required" in params
