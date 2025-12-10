@@ -3,7 +3,7 @@ name = "needle-in-haystack"
 version = "0.1.0"
 description = "Needle-in-haystack RLM environment for verifiers"
 requires-python = ">=3.10"
-dependencies = ["verifiers"]
+dependencies = ["verifiers", "filelock"]
 
 [build-system]
 requires = ["hatchling"]
