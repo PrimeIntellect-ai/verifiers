@@ -274,7 +274,7 @@ def call_reflection_model(
             "temperature": temperature,
         }
         if max_tokens is not None:
-            request_args["max_tokens"] = max_tokens
+            request_args["max_completion_tokens"] = max_tokens
         response = client.chat.completions.create(**request_args)
         return response.choices[0].message.content or ""
     except Exception as e:

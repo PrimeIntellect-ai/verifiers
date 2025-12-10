@@ -1,0 +1,48 @@
+{
+  "config": {
+    "env_id": "wordle",
+    "model": "gpt-5-mini",
+    "reflection_model": "gpt-5-mini",
+    "reflection_temperature": 1.0,
+    "components": [
+      "system_prompt"
+    ],
+    "trainset_size": 50,
+    "valset_size": 20,
+    "rollouts_per_example": 1,
+    "max_metric_calls": 790,
+    "reflection_minibatch_size": 35,
+    "seed": 42,
+    "max_concurrent": 32
+  },
+  "date": "2025-12-02",
+  "timestamp": "2025-12-02T11:03:27.179616",
+  "val_aggregate_scores": [
+    1.0151690476190476,
+    1.3220761904761906,
+    1.3447619047619048,
+    1.3167095238095239
+  ],
+  "num_candidates": 4,
+  "best_val_score": 1.3447619047619048,
+  "initial_val_score": 1.0151690476190476,
+  "improvement": 0.32959285714285724,
+  "candidates_history": [
+    {
+      "iteration": 0,
+      "score": 1.0151690476190476
+    },
+    {
+      "iteration": 1,
+      "score": 1.3220761904761906
+    },
+    {
+      "iteration": 2,
+      "score": 1.3447619047619048
+    },
+    {
+      "iteration": 3,
+      "score": 1.3167095238095239
+    }
+  ]
+}
