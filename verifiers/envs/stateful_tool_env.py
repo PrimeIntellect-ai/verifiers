@@ -41,16 +41,21 @@ class StatefulToolEnv(vf.ToolEnv):
     def add_tool(self, tool: Callable, args_to_skip: list[str] = []):
         self.tools.append(tool)
         oai_tool = convert_func_to_oai_tool(tool)
+        assert "function" in oai_tool
+        assert "parameters" in oai_tool["function"]
+        params = oai_tool["function"]["parameters"]
         for arg in args_to_skip:
-            assert "function" in oai_tool
-            assert "parameters" in oai_tool["function"]
-            params = oai_tool["function"]["parameters"]
             if (
                 "properties" in params
                 and isinstance(params["properties"], dict)
                 and arg in params["properties"]
             ):
-                cast(dict[str, object], params["properties"]).pop(arg)
+                arg_properties = cast(dict[str, dict], params["properties"]).pop(arg)
+                if "$ref" in arg_properties:
+                    refs = arg_properties["$ref"]
+                    ref_type = refs.split("/")[-1]
+                    if "$defs" in params and ref_type in params["$defs"]:
+                        params["$defs"].pop(ref_type)  # type: ignore
             if (
                 "required" in params
                 and isinstance(params["required"], list)
