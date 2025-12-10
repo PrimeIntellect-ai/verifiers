@@ -495,9 +495,23 @@ class RLMEnv(SandboxEnv):
             """Total completion tokens from sub-LLM calls."""
             return float(state.get("sub_llm_completion_tokens", 0))
 
+        def sub_llm_total_tool_calls(state: State) -> float:
+            """Total tool calls made by sub-LLMs."""
+            return float(state.get("sub_llm_total_tool_calls", 0))
+
+        def sub_llm_total_turns(state: State) -> float:
+            """Total turns (LLM calls) made by sub-LLMs."""
+            return float(state.get("sub_llm_total_turns", 0))
+
         return Rubric(
-            funcs=[sub_llm_calls, sub_llm_prompt_tokens, sub_llm_completion_tokens],
-            weights=[0.0, 0.0, 0.0],
+            funcs=[
+                sub_llm_calls,
+                sub_llm_prompt_tokens,
+                sub_llm_completion_tokens,
+                sub_llm_total_tool_calls,
+                sub_llm_total_turns,
+            ],
+            weights=[0.0, 0.0, 0.0, 0.0, 0.0],
         )
 
     # =========================================================================
@@ -563,20 +577,22 @@ class RLMEnv(SandboxEnv):
 
     async def _run_sub_llm_with_tools(
         self, client: Any, model: str, messages: list[dict]
-    ) -> tuple[dict, int, int, int, bool]:
+    ) -> tuple[dict, int, int, int, int, bool]:
         """
         Run a sub-LLM call with tool-calling loop.
 
         Returns:
             Tuple of (response_dict, total_prompt_tokens, total_completion_tokens,
-                      tool_call_count, max_turns_reached)
+                      tool_call_count, num_turns, max_turns_reached)
         """
         current_messages = list(messages)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         tool_call_count = 0
+        num_turns = 0
 
         for _ in range(self.sub_tool_max_turns):
+            num_turns += 1
             # Make LLM call with tools
             response = await client.chat.completions.create(
                 model=model,
@@ -605,6 +621,7 @@ class RLMEnv(SandboxEnv):
                     total_prompt_tokens,
                     total_completion_tokens,
                     tool_call_count,
+                    num_turns,
                     False,  # max_turns_reached
                 )
 
@@ -626,6 +643,7 @@ class RLMEnv(SandboxEnv):
                 current_messages.append(tool_result)
 
         # Max turns reached - add prompt for final answer and make call without tools
+        num_turns += 1  # Count the final forced response as a turn
         current_messages.append(
             {
                 "role": "user",
@@ -652,6 +670,7 @@ class RLMEnv(SandboxEnv):
             total_prompt_tokens,
             total_completion_tokens,
             tool_call_count,
+            num_turns,
             True,  # max_turns_reached
         )
 
@@ -849,6 +868,7 @@ class RLMEnv(SandboxEnv):
                     prompt_tokens,
                     completion_tokens,
                     tool_call_count,
+                    num_turns,
                     max_turns_reached,
                 ) = await self._run_sub_llm_with_tools(
                     client, sub_model, messages_with_system
@@ -869,6 +889,7 @@ class RLMEnv(SandboxEnv):
                 prompt_tokens = usage.get("prompt_tokens", 0) or 0
                 completion_tokens = usage.get("completion_tokens", 0) or 0
                 tool_call_count = 0
+                num_turns = 1  # Simple path is always 1 turn
                 max_turns_reached = False
 
             # Extract boxed answer from response (falls back to full content if no \boxed{})
@@ -887,12 +908,20 @@ class RLMEnv(SandboxEnv):
             context["sub_llm_completion_tokens"] = (
                 context.get("sub_llm_completion_tokens", 0) + completion_tokens
             )
+            # Track additional metrics for analysis
+            context["sub_llm_total_tool_calls"] = (
+                context.get("sub_llm_total_tool_calls", 0) + tool_call_count
+            )
+            context["sub_llm_total_turns"] = (
+                context.get("sub_llm_total_turns", 0) + num_turns
+            )
 
             # Add metadata to response for the worker to parse
             response_dict["_rlm_metadata"] = {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "tool_call_count": tool_call_count,
+                "num_turns": num_turns,
                 "max_turns_reached": max_turns_reached,
             }
 
@@ -1299,6 +1328,10 @@ PY
             state["sub_llm_completion_tokens"] = context.get(
                 "sub_llm_completion_tokens", 0
             )
+            state["sub_llm_total_tool_calls"] = context.get(
+                "sub_llm_total_tool_calls", 0
+            )
+            state["sub_llm_total_turns"] = context.get("sub_llm_total_turns", 0)
             del self.active_rollouts[rollout_id]
 
         # Decrement tunnel usage

@@ -7,6 +7,7 @@ dependencies = [
     "aiofiles>=24.1.0",
     "aiohttp>=3.10.0",
     "datasets>=4.0.0",
+    "filelock>=3.0.0",
     "pdfminer-six>=20251107",
     "trafilatura>=2.0.0",
     "verifiers>=0.1.8",

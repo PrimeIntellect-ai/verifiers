@@ -10,11 +10,12 @@ import aiohttp
 import httpx
 import verifiers as vf
 from datasets import load_dataset
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
+from openai.types.chat import ChatCompletionToolParam
 from verifiers.envs.rlm_env import RLMEnv
 from verifiers.envs.stateful_tool_env import StatefulToolEnv
 from verifiers.rubrics.judge_rubric import JudgeRubric
-from verifiers.types import Messages, State
+from verifiers.types import Messages, MessageType, ModelResponse, SamplingArgs, State
 from verifiers.utils.data_utils import extract_boxed_answer
 
 from .config import (
@@ -25,6 +26,7 @@ from .config import (
     SERPER_API_URL,
 )
 from .formatting import format_serper_results, truncate_text
+from .metrics_logger import MetricsLogger, create_logging_reward_func
 from .open_one import open_one
 from .rate_limit import with_rate_limit_retry
 
@@ -53,6 +55,8 @@ def load_environment(
     redundancy_penalty_weight: float = 0.0,
     debug: bool = False,
     finish_with_tool: bool = False,
+    # Metrics logging
+    metrics_output_path: str | None = None,
 ) -> vf.Environment:
     # === Dataset ===
     raw_split = load_dataset(dataset_name, split=dataset_split)
@@ -124,9 +128,12 @@ def load_environment(
         # Note: judge() doesn't accept **kwargs, so we don't pass them
         judge_response = await judge_rubric.judge(state["info"]["raw_question"], completion, response, state)
         if "yes" in judge_response.lower():
-            return 1.0
+            result = 1.0
         else:
-            return 0.0
+            result = 0.0
+        # Store in state for metrics logging
+        state["judge_reward"] = result
+        return result
 
     async def redundancy_penalty_func(
         prompt: vf.Messages, completion: vf.Messages, answer: str, state: dict, **kwargs
@@ -173,6 +180,14 @@ def load_environment(
 
     judge_rubric.add_reward_func(judge_reward_func)
     judge_rubric.add_reward_func(redundancy_penalty_func, weight=-redundancy_penalty_weight)
+
+    # === Metrics Logging ===
+    # If metrics_output_path is provided, add a logging reward function
+    # This logs detailed per-rollout metrics to a JSON file for statistical analysis
+    if metrics_output_path:
+        metrics_logger = MetricsLogger(metrics_output_path)
+        logging_reward = create_logging_reward_func(metrics_logger, is_rlm_mode=use_rlm)
+        judge_rubric.add_reward_func(logging_reward, weight=0.0)
 
     # === RLM Mode ===
     if use_rlm:
@@ -229,7 +244,46 @@ def load_environment(
                 answer["ready"] = True
             """
 
-            pass
+            async def get_model_response(
+                self,
+                client: AsyncOpenAI,
+                model: str,
+                prompt: Messages,
+                oai_tools: list[ChatCompletionToolParam] | None = None,
+                sampling_args: SamplingArgs | None = None,
+                message_type: MessageType | None = None,
+            ) -> ModelResponse:
+                """Wrap parent get_model_response with retry for content moderation false positives."""
+                max_retries = 3
+                last_exception: Exception | None = None
+
+                for attempt in range(max_retries):
+                    try:
+                        return await super().get_model_response(
+                            client=client,
+                            model=model,
+                            prompt=prompt,
+                            oai_tools=oai_tools,
+                            sampling_args=sampling_args,
+                            message_type=message_type,
+                        )
+                    except BadRequestError as e:
+                        error_text = e.response.text.lower()
+                        # Retry on content moderation false positives
+                        if "invalid_prompt" in error_text or "violating our usage policy" in error_text:
+                            last_exception = e
+                            if attempt < max_retries - 1:
+                                self.logger.warning(
+                                    f"Content moderation false positive, retrying ({attempt + 1}/{max_retries})..."
+                                )
+                                await asyncio.sleep(1)
+                                continue
+                        # Re-raise other BadRequestErrors (including context length - parent handles those)
+                        raise
+
+                # All retries exhausted
+                assert last_exception is not None
+                raise last_exception
 
         env = DeepDiveRLMEnv(
             sub_model=rlm_sub_model,
