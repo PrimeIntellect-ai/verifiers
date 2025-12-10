@@ -112,9 +112,14 @@ class StatefulToolEnv(vf.ToolEnv):
         for tool_call in last_msg.get("tool_calls", []):
             try:
                 tool_name: str = tool_call.get("function", {}).get("name", "")
-                tool_args: dict = json.loads(
+                parsed_args = json.loads(
                     tool_call.get("function", {}).get("arguments", "")
                 )
+                if not isinstance(parsed_args, dict):
+                    raise ValueError(
+                        f"Expected tool arguments to be a dict, got {type(parsed_args).__name__}: {parsed_args}"
+                    )
+                tool_args: dict = parsed_args
             except Exception as e:
                 raise vf.ToolParseError(cause=e)
             tool_call_id: str = tool_call.get("id", "")

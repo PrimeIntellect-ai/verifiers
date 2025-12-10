@@ -199,6 +199,9 @@ PY
         state: vf.State,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        assert isinstance(tool_args, dict), (
+            f"Expected tool_args to be a dict, got {type(tool_args)}: {tool_args}"
+        )
         updated_args = dict(tool_args)
         if tool_name == "python":
             updated_args["sandbox_id"] = state["sandbox_id"]
