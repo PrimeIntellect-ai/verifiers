@@ -952,6 +952,12 @@ class RLMEnv(SandboxEnv):
     # State Management
     # =========================================================================
 
+    async def _execute_command_with_retry(self, sandbox_id: str, command: str):
+        """Execute command with retry logic for transient sandbox errors."""
+        return await self.with_retry(self.sandbox_client.execute_command)(
+            sandbox_id, command
+        )
+
     def update_tool_args(
         self,
         tool_name: str,
@@ -1044,7 +1050,7 @@ fi
 
 nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
 """
-        await self.sandbox_client.execute_command(sandbox_id, start_worker_cmd)
+        await self._execute_command_with_retry(sandbox_id, start_worker_cmd)
 
         # Wait for worker to be ready
         await self._wait_for_worker_ready(sandbox_id)
@@ -1100,17 +1106,17 @@ import base64
 from pathlib import Path
 Path('{self._CONTEXT_FILE}').write_bytes(base64.b64decode('{context_b64}'))
 " """
-            await self.sandbox_client.execute_command(sandbox_id, cmd)
+            await self._execute_command_with_retry(sandbox_id, cmd)
         else:
             # Large context - write in chunks
             # First, create empty file
-            await self.sandbox_client.execute_command(
+            await self._execute_command_with_retry(
                 sandbox_id, f"rm -f {self._CONTEXT_FILE} && touch {self._CONTEXT_FILE}"
             )
             
             # Write base64 chunks to a temp file, then decode
             temp_b64_file = "/tmp/rlm_context_b64.txt"
-            await self.sandbox_client.execute_command(
+            await self._execute_command_with_retry(
                 sandbox_id, f"rm -f {temp_b64_file} && touch {temp_b64_file}"
             )
             
@@ -1119,11 +1125,11 @@ Path('{self._CONTEXT_FILE}').write_bytes(base64.b64decode('{context_b64}'))
                 chunk = context_b64[i:i + max_chunk_size]
                 # Use printf instead of echo to handle special characters better
                 cmd = f"printf '%s' '{chunk}' >> {temp_b64_file}"
-                await self.sandbox_client.execute_command(sandbox_id, cmd)
+                await self._execute_command_with_retry(sandbox_id, cmd)
             
             # Decode the complete base64 file
             cmd = f"base64 -d {temp_b64_file} > {self._CONTEXT_FILE} && rm -f {temp_b64_file}"
-            await self.sandbox_client.execute_command(sandbox_id, cmd)
+            await self._execute_command_with_retry(sandbox_id, cmd)
 
     async def _write_answer_to_sandbox(self, sandbox_id: str, answer: dict) -> None:
         """Write answer to sandbox file."""
@@ -1134,17 +1140,17 @@ import base64
 from pathlib import Path
 Path('{self._ANSWER_FILE}').write_bytes(base64.b64decode('{answer_b64}'))
 " """
-        await self.sandbox_client.execute_command(sandbox_id, cmd)
+        await self._execute_command_with_retry(sandbox_id, cmd)
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         """Wait for worker to signal ready."""
         wait_script = _RLM_READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
-        result = await self.sandbox_client.execute_command(sandbox_id, wait_script)
+        result = await self._execute_command_with_retry(sandbox_id, wait_script)
         if "failed to start" in result.stdout or "failed to start" in (
             result.stderr or ""
         ):
             # Debug: get more info about why it failed
-            debug_result = await self.sandbox_client.execute_command(
+            debug_result = await self._execute_command_with_retry(
                 sandbox_id,
                 "ls -la /tmp/rlm* 2>&1; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1",
             )
@@ -1181,7 +1187,7 @@ PY
             """
         )
 
-        result = await self.sandbox_client.execute_command(sandbox_id, command)
+        result = await self._execute_command_with_retry(sandbox_id, command)
         if not result.stdout:
             return {
                 "status": "error",
@@ -1356,7 +1362,7 @@ PY
             return
 
         try:
-            result = await self.sandbox_client.execute_command(
+            result = await self._execute_command_with_retry(
                 sandbox_id,
                 f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
             )
