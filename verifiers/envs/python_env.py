@@ -178,7 +178,9 @@ PY
             start_command=start_command,
             **kwargs,
         )
-        self.add_tool(self.python, args_to_skip=["sandbox_id", "python_state"])
+        self.add_tool(
+            self.python, args_to_skip=["sandbox_id", "sandbox_state", "python_state"]
+        )
         self.remove_tool(self.bash)  # omit from agent tool list
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
