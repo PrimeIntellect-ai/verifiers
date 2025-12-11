@@ -86,9 +86,22 @@ class TestStatefulToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
-        self, mock_stateful_tool_env, mock_openai_client, sample_chat_dataset
+        self, mock_openai_client, sample_chat_dataset
     ):
-        """Test that ToolEnv stops rollout when tool call is not JSON-parsable."""
+        """Test that StatefulToolEnv stops rollout when tool call is not JSON-parsable."""
+
+        class ParseErrorStatefulToolEnv(vf.StatefulToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(tools=[], stop_errors=[vf.ToolParseError], **kwargs)
+
+            def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+                return tool_args
+
+        env = ParseErrorStatefulToolEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
 
         # Create a tool call with invalid JSON arguments
         from openai.types.chat.chat_completion_message_tool_call import (
@@ -112,7 +125,7 @@ class TestStatefulToolEnv:
             tool_calls=[tool_call_with_invalid_json_arguments],
         )
 
-        state = await mock_stateful_tool_env.rollout(
+        state = await env.rollout(
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "Square 4"}],
                 answer="",

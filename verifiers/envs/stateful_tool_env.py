@@ -110,6 +110,7 @@ class StatefulToolEnv(vf.ToolEnv):
         tool_messages = []
         last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
         for tool_call in last_msg.get("tool_calls", []):
+            tool_call_id: str = tool_call.get("id", "")
             try:
                 tool_name: str = tool_call.get("function", {}).get("name", "")
                 parsed_args = json.loads(
@@ -121,8 +122,21 @@ class StatefulToolEnv(vf.ToolEnv):
                     )
                 tool_args: dict = parsed_args
             except Exception as e:
-                raise vf.ToolParseError(cause=e)
-            tool_call_id: str = tool_call.get("id", "")
+                err = vf.ToolParseError(cause=e)
+                if self._should_stop_for_error(err):
+                    raise err
+                tool_messages.append(
+                    cast(
+                        vf.Message,
+                        {
+                            "role": "tool",
+                            "content": self.error_formatter(e),
+                            "tool_call_id": tool_call_id,
+                        },
+                    )
+                )
+                continue
+
             tool_args = self.update_tool_args(
                 tool_name, tool_args, messages, state, **kwargs
             )
@@ -130,7 +144,20 @@ class StatefulToolEnv(vf.ToolEnv):
                 tool_message: vf.Message = await self.call_tool(
                     tool_name, tool_args, tool_call_id
                 )
+                tool_messages.append(tool_message)
             except Exception as e:
-                raise vf.ToolCallError(cause=e)
-            tool_messages.append(tool_message)
+                err = vf.ToolCallError(cause=e)
+                if self._should_stop_for_error(err):
+                    raise err
+                tool_messages.append(
+                    cast(
+                        vf.Message,
+                        {
+                            "role": "tool",
+                            "content": self.error_formatter(e),
+                            "tool_call_id": tool_call_id,
+                        },
+                    )
+                )
+
         return tool_messages
