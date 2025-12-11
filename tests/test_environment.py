@@ -7,7 +7,7 @@ import pytest
 from datasets import Dataset
 from openai.types.chat.chat_completion import Choice
 
-from verifiers import Environment, Parser, Rubric, ThinkParser
+from verifiers import Environment, Parser, Rubric, ThinkParser, __version__ as vf_version
 from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
@@ -81,6 +81,8 @@ def _make_metadata(
     return GenerateMetadata(
         env_id="test-env",
         env_args={},
+        env_version="test-env-version",
+        verifiers_version="test-verifiers-version",
         model="test-model",
         base_url="http://localhost",
         num_examples=num_examples,
@@ -419,6 +421,7 @@ class TestEnvironmentBase:
                 weights=[0.5, 0.5],
             ),
         )
+        env.version = "test-env-v1"
 
         results = await env.generate(
             inputs=env.get_dataset(n=2),
@@ -433,6 +436,8 @@ class TestEnvironmentBase:
         assert "reward_b" in results["metadata"]["avg_metrics"]
         assert results["metadata"]["avg_metrics"]["reward_a"] == 1.0
         assert results["metadata"]["avg_metrics"]["reward_b"] == 0.5
+        assert results["metadata"]["env_version"] == "test-env-v1"
+        assert results["metadata"]["verifiers_version"] == vf_version
 
     @pytest.mark.asyncio
     async def test_generate_metadata_without_scoring(self, mock_openai_client):

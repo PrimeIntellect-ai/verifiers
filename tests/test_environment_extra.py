@@ -90,6 +90,8 @@ def _make_metadata(
     return GenerateMetadata(
         env_id="dummy-env",
         env_args={},
+        env_version="dummy-env-version",
+        verifiers_version="test-verifiers-version",
         model="test-model",
         base_url="http://localhost",
         num_examples=num_examples,

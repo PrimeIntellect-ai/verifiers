@@ -5,6 +5,7 @@ import json
 import logging
 import signal
 import time
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -48,6 +49,38 @@ from verifiers.utils.path_utils import get_results_path
 
 if TYPE_CHECKING:
     pass
+
+
+def _get_verifiers_version() -> str | None:
+    try:
+        return pkg_version("verifiers")
+    except PackageNotFoundError:
+        try:
+            from verifiers import __version__
+
+            return __version__
+        except Exception:
+            return None
+
+
+def _get_env_version(env: "Environment") -> str | None:
+    # Instance override
+    if getattr(env, "version", None):
+        return str(getattr(env, "version"))
+
+    env_module = inspect.getmodule(env.__class__)
+    if env_module and hasattr(env_module, "__version__"):
+        version = getattr(env_module, "__version__")
+        if version:
+            return str(version)
+
+    top_level_module = env.__class__.__module__.split(".")[0]
+    try:
+        return pkg_version(top_level_module)
+    except PackageNotFoundError:
+        pass
+
+    return None
 
 
 class Environment(ABC):
@@ -581,6 +614,8 @@ class Environment(ABC):
         metadata = GenerateMetadata(
             env_id=self.env_id,
             env_args=self.env_args,
+            env_version=_get_env_version(self),
+            verifiers_version=_get_verifiers_version(),
             model=model,
             base_url=str(client.base_url) if hasattr(client, "base_url") else "",
             num_examples=num_unique_examples,

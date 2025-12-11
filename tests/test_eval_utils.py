@@ -15,6 +15,8 @@ def _make_metadata(
     return GenerateMetadata(
         env_id="test-env",
         env_args={},
+        env_version="test-env-version",
+        verifiers_version="test-verifiers-version",
         model="test-model",
         base_url="http://localhost",
         num_examples=num_examples,
