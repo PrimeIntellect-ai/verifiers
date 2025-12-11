@@ -413,9 +413,10 @@ touch /tmp/vf_complete
 
     async def get_model_response(
         self,
-        client: AsyncOpenAI,
-        model: str,
+        state: State,
         prompt: Messages,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: str | None = None,
@@ -424,9 +425,8 @@ touch /tmp/vf_complete
         Get model response and unblock the waiting HTTP handler.
         Uses context var to find the intercept for this request.
         """
-        # Handle agent completion case (empty prompt, no pending request)
+        # Handle agent completion case (empty prompt)
         if not prompt:
-            # Return a minimal dummy response that won't break add_model_response
             from openai.types.chat import ChatCompletion, ChatCompletionMessage
             from openai.types.chat.chat_completion import Choice
 
@@ -440,44 +440,33 @@ touch /tmp/vf_complete
                     )
                 ],
                 created=int(time.time()),
-                model=model,
+                model=model or state["model"],
                 object="chat.completion",
             )
 
         request_id = _current_request_id.get()
+        intercept = self._intercepts.get(request_id) if request_id else None
 
-        if request_id and request_id in self._intercepts:
-            intercept = self._intercepts[request_id]
+        if intercept:
+            # Use model/tools from agent's intercepted request
+            model = intercept.get("model") or model
+            oai_tools = intercept.get("tools") or oai_tools
 
-            # Use model/tools from agent's request, fall back to provided args
-            effective_model = intercept.get("model") or model
-            effective_tools = intercept.get("tools") or oai_tools
-
-            response = await super().get_model_response(
-                client=client,
-                model=effective_model,
-                prompt=prompt,
-                oai_tools=effective_tools,
-                sampling_args=sampling_args,
-                message_type=None,
-            )
-
-            # Unblock the HTTP handler waiting for this response
-            intercept["response_future"].set_result(response)
-
-            # Clean up context var
-            _current_request_id.set(None)
-
-            return response
-
-        return await super().get_model_response(
+        response = await super().get_model_response(
+            state=state,
+            prompt=prompt,
             client=client,
             model=model,
-            prompt=prompt,
             oai_tools=oai_tools,
             sampling_args=sampling_args,
-            message_type=None,
+            message_type=message_type,
         )
+
+        if intercept:
+            intercept["response_future"].set_result(response)
+            _current_request_id.set(None)
+
+        return response
 
     async def _ensure_interception_server(self):
         """Start shared HTTP server if needed"""
