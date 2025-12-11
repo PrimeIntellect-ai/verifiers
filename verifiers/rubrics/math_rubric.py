@@ -34,22 +34,31 @@ class MathRubric(Rubric):
                 ) or ""
                 if response == "":
                     return 0.0
-                parsed_answer = await asyncio.to_thread(
-                    parse,
-                    f"\\boxed{{{answer}}}",
-                    parsing_timeout=None,  # type: ignore
-                )
-                parsed_response = await asyncio.to_thread(
-                    parse,
-                    f"\\boxed{{{response}}}",
-                    parsing_timeout=None,  # type: ignore
-                )
-                result = await asyncio.to_thread(
-                    verify,
-                    parsed_answer,
-                    parsed_response,
-                    timeout_seconds=None,
-                )
+
+                def parse_answer():
+                    return parse(
+                        f"\\boxed{{{answer}}}",
+                        parsing_timeout=None,  # type: ignore
+                    )
+
+                parsed_answer = await asyncio.to_thread(parse_answer)
+
+                def parse_response():
+                    return parse(
+                        f"\\boxed{{{response}}}",
+                        parsing_timeout=None,  # type: ignore
+                    )
+
+                parsed_response = await asyncio.to_thread(parse_response)
+
+                def verify_result():
+                    return verify(
+                        parsed_answer,
+                        parsed_response,
+                        timeout_seconds=None,
+                    )
+
+                result = await asyncio.to_thread(verify_result)
                 if result:
                     return 1.0
                 else:
