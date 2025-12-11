@@ -3,8 +3,6 @@ from typing import cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionMessage,
 )
 
 from verifiers.types import ChatMessage, Messages
