@@ -633,18 +633,18 @@ touch /tmp/vf_complete
         """
         pass
 
-    # @vf.cleanup
-    # async def destroy_sandbox(self, state: State):
-    #     """Cleanup sandbox after rollout"""
-    #     await self.post_rollout(state)
-    #     sandbox_id = state.get("sandbox_id")
-    #     if sandbox_id:
-    #         try:
-    #             sandbox_client = AsyncSandboxClient()
-    #             await sandbox_client.delete(sandbox_id)
-    #             logger.debug(f"Deleted sandbox {sandbox_id}")
-    #         except Exception as e:
-    #             logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+    @vf.cleanup
+    async def destroy_sandbox(self, state: State):
+        """Cleanup sandbox after rollout"""
+        await self.post_rollout(state)
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            try:
+                sandbox_client = AsyncSandboxClient()
+                await sandbox_client.delete(sandbox_id)
+                logger.debug(f"Deleted sandbox {sandbox_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
