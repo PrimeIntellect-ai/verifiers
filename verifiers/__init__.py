@@ -93,6 +93,7 @@ __all__ = [
     "SingleTurnEnv",
     "PythonEnv",
     "SandboxEnv",
+    "BrowserEnv",
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
@@ -126,6 +127,7 @@ _LAZY_IMPORTS = {
     "lora_defaults": "verifiers.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
+    "BrowserEnv": "verifiers.envs.browser_env:BrowserEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
@@ -146,6 +148,7 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from .envs.browser_env import BrowserEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401

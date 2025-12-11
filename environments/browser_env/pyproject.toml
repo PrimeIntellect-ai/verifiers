@@ -1,0 +1,22 @@
+[project]
+name = "browser_env"
+version = "0.1.0"
+description = "Browser environment for vision-based browser control via CUA primitives"
+tags = ["browser", "multi-turn", "vision", "tools", "eval"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.5.post0",
+    "aiohttp>=3.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["browser_env.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
+
