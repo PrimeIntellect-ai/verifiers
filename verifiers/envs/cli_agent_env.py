@@ -473,7 +473,7 @@ touch /tmp/vf_complete
         msg = response.get("choices", [{}])[0].get("message", {})
         if msg.get("content"):
             logger.debug(f"  [assistant] {self._truncate(msg['content'])}")
-        for tc in msg.get("tool_calls", []):
+        for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {})
             logger.debug(
                 f"  [tool_call] {func.get('name')}({self._truncate(func.get('arguments', ''), 100)})"
