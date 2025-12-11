@@ -31,6 +31,9 @@ EXA_FETCH_TOOLS = [
             "--profile",
             os.getenv("SMITHERY_PROFILE", ""),
         ],
+        "env": {
+            "NPM_CONFIG_LOGLEVEL": "silent",
+        },
         "description": "Exa MCP server",
     },
     {
@@ -52,6 +55,7 @@ BROWSERBASE_TOOLS = [
             "BROWSERBASE_API_KEY": os.getenv("BROWSERBASE_API_KEY", ""),
             "BROWSERBASE_PROJECT_ID": os.getenv("BROWSERBASE_PROJECT_ID", ""),
             "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
+            "NPM_CONFIG_LOGLEVEL": "silent",
         },
         "description": "Browserbase MCP (via npx)",
     },

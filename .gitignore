@@ -45,3 +45,9 @@ scratch/
 .vscode/
 *.swp
 .DS_Store
+
+# Node modules
+node_modules/
+
+# Browser env generated files
+environments/browser_env/cua-server/node_modules/
