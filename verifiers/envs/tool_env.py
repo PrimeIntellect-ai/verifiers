@@ -13,10 +13,14 @@ class ToolEnv(vf.MultiTurnEnv):
         self,
         tools: list[Callable] | None = None,
         max_turns: int = 10,
+        error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
+        stop_errors: list[type[Exception]] | None = None,
         **kwargs,
     ):
         self.tools = tools or []
         self.max_turns = max_turns
+        self.error_formatter = error_formatter
+        self.stop_errors: list[type[Exception]] = stop_errors or []
         self.oai_tools = [convert_func_to_oai_tool(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
@@ -54,12 +58,24 @@ class ToolEnv(vf.MultiTurnEnv):
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
     ) -> vf.Message:
         """Call a tool based on JSON command."""
-        tool_func = self.tool_map[tool_name]
-        result = await maybe_await(tool_func, **tool_args)
-        return cast(
-            vf.Message,
-            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
-        )
+        try:
+            tool_func = self.tool_map[tool_name]
+            result = await maybe_await(tool_func, **tool_args)
+            return cast(
+                vf.Message,
+                {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+            )
+        except Exception as e:
+            if any(isinstance(e, err_type) for err_type in self.stop_errors):
+                raise
+            return cast(
+                vf.Message,
+                {
+                    "role": "tool",
+                    "content": self.error_formatter(e),
+                    "tool_call_id": tool_call_id,
+                },
+            )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs

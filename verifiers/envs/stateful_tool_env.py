@@ -8,7 +8,6 @@ from openai.types.chat import (
 )
 
 import verifiers as vf
-from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
@@ -17,11 +16,15 @@ class StatefulToolEnv(vf.ToolEnv):
         self,
         tools: list[Callable] | None = None,
         max_turns: int = 10,
+        error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
+        stop_errors: list[type[Exception]] | None = None,
         **kwargs,
     ):
         super().__init__(
             tools=tools,
             max_turns=max_turns,
+            error_formatter=error_formatter,
+            stop_errors=stop_errors,
             **kwargs,
         )
         self.tools: list[Callable] = tools or []
@@ -90,17 +93,6 @@ class StatefulToolEnv(vf.ToolEnv):
     ) -> dict:
         """Update tool arguments and/or state (in-place) based on messages and state."""
         pass
-
-    async def call_tool(
-        self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> vf.Message:
-        """Call a tool based on JSON command."""
-        tool_func = self.tool_map[tool_name]
-        result = await maybe_await(tool_func, **tool_args)
-        return cast(
-            vf.Message,
-            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
-        )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
