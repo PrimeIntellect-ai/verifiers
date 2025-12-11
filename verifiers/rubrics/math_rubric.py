@@ -16,9 +16,9 @@ class MathRubric(Rubric):
     ):
         parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
         super().__init__(funcs=funcs, weights=weights, parser=parser)
-        self.add_reward_func(self.correct_answer_reward_func)
+        self.add_reward_func(self.correct_answer)
 
-    def correct_answer_reward_func(
+    def correct_answer(
         self, parser: Parser, completion: Messages, answer: str, **kwargs
     ) -> float:
         """Reward function that checks if the final answer matches the expected answer."""
