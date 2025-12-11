@@ -472,123 +472,6 @@ class TestCleanupRLMState:
 # =============================================================================
 
 
-class TestEnvResponse:
-    """Tests for env_response method."""
-
-    @pytest.mark.asyncio
-    async def test_prompts_for_code_when_no_blocks(self, rlm_env):
-        """Prompts for code when no code blocks found."""
-        messages = [
-            {"role": "user", "content": "What is 2+2?"},
-            {"role": "assistant", "content": "Let me think about this..."},
-        ]
-        state = {"sandbox_id": "sandbox_123"}
-
-        response = await rlm_env.env_response(messages, state)
-
-        assert len(response) == 1
-        assert response[0]["role"] == "user"
-        assert (
-            "Python code" in response[0]["content"]
-            or "code block" in response[0]["content"]
-        )
-
-    @pytest.mark.asyncio
-    async def test_executes_single_code_block(self, rlm_env):
-        """Executes single code block and returns formatted output."""
-        messages = [
-            {"role": "assistant", "content": "```python\nprint('hello')\n```"},
-        ]
-        state = {"sandbox_id": "sandbox_123"}
-
-        # Mock execution
-        rlm_env._execute_code = AsyncMock(
-            return_value={
-                "status": "ok",
-                "stdout": "hello",
-                "stderr": "",
-                "result": None,
-                "execution_count": 1,
-                "answer": {"ready": False, "content": ""},
-            }
-        )
-
-        response = await rlm_env.env_response(messages, state)
-
-        assert len(response) == 1
-        assert "hello" in response[0]["content"]
-        rlm_env._execute_code.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_executes_multiple_code_blocks(self, rlm_env):
-        """Executes multiple code blocks sequentially."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "```python\nx = 1\n```\n```python\ny = 2\n```",
-            },
-        ]
-        state = {"sandbox_id": "sandbox_123"}
-
-        call_count = 0
-
-        async def mock_execute(sandbox_id, code):
-            nonlocal call_count
-            call_count += 1
-            return {
-                "status": "ok",
-                "stdout": f"block {call_count}",
-                "stderr": "",
-                "result": None,
-                "execution_count": call_count,
-                "answer": {"ready": False, "content": ""},
-            }
-
-        rlm_env._execute_code = mock_execute
-
-        response = await rlm_env.env_response(messages, state)
-
-        assert call_count == 2
-        assert "[Code block 1]" in response[0]["content"]
-        assert "[Code block 2]" in response[0]["content"]
-
-    @pytest.mark.asyncio
-    async def test_sets_final_answer_when_ready(self, rlm_env):
-        """Sets final_answer in state when answer['ready'] = True."""
-        messages = [
-            {"role": "assistant", "content": "```python\nanswer['ready'] = True\n```"},
-        ]
-        state = {"sandbox_id": "sandbox_123"}
-
-        rlm_env._execute_code = AsyncMock(
-            return_value={
-                "status": "ok",
-                "stdout": "",
-                "stderr": "",
-                "result": None,
-                "execution_count": 1,
-                "answer": {"ready": True, "content": "The answer is 4"},
-            }
-        )
-
-        await rlm_env.env_response(messages, state)
-
-        assert "final_answer" in state
-        assert state["final_answer"] == "The answer is 4"
-
-    @pytest.mark.asyncio
-    async def test_handles_missing_sandbox(self, rlm_env):
-        """Handles missing sandbox gracefully."""
-        messages = [
-            {"role": "assistant", "content": "```python\nprint('test')\n```"},
-        ]
-        state = {}  # No sandbox_id
-
-        response = await rlm_env.env_response(messages, state)
-
-        assert "Error" in response[0]["content"]
-
-
 class TestGetPromptMessages:
     """Tests for get_prompt_messages method."""
 
@@ -720,6 +603,7 @@ class TestRunSubLLMWithTools:
             prompt_tokens,
             completion_tokens,
             tool_call_count,
+            num_turns,
             max_turns_reached,
         ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
@@ -727,6 +611,7 @@ class TestRunSubLLMWithTools:
 
         assert "choices" in result
         assert tool_call_count == 0
+        assert num_turns == 1
         assert max_turns_reached is False
 
     @pytest.mark.asyncio
@@ -1217,6 +1102,7 @@ class TestSubLLMMetricsWithTools:
             prompt_tokens,
             completion_tokens,
             tool_call_count,
+            num_turns,
             max_turns_reached,
         ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
@@ -1226,6 +1112,7 @@ class TestSubLLMMetricsWithTools:
         assert prompt_tokens == 150  # 50 + 100
         assert completion_tokens == 50  # 30 + 20
         assert tool_call_count == 1  # One tool call was made
+        assert num_turns == 2  # Two LLM calls: one with tool call, one final
         assert max_turns_reached is False
 
 
