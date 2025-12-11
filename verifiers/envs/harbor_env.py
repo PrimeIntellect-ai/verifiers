@@ -5,7 +5,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import tomli
+try:
+    import tomllib  # type: ignore[unresolved-import]
+except ImportError:
+    import tomli as tomllib  # type: ignore[unresolved-import]
 from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 
@@ -63,7 +66,7 @@ class HarborEnv(CliAgentEnv):
                 continue
 
             with open(task_toml, "rb") as f:
-                config = tomli.load(f)
+                config = tomllib.load(f)
 
             instruction = instruction_md.read_text().strip()
 

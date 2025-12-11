@@ -7,7 +7,7 @@ import time
 import uuid
 import platform
 import shutil
-from typing import Any
+from typing import Any, cast
 
 from aiohttp import web
 from openai import AsyncOpenAI
@@ -544,7 +544,8 @@ touch /tmp/vf_complete
         await context["request_id_queue"].put(request_id)
 
         try:
-            response = await intercept["response_future"]
+            response_future = cast(asyncio.Future[Any], intercept["response_future"])
+            response = await response_future
         except Exception as e:
             logger.error(f"Error processing intercepted request: {e}")
             return web.json_response(  # type: ignore
