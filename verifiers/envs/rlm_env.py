@@ -1088,59 +1088,29 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
     async def _write_context_to_sandbox(
         self, sandbox_id: str, context_dict: dict
     ) -> None:
-        """Write context to sandbox file.
-        
-        For large contexts, writes in chunks to avoid shell command length limits.
-        """
+        """Write context to sandbox file using direct file upload."""
         context_json = json.dumps(context_dict)
-        context_b64 = base64.b64encode(context_json.encode("utf-8")).decode("utf-8")
+        context_bytes = context_json.encode("utf-8")
         
-        # Shell command length limit is typically ~128KB-256KB depending on OS
-        # Use conservative chunk size of 50KB to be safe
-        max_chunk_size = 50_000
-        
-        if len(context_b64) <= max_chunk_size:
-            # Small context - use simple single command
-            cmd = f"""python3 -c "
-import base64
-from pathlib import Path
-Path('{self._CONTEXT_FILE}').write_bytes(base64.b64decode('{context_b64}'))
-" """
-            await self._execute_command_with_retry(sandbox_id, cmd)
-        else:
-            # Large context - write in chunks
-            # First, create empty file
-            await self._execute_command_with_retry(
-                sandbox_id, f"rm -f {self._CONTEXT_FILE} && touch {self._CONTEXT_FILE}"
-            )
-            
-            # Write base64 chunks to a temp file, then decode
-            temp_b64_file = "/tmp/rlm_context_b64.txt"
-            await self._execute_command_with_retry(
-                sandbox_id, f"rm -f {temp_b64_file} && touch {temp_b64_file}"
-            )
-            
-            # Write chunks
-            for i in range(0, len(context_b64), max_chunk_size):
-                chunk = context_b64[i:i + max_chunk_size]
-                # Use printf instead of echo to handle special characters better
-                cmd = f"printf '%s' '{chunk}' >> {temp_b64_file}"
-                await self._execute_command_with_retry(sandbox_id, cmd)
-            
-            # Decode the complete base64 file
-            cmd = f"base64 -d {temp_b64_file} > {self._CONTEXT_FILE} && rm -f {temp_b64_file}"
-            await self._execute_command_with_retry(sandbox_id, cmd)
+        # Use upload_bytes API for efficient transfer of large files
+        await self.with_retry(self.sandbox_client.upload_bytes)(
+            sandbox_id,
+            file_path=self._CONTEXT_FILE,
+            file_bytes=context_bytes,
+            filename="rlm_context.json",
+        )
 
     async def _write_answer_to_sandbox(self, sandbox_id: str, answer: dict) -> None:
-        """Write answer to sandbox file."""
+        """Write answer to sandbox file using direct file upload."""
         answer_json = json.dumps(answer)
-        answer_b64 = base64.b64encode(answer_json.encode("utf-8")).decode("utf-8")
-        cmd = f"""python3 -c "
-import base64
-from pathlib import Path
-Path('{self._ANSWER_FILE}').write_bytes(base64.b64decode('{answer_b64}'))
-" """
-        await self._execute_command_with_retry(sandbox_id, cmd)
+        answer_bytes = answer_json.encode("utf-8")
+        
+        await self.with_retry(self.sandbox_client.upload_bytes)(
+            sandbox_id,
+            file_path=self._ANSWER_FILE,
+            file_bytes=answer_bytes,
+            filename="rlm_answer.json",
+        )
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         """Wait for worker to signal ready."""
