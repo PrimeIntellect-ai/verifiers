@@ -520,6 +520,16 @@ touch /tmp/vf_complete
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
+        # Log intercepted request
+        logger.debug(f"[{rollout_id}] ← INTERCEPTED REQUEST")
+        for msg in request_body.get("messages", []):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            content_preview = (content[:200] + "...") if len(content) > 200 else content
+            logger.debug(f"  [{role}] {content_preview}")
+        if request_body.get("tools"):
+            logger.debug(f"  [tools] {len(request_body['tools'])} tool(s) available")
+
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         intercept = {
             "request_id": request_id,
@@ -544,6 +554,22 @@ touch /tmp/vf_complete
         response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
+
+        # Log response
+        logger.debug(f"[{rollout_id}] → RESPONSE")
+        choice = response_dict.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+        if msg.get("content"):
+            content = msg["content"]
+            content_preview = (content[:200] + "...") if len(content) > 200 else content
+            logger.debug(f"  [assistant] {content_preview}")
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                func = tc.get("function", {})
+                logger.debug(
+                    f"  [tool_call] {func.get('name')}({func.get('arguments', '')[:100]})"
+                )
+
         return web.json_response(response_dict)  # type: ignore
 
     @vf.teardown
