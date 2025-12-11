@@ -101,7 +101,9 @@ class TestToolEnv:
 
         class TestToolEnv(vf.ToolEnv):
             def __init__(self, **kwargs):
-                super().__init__(tools=[square_tool], **kwargs)
+                super().__init__(
+                    tools=[square_tool], stop_errors=[vf.ToolParseError], **kwargs
+                )
 
         env = TestToolEnv(
             client=mock_openai_client,
