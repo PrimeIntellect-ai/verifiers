@@ -33,15 +33,17 @@ class SandboxTransport(StreamingHTTPTransport):
 
         await self.sandbox_client.wait_for_creation(self.sandbox_id)
 
-        start_cmd = f"{self.config.command} {' '.join(self.config.args or [])}"
-        await self.sandbox_client.execute_command(
-            self.sandbox_id,
-            start_cmd,
-            background=True
-        )
-
         if self.port_to_expose:
             await self.expose_sandbox()
+
+        start_cmd = f"nohup {self.config.command} {' '.join(self.config.args or [])} > /dev/null 2>&1 &"
+        await self.sandbox_client.execute_command(
+            self.sandbox_id,
+            start_cmd
+        )
+
+        # give the MCP server time to start
+        await asyncio.sleep(3)
 
         return await super().connect()
 
