@@ -5,11 +5,8 @@ tags = ["dummy", "testing", "cli-agent", "harbor"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers",
+    "verifiers>=0.1.8.post2",
 ]
-
-[tool.uv.sources]
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", branch = "cooper/cli-agent" }
 
 [build-system]
 requires = ["hatchling"]
