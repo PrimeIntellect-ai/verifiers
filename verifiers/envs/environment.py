@@ -430,6 +430,7 @@ class Environment(ABC):
         state["trajectory"] = []
         state["reward"] = None
         state["metrics"] = None
+        state["error"] = None
         state["timing"] = RolloutTiming(
             generation_ms=0.0,
             scoring_ms=0.0,
