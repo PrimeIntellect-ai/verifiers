@@ -28,18 +28,19 @@ classifiers = [
 ]
 
 dependencies = [
-    "datasets",
+    "datasets>=3.0.0",
     "jinja2>=3.1.6",
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "requests",
     "rich",
+    "tenacity>=8.5.0",
     "textual",
     "pydantic>=2.11.9",
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
-    "prime-sandboxes>=0.2.2",
+    "prime-sandboxes>=0.2.5",
     "wget>=3.2",
 ]
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import deepspeed
 import torch
+import wandb
 from accelerate.utils import (
     broadcast_object_list,
     is_peft_model,
@@ -19,7 +20,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
 
 import verifiers as vf
-import wandb
+from verifiers.errors import Error
 from verifiers.rl.inference.client import VLLMClient
 from verifiers.rl.trainer.config import RLConfig
 from verifiers.rl.trainer.orchestrator import Orchestrator
@@ -125,6 +126,7 @@ class RLTrainer(Trainer):
         self._textual_logs = {
             "prompt": deque(),
             "completion": deque(),
+            "error": deque(),
             "rewards": defaultdict(lambda: deque()),
         }
 
@@ -235,6 +237,7 @@ class RLTrainer(Trainer):
             self.log_rollouts(
                 prompts=batch.prompts,
                 completions=batch.completions,
+                errors=batch.errors,
                 rewards_dict=batch.rewards_dict,
             )
 
@@ -409,6 +412,7 @@ class RLTrainer(Trainer):
             print_prompt_completions_sample(
                 list(self._textual_logs["prompt"]),  # type: ignore[arg-type]
                 list(self._textual_logs["completion"]),  # type: ignore[arg-type]
+                list(self._textual_logs["error"]),  # type: ignore[arg-type]
                 list(self._textual_logs["rewards"]["reward"]),  # type: ignore[arg-type]
                 self.state.global_step,
             )
@@ -452,6 +456,7 @@ class RLTrainer(Trainer):
             # clear after logging
             self._textual_logs["prompt"].clear()
             self._textual_logs["completion"].clear()
+            self._textual_logs["error"].clear()
             for key in self._textual_logs["rewards"]:
                 self._textual_logs["rewards"][key].clear()
 
@@ -459,10 +464,12 @@ class RLTrainer(Trainer):
         self,
         prompts: List[Messages],
         completions: List[Messages],
+        errors: List[Error | None],
         rewards_dict: Dict[str, Any],
     ) -> None:
         self._textual_logs["prompt"].extend(prompts)  # type: ignore[union-attr]
         self._textual_logs["completion"].extend(completions)  # type: ignore[union-attr]
+        self._textual_logs["error"].extend(errors)  # type: ignore[union-attr]
         for reward_key in rewards_dict:
             reward_values = rewards_dict[reward_key]
             self._textual_logs["rewards"][reward_key].extend(reward_values)  # type: ignore[union-attr]
