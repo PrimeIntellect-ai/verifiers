@@ -19,6 +19,7 @@ load_dotenv()
 EXA_FETCH_TOOLS = [
     {
         "name": "exa",
+        "transport": "stdio",
         "command": "npx",
         "args": [
             "-y",
@@ -31,9 +32,19 @@ EXA_FETCH_TOOLS = [
     },
     {
         "name": "fetch",
+        "transport": "stdio",
         "command": "uvx",
         "args": ["mcp-server-fetch"],
         "description": "Fetch MCP server",
+    },
+]
+
+BROWSERBASE_TOOLS = [
+    {
+        "name": "browserbase",
+        "transport": "http",
+        "url": os.getenv("BROWSERBASE_URL"),
+        "description": "Browserbase MCP",
     },
 ]
 
