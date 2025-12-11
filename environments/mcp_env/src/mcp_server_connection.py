@@ -1,9 +1,13 @@
 import asyncio
 import logging
+import os
+from urllib.parse import urlparse
+from contextlib import AsyncExitStack
 from typing import Dict, Optional
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent, Tool
 
 from .models import MCPServerConfig
@@ -20,6 +24,7 @@ class MCPServerConnection:
         self._ready = asyncio.Event()
         self._error: Optional[Exception] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._process: Optional[asyncio.subprocess.Process] = None
 
     async def connect(self):
         # Record the loop this connection is bound to
@@ -33,30 +38,80 @@ class MCPServerConnection:
 
         return self.tools
 
-    async def _get_connection(self):
-        try:
-            server_params = StdioServerParameters(
-                command=self.config.command,
-                args=self.config.args or [],
-                env=self.config.env,
+    async def _run_stdio(self):
+        server_params = StdioServerParameters(
+            command=self.config.command,
+            args=self.config.args or [],
+            env=self.config.env,
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                self.session = session
+
+                await session.initialize()
+
+                tools_response = await session.list_tools()
+
+                for tool in tools_response.tools:
+                    self.tools[tool.name] = tool
+
+                self._ready.set()
+
+                while True:
+                    await asyncio.sleep(1)
+
+    async def _run_streamable_http(self):
+        if not self.config.url:
+            raise ValueError(
+                f"StreamableHTTP server '{self.config.name}' requires a url"
             )
 
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    self.session = session
+        if self.config.command:
+            env = os.environ.copy()
+            if self.config.env:
+                env.update({k: v for k, v in self.config.env.items() if v is not None})
 
-                    await session.initialize()
+            self._process = await asyncio.create_subprocess_exec(
+                self.config.command,
+                *(self.config.args or []),
+                env=env,
+            )
 
-                    tools_response = await session.list_tools()
+            await self._wait_for_http_server()
 
-                    for tool in tools_response.tools:
-                        self.tools[tool.name] = tool
+        async with AsyncExitStack() as stack:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(
+                    self.config.url,
+                    headers=self.config.headers,
+                )
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            self.session = session
 
-                    self._ready.set()
+            await session.initialize()
 
-                    while True:
-                        await asyncio.sleep(1)
+            tools_response = await session.list_tools()
 
+            for tool in tools_response.tools:
+                self.tools[tool.name] = tool
+
+            self._ready.set()
+
+            while True:
+                await asyncio.sleep(1)
+
+    async def _get_connection(self):
+        try:
+            if self.config.transport == "stdio":
+                await self._run_stdio()
+            elif self.config.transport == "streamablehttp":
+                await self._run_streamable_http()
+            else:
+                raise ValueError(
+                    f"Unsupported MCP transport '{self.config.transport}'"
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -65,6 +120,15 @@ class MCPServerConnection:
         finally:
             self.session = None
             self.tools = {}
+
+            if self._process is not None:
+                self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    self._process.kill()
+                    await self._process.wait()
+                self._process = None
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         assert self.session is not None, f"Server '{self.config.name}' not connected"
@@ -97,3 +161,36 @@ class MCPServerConnection:
         except asyncio.CancelledError:
             pass
         self.logger.info(f"MCP server '{self.config.name}' terminated")
+
+    async def _wait_for_http_server(self, timeout: float = 30.0) -> None:
+        if not self.config.url:
+            await asyncio.sleep(2.0)
+            return
+
+        parsed = urlparse(self.config.url)
+        host = parsed.hostname
+        port = parsed.port
+
+        if host is None:
+            await asyncio.sleep(2.0)
+            return
+
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while True:
+            try:
+                reader, writer = await asyncio.open_connection(host, port)
+            except Exception:
+                if loop.time() >= deadline:
+                    raise RuntimeError(
+                        f"Timed out waiting for StreamableHTTP server '{self.config.name}'"
+                    )
+                await asyncio.sleep(0.5)
+            else:
+                writer.close()
+                await writer.wait_closed()
+                return
