@@ -39,6 +39,14 @@ class StatefulToolEnv(vf.ToolEnv):
         self.max_turns: int = max_turns
 
     def add_tool(self, tool: Callable, args_to_skip: list[str] = []):
+        """Add a tool, optionally hiding arguments from the agent's view.
+
+        Skipped args are removed from the schema shown to the agent but can be
+        injected at call time via update_tool_args. If a skipped arg uses a $ref
+        to a type in $defs, that definition is also removed to keep the schema clean.
+
+        Assumes all non-skipped args use standard JSON types (no remaining $ref/$defs).
+        """
         self.tools.append(tool)
         oai_tool = convert_func_to_oai_tool(tool)
         assert "function" in oai_tool
