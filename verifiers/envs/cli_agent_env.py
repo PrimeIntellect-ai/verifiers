@@ -97,48 +97,36 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
     def _ensure_cloudflared_installed(self) -> str:
         """Install cloudflared if not already installed. Returns path to cloudflared binary."""
-        cloudflared_path = shutil.which("cloudflared")
-        if cloudflared_path:
-            return cloudflared_path
+        path = shutil.which("cloudflared")
+        if path:
+            return path
 
         logger.info("Installing cloudflared...")
         system = platform.system()
 
-        if system == "Darwin":  # macOS
-            result = subprocess.run(
-                ["brew", "install", "cloudflare/cloudflare/cloudflared"],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to install cloudflared via Homebrew: {result.stderr}"
-                )
-            cloudflared_path = shutil.which("cloudflared")
-            if not cloudflared_path:
-                raise RuntimeError("cloudflared installed but not found in PATH")
-            return cloudflared_path
+        if system == "Darwin":
+            cmd = ["brew", "install", "cloudflare/cloudflare/cloudflared"]
         elif system == "Linux":
-            # Official cloudflared installation script
-            install_script = "curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i cloudflared.deb && rm cloudflared.deb"
-            result = subprocess.run(
-                ["bash", "-c", install_script],
-                capture_output=True,
-                text=True,
-                timeout=300,
+            script = (
+                "curl -L --output cloudflared.deb "
+                "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb "
+                "&& sudo dpkg -i cloudflared.deb && rm cloudflared.deb"
             )
-            if result.returncode != 0:
-                raise RuntimeError(f"Failed to install cloudflared: {result.stderr}")
-            cloudflared_path = shutil.which("cloudflared")
-            if not cloudflared_path:
-                raise RuntimeError("cloudflared installed but not found in PATH")
-            return cloudflared_path
+            cmd = ["bash", "-c", script]
         else:
             raise RuntimeError(
                 f"Unsupported platform: {system}. "
                 "Please install cloudflared manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
             )
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to install cloudflared: {result.stderr}")
+
+        path = shutil.which("cloudflared")
+        if not path:
+            raise RuntimeError("cloudflared installed but not found in PATH")
+        return path
 
     def _extract_tunnel_url_from_line(self, line: str) -> str | None:
         """Extract tunnel URL from a line of cloudflared output."""
@@ -468,6 +456,29 @@ touch /tmp/vf_complete
 
         return response
 
+    def _truncate(self, s: str, limit: int = 200) -> str:
+        return (s[:limit] + "...") if len(s) > limit else s
+
+    def _log_request(self, rollout_id: str, body: dict) -> None:
+        logger.debug(f"[{rollout_id}] <- INTERCEPTED REQUEST")
+        for msg in body.get("messages", []):
+            logger.debug(
+                f"  [{msg.get('role', '?')}] {self._truncate(msg.get('content', ''))}"
+            )
+        if body.get("tools"):
+            logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
+
+    def _log_response(self, rollout_id: str, response: dict) -> None:
+        logger.debug(f"[{rollout_id}] -> RESPONSE")
+        msg = response.get("choices", [{}])[0].get("message", {})
+        if msg.get("content"):
+            logger.debug(f"  [assistant] {self._truncate(msg['content'])}")
+        for tc in msg.get("tool_calls", []):
+            func = tc.get("function", {})
+            logger.debug(
+                f"  [tool_call] {func.get('name')}({self._truncate(func.get('arguments', ''), 100)})"
+            )
+
     async def _ensure_interception_server(self):
         """Start shared HTTP server if needed"""
         async with self._server_lock:
@@ -509,15 +520,7 @@ touch /tmp/vf_complete
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
-        # Log intercepted request
-        logger.debug(f"[{rollout_id}] ← INTERCEPTED REQUEST")
-        for msg in request_body.get("messages", []):
-            role = msg.get("role", "?")
-            content = msg.get("content", "")
-            content_preview = (content[:200] + "...") if len(content) > 200 else content
-            logger.debug(f"  [{role}] {content_preview}")
-        if request_body.get("tools"):
-            logger.debug(f"  [tools] {len(request_body['tools'])} tool(s) available")
+        self._log_request(rollout_id, request_body)
 
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         intercept = {
@@ -545,21 +548,7 @@ touch /tmp/vf_complete
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
 
-        # Log response
-        logger.debug(f"[{rollout_id}] → RESPONSE")
-        choice = response_dict.get("choices", [{}])[0]
-        msg = choice.get("message", {})
-        if msg.get("content"):
-            content = msg["content"]
-            content_preview = (content[:200] + "...") if len(content) > 200 else content
-            logger.debug(f"  [assistant] {content_preview}")
-        if msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                func = tc.get("function", {})
-                logger.debug(
-                    f"  [tool_call] {func.get('name')}({func.get('arguments', '')[:100]})"
-                )
-
+        self._log_response(rollout_id, response_dict)
         return web.json_response(response_dict)  # type: ignore
 
     @vf.teardown
