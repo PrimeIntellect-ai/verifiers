@@ -41,6 +41,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
+    cleanup_messages,
     concat_messages,
     get_overlong_prompt_dummy_response,
 )
@@ -324,6 +325,7 @@ class Environment(ABC):
         try:
             if message_type == "chat":
                 assert isinstance(prompt, list)
+                prompt = cleanup_messages(prompt)  # strip None fields from messages
                 # --- detect audio parts and force text-only modality if caller didn't set one ---
                 has_audio = False
                 try:
