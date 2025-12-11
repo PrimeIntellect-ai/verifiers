@@ -68,9 +68,11 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
 
     printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
     printable_completions = [messages_to_printable(c) for c in results["completion"]]
+    errors = [s.get("error") for s in results["state"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
+        errors,
         results["reward"],
         step=0,
         num_samples=num_samples,

@@ -7,6 +7,8 @@ from typing import (
     Literal,
 )
 
+from verifiers.errors import Error
+
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
 else:
@@ -105,6 +107,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
+    error: Error | None
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists

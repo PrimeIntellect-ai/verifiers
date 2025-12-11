@@ -36,6 +36,7 @@ class Batch(BaseModel):
     generation_time: float = 0.0
     prompts: list[Any] = Field(default_factory=list)
     completions: list[Any] = Field(default_factory=list)
+    errors: list[Any] = Field(default_factory=list)
     metrics_dict: dict[str, float] = Field(default_factory=dict)
     rewards_dict: dict[str, list[float]] = Field(default_factory=dict)
 
@@ -307,6 +308,7 @@ class Orchestrator:
             metrics_dict["timing/total_ms"] = float(np.mean(total_ms))
 
         metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
+        errors = [state.get("error") for state in env_results["state"]]
 
         # build per-process microbatches
         N = len(advantages)
@@ -355,5 +357,6 @@ class Orchestrator:
             rewards_dict=rewards_dict,
             completions=env_results["completion"],
             prompts=env_results["prompt"],
+            errors=errors,
             metrics_dict=metrics_dict,
         )
