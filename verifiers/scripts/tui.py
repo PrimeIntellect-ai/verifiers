@@ -516,7 +516,13 @@ class ViewRunScreen(Screen):
         # Update completion
         completion = record.get("completion", "")
         completion_widget = self.query_one("#completion-content", Static)
-        completion_widget.update(format_prompt_or_completion(completion))
+        completion_text = format_prompt_or_completion(completion)
+        error = record.get("error")
+        if error is not None:
+            completion_text.append("\n\n")
+            completion_text.append("error: ", style="bold red")
+            completion_text.append(str(error), style="red")
+        completion_widget.update(completion_text)
 
         # Update details
         details_lines = Text()

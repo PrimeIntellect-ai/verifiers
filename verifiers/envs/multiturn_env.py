@@ -29,6 +29,11 @@ class MultiTurnEnv(vf.Environment):
     async def setup_state(self, state: State) -> State:
         return state
 
+    @vf.stop(priority=100)  # high priority to always check for errors first
+    async def has_error(self, state: State, **kwargs) -> bool:
+        """Abrupts rollout early if an error has occurred."""
+        return state.get("error") is not None
+
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
@@ -92,16 +97,15 @@ class MultiTurnEnv(vf.Environment):
         Generate a multi-turn rollout with the environment.
         """
         state = await self.init_state(input, client, model, sampling_args)
-        state = await self.setup_state(state)
+        try:
+            state = await self.setup_state(state)
+        except vf.Error as e:
+            state["error"] = e
         while not await self.is_completed(state):
-            prompt_messages = await self.get_prompt_messages(state)
-            response = await self.get_model_response(
-                client,
-                model,
-                prompt_messages,
-                oai_tools=state["oai_tools"],
-                sampling_args=sampling_args,
-                message_type=self.message_type,
-            )
-            await self.add_model_response(state, prompt_messages, response)
+            try:
+                prompt_messages = await self.get_prompt_messages(state)
+                response = await self.get_model_response(state, prompt_messages)
+                await self.add_model_response(state, prompt_messages, response)
+            except vf.Error as e:
+                state["error"] = e
         return state

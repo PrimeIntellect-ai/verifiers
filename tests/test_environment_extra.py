@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from datasets import Dataset
 
+import verifiers as vf
 from verifiers.envs.environment import Environment
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -42,16 +43,13 @@ class DummyEnvironment(Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ):
-        state = await self.init_state(input, client=client, model=model)
+        state = await self.init_state(
+            input, client=client, model=model, sampling_args=sampling_args
+        )
         state = await self.setup_state(state)
 
         prompt_messages = state["prompt"]
-        response = await self.get_model_response(
-            prompt=prompt_messages,
-            client=client,
-            model=model,
-            sampling_args=sampling_args,
-        )
+        response = await self.get_model_response(state=state, prompt=prompt_messages)
         assert response is not None
 
         from verifiers.types import TrajectoryStep
@@ -121,19 +119,22 @@ def _make_env(
 @pytest.mark.asyncio
 async def test_get_model_response_chat_with_tools(mock_openai_client):
     env = _make_env(mock_openai_client)
-    prompt = [{"role": "user", "content": "Hello"}]
+    prompt: vf.Messages = [{"role": "user", "content": "Hello"}]
     tools = [
         {
             "type": "function",
             "function": {"name": "echo", "description": "echo", "parameters": {}},
         }
     ]
-    resp = await env.get_model_response(
+    state = await env.init_state(
+        input=RolloutInput(example_id=0, task="test", prompt=prompt),
         client=mock_openai_client,
         model="test-model",
+    )
+    state["oai_tools"] = tools
+    resp = await env.get_model_response(
+        state=state,
         prompt=prompt,
-        oai_tools=tools,
-        message_type="chat",
     )
     # Ensure the client was invoked and received tools kwarg
     assert hasattr(resp, "choices")
@@ -145,14 +146,14 @@ async def test_get_model_response_chat_with_tools(mock_openai_client):
 @pytest.mark.asyncio
 async def test_get_model_response_completion_rejects_tools(mock_openai_client):
     env = _make_env(mock_openai_client, message_type="completion")
-    with pytest.raises(ValueError, match="oai_tools are not supported for completion"):
-        await env.get_model_response(
+    with pytest.raises(vf.ModelError):
+        state = await env.init_state(
+            input=RolloutInput(example_id=0, task="test", prompt="Complete this"),
             client=mock_openai_client,
             model="test-model",
-            prompt="Complete this",
-            oai_tools=[{"type": "function", "function": {"name": "noop"}}],
-            message_type="completion",
         )
+        state["oai_tools"] = [{"type": "function", "function": {"name": "noop"}}]
+        await env.get_model_response(state=state, prompt="Complete this")
 
 
 def test_run_rollouts_with_max_concurrent(mock_openai_client):
