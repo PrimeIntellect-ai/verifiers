@@ -42,8 +42,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
     API requests via HTTP proxy server. Each agent request triggers one
     rollout step.
     Cloudflare Tunnel is automatically installed and started to expose the
-    interception server. Supports high concurrency for parallel requests.
-    Fully automated with no configuration or authentication required.
+    interception server.
     """
 
     def __init__(
@@ -197,7 +196,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
             time.sleep(check_interval)
 
-        # Final check: search all collected lines
+        # Search all collected lines
         all_output = "".join(stderr_lines)
         for line in stderr_lines:
             url = self._extract_tunnel_url_from_line(line)
@@ -213,13 +212,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
     async def _get_tunnel_url(self) -> str:
         """Get tunnel URL from pool, creating new tunnels as needed (1 per 50 active rollouts)."""
         async with self._tunnel_lock:
-            # Count total active rollouts
             total_active_rollouts = len(self._active_rollouts)
 
             # Calculate required tunnels (at least 1 per 50 rollouts, minimum 1)
             required_tunnels = max(1, (total_active_rollouts + 49) // 50)
 
-            # Ensure we have enough tunnels
             while len(self._tunnels) < required_tunnels:
                 try:
                     url, process = self._start_cloudflared_tunnel()
@@ -237,11 +234,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
                     logger.error(f"Failed to create tunnel: {e}")
                     raise
 
-            # Round-robin selection
             tunnel = self._tunnels[self._tunnel_round_robin_index % len(self._tunnels)]
             self._tunnel_round_robin_index += 1
 
-            # Increment active rollouts for this tunnel
             tunnel["active_rollouts"] += 1
 
             return tunnel["url"]
@@ -253,17 +248,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        # Start interception server first (tunnel needs it to be running)
         await self._ensure_interception_server()
 
         # Auto-start Cloudflare tunnel if not provided
         tunnel_url: str | None = None
         if self.interception_host is None:
             tunnel_url = await self._get_tunnel_url()
-            # Use full HTTPS URL from tunnel
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
         else:
-            # Manual hostname/IP provided - use with configured port
             state["interception_base_url"] = (
                 f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1"
             )
@@ -304,7 +296,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
             "request_id_queue": request_id_queue,
         }
 
-        # Start the agent command after all setup is complete
         await self._start_agent(state, sandbox_client)
 
         return state
@@ -367,10 +358,7 @@ touch /tmp/vf_complete
             return False
 
     async def get_prompt_messages(self, state: State) -> Messages:
-        """
-        Wait for agent to make an API request OR agent completion, whichever comes first.
-        Sets context var so get_model_response knows which intercept to use.
-        """
+        """Wait for agent to make an API request OR agent completion, whichever comes first."""
         request_id_queue = state["request_id_queue"]
         deadline = time.time() + self.request_timeout
 
@@ -381,20 +369,18 @@ touch /tmp/vf_complete
                     request_id_queue.get(),
                     timeout=self.poll_interval,
                 )
-                # Got a request - proceed normally
+                # Got a request, proceed normally
                 _current_request_id.set(request_id)
                 intercept = self._intercepts[request_id]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
-                # No request yet - check if agent finished
+                # No request yet, check if agent finished
                 if await self._check_agent_completed(state):
-                    # Agent exited without making another request
                     state["agent_completed"] = True
                     logger.debug("Agent completed without pending request")
                     return []
 
-        # Overall timeout reached
         state["agent_completed"] = True
         state["completion_reason"] = "request_timeout"
         logger.debug("Agent request timeout reached")
@@ -410,10 +396,7 @@ touch /tmp/vf_complete
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
     ) -> ModelResponse:
-        """
-        Get model response and unblock the waiting HTTP handler.
-        Uses context var to find the intercept for this request.
-        """
+        """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
         if not prompt:
             from openai.types.chat import ChatCompletion, ChatCompletionMessage
@@ -437,7 +420,6 @@ touch /tmp/vf_complete
         intercept = self._intercepts.get(request_id) if request_id else None
 
         if intercept:
-            # Use model/tools from agent's intercepted request
             model = intercept.get("model") or model
             oai_tools = intercept.get("tools") or oai_tools
 
@@ -575,16 +557,13 @@ touch /tmp/vf_complete
         """Cleanup interception context for rollout"""
         rollout_id = state.get("rollout_id")
         if rollout_id:
-            # Clean up any intercepts belonging to this rollout
             for request_id in list(self._intercepts.keys()):
                 if self._intercepts[request_id].get("rollout_id") == rollout_id:
                     del self._intercepts[request_id]
 
-            # Clean up active rollout tracking
             if rollout_id in self._active_rollouts:
                 del self._active_rollouts[rollout_id]
 
-        # Decrement active rollouts for the tunnel used by this rollout
         tunnel_url = state.get("tunnel_url")
         if tunnel_url:
             async with self._tunnel_lock:
