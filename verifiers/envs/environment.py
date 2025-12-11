@@ -510,11 +510,6 @@ class Environment(ABC):
                 return True
         return False
 
-    @vf.stop(priority=100)  # high priority to always check for errors first
-    async def has_error(self, state: State, **kwargs) -> bool:
-        """Abrupts rollout early if an error has occurred."""
-        return state.get("error") is not None
-
     async def run_rollout(
         self,
         sem: AsyncContextManager,

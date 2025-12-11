@@ -29,6 +29,11 @@ class MultiTurnEnv(vf.Environment):
     async def setup_state(self, state: State) -> State:
         return state
 
+    @vf.stop(priority=100)  # high priority to always check for errors first
+    async def has_error(self, state: State, **kwargs) -> bool:
+        """Abrupts rollout early if an error has occurred."""
+        return state.get("error") is not None
+
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
