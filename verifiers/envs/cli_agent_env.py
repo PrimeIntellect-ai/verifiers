@@ -21,6 +21,7 @@ import verifiers as vf
 from verifiers.types import (
     ChatCompletionToolParam,
     Messages,
+    MessageType,
     ModelResponse,
     SamplingArgs,
     State,
@@ -407,7 +408,7 @@ touch /tmp/vf_complete
         model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: str | None = None,
+        message_type: MessageType | None = None,
     ) -> ModelResponse:
         """
         Get model response and unblock the waiting HTTP handler.

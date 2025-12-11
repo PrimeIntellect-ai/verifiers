@@ -105,9 +105,8 @@ class SandboxEnv(vf.StatefulToolEnv):
         self,
         command: str,
         sandbox_id: str,
-        working_dir: str | None = None,
-        *,
         sandbox_state: SandboxState,
+        working_dir: str | None = None,
     ) -> str:
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
