@@ -142,6 +142,8 @@ class GenerateMetadata(TypedDict):
 
     env_id: str
     env_args: dict
+    env_version: str | None
+    verifiers_version: str | None
     model: str
     base_url: str
     num_examples: int

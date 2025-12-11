@@ -10,6 +10,8 @@ def _make_metadata(config) -> GenerateMetadata:
     return GenerateMetadata(
         env_id=config.env_id,
         env_args=config.env_args,
+        env_version="test-env-version",
+        verifiers_version="test-verifiers-version",
         model=config.model,
         base_url=config.client_config.api_base_url,
         num_examples=config.num_examples,

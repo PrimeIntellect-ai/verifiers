@@ -60,7 +60,7 @@ class ProcessedOutputs(BaseModel):
     rewards: list[float]
 ```
 
-`GenerateOutputs.metadata` captures run-level context (environment + arguments, model + sampling configuration, summary statistics, and the resolved save path) so downstream tooling can reproduce or resume evaluations without guessing defaults.
+`GenerateOutputs.metadata` captures run-level context (environment + arguments, environment + library versions, model + sampling configuration, summary statistics, and the resolved save path) so downstream tooling can reproduce or resume evaluations without guessing defaults.
 
 ### State Dictionary
 
@@ -287,4 +287,3 @@ def reset_for_rollout(self, prompt: Messages, answer: str, info: Info | None) ->
     }
     return state
 ```
-
