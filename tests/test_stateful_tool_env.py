@@ -6,7 +6,7 @@ import pytest
 from openai.types.chat import ChatCompletionUserMessageParam
 
 import verifiers as vf
-from tests.conftest import secret_tool
+from tests.conftest import faulty_tool, secret_tool
 from verifiers.types import RolloutInput
 
 
@@ -139,9 +139,24 @@ class TestStatefulToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_call_error(
-        self, mock_stateful_tool_env, mock_openai_client, sample_chat_dataset
+        self, mock_openai_client, sample_chat_dataset
     ):
         """Test that ToolEnv stops rollout when tool raises an exception."""
+
+        class ErrorStatefulToolEnv(vf.StatefulToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(
+                    tools=[faulty_tool], stop_errors=[vf.ToolCallError], **kwargs
+                )
+
+            def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+                return tool_args
+
+        env = ErrorStatefulToolEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
 
         tool_call = _build_tool_call("faulty_tool", {})
 
@@ -151,7 +166,7 @@ class TestStatefulToolEnv:
             tool_calls=[tool_call],
         )
 
-        state = await mock_stateful_tool_env.rollout(
+        state = await env.rollout(
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "Invoke"}],
                 answer="",
