@@ -41,15 +41,13 @@ class CliAgentEnv(vf.MultiTurnEnv):
     Extends MultiTurnEnv to reuse rollout loop, but intercepts agent's
     API requests via HTTP proxy server. Each agent request triggers one
     rollout step.
-    Cloudflare Tunnel is automatically installed and started to expose the
-    interception server.
     """
 
     def __init__(
         self,
         run_command: str,
         interception_port: int = 8765,
-        interception_host: str | None = None,
+        interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
         request_timeout: float = 300.0,
@@ -70,7 +68,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.interception_port = interception_port
-        self.interception_host = interception_host
+        self.interception_url = interception_url
         self._tunnels: list[
             dict[str, Any]
         ] = []  # List of {url, process, active_rollouts}
@@ -252,12 +250,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         # Auto-start Cloudflare tunnel if not provided
         tunnel_url: str | None = None
-        if self.interception_host is None:
+        if self.interception_url is None:
             tunnel_url = await self._get_tunnel_url()
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
         else:
             state["interception_base_url"] = (
-                f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1"
+                f"{self.interception_url.rstrip('/')}/rollout/{rollout_id}/v1"
             )
 
         env_vars = await self._build_env_vars(state)
@@ -290,7 +288,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         request_id_queue: asyncio.Queue = asyncio.Queue()
         state["request_id_queue"] = request_id_queue
-        state["tunnel_url"] = tunnel_url if self.interception_host is None else None
+        state["tunnel_url"] = tunnel_url if self.interception_url is None else None
         state["agent_completed"] = False
         self._active_rollouts[rollout_id] = {
             "request_id_queue": request_id_queue,
