@@ -38,6 +38,7 @@ class MCPEnv(vf.StatefulToolEnv):
         sandbox_disk_size_gb: int = 5,
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: Optional[Dict[str, str]] = None,
+        sandbox_port_to_expose: Optional[int] = None,
         # standard options
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"Error: {str(e)}",
@@ -61,6 +62,7 @@ class MCPEnv(vf.StatefulToolEnv):
         self.sandbox_disk_size_gb = sandbox_disk_size_gb
         self.sandbox_timeout_minutes = sandbox_timeout_minutes
         self.sandbox_environment_vars = sandbox_environment_vars or {}
+        self.sandbox_port_to_expose = sandbox_port_to_expose
         self.sandbox_client: Optional[AsyncSandboxClient] = None
         self.active_sandboxes: set[str] = set()
 
@@ -191,7 +193,9 @@ class MCPEnv(vf.StatefulToolEnv):
                 config,
                 sandbox_client=self.sandbox_client,
                 sandbox_request=sandbox_request,
-                timeout=self.http_timeout
+                port_to_expose=self.sandbox_port_to_expose,
+                timeout=self.http_timeout,
+                max_retries=self.http_max_retries
             )
 
         else:
