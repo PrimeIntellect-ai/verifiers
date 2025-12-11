@@ -5,7 +5,7 @@ import json
 import logging
 import signal
 import time
-from importlib.metadata import PackageNotFoundError, version as pkg_version
+import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -19,11 +19,13 @@ from typing import (
     List,
     Literal,
     TypeVar,
+    cast,
 )
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
+import verifiers as vf
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -43,7 +45,7 @@ from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
     concat_messages,
-    get_overlong_prompt_dummy_response,
+    strip_nones_from_content,
 )
 from verifiers.utils.path_utils import get_results_path
 
@@ -323,9 +325,10 @@ class Environment(ABC):
 
     async def get_model_response(
         self,
-        client: AsyncOpenAI,
-        model: str,
+        state: State,
         prompt: Messages,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
@@ -336,10 +339,17 @@ class Environment(ABC):
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
         """
-        sampling_args = sampling_args or {}
-        # resolve message type first
-        if message_type is None:
-            message_type = self.message_type
+        # resolve optional argument, fallback to state or class defaults
+        client = client or state["client"]
+        model = model or state["model"]
+        oai_tools = oai_tools or state["oai_tools"]
+        sampling_args = cast(
+            SamplingArgs, sampling_args or state["sampling_args"] or {}
+        )
+        message_type = message_type or self.message_type
+        assert model is not None
+        assert client is not None
+
         # normalize sampling args:
         # - if max_tokens is provided for chat, rename to max_completion_tokens
         # - drop any None-valued entries to avoid sending to the client
@@ -357,6 +367,7 @@ class Environment(ABC):
         try:
             if message_type == "chat":
                 assert isinstance(prompt, list)
+                prompt = strip_nones_from_content(prompt)
                 # --- detect audio parts and force text-only modality if caller didn't set one ---
                 has_audio = False
                 try:
@@ -418,11 +429,8 @@ class Environment(ABC):
                 ]
                 if any(phrase in error_text for phrase in context_length_phrases):
                     self.logger.debug("Caught overlong prompt.")
-                    return get_overlong_prompt_dummy_response(
-                        message_type or self.message_type
-                    )
-            self.logger.error(f"Error getting model response: {e} \n\nExiting...")
-            raise e
+                    raise vf.OverlongPromptError(e)
+            raise vf.ModelError(e)
 
     async def init_state(
         self,
@@ -458,6 +466,7 @@ class Environment(ABC):
         state["trajectory"] = []
         state["reward"] = None
         state["metrics"] = None
+        state["error"] = None
         state["timing"] = RolloutTiming(
             generation_ms=0.0,
             scoring_ms=0.0,
@@ -504,6 +513,12 @@ class Environment(ABC):
         if await condition(state):
             state["is_completed"] = True
             state["stop_condition"] = condition.__name__
+            if state.get("stop_condition") == "has_error":
+                self.logger.error(
+                    f"Got {state['error'].__class__.__name__}, caused by {state['error'].cause!r}"
+                )
+                cause = state["error"].cause
+                traceback.print_exception(type(cause), cause, cause.__traceback__)
             return True
         return False
 
@@ -514,6 +529,9 @@ class Environment(ABC):
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 
     async def _render_completion(self, state: State):
+        if len(state["trajectory"]) == 0:
+            state["completion"] = []
+            return
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
         full_conversation = concat_messages([last_prompt, last_completion])
