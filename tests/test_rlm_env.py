@@ -256,34 +256,42 @@ class TestGenerateSubToolsDocumentation:
 
 
 class TestExtractTunnelUrlFromLine:
-    """Tests for _extract_tunnel_url_from_line method."""
+    """Tests for extract_tunnel_url_from_line function."""
 
-    def test_extract_valid_url(self, rlm_env):
+    def test_extract_valid_url(self):
         """Extract valid trycloudflare.com URL."""
+        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+
         line = (
             "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
         )
-        url = rlm_env._extract_tunnel_url_from_line(line)
+        url = extract_tunnel_url_from_line(line)
         assert url == "https://random-words.trycloudflare.com"
 
-    def test_return_none_for_no_url(self, rlm_env):
+    def test_return_none_for_no_url(self):
         """Return None for lines without tunnel URL."""
+        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+
         line = "Starting cloudflared tunnel..."
-        url = rlm_env._extract_tunnel_url_from_line(line)
+        url = extract_tunnel_url_from_line(line)
         assert url is None
 
-    def test_handle_trailing_characters(self, rlm_env):
+    def test_handle_trailing_characters(self):
         """Handle URLs with trailing characters."""
+        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+
         line = "https://test-tunnel.trycloudflare.com/path?query=1 some text"
-        url = rlm_env._extract_tunnel_url_from_line(line)
+        url = extract_tunnel_url_from_line(line)
         assert url is not None
         assert url.startswith("https://")
         assert ".trycloudflare.com" in url
 
-    def test_no_https_prefix(self, rlm_env):
+    def test_no_https_prefix(self):
         """Return None when line has domain but no https://."""
+        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+
         line = "something.trycloudflare.com without https"
-        url = rlm_env._extract_tunnel_url_from_line(line)
+        url = extract_tunnel_url_from_line(line)
         assert url is None
 
 
@@ -371,9 +379,9 @@ class TestSetupState:
     @pytest.mark.asyncio
     async def test_creates_rollout_id(self, rlm_env):
         """Creates rollout_id and registers in active_rollouts."""
-        # Mock the interception server and tunnel
+        # Mock the interception server and tunnel pool
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(
+        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
         rlm_env._write_context_to_sandbox = AsyncMock()
@@ -396,7 +404,7 @@ class TestSetupState:
     async def test_sets_up_interception_url(self, rlm_env):
         """Sets up interception_url in state."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(
+        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
         rlm_env._write_context_to_sandbox = AsyncMock()
@@ -418,7 +426,7 @@ class TestSetupState:
     async def test_stores_rlm_context(self, rlm_env):
         """Stores rlm_context in state."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(
+        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
         rlm_env._write_context_to_sandbox = AsyncMock()
@@ -906,7 +914,7 @@ class TestSubLLMMetricsInitialization:
     async def test_initializes_metrics_in_active_rollouts(self, rlm_env):
         """Initializes sub-LLM metrics tracking in active_rollouts."""
         rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._get_tunnel_url = AsyncMock(
+        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
         rlm_env._write_context_to_sandbox = AsyncMock()
