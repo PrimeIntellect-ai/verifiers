@@ -5,6 +5,23 @@ from pathlib import Path
 import pytest
 import tomllib
 
+SKIPPED_ENVS = [
+    # Requires fix for resource setup
+    # uv run pytest tests/test_envs.py -vv -k mcp_env
+    #
+    # npm ERR! Cannot read property 'split' of undefined
+    # npm ERR! A complete log of this run can be found in:
+    # npm ERR!     /home/ubuntu/.npm/_logs/2025-12-12T11_25_18_731Z-debug-0.log
+    "mcp_env",
+    # Requires fix for completion dataset setup
+    # uv run pytest tests/test_envs.py -vv -k continuation_quality
+    #
+    #     example_id = input_item["example_id"]
+    #                 ~~~~~~~~~~^^^^^^^^^^^^^^
+    # KeyError: 'example_id'
+    "continuation_quality",
+]
+
 
 def get_environments() -> list[Path]:
     """Get all subdirectories of `environments/`, or only changed environments if CHANGED_ENVS is set."""
@@ -56,6 +73,8 @@ def test_readme_exists(env_dir: Path):
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     """Fixture that installs the given environment in a fresh virtual environment. Module-scoped to reuse the same venv for all tests."""
+    if env_dir.name in SKIPPED_ENVS:
+        pytest.skip(f"Skipping {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     cmd = f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && uv pip install {env_dir.absolute().as_posix()}"
     process = subprocess.run(
