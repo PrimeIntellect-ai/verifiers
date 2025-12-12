@@ -55,7 +55,7 @@ class SandboxTransport(StreamingHTTPTransport):
         # dns for port exposure takes some time so we wait
         await asyncio.sleep(10)
         self.port_exposed = True
-        self.url = exposed_sandbox.url
+        self.url = f"{exposed_sandbox.url}/mcp"
         self.exposure_id = exposed_sandbox.exposure_id
 
 
