@@ -68,12 +68,17 @@ class MultiTurnEnv(vf.Environment):
         ) -> list[int]:
             """Tokenize a prompt using the vLLM tokenize API."""
             http_client = client._client
-            base_url = str(client.base_url).replace("/v1", "")
-            url = f"{base_url}/tokenize"  # vLLM specific
-            response = await http_client.post(
-                url, json={"model": model, "messages": prompt}
-            )
-            return response.json()["tokens"]
+            base_url = str(client.base_url).replace("/v1/", "")
+            tokenize_url = base_url + "/tokenize"  # vLLM specific
+            try:
+                response = await http_client.post(
+                    tokenize_url, json={"model": model, "messages": prompt}
+                )
+                if not response.status_code == 200:
+                    raise Exception(f"Failed to tokenize prompt: {response.text}")
+                return response.json()["tokens"]
+            except Exception as e:
+                raise vf.ModelError(e)
 
         if len(state["trajectory"]) == 0:
             return await tokenize_vllm(state["prompt"], client, state["model"])
