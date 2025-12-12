@@ -53,6 +53,7 @@ jobs:
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+      EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - name: Checkout repository
