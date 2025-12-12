@@ -82,4 +82,4 @@ jobs:
             export CHANGED_ENVS="${{ steps.changed-envs.outputs.all_changed_files || 'none' }}"
             echo "CHANGED_ENVS: $CHANGED_ENVS"
           fi
-          uv run pytest tests/test_envs.py -v
+          uv run pytest tests/test_envs.py -vv
