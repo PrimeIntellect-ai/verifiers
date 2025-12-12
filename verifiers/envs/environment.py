@@ -989,6 +989,10 @@ class Environment(ABC):
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
 
+    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
+        """Set whether the environment should use token prompts for rollouts."""
+        self.use_token_prompts = use_token_prompts
+
     make_dataset = make_dataset
 
 
