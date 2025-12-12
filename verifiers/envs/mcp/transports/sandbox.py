@@ -36,14 +36,24 @@ class SandboxTransport(StreamingHTTPTransport):
         if self.port_to_expose:
             await self.expose_sandbox()
 
-        start_cmd = f"nohup {self.config.command} {' '.join(self.config.args or [])} > /dev/null 2>&1 &"
+        start_cmd = f"nohup {self.config.command} {' '.join(self.config.args or [])} > /tmp/mcp.log 2>&1 &"
         await self.sandbox_client.execute_command(
             self.sandbox_id,
             start_cmd
         )
 
         # give the MCP server time to start
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
+
+        # debug: check if server started
+        ps_result = await self.sandbox_client.execute_command(self.sandbox_id, "ps aux")
+        print(f"[DEBUG] Processes: {ps_result}")
+
+        log_result = await self.sandbox_client.execute_command(self.sandbox_id, "cat /tmp/mcp.log 2>/dev/null || echo 'no log'")
+        print(f"[DEBUG] MCP log: {log_result}")
+
+        curl_result = await self.sandbox_client.execute_command(self.sandbox_id, "curl -s http://localhost:3000/mcp 2>&1 || echo 'curl failed'")
+        print(f"[DEBUG] Curl localhost: {curl_result}")
 
         return await super().connect()
 
