@@ -472,9 +472,12 @@ class Environment(ABC):
             sampling_args.pop("max_completion_tokens")
         clean_sampling_args = {k: v for k, v in sampling_args.items() if v is not None}
 
-        http_client = client._client
-        base_url = str(client.base_url).replace("/v1/", "")
-        url = base_url + "/generate"  # Specific to PRIME-RL's custom vLLM extension
+        if getattr(self, "tokens_client", None) is None:
+            url_without_v1 = str(client.base_url).replace("/v1/", "")
+            tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
+            setattr(self, "tokens_client", tokens_client)
+        else:
+            tokens_client = getattr(self, "tokens_client")
 
         extra_body = clean_sampling_args.pop("extra_body", {})
         body = dict(
@@ -487,10 +490,11 @@ class Environment(ABC):
         )
 
         try:
-            response = await http_client.post(url, json=body)
-            response.raise_for_status()
-            return ChatCompletion.model_validate(response.json())
-
+            return await tokens_client.post(
+                "/generate",
+                body=body,
+                cast_to=ChatCompletion,
+            )
         except Exception as e:
             # in case of making a request with an overlong prompt, e.g from a too-long
             # environment response, we return a dummy response to with finish_reason "length"
