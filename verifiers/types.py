@@ -219,6 +219,7 @@ class EvalConfig(BaseModel):
     env_id: str
     env_args: dict
     env_dir_path: str
+    use_token_prompts: bool = False
     # evaluation
     model: str
     client_config: ClientConfig

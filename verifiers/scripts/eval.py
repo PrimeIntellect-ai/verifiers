@@ -218,6 +218,13 @@ def main():
         default="",
         help="Name of dataset to save to Hugging Face Hub",
     )
+    parser.add_argument(
+        "--use-token-prompts",
+        "-U",
+        default=False,
+        action="store_true",
+        help="Use token prompts. Requires that the inference server supports token-in prompts.",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -296,6 +303,7 @@ def main():
         env_id=args.env_id,
         env_args=args.env_args,
         env_dir_path=args.env_dir_path,
+        use_token_prompts=args.use_token_prompts,
         # evaluation
         model=args.model,
         client_config=client_config,
