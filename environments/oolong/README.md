@@ -26,6 +26,7 @@ Oolong consists of two HuggingFace datasets:
 | `split` | Literal["validation", "test"] | "validation" | Dataset split to use |
 | `shuffle` | bool | False | Whether to shuffle the dataset |
 | `use_rlm` | bool | True | If True, use RLM mode. If False, use standard SingleTurnEnv mode. |
+| `include_env_tips` | bool | False | Include strategy tips in prompt for SFT data generation (RLM mode only) |
 | `max_iterations` | int | 30 | Maximum REPL iterations (RLM mode only) |
 | `max_output_length` | int | 8192 | Maximum code execution output length (RLM mode only) |
 | `judge_model` | str | "gpt-5-mini" | Model to use for judging answer correctness |
@@ -46,6 +47,24 @@ Oolong consists of two HuggingFace datasets:
 | Context location | `info["context"]` (accessible via code) | Directly in prompt |
 | Model capability | Write Python code to explore | Process text directly |
 | Best for | Very long contexts | Shorter contexts, direct comparison |
+
+### SFT Data Generation
+
+When `include_env_tips=True` (RLM mode only), environment-specific strategy tips are appended to the prompt inside `<env_tips>` tags. This is useful for generating SFT training data where a strong model can leverage the tips to produce high-quality demonstrations.
+
+The tips suggest an effective chunking strategy for long-context retrieval:
+
+1. Split the context into chunks
+2. Write a prompt describing what to look for, then append it to each chunk
+3. Call `llm_batch()` once with all prompts to scan chunks in parallel
+4. Aggregate the relevant findings
+
+Since the tips are wrapped in `<env_tips>` tags, they can be easily stripped from the training data so the student model learns to apply the right strategy without explicit hints.
+
+```bash
+# Generate SFT data with strategy tips
+uv run vf-eval -s oolong -m gpt-4.1 --env-kwargs '{"include_env_tips": true}'
+```
 
 ## Reward Functions
 

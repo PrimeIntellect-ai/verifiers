@@ -30,6 +30,22 @@ from verifiers.utils.data_utils import extract_boxed_answer
 
 
 # =============================================================================
+# Environment Tips (for SFT data generation)
+# =============================================================================
+
+# Environment-specific tips for RLM mode (used for SFT data generation)
+# These tips are wrapped in <env_tips> tags so they can be removed during training
+_ENV_TIPS = """
+<env_tips>
+Strategy for long-context information retrieval:
+1. Split the context into chunks (e.g., by paragraphs or fixed character windows with some overlap)
+2. Write a prompt describing what to look for, then append it to each chunk to create a list of prompts
+3. Call llm_batch() once with all prompts to scan chunks in parallel
+4. Aggregate the relevant findings from the responses
+</env_tips>"""
+
+
+# =============================================================================
 # Metrics Logging
 # =============================================================================
 
@@ -179,6 +195,9 @@ def _create_logging_reward_func(
                         # For standard mode, extract just the question part
                         if "<context>" in content:
                             content = content.split("<context>")[0].strip()
+                        # Strip env_tips if present (RLM mode with include_env_tips)
+                        if "<env_tips>" in content:
+                            content = content.split("<env_tips>")[0].strip()
                         prompt_preview = (
                             content[:100]
                             if isinstance(content, str)
@@ -301,6 +320,7 @@ def load_environment(
     shuffle: bool = False,
     seed: int = 42,
     use_rlm: bool = True,
+    include_env_tips: bool = False,
     max_iterations: int = 30,
     max_output_length: int = 8192,
     judge_model: str = "gpt-5-mini",
@@ -320,6 +340,9 @@ def load_environment(
         shuffle: Whether to shuffle the dataset (useful for sampling different examples)
         use_rlm: If True, use RLMEnv with context in info["context"].
                  If False, use SingleTurnEnv with context directly in the prompt.
+        include_env_tips: If True and use_rlm=True, include environment-specific
+                          strategy tips in the prompt (wrapped in <env_tips> tags).
+                          Useful for SFT data generation. Ignored if use_rlm=False.
         max_iterations: Maximum REPL iterations before stopping (RLM mode only)
         max_output_length: Maximum length of code execution output (RLM mode only)
         judge_model: Model to use for judging answer correctness
@@ -355,9 +378,12 @@ def load_environment(
 
         if use_rlm:
             # RLM mode: context goes in info, short prompt
+            prompt_content = question
+            if include_env_tips:
+                prompt_content = prompt_content + _ENV_TIPS
             return {
                 "example_id": idx,
-                "prompt": [{"role": "user", "content": question}],
+                "prompt": [{"role": "user", "content": prompt_content}],
                 "task": "oolong",
                 "answer": answer,
                 "info": {"context": context, "context_length": context_length},
@@ -425,8 +451,12 @@ Respond either "yes" or "no" only."""
     # Helper to extract question (RLM mode has clean question, standard has context in prompt)
     def _get_question(prompt: vf.Messages, state: vf.State) -> str:
         if use_rlm:
-            # RLM mode: prompt is just the question
-            return prompt[-1]["content"] if prompt else ""
+            # RLM mode: prompt is just the question (possibly with env_tips appended)
+            content = prompt[-1]["content"] if prompt else ""
+            # Strip env_tips if present
+            if "<env_tips>" in content:
+                content = content.split("<env_tips>")[0].strip()
+            return content
         else:
             # Standard mode: extract question from the beginning of the prompt
             # The question comes before the <context> tag
