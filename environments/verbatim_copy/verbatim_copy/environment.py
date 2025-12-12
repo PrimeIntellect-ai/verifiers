@@ -173,6 +173,7 @@ def _create_levenshtein_similarity_reward(use_rlm: bool):
 def load_environment(
     num_samples: int = 100,
     difficulty: DifficultyLevel | Literal["all"] = "all",
+    length_scale: float = 1.0,
     seed: int = 42,
     use_rlm: bool = True,
     include_env_tips: bool = False,
@@ -187,6 +188,9 @@ def load_environment(
         num_samples: Number of samples to generate
         difficulty: Difficulty level ("easy", "medium", "hard", "mixed", or "all")
                     "all" uses the default distribution across all difficulties
+        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
+                      Allows arbitrary scaling for future-proofing as models improve.
+                      At length_scale=1.0: easy~25 words, medium~2-4 records, hard~8 codes.
         seed: Random seed for data generation
         use_rlm: If True, use RLMEnv with REPL access.
                  If False, use SingleTurnEnv for single-shot generation.
@@ -203,12 +207,15 @@ def load_environment(
     # Generate dataset
     if difficulty == "all":
         # Use default distribution
-        samples = generate_dataset(num_samples=num_samples, seed=seed)
+        samples = generate_dataset(
+            num_samples=num_samples, length_scale=length_scale, seed=seed
+        )
     else:
         # Single difficulty level
         samples = generate_dataset(
             num_samples=num_samples,
             difficulty_distribution={difficulty: 1.0},
+            length_scale=length_scale,
             seed=seed,
         )
 
@@ -230,6 +237,7 @@ def load_environment(
             "answer": sample["text"],  # Ground truth is the original text
             "info": {
                 "difficulty": sample["difficulty"],
+                "length_scale": sample["length_scale"],
                 "id": sample["id"],
             },
         }

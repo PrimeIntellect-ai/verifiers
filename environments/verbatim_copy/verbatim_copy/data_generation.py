@@ -218,6 +218,7 @@ def generate_csv_data(
 
 def generate_sample(
     difficulty: DifficultyLevel = "medium",
+    length_scale: float = 1.0,
     seed: int | None = None,
 ) -> dict:
     """
@@ -225,11 +226,32 @@ def generate_sample(
 
     Args:
         difficulty: Difficulty level of the text to copy
+        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
+                      Allows arbitrary scaling for future-proofing as models improve.
         seed: Random seed for reproducibility
 
     Returns:
-        Dict with 'text' (the text to copy) and 'difficulty' metadata
+        Dict with 'text' (the text to copy), 'difficulty', and 'length_scale' metadata
     """
+    # Base values (what length_scale=1.0 produces)
+    BASE_WORDS = 25
+    BASE_RECORDS = 2
+    BASE_ROWS = 4
+    BASE_CODES = 8
+    # Mixed mode uses smaller base values
+    BASE_MIXED_CODES = 3
+    BASE_MIXED_WORDS = 10
+    BASE_MIXED_ROWS = 3
+
+    # Scale with minimum bounds to avoid degenerate cases
+    num_words = max(5, int(BASE_WORDS * length_scale))
+    num_records = max(1, int(BASE_RECORDS * length_scale))
+    num_rows = max(1, int(BASE_ROWS * length_scale))
+    num_codes = max(2, int(BASE_CODES * length_scale))
+    mixed_codes = max(1, int(BASE_MIXED_CODES * length_scale))
+    mixed_words = max(3, int(BASE_MIXED_WORDS * length_scale))
+    mixed_rows = max(1, int(BASE_MIXED_ROWS * length_scale))
+
     fake = Faker()
 
     if seed is not None:
@@ -238,35 +260,37 @@ def generate_sample(
 
     if difficulty == "easy":
         # Word sequences - familiar patterns
-        text = generate_word_sequence(num_words=25, seed=seed)
+        text = generate_word_sequence(num_words=num_words, seed=seed)
     elif difficulty == "medium":
         # Structured data - numbers and special chars
         choice = random.choice(["json", "csv"])
         if choice == "json":
-            text = generate_structured_data(fake, num_records=2, seed=seed)
+            text = generate_structured_data(fake, num_records=num_records, seed=seed)
         else:
-            text = generate_csv_data(fake, num_rows=4, seed=seed)
+            text = generate_csv_data(fake, num_rows=num_rows, seed=seed)
     elif difficulty == "hard":
         # Alphanumeric codes - no semantic cues
-        text = generate_alphanumeric_codes(num_codes=8, code_format="mixed", seed=seed)
+        text = generate_alphanumeric_codes(num_codes=num_codes, code_format="mixed", seed=seed)
     else:  # mixed
         # Combine multiple types
         parts = [
-            f"Reference codes:\n{generate_alphanumeric_codes(num_codes=3, code_format='short', seed=seed)}",
-            f"\nKeywords: {generate_word_sequence(num_words=10, seed=seed + 1 if seed else None)}",
-            f"\nData:\n{generate_csv_data(fake, num_rows=3, seed=seed + 2 if seed else None)}",
+            f"Reference codes:\n{generate_alphanumeric_codes(num_codes=mixed_codes, code_format='short', seed=seed)}",
+            f"\nKeywords: {generate_word_sequence(num_words=mixed_words, seed=seed + 1 if seed else None)}",
+            f"\nData:\n{generate_csv_data(fake, num_rows=mixed_rows, seed=seed + 2 if seed else None)}",
         ]
         text = "\n".join(parts)
 
     return {
         "text": text,
         "difficulty": difficulty,
+        "length_scale": length_scale,
     }
 
 
 def generate_dataset(
     num_samples: int = 100,
     difficulty_distribution: dict[DifficultyLevel, float] | None = None,
+    length_scale: float = 1.0,
     seed: int = 42,
 ) -> list[dict]:
     """
@@ -276,10 +300,12 @@ def generate_dataset(
         num_samples: Total number of samples to generate
         difficulty_distribution: Dict mapping difficulty to proportion (must sum to 1.0)
                                  Default: {"easy": 0.25, "medium": 0.35, "hard": 0.25, "mixed": 0.15}
+        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
+                      Allows arbitrary scaling for future-proofing as models improve.
         seed: Base random seed for reproducibility
 
     Returns:
-        List of sample dicts with 'text' and 'difficulty' keys
+        List of sample dicts with 'text', 'difficulty', and 'length_scale' keys
     """
     if difficulty_distribution is None:
         difficulty_distribution = {
@@ -307,7 +333,9 @@ def generate_dataset(
     samples = []
     for i, difficulty in enumerate(difficulties):
         sample_seed = seed + i * 1000  # Ensure different seeds per sample
-        sample = generate_sample(difficulty=difficulty, seed=sample_seed)
+        sample = generate_sample(
+            difficulty=difficulty, length_scale=length_scale, seed=sample_seed
+        )
         sample["id"] = i
         samples.append(sample)
 
