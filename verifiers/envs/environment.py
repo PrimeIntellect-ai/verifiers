@@ -93,13 +93,13 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
         if self.message_type == "chat":
             if dataset is not None:
-                self.dataset = self.format_chat_dataset(
+                self.dataset = self.format_dataset(
                     dataset, self.system_prompt, self.few_shot, map_kwargs=map_kwargs
                 )
             else:
                 self.dataset = None
             if eval_dataset is not None:
-                self.eval_dataset = self.format_chat_dataset(
+                self.eval_dataset = self.format_dataset(
                     eval_dataset,
                     self.system_prompt,
                     self.few_shot,
@@ -114,16 +114,8 @@ class Environment(ABC):
                     'Please use message_type="chat" instead, or pre-format your dataset '
                     'to contain a "prompt" column.'
                 )
-            if dataset is not None:
-                self.dataset = self.format_dataset(dataset, map_kwargs=map_kwargs)
-            else:
-                self.dataset = None
-            if eval_dataset is not None:
-                self.eval_dataset = self.format_dataset(
-                    eval_dataset, map_kwargs=map_kwargs
-                )
-            else:
-                self.eval_dataset = None
+            self.dataset = dataset
+            self.eval_dataset = eval_dataset
 
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
@@ -258,16 +250,6 @@ class Environment(ABC):
     def format_dataset(
         self,
         dataset: Dataset,
-        map_kwargs: dict = {},
-    ) -> Dataset:
-        """Format dataset by creating example_id and prompt columns, and setting task column."""
-        dataset = self._ensure_example_id(dataset)
-        dataset = self._ensure_task(dataset, map_kwargs)
-        return dataset
-
-    def format_chat_dataset(
-        self,
-        dataset: Dataset,
         system_prompt: str | None = None,
         few_shot: list[ChatMessage] | None = None,
         question_key: str = "question",
@@ -277,10 +259,11 @@ class Environment(ABC):
         """
         Format dataset by creating example_id and prompt columns, and setting task column.
         """
-        dataset = self.format_dataset(dataset, map_kwargs)
+        dataset = self._ensure_example_id(dataset)
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
+        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
