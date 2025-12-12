@@ -1,7 +1,8 @@
 import logging
 from abc import abstractmethod
+from typing import Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
@@ -71,16 +72,30 @@ class MultiTurnEnv(vf.Environment):
             client: AsyncOpenAI,
         ) -> list[int]:
             """Tokenize a prompt using the vLLM tokenize API."""
-            http_client = client._client
-            base_url = str(client.base_url).replace("/v1/", "")
-            tokenize_url = base_url + "/tokenize"  # vLLM specific
+            if getattr(self, "tokens_client", None) is None:
+                url_without_v1 = str(client.base_url).replace("/v1/", "")
+                tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
+                setattr(self, "tokens_client", tokens_client)
+            else:
+                tokens_client = getattr(self, "tokens_client")
+            body = dict(
+                model=model,
+                messages=messages,
+                tools=tools,
+            )
+
+            # Copy from vllm/entrypoints/openai/protocol.py
+            class TokenizeResponse(BaseModel):
+                count: int
+                max_model_len: int
+                tokens: list[int]
+                token_strs: Optional[list[str]] = None
+
             try:
-                response = await http_client.post(
-                    tokenize_url,
-                    json={"model": model, "messages": messages, "tools": tools},
+                tokenize_response = await tokens_client.post(
+                    "/tokenize", body=body, cast_to=TokenizeResponse
                 )
-                response.raise_for_status()
-                return response.json()["tokens"]
+                return tokenize_response.tokens
             except Exception as e:
                 raise vf.ModelError(e)
 
