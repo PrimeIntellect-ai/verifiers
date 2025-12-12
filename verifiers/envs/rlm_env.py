@@ -591,6 +591,17 @@ class RLMEnv(SandboxEnv):
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_tokens(response: Any) -> tuple[int, int]:
+        """Extract prompt and completion tokens from response usage."""
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return 0, 0
+        return (
+            getattr(usage, "prompt_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0,
+        )
+
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
     ) -> dict:
@@ -636,10 +647,9 @@ class RLMEnv(SandboxEnv):
             )
 
             # Accumulate tokens from this call
-            usage = getattr(response, "usage", None)
-            if usage:
-                total_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                total_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+            prompt_tokens, completion_tokens = self._extract_tokens(response)
+            total_prompt_tokens += prompt_tokens
+            total_completion_tokens += completion_tokens
 
             assistant_message = response.choices[0].message
             tool_calls = getattr(assistant_message, "tool_calls", None)
@@ -692,10 +702,9 @@ class RLMEnv(SandboxEnv):
         )
 
         # Accumulate tokens from final call
-        usage = getattr(response, "usage", None)
-        if usage:
-            total_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-            total_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        prompt_tokens, completion_tokens = self._extract_tokens(response)
+        total_prompt_tokens += prompt_tokens
+        total_completion_tokens += completion_tokens
 
         response_dict = (
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
@@ -876,21 +885,10 @@ class RLMEnv(SandboxEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
 
-    async def setup_state(self, state: State) -> State:
-        """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
-        # Create sandbox via parent
-        state = await super().setup_state(state)
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            raise RuntimeError("Sandbox ID not set")
-
-        rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
-        state["rollout_id"] = rollout_id
-
-        # Start interception server for sub-LLM calls
+    async def _setup_interception(self, state: State, rollout_id: str) -> State:
+        """Start interception server and configure tunnel URL for sub-LLM calls."""
         await self._ensure_interception_server()
 
-        # Get tunnel URL for sandbox to call back
         tunnel_url: str | None = None
         if self._tunnel_pool:
             tunnel_url = await self._tunnel_pool.get_tunnel_url(
@@ -902,35 +900,24 @@ class RLMEnv(SandboxEnv):
 
         state["interception_url"] = interception_url
         state["tunnel_url"] = tunnel_url
+        return state
 
-        # Register rollout for sub-LLM routing with metrics tracking
+    def _register_rollout(self, state: State, rollout_id: str) -> None:
+        """Register rollout in active_rollouts for sub-LLM request routing."""
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
-            # Metrics tracking
             "sub_llm_call_count": 0,
             "sub_llm_prompt_tokens": 0,
             "sub_llm_completion_tokens": 0,
         }
 
-        # Build context dict
-        info = state.get("info", {})
-        context_data = info.get(self.context_key, None)
-        context_dict = self._build_context_dict(context_data)
-        state["rlm_context"] = context_dict
+    async def _start_worker(self, state: State) -> None:
+        """Start the Python worker process in the sandbox and wait for ready signal."""
+        sandbox_id = state["sandbox_id"]
+        interception_url = state["interception_url"]
 
-        # Wait for sandbox to be ready
-        await self.sandbox_client.wait_for_creation(sandbox_id)
-
-        # Write context file to sandbox BEFORE starting worker
-        await self._write_context_to_sandbox(sandbox_id, context_dict)
-
-        # Write initial answer file BEFORE starting worker
-        await self._write_answer_to_sandbox(sandbox_id, {"ready": False, "content": ""})
-
-        # Start worker with environment variables set
-        # This must happen AFTER writing context/answer files
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
@@ -953,27 +940,55 @@ fi
 nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
 """
         await self._execute_command_with_retry(sandbox_id, start_worker_cmd)
-
-        # Wait for worker to be ready
         await self._wait_for_worker_ready(sandbox_id)
 
-        # Initialize worker state (ready flag indicates worker is running)
+    async def setup_state(self, state: State) -> State:
+        """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
+        # 1. Create sandbox via parent
+        state = await super().setup_state(state)
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            raise RuntimeError("Sandbox ID not set")
+
+        rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
+        state["rollout_id"] = rollout_id
+
+        # 2. Setup interception and tunnels
+        state = await self._setup_interception(state, rollout_id)
+
+        # 3. Register rollout for sub-LLM routing
+        self._register_rollout(state, rollout_id)
+
+        # 4. Build and write context
+        info = state.get("info", {})
+        context_data = info.get(self.context_key, None)
+        context_dict = self._build_context_dict(context_data)
+        state["rlm_context"] = context_dict
+
+        # 5. Prepare sandbox and start worker
+        await self.sandbox_client.wait_for_creation(sandbox_id)
+        await self._write_json_to_sandbox(
+            sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
+        )
+        await self._write_json_to_sandbox(
+            sandbox_id,
+            {"ready": False, "content": ""},
+            self._ANSWER_FILE,
+            "rlm_answer.json",
+        )
+
+        # 6. Start worker
+        await self._start_worker(state)
         state["rlm_worker_ready"] = True
 
         return state
 
     def _build_context_dict(self, context_data: Any) -> dict[str, Any]:
         """Build context dictionary with metadata."""
-        if context_data is not None:
-            return {
-                "input_data": context_data,
-                "input_data_metadata": self._build_context_metadata(context_data),
-            }
-        else:
-            return {
-                "input_data": None,
-                "input_data_metadata": {"type": "none", "size": 0},
-            }
+        return {
+            "input_data": context_data,
+            "input_data_metadata": self._build_context_metadata(context_data),
+        }
 
     def _build_context_metadata(self, context_data: Any) -> dict[str, Any]:
         """Build minimal metadata dictionary for the context."""
@@ -987,31 +1002,13 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
             metadata["size"] = "unknown"
         return metadata
 
-    async def _write_context_to_sandbox(
-        self, sandbox_id: str, context_dict: dict
+    async def _write_json_to_sandbox(
+        self, sandbox_id: str, data: dict, file_path: str, filename: str
     ) -> None:
-        """Write context to sandbox file using direct file upload."""
-        context_json = json.dumps(context_dict)
-        context_bytes = context_json.encode("utf-8")
-
-        # Use upload_bytes API for efficient transfer of large files
+        """Write JSON data to sandbox file using direct file upload."""
+        data_bytes = json.dumps(data).encode("utf-8")
         await self.with_retry(self.sandbox_client.upload_bytes)(
-            sandbox_id,
-            file_path=self._CONTEXT_FILE,
-            file_bytes=context_bytes,
-            filename="rlm_context.json",
-        )
-
-    async def _write_answer_to_sandbox(self, sandbox_id: str, answer: dict) -> None:
-        """Write answer to sandbox file using direct file upload."""
-        answer_json = json.dumps(answer)
-        answer_bytes = answer_json.encode("utf-8")
-
-        await self.with_retry(self.sandbox_client.upload_bytes)(
-            sandbox_id,
-            file_path=self._ANSWER_FILE,
-            file_bytes=answer_bytes,
-            filename="rlm_answer.json",
+            sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
         )
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:

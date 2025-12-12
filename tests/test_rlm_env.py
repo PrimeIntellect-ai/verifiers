@@ -203,7 +203,7 @@ class TestBuildContextDict:
         """Build context dict with None (no context)."""
         context = rlm_env._build_context_dict(None)
         assert context["input_data"] is None
-        assert context["input_data_metadata"]["type"] == "none"
+        assert context["input_data_metadata"]["type"] == "<class 'NoneType'>"
         assert context["input_data_metadata"]["size"] == 0
 
 
@@ -383,8 +383,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_context_to_sandbox = AsyncMock()
-        rlm_env._write_answer_to_sandbox = AsyncMock()
+        rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
 
         state = {
@@ -406,8 +405,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_context_to_sandbox = AsyncMock()
-        rlm_env._write_answer_to_sandbox = AsyncMock()
+        rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
 
         state = {
@@ -428,8 +426,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_context_to_sandbox = AsyncMock()
-        rlm_env._write_answer_to_sandbox = AsyncMock()
+        rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
 
         context_data = {"key": "value"}
@@ -916,8 +913,7 @@ class TestSubLLMMetricsInitialization:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_context_to_sandbox = AsyncMock()
-        rlm_env._write_answer_to_sandbox = AsyncMock()
+        rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
 
         state = {"info": {}, "model": "test-model", "client": MagicMock()}
