@@ -180,7 +180,9 @@ def _create_logging_reward_func(
                         if "<context>" in content:
                             content = content.split("<context>")[0].strip()
                         prompt_preview = (
-                            content[:100] if isinstance(content, str) else str(content)[:100]
+                            content[:100]
+                            if isinstance(content, str)
+                            else str(content)[:100]
                         )
                         break
                 else:
@@ -429,7 +431,11 @@ Respond either "yes" or "no" only."""
             # Standard mode: extract question from the beginning of the prompt
             # The question comes before the <context> tag
             if prompt and isinstance(prompt, list):
-                content = prompt[-1].get("content", "") if isinstance(prompt[-1], dict) else ""
+                content = (
+                    prompt[-1].get("content", "")
+                    if isinstance(prompt[-1], dict)
+                    else ""
+                )
                 if "<context>" in content:
                     return content.split("<context>")[0].strip()
                 return content

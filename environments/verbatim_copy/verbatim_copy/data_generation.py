@@ -270,7 +270,9 @@ def generate_sample(
             text = generate_csv_data(fake, num_rows=num_rows, seed=seed)
     elif difficulty == "hard":
         # Alphanumeric codes - no semantic cues
-        text = generate_alphanumeric_codes(num_codes=num_codes, code_format="mixed", seed=seed)
+        text = generate_alphanumeric_codes(
+            num_codes=num_codes, code_format="mixed", seed=seed
+        )
     else:  # mixed
         # Combine multiple types
         parts = [
