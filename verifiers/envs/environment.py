@@ -440,9 +440,6 @@ class Environment(ABC):
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
         """
-        assert message_type == "chat", (
-            "Only chat messages are supported for token-in based rollouts at the moment"
-        )
 
         # TODO: a good chunk of the logic below is duplicated from the get_model_response function, and should be abstracted out.
 
@@ -456,6 +453,9 @@ class Environment(ABC):
         message_type = message_type or self.message_type
         assert model is not None
         assert client is not None
+        assert message_type == "chat", (
+            "Only chat messages are supported for token-in based rollouts at the moment"
+        )
 
         # normalize sampling args:
         # - if max_tokens is provided for chat, rename to max_completion_tokens
@@ -473,8 +473,8 @@ class Environment(ABC):
         clean_sampling_args = {k: v for k, v in sampling_args.items() if v is not None}
 
         http_client = client._client
-        base_url = str(client.base_url).replace("/v1", "")
-        url = f"{base_url}/generate"  # TODO: Make this configurable
+        base_url = str(client.base_url).replace("/v1/", "")
+        url = base_url + "/generate"  # Specific to PRIME-RL's custom vLLM extension
 
         extra_body = clean_sampling_args.pop("extra_body", {})
         body = dict(
