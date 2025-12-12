@@ -74,8 +74,7 @@ class MultiTurnEnv(vf.Environment):
                 response = await http_client.post(
                     tokenize_url, json={"model": model, "messages": prompt}
                 )
-                if not response.status_code == 200:
-                    raise Exception(f"Failed to tokenize prompt: {response.text}")
+                response.raise_for_status()
                 return response.json()["tokens"]
             except Exception as e:
                 raise vf.ModelError(e)
