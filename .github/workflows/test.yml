@@ -16,7 +16,7 @@ on:
 
 jobs:
   test:
-    name: Test verifiers
+    name: Verifiers
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -46,7 +46,7 @@ jobs:
         run: |
           uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
   test-envs:
-    name: Test environments
+    name: Environments
     runs-on: ubuntu-latest
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
