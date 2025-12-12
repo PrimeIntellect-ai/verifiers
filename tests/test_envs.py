@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -91,10 +90,7 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
-    env_args = {
-        "max_turns": 5
-    }  # Only do 5 turns for MultiTurnEnv to keep CI time reasonable
-    eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 512 -a '{json.dumps(env_args)}'"
+    eval_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run vf-eval {env_dir.name} -n 1 -r 1 -t 16"
     process = subprocess.run(
         eval_cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
     )
