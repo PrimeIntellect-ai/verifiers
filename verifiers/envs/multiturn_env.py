@@ -2,6 +2,7 @@ import logging
 from abc import abstractmethod
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
 from verifiers.types import (
@@ -64,7 +65,10 @@ class MultiTurnEnv(vf.Environment):
 
     async def get_prompt_ids(self, state: State, client: AsyncOpenAI) -> list[int]:
         async def tokenize_vllm(
-            prompt: Messages, client: AsyncOpenAI, model: str
+            messages: Messages,
+            tools: list[ChatCompletionToolParam] | None,
+            model: str,
+            client: AsyncOpenAI,
         ) -> list[int]:
             """Tokenize a prompt using the vLLM tokenize API."""
             http_client = client._client
@@ -72,7 +76,8 @@ class MultiTurnEnv(vf.Environment):
             tokenize_url = base_url + "/tokenize"  # vLLM specific
             try:
                 response = await http_client.post(
-                    tokenize_url, json={"model": model, "messages": prompt}
+                    tokenize_url,
+                    json={"model": model, "messages": messages, "tools": tools},
                 )
                 response.raise_for_status()
                 return response.json()["tokens"]
@@ -80,17 +85,27 @@ class MultiTurnEnv(vf.Environment):
                 raise vf.ModelError(e)
 
         if len(state["trajectory"]) == 0:
-            return await tokenize_vllm(state["prompt"], client, state["model"])
+            return await tokenize_vllm(
+                messages=state["prompt"],
+                tools=state["oai_tools"],
+                model=state["model"],
+                client=client,
+            )
         else:
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
+            print(prev_turn_prompt)
+            print(prev_turn_completion)
             prev_turn_tokens = state["trajectory"][-1]["tokens"]
+            print(prev_turn_tokens)
             assert prev_turn_tokens is not None
-            prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
+            prev_turn_prompt_ids = prev_turn_tokens.get("prompt_ids", [])
             prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
-            env_response_ids = await tokenize_vllm(env_response, client, state["model"])
+            env_response_ids = await tokenize_vllm(
+                messages=env_response, tools=None, model=state["model"], client=client
+            )
             return prev_turn_prompt_ids + prev_turn_completion_ids + env_response_ids
 
     async def add_model_response(

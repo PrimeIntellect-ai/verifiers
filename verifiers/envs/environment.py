@@ -480,7 +480,7 @@ class Environment(ABC):
         body = dict(
             model=model,
             messages=prompt,
-            # tools=oai_tools,
+            tools=oai_tools,
             tokens=prompt_ids,
             **clean_sampling_args,
             **extra_body,
