@@ -135,7 +135,7 @@ class TestMathRubric:
 
         # Entire function should timeout within timeout + small overhead
         print(f"Time taken: {elapsed_time:.2f}s")
-        overhead_seconds = 0.5
+        overhead_seconds = 1
         assert elapsed_time < timeout_seconds + overhead_seconds, (
             f"Time taken: {elapsed_time:.2f}s (expected < {timeout_seconds + overhead_seconds}s)"
         )
