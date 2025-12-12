@@ -67,7 +67,7 @@ class SandboxEnv(vf.StatefulToolEnv):
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.DEBUG),
+            before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
         ).wraps
         self.add_tool(self.bash, args_to_skip=["sandbox_id", "working_dir"])
