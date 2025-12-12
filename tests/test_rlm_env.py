@@ -1,6 +1,5 @@
 """Tests for the RLMEnv class."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -934,8 +933,8 @@ class TestSubLLMMetricsTracking:
     """Tests for sub-LLM metrics tracking in _handle_sub_llm_request."""
 
     @pytest.mark.asyncio
-    async def test_increments_call_count(self, rlm_env):
-        """Increments call count for each sub-LLM request."""
+    async def test_appends_call_to_list(self, rlm_env):
+        """Appends call data to sub_llm_calls list for each sub-LLM request."""
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -951,9 +950,6 @@ class TestSubLLMMetricsTracking:
             "client": mock_client,
             "model": "test-model",
             "sub_model": "gpt-4",
-            "sub_llm_call_count": 0,
-            "sub_llm_prompt_tokens": 0,
-            "sub_llm_completion_tokens": 0,
         }
 
         mock_request = MagicMock()
@@ -967,13 +963,14 @@ class TestSubLLMMetricsTracking:
         await rlm_env._handle_sub_llm_request(mock_request)
 
         context = rlm_env.active_rollouts[rollout_id]
-        assert context["sub_llm_call_count"] == 1
-        assert context["sub_llm_prompt_tokens"] == 10
-        assert context["sub_llm_completion_tokens"] == 20
+        sub_llm_calls = context.get("sub_llm_calls", [])
+        assert len(sub_llm_calls) == 1
+        assert sub_llm_calls[0]["metadata"]["prompt_tokens"] == 10
+        assert sub_llm_calls[0]["metadata"]["completion_tokens"] == 20
 
     @pytest.mark.asyncio
     async def test_accumulates_across_requests(self, rlm_env):
-        """Accumulates metrics across multiple sub-LLM requests."""
+        """Accumulates call data across multiple sub-LLM requests."""
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -985,13 +982,16 @@ class TestSubLLMMetricsTracking:
         )
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
+        # Pre-populate with 5 existing calls
+        existing_calls = [
+            {"metadata": {"prompt_tokens": 20, "completion_tokens": 40}}
+            for _ in range(5)
+        ]
         rlm_env.active_rollouts[rollout_id] = {
             "client": mock_client,
             "model": "test-model",
             "sub_model": "gpt-4",
-            "sub_llm_call_count": 5,
-            "sub_llm_prompt_tokens": 100,
-            "sub_llm_completion_tokens": 200,
+            "sub_llm_calls": existing_calls,
         }
 
         mock_request = MagicMock()
@@ -1005,9 +1005,11 @@ class TestSubLLMMetricsTracking:
         await rlm_env._handle_sub_llm_request(mock_request)
 
         context = rlm_env.active_rollouts[rollout_id]
-        assert context["sub_llm_call_count"] == 6
-        assert context["sub_llm_prompt_tokens"] == 110
-        assert context["sub_llm_completion_tokens"] == 220
+        sub_llm_calls = context.get("sub_llm_calls", [])
+        assert len(sub_llm_calls) == 6
+        # New call should have the new tokens
+        assert sub_llm_calls[-1]["metadata"]["prompt_tokens"] == 10
+        assert sub_llm_calls[-1]["metadata"]["completion_tokens"] == 20
 
     @pytest.mark.asyncio
     async def test_handles_missing_usage(self, rlm_env):
@@ -1027,9 +1029,6 @@ class TestSubLLMMetricsTracking:
             "client": mock_client,
             "model": "test-model",
             "sub_model": "gpt-4",
-            "sub_llm_call_count": 0,
-            "sub_llm_prompt_tokens": 0,
-            "sub_llm_completion_tokens": 0,
         }
 
         mock_request = MagicMock()
@@ -1043,9 +1042,10 @@ class TestSubLLMMetricsTracking:
         await rlm_env._handle_sub_llm_request(mock_request)
 
         context = rlm_env.active_rollouts[rollout_id]
-        assert context["sub_llm_call_count"] == 1
-        assert context["sub_llm_prompt_tokens"] == 0
-        assert context["sub_llm_completion_tokens"] == 0
+        sub_llm_calls = context.get("sub_llm_calls", [])
+        assert len(sub_llm_calls) == 1
+        assert sub_llm_calls[0]["metadata"]["prompt_tokens"] == 0
+        assert sub_llm_calls[0]["metadata"]["completion_tokens"] == 0
 
 
 class TestSubLLMMetricsWithTools:
@@ -1128,30 +1128,58 @@ class TestSubLLMMetricsCleanup:
     """Tests for metrics cleanup."""
 
     @pytest.mark.asyncio
-    async def test_copies_metrics_to_state(self, rlm_env):
-        """Copies sub-LLM metrics from active_rollouts to state."""
+    async def test_derives_metrics_from_calls_list(self, rlm_env):
+        """Derives sub-LLM metrics from sub_llm_calls list during cleanup."""
         rollout_id = "rlm_test123"
+        # Populate sub_llm_calls list with call data
+        sub_llm_calls = [
+            {
+                "metadata": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 60,
+                    "tool_call_count": 1,
+                    "num_turns": 2,
+                }
+            },
+            {
+                "metadata": {
+                    "prompt_tokens": 50,
+                    "completion_tokens": 100,
+                    "tool_call_count": 2,
+                    "num_turns": 3,
+                }
+            },
+            {
+                "metadata": {
+                    "prompt_tokens": 70,
+                    "completion_tokens": 140,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                }
+            },
+        ]
         rlm_env.active_rollouts[rollout_id] = {
             "client": MagicMock(),
-            "sub_llm_call_count": 5,
-            "sub_llm_prompt_tokens": 150,
-            "sub_llm_completion_tokens": 300,
+            "sub_llm_calls": sub_llm_calls,
         }
 
         state = {"rollout_id": rollout_id}
         await rlm_env.cleanup_rlm_state(state)
 
-        assert state["sub_llm_call_count"] == 5
-        assert state["sub_llm_prompt_tokens"] == 150
-        assert state["sub_llm_completion_tokens"] == 300
+        # Metrics should be derived from the calls list
+        assert state["sub_llm_call_count"] == 3
+        assert state["sub_llm_prompt_tokens"] == 150  # 30 + 50 + 70
+        assert state["sub_llm_completion_tokens"] == 300  # 60 + 100 + 140
+        assert state["sub_llm_total_tool_calls"] == 3  # 1 + 2 + 0
+        assert state["sub_llm_total_turns"] == 6  # 2 + 3 + 1
 
     @pytest.mark.asyncio
-    async def test_handles_missing_metrics_gracefully(self, rlm_env):
-        """Handles missing metrics in active_rollouts gracefully."""
+    async def test_handles_missing_calls_list_gracefully(self, rlm_env):
+        """Handles missing sub_llm_calls list in active_rollouts gracefully."""
         rollout_id = "rlm_test123"
         rlm_env.active_rollouts[rollout_id] = {
             "client": MagicMock(),
-            # No metrics fields
+            # No sub_llm_calls field
         }
 
         state = {"rollout_id": rollout_id}
