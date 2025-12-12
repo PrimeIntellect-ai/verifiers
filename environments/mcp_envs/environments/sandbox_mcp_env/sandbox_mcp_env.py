@@ -56,8 +56,8 @@ def load_environment(**kwargs):
         transport_type="sandbox",
         connection_scope="rollout",  # Each rollout gets its own sandbox
         # Sandbox configuration
-        sandbox_image="node:20-slim",
-        sandbox_start_command="tail -f /dev/null",  # Keep sandbox alive
+        sandbox_image="python:3.11-slim",
+        sandbox_start_command="apt-get update && apt-get install -y nodejs npm && tail -f /dev/null",
         sandbox_cpu_cores=1,
         sandbox_memory_gb=2,
         sandbox_disk_size_gb=5,
