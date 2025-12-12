@@ -532,6 +532,27 @@ class RLMEnv(SandboxEnv):
     # Sub-Agent Tool Infrastructure
     # =========================================================================
 
+    def _generate_packages_documentation(self) -> str:
+        """Generate documentation for installed packages to include in system prompt."""
+        if not self.pip_install_packages:
+            return ""
+
+        # Parse package names from pip_install_packages string
+        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
+        if not packages:
+            return ""
+
+        lines = ["\n## Installed Packages\n"]
+        lines.append(
+            "The following Python packages are pre-installed in the REPL environment:\n"
+        )
+        for pkg in packages:
+            lines.append(f"- `{pkg}`")
+        lines.append("")
+        lines.append("You can import and use these packages directly in your code.\n")
+
+        return "\n".join(lines)
+
     def _generate_sub_tools_documentation(self) -> str:
         """Generate documentation for sub-agent tools to include in system prompt."""
         if not self.sub_tools:
@@ -1146,19 +1167,20 @@ PY
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
-            # Build system prompt with sub-tool documentation
+            # Build system prompt with packages and sub-tool documentation
             base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+            packages_docs = self._generate_packages_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
-            system_prompt = base_system_prompt + sub_tools_docs
+            system_prompt = base_system_prompt + packages_docs + sub_tools_docs
 
             messages = list(prompt)
             if not messages or messages[0].get("role") != "system":
                 messages.insert(0, {"role": "system", "content": system_prompt})
             else:
-                # Append tool docs to existing system prompt
+                # Append packages and tool docs to existing system prompt
                 messages[0] = {
                     "role": "system",
-                    "content": messages[0]["content"] + sub_tools_docs,
+                    "content": messages[0]["content"] + packages_docs + sub_tools_docs,
                 }
             return messages
         else:
