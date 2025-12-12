@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import textwrap
+import time
 import uuid
 from typing import Any, Callable
 
@@ -783,20 +784,26 @@ class RLMEnv(SandboxEnv):
                     if content:
                         message["content"] = extract_boxed_answer(content)
 
-            # Track metrics
-            context["sub_llm_call_count"] = context.get("sub_llm_call_count", 0) + 1
-            context["sub_llm_prompt_tokens"] = (
-                context.get("sub_llm_prompt_tokens", 0) + prompt_tokens
-            )
-            context["sub_llm_completion_tokens"] = (
-                context.get("sub_llm_completion_tokens", 0) + completion_tokens
-            )
-            # Track additional metrics for analysis
-            context["sub_llm_total_tool_calls"] = (
-                context.get("sub_llm_total_tool_calls", 0) + tool_call_count
-            )
-            context["sub_llm_total_turns"] = (
-                context.get("sub_llm_total_turns", 0) + num_turns
+            # Save full sub-LLM call data (metrics are derived from this in cleanup)
+            response_content = ""
+            if response_dict.get("choices"):
+                response_content = (
+                    response_dict["choices"][0].get("message", {}).get("content", "")
+                )
+            context.setdefault("sub_llm_calls", []).append(
+                {
+                    "turn": context.get("current_turn", 0),
+                    "timestamp": time.time(),
+                    "request": {"messages": messages},
+                    "response": {"content": response_content},
+                    "metadata": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "tool_call_count": tool_call_count,
+                        "num_turns": num_turns,
+                        "max_turns_reached": max_turns_reached,
+                    },
+                }
             )
 
             # Add metadata to response for the worker to parse
@@ -1111,6 +1118,11 @@ PY
         Returns:
             Execution output including stdout, stderr, and expression results
         """
+        # Update current turn in rollout context for sub-LLM call tracking
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
         result = await self._execute_code(sandbox_id, code)
         output = self._format_execution_output(result)
 
@@ -1172,16 +1184,26 @@ PY
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
-            # Copy metrics to state before cleanup
-            state["sub_llm_call_count"] = context.get("sub_llm_call_count", 0)
-            state["sub_llm_prompt_tokens"] = context.get("sub_llm_prompt_tokens", 0)
-            state["sub_llm_completion_tokens"] = context.get(
-                "sub_llm_completion_tokens", 0
+
+            # Copy full sub-LLM call data for training frameworks
+            sub_llm_calls = context.get("sub_llm_calls", [])
+            state["sub_llm_calls"] = sub_llm_calls
+
+            # Derive metrics from call data (single source of truth)
+            state["sub_llm_call_count"] = len(sub_llm_calls)
+            state["sub_llm_prompt_tokens"] = sum(
+                c["metadata"]["prompt_tokens"] for c in sub_llm_calls
             )
-            state["sub_llm_total_tool_calls"] = context.get(
-                "sub_llm_total_tool_calls", 0
+            state["sub_llm_completion_tokens"] = sum(
+                c["metadata"]["completion_tokens"] for c in sub_llm_calls
             )
-            state["sub_llm_total_turns"] = context.get("sub_llm_total_turns", 0)
+            state["sub_llm_total_tool_calls"] = sum(
+                c["metadata"]["tool_call_count"] for c in sub_llm_calls
+            )
+            state["sub_llm_total_turns"] = sum(
+                c["metadata"]["num_turns"] for c in sub_llm_calls
+            )
+
             del self.active_rollouts[rollout_id]
 
         # Release tunnel
@@ -1209,8 +1231,3 @@ PY
         except Exception as e:
             logger.warning(f"Failed to read RLM answer: {e}")
             state["final_answer"] = ""
-
-
-# TODO: Improve system prompt
-# TODO: Add logging for sub-LLM calls
-# TODO: Experiment with putting the user query inside the `context`
