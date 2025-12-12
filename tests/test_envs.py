@@ -9,7 +9,7 @@ import tomllib
 
 def get_environments() -> list[Path]:
     """Get all subdirectories of `environments/`, or only changed environments if CHANGED_ENVS is set."""
-    all_envs = list(Path("environments").iterdir())
+    all_envs = list(x for x in Path("environments").iterdir() if x.is_dir())
 
     # Filter environments if CHANGED_ENVS is set (for PRs)
     changed_envs = os.getenv("CHANGED_ENVS")
