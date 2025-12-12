@@ -15,10 +15,10 @@ from filelock import FileLock
 
 class MetricsLogger:
     """Thread-safe JSON metrics logger for RLM experiments.
-    
+
     Writes metrics incrementally to a JSON file, with one entry per rollout.
     Uses file locking for safe concurrent access from multiple async tasks.
-    
+
     Usage:
         logger = MetricsLogger("results/metrics.json")
         logger.log(example_id=1, total_tokens=1234, ...)
@@ -82,7 +82,7 @@ class MetricsLogger:
 
     def log(self, **kwargs: Any):
         """Thread-safe logging of a single rollout's metrics.
-        
+
         Args:
             **kwargs: Metric name-value pairs to log.
         """
@@ -96,7 +96,7 @@ class MetricsLogger:
 
     def log_batch(self, records: list[dict[str, Any]]):
         """Thread-safe batch logging of multiple rollouts.
-        
+
         Args:
             records: List of dicts, each containing metrics for one rollout.
         """
@@ -112,14 +112,14 @@ class MetricsLogger:
 
 def create_logging_reward_func(logger: MetricsLogger, is_rlm_mode: bool = False):
     """Create a reward function that logs metrics and returns 1 (success) or 0 (error).
-    
+
     This function should be added to the rubric with weight=0.0 so it only logs
     metrics without affecting the reward.
-    
+
     Args:
         logger: MetricsLogger instance to write metrics to.
         is_rlm_mode: Whether this is running in RLM mode (affects which metrics are relevant).
-    
+
     Returns:
         A reward function that logs metrics and returns 1.0 on success, 0.0 on error.
     """
@@ -171,7 +171,11 @@ def create_logging_reward_func(logger: MetricsLogger, is_rlm_mode: bool = False)
                 for msg in prompt:
                     if msg.get("role") == "user":
                         content = msg.get("content", "")
-                        prompt_preview = content[:100] if isinstance(content, str) else str(content)[:100]
+                        prompt_preview = (
+                            content[:100]
+                            if isinstance(content, str)
+                            else str(content)[:100]
+                        )
                         break
                 else:
                     prompt_preview = str(prompt[0].get("content", ""))[:100]

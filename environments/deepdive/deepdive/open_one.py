@@ -9,7 +9,9 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
-_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=max(os.cpu_count() - 4, 1))
+_process_pool = concurrent.futures.ProcessPoolExecutor(
+    max_workers=max(os.cpu_count() - 4, 1)
+)
 
 
 async def run_in_process(func, *args, **kwargs):
@@ -34,7 +36,9 @@ def looks_like_pdf(url: str, headers: dict, body: bytes) -> bool:
     """Heuristic PDF detector based on headers and magic bytes."""
     # Normalize headers
     content_type = headers.get("Content-Type") or headers.get("content-type") or ""
-    content_disposition = headers.get("Content-Disposition") or headers.get("content-disposition") or ""
+    content_disposition = (
+        headers.get("Content-Disposition") or headers.get("content-disposition") or ""
+    )
     ct = content_type.lower()
     disp = content_disposition.lower()
     path = urlparse(url).path.lower()
@@ -144,7 +148,9 @@ async def fetch_llm_readable(url, timeout=30, headers=None, debug=False):
                         if m:
                             pdf_url = urljoin(url, m.group(1))
                             # Recursively handle the embedded PDF URL
-                            return await fetch_llm_readable(pdf_url, timeout, headers, debug)
+                            return await fetch_llm_readable(
+                                pdf_url, timeout, headers, debug
+                            )
 
                     # Fallback: run trafilatura on whatever HTML-ish/text-ish content we have
                     import trafilatura

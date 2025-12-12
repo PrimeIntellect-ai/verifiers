@@ -115,7 +115,9 @@ def load_environment(
     rate_limit_semaphore = asyncio.Semaphore(1)
     rate_limit_event = asyncio.Event()
 
-    @with_rate_limit_retry(concurrency_semaphore, rate_limit_semaphore, rate_limit_event)
+    @with_rate_limit_retry(
+        concurrency_semaphore, rate_limit_semaphore, rate_limit_event
+    )
     async def judge_reward_func(
         prompt: vf.Messages, completion: vf.Messages, answer: str, state: dict, **kwargs
     ) -> float:
@@ -126,7 +128,9 @@ def load_environment(
             # Standard mode: "[[deepdive/FINAL_ANSWER]]" is set only if the model used the finish tool
             response = state.get("[[deepdive/FINAL_ANSWER]]", completion[-1]["content"])
         # Note: judge() doesn't accept **kwargs, so we don't pass them
-        judge_response = await judge_rubric.judge(state["info"]["raw_question"], completion, response, state)
+        judge_response = await judge_rubric.judge(
+            state["info"]["raw_question"], completion, response, state
+        )
         if "yes" in judge_response.lower():
             result = 1.0
         else:
@@ -175,11 +179,17 @@ def load_environment(
             for j in range(i + 1, len(search_queries_sets)):
                 if i == j:
                     continue
-                similarity_sum += jaccard_similarity(search_queries_sets[i], search_queries_sets[j])
-        return similarity_sum / len(search_queries_sets) / (len(search_queries_sets) - 1)
+                similarity_sum += jaccard_similarity(
+                    search_queries_sets[i], search_queries_sets[j]
+                )
+        return (
+            similarity_sum / len(search_queries_sets) / (len(search_queries_sets) - 1)
+        )
 
     judge_rubric.add_reward_func(judge_reward_func)
-    judge_rubric.add_reward_func(redundancy_penalty_func, weight=-redundancy_penalty_weight)
+    judge_rubric.add_reward_func(
+        redundancy_penalty_func, weight=-redundancy_penalty_weight
+    )
 
     # === Metrics Logging ===
     # If metrics_output_path is provided, add a logging reward function
@@ -207,17 +217,23 @@ def load_environment(
 
             timeout = aiohttp.ClientTimeout(total=serper_timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(SERPER_API_URL, headers=headers, json=payload) as response:
+                async with session.post(
+                    SERPER_API_URL, headers=headers, json=payload
+                ) as response:
                     content = await response.text()
                     if response.status >= 400:
-                        raise ValueError(f"Serper API error {response.status}: {content.strip()}")
+                        raise ValueError(
+                            f"Serper API error {response.status}: {content.strip()}"
+                        )
 
             data = json.loads(content)
             limit = max(1, min(int(num_results), max_search_results))
             formatted = format_serper_results(data, limit, query)
             result = truncate_text(formatted, int(max_response_chars))
             if debug:
-                print(f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}")
+                print(
+                    f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}"
+                )
             return result
 
         async def open(urls: list[str]) -> str:
@@ -225,9 +241,13 @@ def load_environment(
             Returns the text content of each webpage."""
             t0 = perf_counter()
             results = await asyncio.gather(*[open_one(url, debug) for url in urls])
-            results_str = "\n\n".join([f"# Content from {urls[i]}\n{r}" for i, r in enumerate(results)])
+            results_str = "\n\n".join(
+                [f"# Content from {urls[i]}\n{r}" for i, r in enumerate(results)]
+            )
             if debug:
-                print(f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}")
+                print(
+                    f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
+                )
             return results_str
 
         # Create RLM-based environment
@@ -270,7 +290,10 @@ def load_environment(
                     except BadRequestError as e:
                         error_text = e.response.text.lower()
                         # Retry on content moderation false positives
-                        if "invalid_prompt" in error_text or "violating our usage policy" in error_text:
+                        if (
+                            "invalid_prompt" in error_text
+                            or "violating our usage policy" in error_text
+                        ):
                             last_exception = e
                             if attempt < max_retries - 1:
                                 self.logger.warning(
@@ -313,10 +336,14 @@ def load_environment(
 
         timeout = aiohttp.ClientTimeout(total=serper_timeout)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(SERPER_API_URL, headers=headers, json=payload) as response:
+            async with session.post(
+                SERPER_API_URL, headers=headers, json=payload
+            ) as response:
                 content = await response.text()
                 if response.status >= 400:
-                    raise ValueError(f"Serper API error {response.status}: {content.strip()}")
+                    raise ValueError(
+                        f"Serper API error {response.status}: {content.strip()}"
+                    )
 
         data = json.loads(content)
         state["last_search_result"] = data
@@ -325,16 +352,22 @@ def load_environment(
         formatted = format_serper_results(data, limit, query)
         result = truncate_text(formatted, int(max_response_chars))
         if debug:
-            print(f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}")
+            print(
+                f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}"
+            )
         return result
 
     async def open(state: Any, urls: list[str]) -> str:
         """Get the content of webpages given a list of URLs"""
         t0 = perf_counter()
         results = await asyncio.gather(*[open_one(url, debug) for url in urls])
-        results_str = "\n\n".join([f"# Open Result {i}\n{r}" for i, r in enumerate(results)])
+        results_str = "\n\n".join(
+            [f"# Open Result {i}\n{r}" for i, r in enumerate(results)]
+        )
         if debug:
-            print(f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}")
+            print(
+                f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
+            )
         return results_str
 
     async def click_one(state: Any, result_index: int) -> str:
@@ -353,9 +386,13 @@ def load_environment(
         Can open multiple results at once"""
         t0 = perf_counter()
         results = await asyncio.gather(*[click_one(state, i) for i in result_indices])
-        results_str = "\n\n".join([f"# Click Result {i}\n{r}" for i, r in enumerate(results)])
+        results_str = "\n\n".join(
+            [f"# Click Result {i}\n{r}" for i, r in enumerate(results)]
+        )
         if debug:
-            print(f"Clicked {len(result_indices)} results in {perf_counter() - t0:.2f}s; result length: {len(results_str)}")
+            print(
+                f"Clicked {len(result_indices)} results in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
+            )
         return results_str
 
     async def finish(state: Any, final_answer: str) -> str:

@@ -41,20 +41,60 @@ logger = logging.getLogger(__name__)
 
 # Common words for haystack - simple, frequent words
 HAYSTACK_WORDS = [
-    "apple", "banana", "orange", "grape", "cherry",
-    "table", "chair", "window", "door", "floor",
-    "river", "mountain", "forest", "ocean", "desert",
-    "happy", "quiet", "gentle", "simple", "steady",
-    "walk", "talk", "think", "write", "read",
+    "apple",
+    "banana",
+    "orange",
+    "grape",
+    "cherry",
+    "table",
+    "chair",
+    "window",
+    "door",
+    "floor",
+    "river",
+    "mountain",
+    "forest",
+    "ocean",
+    "desert",
+    "happy",
+    "quiet",
+    "gentle",
+    "simple",
+    "steady",
+    "walk",
+    "talk",
+    "think",
+    "write",
+    "read",
 ]
 
 # Uncommon words for needles - same categories but rarer
 NEEDLE_WORDS = [
-    "kumquat", "rambutan", "persimmon", "dragonfruit", "lychee",
-    "ottoman", "credenza", "vestibule", "portico", "parquet",
-    "fjord", "tundra", "savanna", "archipelago", "estuary",
-    "jubilant", "serene", "tranquil", "pristine", "ethereal",
-    "saunter", "ponder", "scribble", "peruse", "ruminate",
+    "kumquat",
+    "rambutan",
+    "persimmon",
+    "dragonfruit",
+    "lychee",
+    "ottoman",
+    "credenza",
+    "vestibule",
+    "portico",
+    "parquet",
+    "fjord",
+    "tundra",
+    "savanna",
+    "archipelago",
+    "estuary",
+    "jubilant",
+    "serene",
+    "tranquil",
+    "pristine",
+    "ethereal",
+    "saunter",
+    "ponder",
+    "scribble",
+    "peruse",
+    "ruminate",
 ]
 
 
@@ -226,9 +266,13 @@ def _create_logging_reward_func(
 
             # Calculate match metrics using the shared helper
             expected_needles = _parse_answer_list(state.get("answer", ""))
-            found_needles = _extract_found_needles(final_answer, expected_needles, needle_type)
+            found_needles = _extract_found_needles(
+                final_answer, expected_needles, needle_type
+            )
             needles_found_count = len(found_needles)
-            partial_match = needles_found_count / len(expected_needles) if expected_needles else 0.0
+            partial_match = (
+                needles_found_count / len(expected_needles) if expected_needles else 0.0
+            )
             exact_match = 1.0 if needles_found_count == len(expected_needles) else 0.0
 
             # Log all metrics
@@ -423,7 +467,9 @@ def generate_haystack(
             needles = random.sample(NEEDLE_WORDS, num_needles)
     else:  # numeric
         # Generate unique 7-digit numbers
-        needles = [str(random.randint(1_000_000, 9_999_999)) for _ in range(num_needles)]
+        needles = [
+            str(random.randint(1_000_000, 9_999_999)) for _ in range(num_needles)
+        ]
 
     # Place needles in the haystack
     for pos, needle in zip(positions, needles):
@@ -470,7 +516,11 @@ def _extract_found_needles(
         # Parse boxed content as comma-separated list
         found_in_boxed = _parse_answer_list(boxed)
         # Check which expected needles are in the boxed response
-        return [n for n in expected_needles if n.lower() in [f.lower() for f in found_in_boxed]]
+        return [
+            n
+            for n in expected_needles
+            if n.lower() in [f.lower() for f in found_in_boxed]
+        ]
 
     # Fall back to searching in full response (case-insensitive for words)
     response_lower = response.lower()
@@ -489,7 +539,7 @@ def _extract_found_needles(
 
 def _extract_number(text: str) -> str:
     """Extract a number from text, trying boxed format first, then raw numbers.
-    
+
     Legacy helper for backwards compatibility with numeric needle type.
     """
     # Try boxed answer first
@@ -565,7 +615,9 @@ def load_environment(
         if num_needles == 1:
             task_description = "Find the magic number hidden in the text."
         else:
-            task_description = f"Find all {num_needles} magic numbers hidden in the text."
+            task_description = (
+                f"Find all {num_needles} magic numbers hidden in the text."
+            )
 
     # Generate dataset
     dataset_rows = []
@@ -586,7 +638,9 @@ def load_environment(
             if num_needles == 1:
                 response_format = "Return just the word/number you found."
             else:
-                response_format = "Return all words/numbers you found, separated by commas."
+                response_format = (
+                    "Return all words/numbers you found, separated by commas."
+                )
 
             dataset_rows.append(
                 {
@@ -611,7 +665,9 @@ def load_environment(
             if num_needles == 1:
                 response_format = "Return just the word/number inside \\boxed{}."
             else:
-                response_format = "Return all words/numbers inside \\boxed{}, separated by commas."
+                response_format = (
+                    "Return all words/numbers inside \\boxed{}, separated by commas."
+                )
 
             dataset_rows.append(
                 {
@@ -688,7 +744,11 @@ def load_environment(
         def partial_match_reward(completion: list, answer: str) -> float:
             """Partial credit: fraction of needles found."""
             if completion and isinstance(completion, list):
-                content = completion[-1].get("content", "") if isinstance(completion[-1], dict) else str(completion[-1])
+                content = (
+                    completion[-1].get("content", "")
+                    if isinstance(completion[-1], dict)
+                    else str(completion[-1])
+                )
             else:
                 content = str(completion) if completion else ""
             expected_needles = _parse_answer_list(answer)
@@ -698,7 +758,11 @@ def load_environment(
         def exact_match_reward(completion: list, answer: str) -> float:
             """Full credit only if ALL needles found."""
             if completion and isinstance(completion, list):
-                content = completion[-1].get("content", "") if isinstance(completion[-1], dict) else str(completion[-1])
+                content = (
+                    completion[-1].get("content", "")
+                    if isinstance(completion[-1], dict)
+                    else str(completion[-1])
+                )
             else:
                 content = str(completion) if completion else ""
             expected_needles = _parse_answer_list(answer)

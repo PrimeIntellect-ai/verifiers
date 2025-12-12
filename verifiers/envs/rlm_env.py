@@ -247,6 +247,7 @@ _RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
     rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
     pip install -q requests
+    pip install -q {pip_install_packages}
 
     # Write worker script but do NOT start it yet
     # Worker will be started by setup_state after context/env vars are set
@@ -263,20 +264,24 @@ PY
 )
 
 
-_RLM_READY_WAIT_SCRIPT = textwrap.dedent(
-    """
-    bash -lc '
-    for i in $(seq 1 200); do
-      if [ -f "{ready_flag}" ]; then
-        exit 0
-      fi
-      sleep 0.05
-    done
-    echo "RLM worker failed to start" >&2
-    exit 1
-    '
-    """
-)
+def _make_ready_wait_script(ready_flag: str, max_wait_seconds: int) -> str:
+    """Generate a ready wait script with configurable timeout."""
+    # Each iteration sleeps 0.05 seconds, so calculate iterations needed
+    iterations = max(1, int(max_wait_seconds / 0.05))
+    return textwrap.dedent(
+        f"""
+        bash -lc '
+        for i in $(seq 1 {iterations}); do
+          if [ -f "{ready_flag}" ]; then
+            exit 0
+          fi
+          sleep 0.05
+        done
+        echo "RLM worker failed to start" >&2
+        exit 1
+        '
+        """
+    )
 
 
 # System prompt for sub-LLMs (called via llm_batch)
@@ -384,6 +389,8 @@ class RLMEnv(SandboxEnv):
         system_prompt: Custom system prompt (default: RLM standard prompt)
         interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
         interception_port: Port for interception server (default: 8766)
+        pip_install_packages: Space-separated packages to install (default: "requests")
+        max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 30)
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -407,6 +414,8 @@ class RLMEnv(SandboxEnv):
         system_prompt: str | None = None,
         interception_host: str | None = None,
         interception_port: int = 8766,
+        pip_install_packages: str = "",
+        max_startup_wait_seconds: int = 30,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -420,6 +429,8 @@ class RLMEnv(SandboxEnv):
         self.custom_system_prompt = system_prompt
         self.interception_host = interception_host
         self.interception_port = interception_port
+        self.pip_install_packages = pip_install_packages
+        self.max_startup_wait_seconds = max_startup_wait_seconds
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -444,6 +455,7 @@ class RLMEnv(SandboxEnv):
             ready_flag=self._READY_FLAG,
             worker_path=self._WORKER_PATH,
             worker_b64=worker_b64,
+            pip_install_packages=pip_install_packages,
         )
 
         # Interception server state (shared across rollouts)
@@ -1091,7 +1103,7 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
         """Write context to sandbox file using direct file upload."""
         context_json = json.dumps(context_dict)
         context_bytes = context_json.encode("utf-8")
-        
+
         # Use upload_bytes API for efficient transfer of large files
         await self.with_retry(self.sandbox_client.upload_bytes)(
             sandbox_id,
@@ -1104,7 +1116,7 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
         """Write answer to sandbox file using direct file upload."""
         answer_json = json.dumps(answer)
         answer_bytes = answer_json.encode("utf-8")
-        
+
         await self.with_retry(self.sandbox_client.upload_bytes)(
             sandbox_id,
             file_path=self._ANSWER_FILE,
@@ -1114,7 +1126,9 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         """Wait for worker to signal ready."""
-        wait_script = _RLM_READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
+        wait_script = _make_ready_wait_script(
+            self._READY_FLAG, self.max_startup_wait_seconds
+        )
         result = await self._execute_command_with_retry(sandbox_id, wait_script)
         if "failed to start" in result.stdout or "failed to start" in (
             result.stderr or ""
@@ -1210,9 +1224,7 @@ PY
     # REPL Tool
     # =========================================================================
 
-    async def call_python_repl(
-        self, code: str, sandbox_id: str, state: Any
-    ) -> str:
+    async def call_python_repl(self, code: str, sandbox_id: str, state: Any) -> str:
         """
         Execute Python code in a persistent REPL environment.
 
