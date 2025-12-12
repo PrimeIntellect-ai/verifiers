@@ -94,10 +94,7 @@ class MultiTurnEnv(vf.Environment):
         else:
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
-            print(prev_turn_prompt)
-            print(prev_turn_completion)
             prev_turn_tokens = state["trajectory"][-1]["tokens"]
-            print(prev_turn_tokens)
             assert prev_turn_tokens is not None
             prev_turn_prompt_ids = prev_turn_tokens.get("prompt_ids", [])
             prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
