@@ -88,7 +88,9 @@ class SandboxEnv(vf.StatefulToolEnv):
             before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
         ).wraps
-        self.add_tool(self.bash, args_to_skip=["sandbox_id", "sandbox_state"])
+        self.add_tool(
+            self.bash, args_to_skip=["sandbox_id", "working_dir", "sandbox_state"]
+        )
 
     async def _wait_for_sandbox_ready(self, sandbox_id: str):
         """Wait for sandbox to be created"""
@@ -100,7 +102,11 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
 
     async def bash(
-        self, command: str, sandbox_id: str, sandbox_state: SandboxState
+        self,
+        command: str,
+        sandbox_id: str,
+        sandbox_state: SandboxState,
+        working_dir: str | None = None,
     ) -> str:
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
@@ -112,7 +118,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
         try:
             results = await self.sandbox_client.execute_command(
-                sandbox_id, command, timeout=self.timeout_per_command_seconds
+                sandbox_id,
+                command,
+                working_dir=working_dir,
+                timeout=self.timeout_per_command_seconds,
             )
         except CommandTimeoutError:
             e = time.time()
@@ -185,6 +194,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         if tool_name == "bash":
             updated_args["sandbox_id"] = state["sandbox_id"]
             updated_args["sandbox_state"] = state["sandbox_state"]
+            updated_args["working_dir"] = state.get("working_dir")
         return updated_args
 
     async def bulk_delete_sandboxes(self, global_ids: list[str]) -> None:
