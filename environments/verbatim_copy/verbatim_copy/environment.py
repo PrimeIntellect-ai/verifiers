@@ -205,24 +205,17 @@ def load_environment(
         Configured environment instance (RLMEnv or SingleTurnEnv)
     """
     # Generate dataset
-    if difficulty == "all":
-        # Use default distribution
-        samples = generate_dataset(
-            num_samples=num_samples, length_scale=length_scale, seed=seed
-        )
-    else:
-        # Single difficulty level
-        samples = generate_dataset(
-            num_samples=num_samples,
-            difficulty_distribution={difficulty: 1.0},
-            length_scale=length_scale,
-            seed=seed,
-        )
+    samples = generate_dataset(
+        num_samples=num_samples,
+        difficulty=difficulty,
+        length_scale=length_scale,
+        seed=seed,
+    )
 
     # Build prompt for each sample
     def build_prompt(sample: dict) -> str:
         text = sample["text"]
-        prompt = f"Copy the following text exactly:\n```\n{text}\n```"
+        prompt = f"Copy the text contained within the <text> tags exactly (do not include the tags themselves):\n<text>\n{text}\n</text>"
         # Add environment tips for RLM mode if requested
         if use_rlm and include_env_tips:
             prompt = prompt + _ENV_TIPS

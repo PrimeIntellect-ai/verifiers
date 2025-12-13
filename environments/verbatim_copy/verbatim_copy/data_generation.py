@@ -291,7 +291,7 @@ def generate_sample(
 
 def generate_dataset(
     num_samples: int = 100,
-    difficulty_distribution: dict[DifficultyLevel, float] | None = None,
+    difficulty: DifficultyLevel | Literal["all"] = "all",
     length_scale: float = 1.0,
     seed: int = 42,
 ) -> list[dict]:
@@ -300,8 +300,8 @@ def generate_dataset(
 
     Args:
         num_samples: Total number of samples to generate
-        difficulty_distribution: Dict mapping difficulty to proportion (must sum to 1.0)
-                                 Default: {"easy": 0.25, "medium": 0.35, "hard": 0.25, "mixed": 0.15}
+        difficulty: Difficulty level for samples. Use "easy", "medium", "hard", or "mixed"
+                    for a single difficulty, or "all" for a balanced mix across all levels.
         length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
                       Allows arbitrary scaling for future-proofing as models improve.
         seed: Base random seed for reproducibility
@@ -309,34 +309,35 @@ def generate_dataset(
     Returns:
         List of sample dicts with 'text', 'difficulty', and 'length_scale' keys
     """
-    if difficulty_distribution is None:
-        difficulty_distribution = {
+    random.seed(seed)
+
+    # Build list of difficulties for each sample
+    if difficulty == "all":
+        # Balanced distribution across all difficulty levels
+        distribution: dict[DifficultyLevel, float] = {
             "easy": 0.25,
             "medium": 0.35,
             "hard": 0.25,
             "mixed": 0.15,
         }
-
-    random.seed(seed)
-
-    # Calculate counts for each difficulty
-    difficulties: list[DifficultyLevel] = []
-    for diff, proportion in difficulty_distribution.items():
-        count = int(num_samples * proportion)
-        difficulties.extend([diff] * count)
-
-    # Fill remaining slots randomly
-    while len(difficulties) < num_samples:
-        difficulties.append(random.choice(list(difficulty_distribution.keys())))
-
-    random.shuffle(difficulties)
+        difficulties: list[DifficultyLevel] = []
+        for diff, proportion in distribution.items():
+            count = int(num_samples * proportion)
+            difficulties.extend([diff] * count)
+        # Fill remaining slots randomly
+        while len(difficulties) < num_samples:
+            difficulties.append(random.choice(list(distribution.keys())))
+        random.shuffle(difficulties)
+    else:
+        # Single difficulty level for all samples
+        difficulties = [difficulty] * num_samples
 
     # Generate samples
     samples = []
-    for i, difficulty in enumerate(difficulties):
+    for i, sample_difficulty in enumerate(difficulties):
         sample_seed = seed + i * 1000  # Ensure different seeds per sample
         sample = generate_sample(
-            difficulty=difficulty, length_scale=length_scale, seed=sample_seed
+            difficulty=sample_difficulty, length_scale=length_scale, seed=sample_seed
         )
         sample["id"] = i
         samples.append(sample)
