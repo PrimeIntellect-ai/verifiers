@@ -2,18 +2,6 @@
 
 Welcome to Verifiers! This library provides a flexible framework for creating RL environments and evaluations with custom multi-turn interaction protocols.
 
-```{toctree}
-:maxdepth: 2
-:hidden:
-
-overview
-environments
-components
-training
-development
-api_reference
-```
-
 ## What is Verifiers?
 
 Verifiers enables you to:
