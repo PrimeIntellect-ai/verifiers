@@ -285,3 +285,9 @@ class EnvGroup(vf.Environment):
         self.max_seq_len = max_seq_len
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
+
+    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
+        """Set whether to use token prompts for this environment group and all sub-environments."""
+        self.use_token_prompts = use_token_prompts
+        for env in self.envs:
+            env.set_use_token_prompts(use_token_prompts)
