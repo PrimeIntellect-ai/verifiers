@@ -2,7 +2,7 @@ import os
 import random
 
 from datasets import load_dataset
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 import verifiers as vf
 
@@ -36,7 +36,9 @@ def load_environment(
     dataset = dataset.map(lambda x: make_cut(x[dataset_key]))
     dataset = dataset.shuffle(seed=777)
 
-    judge_client = OpenAI(api_key=os.getenv(judge_api_key_var), base_url=judge_base_url)
+    judge_client = AsyncOpenAI(
+        base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, "EMPTY")
+    )
     judge_prompt = """Evaluate this base model continuation from a prefix, compared to the true continuation from Wikipedia.
 
 <prefix>

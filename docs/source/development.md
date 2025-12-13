@@ -50,6 +50,15 @@ uv run pytest tests/ -xvs
 
 # Run tests matching a pattern
 uv run pytest tests/ -k "xml_parser"
+
+# Run environment tests
+uv run pytest tests/test_envs.py -vv
+
+# Run environment tests across all CPU cores
+uv run pytest -n auto tests/test_envs.py -vv
+
+# Run specific environment tests
+uv run pytest tests/test_envs.py -k math_python
 ```
 
 The test suite includes 130+ tests covering parsers, rubrics, and environments. The test suite does not currently cover example environments or the trainer. If you require robust performance guarantees for training, you will likely want to use [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
@@ -199,9 +208,13 @@ def load_environment(**kwargs):
 uv sync --all-extras
 
 # Run tests
-uv run pytest tests/                    # All tests
+uv run pytest tests/                   # All tests
 uv run pytest tests/ -xvs              # Debug mode
 uv run pytest tests/ --cov=verifiers   # With coverage
+
+# Run environment tests
+uv run pytest tests/test_envs.py -vv              # All environments
+uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
 # Environment tools
 vf-init new-env                        # Create environment

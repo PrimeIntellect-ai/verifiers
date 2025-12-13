@@ -1,6 +1,8 @@
 [project]
 name = "continuation-quality"
 version = "0.1.1"
+description = "Single-turn quality grades on base model continuations using a judge model."
+tags = ["train"]
 dependencies = [
     "verifiers>=0.1.4",
 ]

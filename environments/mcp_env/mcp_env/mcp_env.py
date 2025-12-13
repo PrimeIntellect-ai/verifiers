@@ -6,13 +6,14 @@ from typing import Callable, Dict, List
 
 from datasets import Dataset
 from dotenv import load_dotenv
-from src.mcp_server_connection import MCPServerConnection
-from src.mcp_tool_wrapper import MCPToolWrapper
-from src.models import MCPServerConfig
 
 import verifiers as vf
 from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import Message
+
+from .mcp_server_connection import MCPServerConnection
+from .mcp_tool_wrapper import MCPToolWrapper
+from .models import MCPServerConfig
 
 load_dotenv()
 

@@ -1,6 +1,8 @@
 [project]
 name = "math-group"
 version = "0.1.1"
+description = "Math group environment"
+tags = ["math", "gsm8k", "train"]
 dependencies = [
     "verifiers>=0.1.8",
     "math-verify>=0.8.0",
