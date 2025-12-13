@@ -22,13 +22,13 @@ from faker import Faker
 logger = logging.getLogger(__name__)
 
 # Data complexity levels (what kind of content is generated)
-DataComplexity = Literal["easy", "medium", "hard", "mixed"]
+DataComplexity = Literal["words", "structured", "codes", "mixed"]
 
 # Default target lengths (in characters) for each complexity level
 DEFAULT_TARGET_LENGTHS: dict[DataComplexity, int] = {
-    "easy": 200,
-    "medium": 500,
-    "hard": 300,
+    "words": 200,
+    "structured": 500,
+    "codes": 300,
     "mixed": 600,
 }
 
@@ -252,18 +252,18 @@ def _generate_raw_content(
     while current_length < needed_length:
         iter_seed = seed + iteration * 100 if seed is not None else None
 
-        if data_complexity == "easy":
+        if data_complexity == "words":
             # Word sequences - familiar patterns
             chunk = generate_word_sequence(num_words=50, seed=iter_seed)
-        elif data_complexity == "medium":
-            # Structured data - numbers and special chars
+        elif data_complexity == "structured":
+            # Structured data - JSON/CSV with numbers and special chars
             choice = random.choice(["json", "csv"])
             if choice == "json":
                 chunk = generate_structured_data(fake, num_records=3, seed=iter_seed)
             else:
                 chunk = generate_csv_data(fake, num_rows=6, seed=iter_seed)
-        elif data_complexity == "hard":
-            # Alphanumeric codes - no semantic cues
+        elif data_complexity == "codes":
+            # Alphanumeric codes - UUIDs and short codes
             chunk = generate_alphanumeric_codes(
                 num_codes=10, code_format="mixed", seed=iter_seed
             )
@@ -329,7 +329,7 @@ def _apply_fragmentation(
 
 
 def generate_sample(
-    data_complexity: DataComplexity = "medium",
+    data_complexity: DataComplexity = "structured",
     target_length: int | None = None,
     mean_fragment_length: int | None = None,
     seed: int | None = None,
@@ -338,7 +338,11 @@ def generate_sample(
     Generate a single sample for the verbatim copy task.
 
     Args:
-        data_complexity: Type of content to generate ("easy", "medium", "hard", "mixed")
+        data_complexity: Type of content to generate:
+                         - "words": English word sequences
+                         - "structured": JSON or CSV formatted data
+                         - "codes": UUIDs and alphanumeric codes
+                         - "mixed": combination of all types
         target_length: Target length in characters. If None, uses default for complexity.
         mean_fragment_length: If set, enables fragmentation - content is sliced into
                               fragments of approximately this size (with random variation)
@@ -401,8 +405,12 @@ def generate_dataset(
 
     Args:
         num_samples: Total number of samples to generate
-        data_complexity: Type of content for samples. Use "easy", "medium", "hard",
-                         or "mixed" for a single type, or "all" for a balanced mix.
+        data_complexity: Type of content for samples:
+                         - "words": English word sequences
+                         - "structured": JSON or CSV formatted data
+                         - "codes": UUIDs and alphanumeric codes
+                         - "mixed": combination of all types
+                         - "all": balanced mix across all types
         target_length: Target length in characters. If None, uses default per complexity.
         mean_fragment_length: If set, enables fragmentation for tokenization-challenging
                               sequences. If None, no fragmentation is applied.
@@ -417,9 +425,9 @@ def generate_dataset(
     if data_complexity == "all":
         # Balanced distribution across all complexity levels
         distribution: dict[DataComplexity, float] = {
-            "easy": 0.25,
-            "medium": 0.35,
-            "hard": 0.25,
+            "words": 0.25,
+            "structured": 0.35,
+            "codes": 0.25,
             "mixed": 0.15,
         }
         complexities: list[DataComplexity] = []

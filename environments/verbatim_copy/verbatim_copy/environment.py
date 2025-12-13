@@ -187,10 +187,14 @@ def load_environment(
 
     Args:
         num_samples: Number of samples to generate
-        data_complexity: Type of content ("easy", "medium", "hard", "mixed", or "all")
-                         "all" uses a balanced distribution across all types.
+        data_complexity: Type of content to generate:
+                         - "words": English word sequences
+                         - "structured": JSON or CSV formatted data
+                         - "codes": UUIDs and alphanumeric codes
+                         - "mixed": combination of all types
+                         - "all": balanced mix across all types
         target_length: Target length in characters. If None, uses default per complexity
-                       (easy: 200, medium: 500, hard: 300, mixed: 600).
+                       (words: 200, structured: 500, codes: 300, mixed: 600).
         mean_fragment_length: If set, enables fragmentation - content is sliced into
                               fragments of approximately this size and concatenated.
                               This creates tokenization-challenging sequences.
