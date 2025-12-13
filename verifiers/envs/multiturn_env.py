@@ -115,9 +115,20 @@ class MultiTurnEnv(vf.Environment):
             prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
-            env_response_ids = await tokenize_vllm(
-                messages=env_response, tools=None, model=state["model"], client=client
+            messages_and_env_response_ids = await tokenize_vllm(
+                messages=concat_messages([messages, env_response]),
+                tools=state["oai_tools"],
+                model=state["model"],
+                client=client,
             )
+            messages_ids = await tokenize_vllm(
+                messages=messages,
+                tools=state["oai_tools"],
+                model=state["model"],
+                client=client,
+            )
+            assert messages_and_env_response_ids[: len(messages_ids)] == messages_ids
+            env_response_ids = messages_and_env_response_ids[len(messages_ids) :]
             return prev_turn_prompt_ids + prev_turn_completion_ids + env_response_ids
 
     async def add_model_response(
