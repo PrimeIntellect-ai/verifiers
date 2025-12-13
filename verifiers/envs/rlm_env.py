@@ -89,7 +89,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
             answer = json.load(f)
 
-    def _single_llm_call(prompt: str, **kwargs) -> dict:
+    def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
         """Make a single sub-LLM call via interception server.
         
         Returns a dict with 'content' and 'metadata' keys.
@@ -104,10 +104,11 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             payload = {{
                 "model": SUB_MODEL or "default",
                 "messages": [{{"role": "user", "content": prompt}}],
+                "_batch_id": batch_id,
             }}
             # Add any extra kwargs
             for k, v in kwargs.items():
-                if k not in ("model", "messages"):
+                if k not in ("model", "messages", "_batch_id"):
                     payload[k] = v
             
             resp = requests.post(
@@ -141,8 +142,10 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         Returns:
             List of response contents in the same order as the input prompts
         """
+        import uuid
+        batch_id = uuid.uuid4().hex[:8]
         with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
-            futures = [executor.submit(_single_llm_call, p, **kwargs) for p in prompts]
+            futures = [executor.submit(_single_llm_call, p, batch_id, **kwargs) for p in prompts]
             results = [f.result() for f in futures]
         
         # Print metadata summary
@@ -517,6 +520,18 @@ class RLMEnv(SandboxEnv):
             """Total turns (LLM calls) made by sub-LLMs."""
             return float(state.get("sub_llm_total_turns", 0))
 
+        def sub_llm_batch_count(state: State) -> float:
+            """Number of llm_batch() invocations during rollout."""
+            return float(state.get("sub_llm_batch_count", 0))
+
+        def sub_llm_max_batch_size(state: State) -> float:
+            """Maximum batch size (peak parallelism) in a single llm_batch() call."""
+            return float(state.get("sub_llm_max_batch_size", 0))
+
+        def sub_llm_mean_batch_size(state: State) -> float:
+            """Mean batch size across all llm_batch() invocations."""
+            return float(state.get("sub_llm_mean_batch_size", 0.0))
+
         return Rubric(
             funcs=[
                 sub_llm_calls,
@@ -524,8 +539,11 @@ class RLMEnv(SandboxEnv):
                 sub_llm_completion_tokens,
                 sub_llm_total_tool_calls,
                 sub_llm_total_turns,
+                sub_llm_batch_count,
+                sub_llm_max_batch_size,
+                sub_llm_mean_batch_size,
             ],
-            weights=[0.0, 0.0, 0.0, 0.0, 0.0],
+            weights=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         )
 
     # =========================================================================
@@ -767,6 +785,7 @@ class RLMEnv(SandboxEnv):
             return web.json_response({"error": "Client not available"}, status=500)
 
         messages = request_body.get("messages", [])
+        batch_id = request_body.get("_batch_id", "")
 
         # Prepend system message with \boxed{} instruction
         messages_with_system = [
@@ -827,6 +846,7 @@ class RLMEnv(SandboxEnv):
                     "request": {"messages": messages},
                     "response": {"content": response_content},
                     "metadata": {
+                        "batch_id": batch_id,
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "tool_call_count": tool_call_count,
@@ -1221,6 +1241,20 @@ PY
             )
             state["sub_llm_total_turns"] = sum(
                 c["metadata"]["num_turns"] for c in sub_llm_calls
+            )
+
+            # Compute batch-level parallelism metrics
+            batches: dict[str, int] = {}
+            for call in sub_llm_calls:
+                batch_id = call["metadata"].get("batch_id", "")
+                if batch_id:
+                    batches[batch_id] = batches.get(batch_id, 0) + 1
+
+            batch_sizes = list(batches.values())
+            state["sub_llm_batch_count"] = len(batch_sizes)
+            state["sub_llm_max_batch_size"] = max(batch_sizes) if batch_sizes else 0
+            state["sub_llm_mean_batch_size"] = (
+                sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
             )
 
             del self.active_rollouts[rollout_id]
