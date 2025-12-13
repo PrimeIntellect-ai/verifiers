@@ -21,7 +21,7 @@ import verifiers as vf
 from verifiers import RLMEnv, SingleTurnEnv
 from verifiers.utils.data_utils import extract_boxed_answer
 
-from .data_generation import DifficultyLevel, generate_dataset
+from .data_generation import DataComplexity, generate_dataset
 
 
 # =============================================================================
@@ -172,9 +172,10 @@ def _create_levenshtein_similarity_reward(use_rlm: bool):
 
 def load_environment(
     num_samples: int = 100,
-    difficulty: DifficultyLevel | Literal["all"] = "all",
-    length_scale: float = 1.0,
-    seed: int = 42,
+    data_complexity: DataComplexity | Literal["all"] = "all",
+    target_length: int | None = None,
+    mean_fragment_length: int | None = None,
+    seed: int | None = None,
     use_rlm: bool = True,
     include_env_tips: bool = False,
     max_iterations: int = 30,
@@ -186,12 +187,15 @@ def load_environment(
 
     Args:
         num_samples: Number of samples to generate
-        difficulty: Difficulty level ("easy", "medium", "hard", "mixed", or "all")
-                    "all" uses the default distribution across all difficulties
-        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
-                      Allows arbitrary scaling for future-proofing as models improve.
-                      At length_scale=1.0: easy~25 words, medium~2-4 records, hard~8 codes.
-        seed: Random seed for data generation
+        data_complexity: Type of content ("easy", "medium", "hard", "mixed", or "all")
+                         "all" uses a balanced distribution across all types.
+        target_length: Target length in characters. If None, uses default per complexity
+                       (easy: 200, medium: 500, hard: 300, mixed: 600).
+        mean_fragment_length: If set, enables fragmentation - content is sliced into
+                              fragments of approximately this size and concatenated.
+                              This creates tokenization-challenging sequences.
+                              If None, no fragmentation is applied.
+        seed: Random seed for reproducibility. If None, uses system randomness.
         use_rlm: If True, use RLMEnv with REPL access.
                  If False, use SingleTurnEnv for single-shot generation.
         include_env_tips: If True and use_rlm=True, include environment-specific
@@ -207,8 +211,9 @@ def load_environment(
     # Generate dataset
     samples = generate_dataset(
         num_samples=num_samples,
-        difficulty=difficulty,
-        length_scale=length_scale,
+        data_complexity=data_complexity,
+        target_length=target_length,
+        mean_fragment_length=mean_fragment_length,
         seed=seed,
     )
 
@@ -229,8 +234,9 @@ def load_environment(
             "prompt": [{"role": "user", "content": prompt_content}],
             "answer": sample["text"],  # Ground truth is the original text
             "info": {
-                "difficulty": sample["difficulty"],
-                "length_scale": sample["length_scale"],
+                "data_complexity": sample["data_complexity"],
+                "target_length": sample["target_length"],
+                "mean_fragment_length": sample["mean_fragment_length"],
                 "id": sample["id"],
             },
         }

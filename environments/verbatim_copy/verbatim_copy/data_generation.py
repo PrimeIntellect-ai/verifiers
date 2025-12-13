@@ -1,22 +1,36 @@
 """
 Synthetic data generation for verbatim copy task.
 
-Generates different types of text with varying difficulty levels:
+Generates different types of text with varying complexity levels:
 - Structured data (JSON-like, CSV-like) using faker
 - Random word sequences
 - Alphanumeric codes using UUIDs
 - Mixed content combining multiple types
+
+Supports optional fragmentation to create tokenization-challenging sequences
+by slicing and concatenating content from multiple sources.
 """
 
 import json
+import logging
 import random
 import uuid
 from typing import Literal
 
 from faker import Faker
 
-# Difficulty levels
-DifficultyLevel = Literal["easy", "medium", "hard", "mixed"]
+logger = logging.getLogger(__name__)
+
+# Data complexity levels (what kind of content is generated)
+DataComplexity = Literal["easy", "medium", "hard", "mixed"]
+
+# Default target lengths (in characters) for each complexity level
+DEFAULT_TARGET_LENGTHS: dict[DataComplexity, int] = {
+    "easy": 200,
+    "medium": 500,
+    "hard": 300,
+    "mixed": 600,
+}
 
 
 def generate_structured_data(
@@ -216,128 +230,220 @@ def generate_csv_data(
     return "\n".join(lines)
 
 
+def _generate_raw_content(
+    data_complexity: DataComplexity,
+    target_length: int,
+    seed: int | None,
+    fake: Faker,
+) -> str:
+    """
+    Generate raw content of at least target_length characters.
+
+    Over-produces content to ensure we have enough material for slicing.
+    """
+    # Over-produce by 2x to ensure enough material
+    overproduce_factor = 2
+    needed_length = target_length * overproduce_factor
+
+    content_parts: list[str] = []
+    current_length = 0
+    iteration = 0
+
+    while current_length < needed_length:
+        iter_seed = seed + iteration * 100 if seed is not None else None
+
+        if data_complexity == "easy":
+            # Word sequences - familiar patterns
+            chunk = generate_word_sequence(num_words=50, seed=iter_seed)
+        elif data_complexity == "medium":
+            # Structured data - numbers and special chars
+            choice = random.choice(["json", "csv"])
+            if choice == "json":
+                chunk = generate_structured_data(fake, num_records=3, seed=iter_seed)
+            else:
+                chunk = generate_csv_data(fake, num_rows=6, seed=iter_seed)
+        elif data_complexity == "hard":
+            # Alphanumeric codes - no semantic cues
+            chunk = generate_alphanumeric_codes(
+                num_codes=10, code_format="mixed", seed=iter_seed
+            )
+        else:  # mixed
+            # Rotate through different types
+            type_choice = iteration % 3
+            if type_choice == 0:
+                chunk = generate_alphanumeric_codes(
+                    num_codes=5, code_format="short", seed=iter_seed
+                )
+            elif type_choice == 1:
+                chunk = generate_word_sequence(num_words=20, seed=iter_seed)
+            else:
+                chunk = generate_csv_data(fake, num_rows=4, seed=iter_seed)
+
+        content_parts.append(chunk)
+        current_length += len(chunk)
+        iteration += 1
+
+    return "\n".join(content_parts)
+
+
+def _apply_fragmentation(
+    raw_content: str,
+    target_length: int,
+    mean_fragment_length: int,
+    seed: int | None,
+) -> str:
+    """
+    Apply fragmentation by taking random slices and concatenating them.
+
+    This creates tokenization-challenging sequences by breaking natural
+    token boundaries.
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    result_parts: list[str] = []
+    current_length = 0
+    content_len = len(raw_content)
+
+    while current_length < target_length:
+        remaining = target_length - current_length
+
+        # Vary fragment size: uniform in [0.5 * mean, 1.5 * mean], clamped to remaining
+        min_frag = max(1, int(mean_fragment_length * 0.5))
+        max_frag = min(int(mean_fragment_length * 1.5), remaining)
+
+        # Ensure valid range (min_frag <= max_frag)
+        min_frag = min(min_frag, max_frag)
+        fragment_size = random.randint(min_frag, max_frag)
+
+        # Pick a random start position in the raw content
+        max_start = max(0, content_len - fragment_size)
+        start_pos = random.randint(0, max_start) if max_start > 0 else 0
+
+        # Extract the fragment
+        fragment = raw_content[start_pos : start_pos + fragment_size]
+        result_parts.append(fragment)
+        current_length += len(fragment)
+
+    return "".join(result_parts)
+
+
 def generate_sample(
-    difficulty: DifficultyLevel = "medium",
-    length_scale: float = 1.0,
+    data_complexity: DataComplexity = "medium",
+    target_length: int | None = None,
+    mean_fragment_length: int | None = None,
     seed: int | None = None,
 ) -> dict:
     """
     Generate a single sample for the verbatim copy task.
 
     Args:
-        difficulty: Difficulty level of the text to copy
-        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
-                      Allows arbitrary scaling for future-proofing as models improve.
+        data_complexity: Type of content to generate ("easy", "medium", "hard", "mixed")
+        target_length: Target length in characters. If None, uses default for complexity.
+        mean_fragment_length: If set, enables fragmentation - content is sliced into
+                              fragments of approximately this size (with random variation)
+                              and concatenated. This creates tokenization-challenging
+                              sequences. If None, no fragmentation is applied.
         seed: Random seed for reproducibility
 
     Returns:
-        Dict with 'text' (the text to copy), 'difficulty', and 'length_scale' metadata
+        Dict with 'text', 'data_complexity', 'target_length', and 'mean_fragment_length'
     """
-    # Base values (what length_scale=1.0 produces)
-    BASE_WORDS = 25
-    BASE_RECORDS = 2
-    BASE_ROWS = 4
-    BASE_CODES = 8
-    # Mixed mode uses smaller base values
-    BASE_MIXED_CODES = 3
-    BASE_MIXED_WORDS = 10
-    BASE_MIXED_ROWS = 3
+    # Resolve target_length
+    if target_length is None:
+        target_length = DEFAULT_TARGET_LENGTHS[data_complexity]
 
-    # Scale with minimum bounds to avoid degenerate cases
-    num_words = max(5, int(BASE_WORDS * length_scale))
-    num_records = max(1, int(BASE_RECORDS * length_scale))
-    num_rows = max(1, int(BASE_ROWS * length_scale))
-    num_codes = max(2, int(BASE_CODES * length_scale))
-    mixed_codes = max(1, int(BASE_MIXED_CODES * length_scale))
-    mixed_words = max(3, int(BASE_MIXED_WORDS * length_scale))
-    mixed_rows = max(1, int(BASE_MIXED_ROWS * length_scale))
+    # Validate mean_fragment_length
+    if mean_fragment_length is not None:
+        if mean_fragment_length <= 0:
+            raise ValueError("mean_fragment_length must be positive")
+        if mean_fragment_length > target_length:
+            logger.warning(
+                f"mean_fragment_length ({mean_fragment_length}) > target_length "
+                f"({target_length}). Disabling fragmentation."
+            )
+            mean_fragment_length = None
 
     fake = Faker()
-
     if seed is not None:
         random.seed(seed)
         fake.seed_instance(seed)
 
-    if difficulty == "easy":
-        # Word sequences - familiar patterns
-        text = generate_word_sequence(num_words=num_words, seed=seed)
-    elif difficulty == "medium":
-        # Structured data - numbers and special chars
-        choice = random.choice(["json", "csv"])
-        if choice == "json":
-            text = generate_structured_data(fake, num_records=num_records, seed=seed)
-        else:
-            text = generate_csv_data(fake, num_rows=num_rows, seed=seed)
-    elif difficulty == "hard":
-        # Alphanumeric codes - no semantic cues
-        text = generate_alphanumeric_codes(
-            num_codes=num_codes, code_format="mixed", seed=seed
+    # Generate raw content (over-produced)
+    raw_content = _generate_raw_content(data_complexity, target_length, seed, fake)
+
+    # Apply fragmentation or simple truncation
+    if mean_fragment_length is not None:
+        text = _apply_fragmentation(
+            raw_content, target_length, mean_fragment_length, seed
         )
-    else:  # mixed
-        # Combine multiple types
-        parts = [
-            f"Reference codes:\n{generate_alphanumeric_codes(num_codes=mixed_codes, code_format='short', seed=seed)}",
-            f"\nKeywords: {generate_word_sequence(num_words=mixed_words, seed=seed + 1 if seed else None)}",
-            f"\nData:\n{generate_csv_data(fake, num_rows=mixed_rows, seed=seed + 2 if seed else None)}",
-        ]
-        text = "\n".join(parts)
+    else:
+        # No fragmentation: just truncate to target length
+        text = raw_content[:target_length]
 
     return {
         "text": text,
-        "difficulty": difficulty,
-        "length_scale": length_scale,
+        "data_complexity": data_complexity,
+        "target_length": target_length,
+        "mean_fragment_length": mean_fragment_length,
     }
 
 
 def generate_dataset(
     num_samples: int = 100,
-    difficulty: DifficultyLevel | Literal["all"] = "all",
-    length_scale: float = 1.0,
-    seed: int = 42,
+    data_complexity: DataComplexity | Literal["all"] = "all",
+    target_length: int | None = None,
+    mean_fragment_length: int | None = None,
+    seed: int | None = None,
 ) -> list[dict]:
     """
     Generate a dataset of verbatim copy samples.
 
     Args:
         num_samples: Total number of samples to generate
-        difficulty: Difficulty level for samples. Use "easy", "medium", "hard", or "mixed"
-                    for a single difficulty, or "all" for a balanced mix across all levels.
-        length_scale: Multiplier for output length (1.0 = default, 2.0 = double, etc.)
-                      Allows arbitrary scaling for future-proofing as models improve.
-        seed: Base random seed for reproducibility
+        data_complexity: Type of content for samples. Use "easy", "medium", "hard",
+                         or "mixed" for a single type, or "all" for a balanced mix.
+        target_length: Target length in characters. If None, uses default per complexity.
+        mean_fragment_length: If set, enables fragmentation for tokenization-challenging
+                              sequences. If None, no fragmentation is applied.
+        seed: Random seed for reproducibility. If None, uses system randomness.
 
     Returns:
-        List of sample dicts with 'text', 'difficulty', and 'length_scale' keys
+        List of sample dicts with 'text', 'data_complexity', 'target_length', etc.
     """
     random.seed(seed)
 
-    # Build list of difficulties for each sample
-    if difficulty == "all":
-        # Balanced distribution across all difficulty levels
-        distribution: dict[DifficultyLevel, float] = {
+    # Build list of complexities for each sample
+    if data_complexity == "all":
+        # Balanced distribution across all complexity levels
+        distribution: dict[DataComplexity, float] = {
             "easy": 0.25,
             "medium": 0.35,
             "hard": 0.25,
             "mixed": 0.15,
         }
-        difficulties: list[DifficultyLevel] = []
-        for diff, proportion in distribution.items():
+        complexities: list[DataComplexity] = []
+        for complexity, proportion in distribution.items():
             count = int(num_samples * proportion)
-            difficulties.extend([diff] * count)
+            complexities.extend([complexity] * count)
         # Fill remaining slots randomly
-        while len(difficulties) < num_samples:
-            difficulties.append(random.choice(list(distribution.keys())))
-        random.shuffle(difficulties)
+        while len(complexities) < num_samples:
+            complexities.append(random.choice(list(distribution.keys())))
+        random.shuffle(complexities)
     else:
-        # Single difficulty level for all samples
-        difficulties = [difficulty] * num_samples
+        # Single complexity level for all samples
+        complexities = [data_complexity] * num_samples
 
     # Generate samples
     samples = []
-    for i, sample_difficulty in enumerate(difficulties):
-        sample_seed = seed + i * 1000  # Ensure different seeds per sample
+    for i, sample_complexity in enumerate(complexities):
+        # Ensure different seeds per sample (if seed is provided)
+        sample_seed = seed + i * 1000 if seed is not None else None
         sample = generate_sample(
-            difficulty=sample_difficulty, length_scale=length_scale, seed=sample_seed
+            data_complexity=sample_complexity,
+            target_length=target_length,
+            mean_fragment_length=mean_fragment_length,
+            seed=sample_seed,
         )
         sample["id"] = i
         samples.append(sample)
