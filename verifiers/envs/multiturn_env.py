@@ -67,7 +67,7 @@ class MultiTurnEnv(vf.Environment):
             return concat_messages([messages, env_response])
 
     async def get_prompt_messages_and_ids(
-        self, state: State, client: AsyncOpenAI, exact_tokenization: bool = False
+        self, state: State, client: AsyncOpenAI, exact_tokenization: bool = True
     ) -> tuple[Messages, list[int]]:
         assert state["tokenize_method"] is not None
         tokenize = (
