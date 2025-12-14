@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Mapping
+from typing import TYPE_CHECKING, AsyncContextManager, Literal, Mapping
 
 from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
@@ -273,9 +273,13 @@ class EnvGroup(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.rollout(input, client, model, sampling_args)
+        return await env.rollout(
+            input, client, model, sampling_args, use_token_prompts, tokenize_method
+        )
 
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
