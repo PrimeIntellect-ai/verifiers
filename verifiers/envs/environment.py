@@ -472,10 +472,10 @@ class Environment(ABC):
             )
             if getattr(self, "tokens_client", None) is None:
                 url_without_v1 = str(client.base_url).replace("/v1/", "")
-                tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
-                setattr(self, "tokens_client", tokens_client)
+                generate_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
+                setattr(self, "generate_client", generate_client)
             else:
-                tokens_client = getattr(self, "tokens_client")
+                generate_client = getattr(self, "generate_client")
 
             extra_body = sampling_args.pop("extra_body", {})
             body = dict(
@@ -488,7 +488,7 @@ class Environment(ABC):
             )
 
             try:
-                return await tokens_client.post(
+                return await generate_client.post(
                     "/generate",
                     body=body,
                     cast_to=ChatCompletion,
