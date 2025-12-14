@@ -92,6 +92,7 @@ class MultiTurnEnv(vf.Environment):
             assert prev_turn_tokens is not None
             prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
             prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
+            prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
 
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
@@ -162,18 +163,16 @@ class MultiTurnEnv(vf.Environment):
                     raise ValueError
 
                 try:
-                    maybe_eom_token = prev_turn_completion_ids[-1]
+                    maybe_eom_token = prev_turn_ids[-1]
                     eom_idx = find_last_index(messages_ids, maybe_eom_token)
                     missing_suffix = messages_ids[eom_idx + 1 :]
-                    prev_turn_completion_ids += missing_suffix
+                    prev_turn_ids += missing_suffix
                 except ValueError:
                     # end of message token not found, so we don't need to add any suffix tokens
                     pass
 
             prompt_messages = messages_and_env_response
-            prompt_ids = (
-                prev_turn_prompt_ids + prev_turn_completion_ids + env_response_ids
-            )
+            prompt_ids = prev_turn_ids + env_response_ids
 
             return prompt_messages, prompt_ids
 
