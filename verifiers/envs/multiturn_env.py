@@ -97,8 +97,6 @@ class MultiTurnEnv(vf.Environment):
             env_response = await self.env_response(messages, state)
             messages_and_env_response = concat_messages([messages, env_response])
 
-            prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
-
             if not exact_tokenization:
                 env_response_ids = await tokenize(
                     client=client,
@@ -164,14 +162,18 @@ class MultiTurnEnv(vf.Environment):
                     raise ValueError
 
                 try:
-                    eom_idx = find_last_index(messages_ids, prev_turn_ids[-1])
+                    maybe_eom_token = prev_turn_completion_ids[-1]
+                    eom_idx = find_last_index(messages_ids, maybe_eom_token)
                     missing_suffix = messages_ids[eom_idx + 1 :]
-                    prev_turn_ids += missing_suffix
+                    prev_turn_completion_ids += missing_suffix
                 except ValueError:
+                    # end of message token not found, so we don't need to add any suffix tokens
                     pass
 
             prompt_messages = messages_and_env_response
-            prompt_ids = prev_turn_ids + env_response_ids
+            prompt_ids = (
+                prev_turn_prompt_ids + prev_turn_completion_ids + env_response_ids
+            )
 
             return prompt_messages, prompt_ids
 
