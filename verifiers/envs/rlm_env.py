@@ -249,8 +249,7 @@ _RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
 
     rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
-    pip install -q requests
-    pip install -q {pip_install_packages}
+    pip install -q requests {pip_install_packages}
 
     # Write worker script but do NOT start it yet
     # Worker will be started by setup_state after context/env vars are set
