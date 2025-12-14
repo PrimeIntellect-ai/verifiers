@@ -180,7 +180,7 @@ class MultiTurnEnv(vf.Environment):
                 missing_suffix = messages_ids[eom_idxs[-1] + 1 :]
                 prev_turn_ids += missing_suffix
 
-            prompt_messages = concat_messages([messages, env_response])
+            prompt_messages = messages_and_env_response
             prompt_ids = prev_turn_ids + env_response_ids
 
             return prompt_messages, prompt_ids
