@@ -220,7 +220,7 @@ def main():
     )
     parser.add_argument(
         "--use-token-prompts",
-        "-U",
+        "-utp",
         default=False,
         action="store_true",
         help="Use token prompts. Requires that the inference server supports token-in prompts.",
