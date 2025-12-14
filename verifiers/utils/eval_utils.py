@@ -11,7 +11,13 @@ from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    OnGroupComplete,
+)
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -98,8 +104,10 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             print(out)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
+async def run_evaluation(
+    config: EvalConfig,
+    on_group_complete: OnGroupComplete | None = None,
+) -> GenerateOutputs:
     client = setup_client(
         config.client_config,
     )
@@ -107,10 +115,8 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
 
-    # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
-    # run evaluation
     results_path = get_eval_results_path(config)
     logger.info(f"Starting evaluation with model: {config.model}")
     logger.info(
@@ -130,6 +136,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        on_group_complete=on_group_complete,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")

@@ -49,6 +49,8 @@ IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
+OnGroupComplete = Callable[["list[State]", int, int], Awaitable[None]]
+
 
 class TrajectoryStepTokens(TypedDict):
     prompt_ids: list[int]

@@ -36,6 +36,7 @@ from verifiers.types import (
     Messages,
     MessageType,
     ModelResponse,
+    OnGroupComplete,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
@@ -663,6 +664,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         use_tqdm: bool = True,
+        on_group_complete: OnGroupComplete | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs by group.
@@ -725,6 +727,7 @@ class Environment(ABC):
             )
 
         groups_completed = 0
+        total_groups = len(group_list)
         all_states: list[State] = []
         try:
             for coro in asyncio.as_completed(group_tasks.keys()):
@@ -735,7 +738,11 @@ class Environment(ABC):
                 if pbar is not None:
                     pbar.update(1)
 
-                # save intermediate results
+                if on_group_complete is not None:
+                    await on_group_complete(
+                        group_states, groups_completed, total_groups
+                    )
+
                 if (
                     save_results
                     and save_every > 0
@@ -842,6 +849,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        on_group_complete: OnGroupComplete | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -860,6 +868,7 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            on_group_complete=on_group_complete,
             **kwargs,
         )
 
