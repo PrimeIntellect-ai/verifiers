@@ -30,27 +30,27 @@ def load_data(csv_path: Path) -> pd.DataFrame:
     return df
 
 
-def plot_reward_vs_complexity(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 1: Reward vs data_complexity (bar chart)."""
+def plot_reward_vs_content_type(ax: plt.Axes, df: pd.DataFrame):
+    """Plot 1: Reward vs content_type (bar chart)."""
     # Filter to target_length=500, mean_fragment_length=20
     filtered = df[(df["target_length"] == 500) & (df["mean_fragment_length"] == 20)]
     
-    # Order complexities
-    order = ["words", "structured", "codes", "mixed"]
-    filtered = filtered.set_index("data_complexity").loc[order].reset_index()
+    # Order content types
+    order = ["words", "json", "csv", "codes", "mixed"]
+    filtered = filtered.set_index("content_type").loc[order].reset_index()
     
     colors = sns.color_palette("husl", len(order))
     bars = ax.bar(
-        filtered["data_complexity"],
+        filtered["content_type"],
         filtered["reward_mean"],
         color=colors,
         edgecolor="black",
         linewidth=1,
     )
     
-    ax.set_xlabel("Data Type")
+    ax.set_xlabel("Content Type")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Data Type\n(len=500, frag=20)")
+    ax.set_title("Reward vs Content Type\n(len=500, frag=20)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     
@@ -68,19 +68,19 @@ def plot_reward_vs_complexity(ax: plt.Axes, df: pd.DataFrame):
 
 def plot_reward_vs_length(ax: plt.Axes, df: pd.DataFrame):
     """Plot 2: Reward vs target_length (line plot)."""
-    # Filter to mean_fragment_length=20, show all complexities
+    # Filter to mean_fragment_length=20, show all content types
     filtered = df[df["mean_fragment_length"] == 20]
     
-    complexities = ["words", "structured", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(complexities))
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    colors = sns.color_palette("husl", len(content_types))
     
-    for complexity, color in zip(complexities, colors):
-        data = filtered[filtered["data_complexity"] == complexity].sort_values("target_length")
+    for content_type, color in zip(content_types, colors):
+        data = filtered[filtered["content_type"] == content_type].sort_values("target_length")
         if len(data) > 0:
             ax.plot(
                 data["target_length"],
                 data["reward_mean"],
-                label=complexity,
+                label=content_type,
                 marker="o",
                 color=color,
                 linewidth=2,
@@ -89,7 +89,7 @@ def plot_reward_vs_length(ax: plt.Axes, df: pd.DataFrame):
     
     ax.set_xlabel("Target Length (chars)")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Target Length\n(frag=20, by data type)")
+    ax.set_title("Reward vs Target Length\n(frag=20, by content type)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="lower left", fontsize=8)
@@ -97,14 +97,14 @@ def plot_reward_vs_length(ax: plt.Axes, df: pd.DataFrame):
 
 def plot_reward_vs_fragmentation(ax: plt.Axes, df: pd.DataFrame):
     """Plot 3: Reward vs mean_fragment_length (line plot)."""
-    # Filter to target_length=500, show all complexities
+    # Filter to target_length=500, show all content types
     filtered = df[df["target_length"] == 500]
     
-    complexities = ["words", "structured", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(complexities))
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    colors = sns.color_palette("husl", len(content_types))
     
-    for complexity, color in zip(complexities, colors):
-        data = filtered[filtered["data_complexity"] == complexity].copy()
+    for content_type, color in zip(content_types, colors):
+        data = filtered[filtered["content_type"] == content_type].copy()
         # Sort by fragment length, putting None first
         data["sort_key"] = data["mean_fragment_length"].fillna(-1)
         data = data.sort_values("sort_key")
@@ -115,7 +115,7 @@ def plot_reward_vs_fragmentation(ax: plt.Axes, df: pd.DataFrame):
             ax.plot(
                 x_positions,
                 data["reward_mean"],
-                label=complexity,
+                label=content_type,
                 marker="o",
                 color=color,
                 linewidth=2,
@@ -123,33 +123,33 @@ def plot_reward_vs_fragmentation(ax: plt.Axes, df: pd.DataFrame):
             )
             
             # Set x-tick labels only once
-            if complexity == complexities[0]:
+            if content_type == content_types[0]:
                 ax.set_xticks(x_positions)
                 ax.set_xticklabels(data["frag_label"], rotation=45)
     
     ax.set_xlabel("Mean Fragment Length")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Fragment Length\n(len=500, by data type)")
+    ax.set_title("Reward vs Fragment Length\n(len=500, by content type)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="lower left", fontsize=8)
 
 
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 4: Heatmap of reward by complexity × fragment_length."""
+    """Plot 4: Heatmap of reward by content_type × fragment_length."""
     # Filter to target_length=500
     filtered = df[df["target_length"] == 500].copy()
     
     # Create pivot table
     pivot = filtered.pivot_table(
         values="reward_mean",
-        index="data_complexity",
+        index="content_type",
         columns="frag_label",
         aggfunc="mean",
     )
     
     # Reorder rows and columns
-    row_order = ["words", "structured", "codes", "mixed"]
+    row_order = ["words", "json", "csv", "codes", "mixed"]
     col_order = ["None"] + [str(x) for x in sorted([int(c) for c in pivot.columns if c != "None"])]
     
     pivot = pivot.reindex(index=row_order, columns=[c for c in col_order if c in pivot.columns])
@@ -167,22 +167,22 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     )
     
     ax.set_xlabel("Mean Fragment Length")
-    ax.set_ylabel("Data Type")
+    ax.set_ylabel("Content Type")
     ax.set_title("Reward Heatmap\n(len=500)")
 
 
 def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
     """Plot 5: Distribution of rewards across all configs."""
-    # Create violin plot by complexity
-    complexities = ["words", "structured", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(complexities))
+    # Create violin plot by content type
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    colors = sns.color_palette("husl", len(content_types))
     
     data_for_plot = []
-    for complexity in complexities:
-        rewards = df[df["data_complexity"] == complexity]["reward_mean"].values
+    for content_type in content_types:
+        rewards = df[df["content_type"] == content_type]["reward_mean"].values
         data_for_plot.append(rewards)
     
-    parts = ax.violinplot(data_for_plot, positions=range(len(complexities)), showmeans=True)
+    parts = ax.violinplot(data_for_plot, positions=range(len(content_types)), showmeans=True)
     
     # Color the violins
     for i, (pc, color) in enumerate(zip(parts["bodies"], colors)):
@@ -193,26 +193,26 @@ def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
     for partname in ["cbars", "cmins", "cmaxes", "cmeans"]:
         parts[partname].set_color("black")
     
-    ax.set_xticks(range(len(complexities)))
-    ax.set_xticklabels(complexities)
-    ax.set_xlabel("Data Type")
+    ax.set_xticks(range(len(content_types)))
+    ax.set_xticklabels(content_types)
+    ax.set_xlabel("Content Type")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward Distribution by Data Type\n(all configs)")
+    ax.set_title("Reward Distribution by Content Type\n(all configs)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
 
 
 def plot_char_vs_exact(ax: plt.Axes, df: pd.DataFrame):
     """Plot 6: Char accuracy vs Exact match scatter."""
-    complexities = ["words", "structured", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(complexities))
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    colors = sns.color_palette("husl", len(content_types))
     
-    for complexity, color in zip(complexities, colors):
-        data = df[df["data_complexity"] == complexity]
+    for content_type, color in zip(content_types, colors):
+        data = df[df["content_type"] == content_type]
         ax.scatter(
             data["exact_match_mean"],
             data["char_accuracy_mean"],
-            label=complexity,
+            label=content_type,
             color=color,
             s=80,
             alpha=0.7,
@@ -249,7 +249,7 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     sns.set_style("whitegrid")
     
     # Top row: Individual metrics
-    plot_reward_vs_complexity(axes[0, 0], df)
+    plot_reward_vs_content_type(axes[0, 0], df)
     plot_reward_vs_length(axes[0, 1], df)
     plot_reward_vs_fragmentation(axes[0, 2], df)
     

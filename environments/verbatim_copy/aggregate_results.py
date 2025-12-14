@@ -48,7 +48,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
         info = r.get("info", {})
         row = {
             # Ablation parameters (from info)
-            "data_complexity": info.get("data_complexity"),
+            "content_type": info.get("content_type"),
             "target_length": info.get("target_length"),
             "mean_fragment_length": info.get("mean_fragment_length"),
             "sample_id": info.get("id"),
@@ -69,7 +69,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
 
 def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute summary statistics grouped by ablation parameters."""
-    group_cols = ["data_complexity", "target_length", "mean_fragment_length"]
+    group_cols = ["content_type", "target_length", "mean_fragment_length"]
     metric_cols = ["reward", "exact_match", "char_accuracy", "levenshtein_similarity"]
     
     # Group and compute stats
@@ -92,7 +92,7 @@ def print_summary_table(summary: pd.DataFrame):
     
     # Sort by ablation parameters for readability
     summary = summary.sort_values(
-        ["data_complexity", "target_length", "mean_fragment_length"],
+        ["content_type", "target_length", "mean_fragment_length"],
         na_position="first"
     )
     
@@ -100,11 +100,11 @@ def print_summary_table(summary: pd.DataFrame):
     print("-" * 85)
     
     for _, row in summary.iterrows():
-        complexity = row["data_complexity"] or "all"
+        content_type = row["content_type"] or "all"
         length = int(row["target_length"]) if pd.notna(row["target_length"]) else "?"
         frag = int(row["mean_fragment_length"]) if pd.notna(row["mean_fragment_length"]) else "None"
         
-        config = f"complexity={complexity}, len={length}, frag={frag}"
+        config = f"type={content_type}, len={length}, frag={frag}"
         
         reward = f"{row['reward_mean']:.3f}±{row['reward_std']:.3f}"
         exact = f"{row['exact_match_mean']:.3f}±{row['exact_match_std']:.3f}"

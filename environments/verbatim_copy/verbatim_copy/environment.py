@@ -21,7 +21,7 @@ import verifiers as vf
 from verifiers import RLMEnv, SingleTurnEnv
 from verifiers.utils.data_utils import extract_boxed_answer
 
-from .data_generation import DataComplexity, generate_dataset
+from .data_generation import ContentType, generate_dataset
 
 
 # =============================================================================
@@ -172,7 +172,7 @@ def _create_levenshtein_similarity_reward(use_rlm: bool):
 
 def load_environment(
     num_samples: int = 100,
-    data_complexity: DataComplexity | Literal["all"] = "all",
+    content_type: ContentType | Literal["all"] = "all",
     target_length: int | None = None,
     mean_fragment_length: int | None = None,
     seed: int | None = None,
@@ -187,14 +187,15 @@ def load_environment(
 
     Args:
         num_samples: Number of samples to generate
-        data_complexity: Type of content to generate:
-                         - "words": English word sequences
-                         - "structured": JSON or CSV formatted data
-                         - "codes": UUIDs and alphanumeric codes
-                         - "mixed": combination of all types
-                         - "all": balanced mix across all types
-        target_length: Target length in characters. If None, uses default per complexity
-                       (words: 200, structured: 500, codes: 300, mixed: 600).
+        content_type: Type of content to generate:
+                      - "words": English word sequences
+                      - "json": JSON formatted data
+                      - "csv": CSV tabular data
+                      - "codes": UUIDs and alphanumeric codes
+                      - "mixed": combination of all types
+                      - "all": balanced mix across all types
+        target_length: Target length in characters. If None, uses default per content type
+                       (words: 200, json: 500, csv: 500, codes: 300, mixed: 600).
         mean_fragment_length: If set, enables fragmentation - content is sliced into
                               fragments of approximately this size and concatenated.
                               This creates tokenization-challenging sequences.
@@ -215,7 +216,7 @@ def load_environment(
     # Generate dataset
     samples = generate_dataset(
         num_samples=num_samples,
-        data_complexity=data_complexity,
+        content_type=content_type,
         target_length=target_length,
         mean_fragment_length=mean_fragment_length,
         seed=seed,
@@ -238,7 +239,7 @@ def load_environment(
             "prompt": [{"role": "user", "content": prompt_content}],
             "answer": sample["text"],  # Ground truth is the original text
             "info": {
-                "data_complexity": sample["data_complexity"],
+                "content_type": sample["content_type"],
                 "target_length": sample["target_length"],
                 "mean_fragment_length": sample["mean_fragment_length"],
                 "id": sample["id"],
