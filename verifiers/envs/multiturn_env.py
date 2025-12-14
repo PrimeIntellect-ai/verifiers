@@ -99,8 +99,14 @@ class MultiTurnEnv(vf.Environment):
 
             prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
 
-            # Parallelize the two tokenization calls
-            if exact_tokenization:
+            if not exact_tokenization:
+                env_response_ids = await tokenize(
+                    client=client,
+                    messages=env_response,
+                    tools=state["oai_tools"],
+                    model=state["model"],
+                )
+            else:
                 # We build the env_response_ids by tokenizing a (a) all previous
                 # messages + env response (b) all previous messages and determine
                 # the env_response_ids as the difference between those two. The main
@@ -126,6 +132,7 @@ class MultiTurnEnv(vf.Environment):
                     model=state["model"],
                 )
 
+                # Parallelize the two tokenization calls
                 messages_ids, messages_and_env_response_ids = await asyncio.gather(
                     messages_ids_task,
                     messages_and_env_response_ids_task,
@@ -162,13 +169,6 @@ class MultiTurnEnv(vf.Environment):
                     prev_turn_ids += missing_suffix
                 except ValueError:
                     pass
-            else:
-                env_response_ids = await tokenize(
-                    client=client,
-                    messages=env_response,
-                    tools=state["oai_tools"],
-                    model=state["model"],
-                )
 
             prompt_messages = messages_and_env_response
             prompt_ids = prev_turn_ids + env_response_ids
