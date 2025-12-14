@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional, cast
 
@@ -15,6 +16,8 @@ from verifiers.types import (
     ModelResponse,
     TrajectoryStepTokens,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def parse_response_tokens(
@@ -148,6 +151,7 @@ async def tokenize_vllm(
 
     global _TOKENS_CLIENT
     if _TOKENS_CLIENT is None:
+        logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
         url_without_v1 = str(client.base_url).replace("/v1/", "")
         _TOKENS_CLIENT = client.copy(base_url=url_without_v1)
     tokens_client = _TOKENS_CLIENT
@@ -212,6 +216,7 @@ async def tokenize_local(
 
     global _TOKENIZER
     if _TOKENIZER is None:
+        logger.debug(f"Lazily loading local tokenizer for {model}")
         _TOKENIZER = AutoTokenizer.from_pretrained(model)
     tokenizer = _TOKENIZER
 
