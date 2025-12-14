@@ -113,7 +113,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # prepare token prompts
     if config.use_token_prompts:
         logger.warning(
-            "Configured to use token prompts. Currently, this is a hand-crated feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+            "Configured to use token prompts. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
         )
         vf_env.use_token_prompts = config.use_token_prompts
         config.sampling_args["logprobs"] = True
