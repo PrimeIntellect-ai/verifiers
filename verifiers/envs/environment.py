@@ -76,6 +76,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -94,6 +95,7 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
         self.use_token_prompts = use_token_prompts
+        self.tokenize_method = tokenize_method
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -564,7 +566,7 @@ class Environment(ABC):
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["use_token_prompts"] = use_token_prompts or self.use_token_prompts
-        state["tokenize_method"] = tokenize_method
+        state["tokenize_method"] = tokenize_method or self.tokenize_method
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -1055,6 +1057,10 @@ class Environment(ABC):
     def set_use_token_prompts(self, use_token_prompts: bool) -> None:
         """Set whether to use token prompts for this environment."""
         self.use_token_prompts = use_token_prompts
+
+    def set_tokenize_method(self, tokenize_method: Literal["local", "vllm"]) -> None:
+        """Set the tokenization method for this environment."""
+        self.tokenize_method = tokenize_method
 
     make_dataset = make_dataset
 

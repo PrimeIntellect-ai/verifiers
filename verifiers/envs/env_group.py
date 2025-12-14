@@ -295,3 +295,9 @@ class EnvGroup(vf.Environment):
         self.use_token_prompts = use_token_prompts
         for env in self.envs:
             env.set_use_token_prompts(use_token_prompts)
+
+    def set_tokenize_method(self, tokenize_method: Literal["local", "vllm"]) -> None:
+        """Set the tokenization method for this environment group and all sub-environments."""
+        self.tokenize_method = tokenize_method
+        for env in self.envs:
+            env.set_tokenize_method(tokenize_method)
