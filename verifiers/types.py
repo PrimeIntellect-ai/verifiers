@@ -94,10 +94,10 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI | None
-    model: str | None
+    client: AsyncOpenAI
+    model: str
     sampling_args: SamplingArgs | None
-    use_token_prompts: bool | None
+    use_token_prompts: bool
     # created during rollout
     is_completed: bool
     stop_condition: str | None

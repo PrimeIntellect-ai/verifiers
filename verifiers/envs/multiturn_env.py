@@ -234,8 +234,8 @@ class MultiTurnEnv(vf.Environment):
                         prompt_messages,
                         prompt_ids,
                     ) = await self.get_prompt_messages_and_ids(state, client)
-                    response = await self.get_model_response_with_tokens(
-                        state, prompt_messages, prompt_ids
+                    response = await self.get_model_response(
+                        state, prompt_messages, prompt_ids=prompt_ids
                     )
                 else:
                     prompt_messages = await self.get_prompt_messages(state)
