@@ -98,6 +98,7 @@ class State(dict):
     model: str
     sampling_args: SamplingArgs | None
     use_token_prompts: bool
+    tokenize_method: Literal["local", "vllm"] | None
     # created during rollout
     is_completed: bool
     stop_condition: str | None
@@ -155,6 +156,7 @@ class GenerateMetadata(TypedDict):
     state_columns: list[str]
     path_to_save: Path
     use_token_prompts: bool
+    tokenize_method: Literal["local", "vllm"] | None
 
 
 class GenerateOutputs(TypedDict):
@@ -222,6 +224,7 @@ class EvalConfig(BaseModel):
     env_args: dict
     env_dir_path: str
     use_token_prompts: bool = False
+    tokenize_method: Literal["local", "vllm"] | None
     # evaluation
     model: str
     client_config: ClientConfig

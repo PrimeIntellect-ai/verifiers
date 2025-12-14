@@ -225,6 +225,13 @@ def main():
         action="store_true",
         help="Use token prompts. Requires that the inference server supports token-in prompts.",
     )
+    parser.add_argument(
+        "--tokenize-method",
+        "-tm",
+        type=str,
+        default=None,
+        help="Whether to use local or remote (vLLM) tokenization. Only applicable if using token prompts. If None, will use vllm tokenization by default.",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -281,16 +288,33 @@ def main():
         merged_sampling_args["temperature"] = args.temperature
 
     # setup for token prompts
+    assert args.tokenize_method is None or args.tokenize_method in ["local", "vllm"], (
+        f"Invalid tokenize_method: {args.tokenize_method}. Must be 'local' or 'vllm' or None."
+    )
     if args.use_token_prompts:
-        logger.warning(
-            "Configured to use token prompts. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
-        )
         merged_sampling_args["logprobs"] = True
         extra_body = dict(return_token_ids=True, prompt_logprobs=True)
         if "extra_body" in merged_sampling_args:
             merged_sampling_args["extra_body"].update(extra_body)
         else:
             merged_sampling_args["extra_body"] = extra_body
+        if args.tokenize_method is None:
+            args.tokenize_method = "vllm"
+        if args.tokenize_method == "local":
+            try:
+                import transformers  # noqa
+            except ImportError:
+                raise ImportError("transformers is required for local tokenization.")
+
+        logger.warning(
+            f"Configured to use token prompts with {args.tokenize_method} tokenization. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+        )
+    else:
+        if args.tokenize_method is not None:
+            logger.warning(
+                f"tokenize_method={args.tokenize_method} is only applicable if using token prompts. Ignoring."
+            )
+            args.tokenize_method = None
 
     # Build headers from repeated --header flags
     merged_headers: Dict[str, str] = {}
@@ -316,6 +340,7 @@ def main():
         env_args=args.env_args,
         env_dir_path=args.env_dir_path,
         use_token_prompts=args.use_token_prompts,
+        tokenize_method=args.tokenize_method,
         # evaluation
         model=args.model,
         client_config=client_config,

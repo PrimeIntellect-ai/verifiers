@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
+from typing import Literal
 
 from openai import AsyncOpenAI
 
@@ -17,6 +18,7 @@ from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
+    tokenize_local,
     tokenize_vllm,
 )
 
@@ -67,20 +69,17 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages_and_ids(
         self, state: State, client: AsyncOpenAI
     ) -> tuple[Messages, list[int]]:
-        if getattr(self, "tokens_client", None) is None:
-            url_without_v1 = str(client.base_url).replace("/v1/", "")
-            tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
-            setattr(self, "tokens_client", tokens_client)
-        else:
-            tokens_client = getattr(self, "tokens_client")
-
+        assert state["tokenize_method"] is not None
+        tokenize = (
+            tokenize_vllm if state["tokenize_method"] == "vllm" else tokenize_local
+        )
         if len(state["trajectory"]) == 0:
             logger.warning(
                 "Calling `get_prompt_messages_and_ids` on the initial prompt. This creates unnecessary overhead, and should not happen. It is save to directly call /v1/chat/completions because no retokenization can happen on the initial prompt."
             )
             prompt_messages = state["prompt"]
-            prompt_ids = await tokenize_vllm(
-                tokens_client=tokens_client,
+            prompt_ids = await tokenize(
+                client=client,
                 messages=state["prompt"],
                 tools=state["oai_tools"],
                 model=state["model"],
@@ -110,15 +109,15 @@ class MultiTurnEnv(vf.Environment):
             messages_and_env_response = concat_messages([messages, env_response])
 
             # Parallelize the two tokenization calls
-            messages_ids_task = tokenize_vllm(
-                tokens_client=tokens_client,
+            messages_ids_task = tokenize(
+                client=client,
                 messages=messages,
                 tools=state["oai_tools"],
                 model=state["model"],
-                default_body=dict(add_generation_prompt=False),
+                extra_kwargs=dict(add_generation_prompt=False),
             )
-            messages_and_env_response_ids_task = tokenize_vllm(
-                tokens_client=tokens_client,
+            messages_and_env_response_ids_task = tokenize(
+                client=client,
                 messages=messages_and_env_response,
                 tools=state["oai_tools"],
                 model=state["model"],
@@ -189,12 +188,13 @@ class MultiTurnEnv(vf.Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> State:
         """
         Generate a multi-turn rollout with the environment.
         """
         state = await self.init_state(
-            input, client, model, sampling_args, use_token_prompts
+            input, client, model, sampling_args, use_token_prompts, tokenize_method
         )
         try:
             state = await self.setup_state(state)

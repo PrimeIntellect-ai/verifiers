@@ -543,6 +543,7 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -561,6 +562,7 @@ class Environment(ABC):
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["use_token_prompts"] = use_token_prompts
+        state["tokenize_method"] = tokenize_method
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -596,6 +598,7 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> State:
         """
         Run a rollout for a given input.
@@ -662,6 +665,7 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> State:
         """
         Run a rollout with a semaphore (generation only, no scoring).
@@ -673,6 +677,7 @@ class Environment(ABC):
                 model,
                 sampling_args,
                 use_token_prompts,
+                tokenize_method,
             )
         return state
 
@@ -685,6 +690,7 @@ class Environment(ABC):
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
         **kwargs,
     ) -> list[State]:
         """Generate and score one group."""
@@ -696,6 +702,7 @@ class Environment(ABC):
                 model,
                 gen_sampling_args,
                 use_token_prompts,
+                tokenize_method,
             )
             for input in group_inputs
         ]
@@ -713,6 +720,7 @@ class Environment(ABC):
         gen_sampling_args: SamplingArgs,
         start_time: float,
         use_token_prompts: bool,
+        tokenize_method: Literal["local", "vllm"] | None,
     ) -> GenerateOutputs:
         """Prepare GenerateOutputs from a list of completed states."""
         # Determine path_to_save
@@ -759,6 +767,7 @@ class Environment(ABC):
             state_columns=state_columns or [],
             path_to_save=path_to_save,
             use_token_prompts=use_token_prompts,
+            tokenize_method=tokenize_method,
         )
 
         return GenerateOutputs(
@@ -789,6 +798,7 @@ class Environment(ABC):
         save_every: int = -1,
         use_tqdm: bool = True,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs by group.
@@ -836,6 +846,7 @@ class Environment(ABC):
                     gen_sem,
                     score_sem,
                     use_token_prompts,
+                    tokenize_method,
                 )
             ): i
             for i, group in enumerate(group_list)
@@ -877,6 +888,7 @@ class Environment(ABC):
                         gen_sampling_args,
                         start_time,
                         use_token_prompts,
+                        tokenize_method,
                     )
                     self.logger.debug(
                         f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
@@ -898,6 +910,7 @@ class Environment(ABC):
             gen_sampling_args,
             start_time,
             use_token_prompts,
+            tokenize_method,
         )
 
         # Save if requested
@@ -963,6 +976,7 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -984,6 +998,7 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             use_token_prompts=use_token_prompts,
+            tokenize_method=tokenize_method,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
@@ -1000,6 +1015,7 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -1019,6 +1035,7 @@ class Environment(ABC):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            tokenize_method=tokenize_method,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
