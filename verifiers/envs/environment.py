@@ -687,6 +687,7 @@ class Environment(ABC):
         results_path: Path | None,
         gen_sampling_args: SamplingArgs,
         start_time: float,
+        use_token_prompts: bool,
     ) -> GenerateOutputs:
         """Prepare GenerateOutputs from a list of completed states."""
         # Determine path_to_save
@@ -732,6 +733,7 @@ class Environment(ABC):
             },
             state_columns=state_columns or [],
             path_to_save=path_to_save,
+            use_token_prompts=use_token_prompts,
         )
 
         return GenerateOutputs(
@@ -849,6 +851,7 @@ class Environment(ABC):
                         results_path,
                         gen_sampling_args,
                         start_time,
+                        use_token_prompts,
                     )
                     self.logger.debug(
                         f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
@@ -869,6 +872,7 @@ class Environment(ABC):
             results_path,
             gen_sampling_args,
             start_time,
+            use_token_prompts,
         )
 
         # Save if requested

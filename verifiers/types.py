@@ -154,6 +154,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
+    use_token_prompts: bool
 
 
 class GenerateOutputs(TypedDict):
