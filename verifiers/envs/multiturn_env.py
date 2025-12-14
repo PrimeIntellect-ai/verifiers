@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from abc import abstractmethod
 from typing import Optional
@@ -133,19 +134,28 @@ class MultiTurnEnv(vf.Environment):
             # branching rollouts.
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
-            messages_and_env_response_ids = await tokenize_vllm(
-                messages=concat_messages([messages, env_response]),
-                tools=state["oai_tools"],
-                model=state["model"],
-                client=client,
-            )
-            messages_ids = await tokenize_vllm(
+            messages_and_env_response = concat_messages([messages, env_response])
+
+            # Parallelize the two tokenization calls
+            messages_ids_task = tokenize_vllm(
                 messages=messages,
                 tools=state["oai_tools"],
                 model=state["model"],
                 client=client,
                 default_body=dict(add_generation_prompt=False),
             )
+            messages_and_env_response_ids_task = tokenize_vllm(
+                messages=messages_and_env_response,
+                tools=state["oai_tools"],
+                model=state["model"],
+                client=client,
+            )
+
+            messages_ids, messages_and_env_response_ids = await asyncio.gather(
+                messages_ids_task,
+                messages_and_env_response_ids_task,
+            )
+
             assert messages_and_env_response_ids[: len(messages_ids)] == messages_ids, (
                 f"Detected violation in incremental tokenization assumption\n{messages_and_env_response_ids[: len(messages_ids)]}\n{messages_ids}"
             )
