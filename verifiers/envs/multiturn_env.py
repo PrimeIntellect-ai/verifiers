@@ -64,7 +64,9 @@ class MultiTurnEnv(vf.Environment):
             env_response = await self.env_response(messages, state)
             return concat_messages([messages, env_response])
 
-    async def get_prompt_ids(self, state: State, client: AsyncOpenAI) -> list[int]:
+    async def get_prompt_messages_and_ids(
+        self, state: State, client: AsyncOpenAI
+    ) -> tuple[Messages, list[int]]:
         async def tokenize_vllm(
             messages: Messages,
             tools: list[ChatCompletionToolParam] | None,
@@ -102,12 +104,14 @@ class MultiTurnEnv(vf.Environment):
                 raise vf.ModelError(e)
 
         if len(state["trajectory"]) == 0:
-            return await tokenize_vllm(
+            prompt_messages = state["prompt"]
+            prompt_ids = await tokenize_vllm(
                 messages=state["prompt"],
                 tools=state["oai_tools"],
                 model=state["model"],
                 client=client,
             )
+            return prompt_messages, prompt_ids
         else:
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
@@ -165,7 +169,10 @@ class MultiTurnEnv(vf.Environment):
             missing_suffix = messages_ids[eom_idxs[-1] + 1 :]
             prev_turn_ids += missing_suffix
 
-            return prev_turn_ids + env_response_ids
+            prompt_messages = concat_messages([messages, env_response])
+            prompt_ids = prev_turn_ids + env_response_ids
+
+            return prompt_messages, prompt_ids
 
     async def add_model_response(
         self,
@@ -220,13 +227,16 @@ class MultiTurnEnv(vf.Environment):
             state["error"] = e
         while not await self.is_completed(state):
             try:
-                prompt_messages = await self.get_prompt_messages(state)
                 if use_token_prompts:
-                    prompt_ids = await self.get_prompt_ids(state, client)
+                    (
+                        prompt_messages,
+                        prompt_ids,
+                    ) = await self.get_prompt_messages_and_ids(state, client)
                     response = await self.get_model_response_with_tokens(
                         state, prompt_messages, prompt_ids
                     )
                 else:
+                    prompt_messages = await self.get_prompt_messages(state)
                     response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
             except vf.Error as e:
