@@ -180,7 +180,7 @@ async def tokenize_vllm(
 
 
 _TOKENIZER = None
-_TOKENIZER_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_TOKENIZER_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="tokenizer")
 
 
 def sync_tokenize_local(
