@@ -166,8 +166,9 @@ class MultiTurnEnv(vf.Environment):
             # end of message token. This *should* be a safe assumption because
             # it is the stop token for chat models.
             eom_idxs = [i for i, x in enumerate(messages_ids) if x == prev_turn_ids[-1]]
-            missing_suffix = messages_ids[eom_idxs[-1] + 1 :]
-            prev_turn_ids += missing_suffix
+            if eom_idxs:
+                missing_suffix = messages_ids[eom_idxs[-1] + 1 :]
+                prev_turn_ids += missing_suffix
 
             prompt_messages = concat_messages([messages, env_response])
             prompt_ids = prev_turn_ids + env_response_ids
