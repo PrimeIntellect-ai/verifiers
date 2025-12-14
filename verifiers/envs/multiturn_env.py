@@ -142,15 +142,24 @@ class MultiTurnEnv(vf.Environment):
             # not of prev_turn_ids (from the engine). To not train OOD w.r.t.
             # the chat template, we add these suffix tokens to prev_turn_ids.
             prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
+
             # Find the index of the end of message token in messages_ids
             #
             # NOTE: This assumes that the final token in prev_turn_ids is the
             # end of message token. This *should* be a safe assumption because
             # it is the stop token for chat models.
-            eom_idxs = [i for i, x in enumerate(messages_ids) if x == prev_turn_ids[-1]]
-            if eom_idxs:
-                missing_suffix = messages_ids[eom_idxs[-1] + 1 :]
+            def find_last_index(lst: list[int], value: int) -> int:
+                for i in range(len(lst) - 1, -1, -1):
+                    if lst[i] == value:
+                        return i
+                raise ValueError
+
+            try:
+                eom_idx = find_last_index(messages_ids, prev_turn_ids[-1])
+                missing_suffix = messages_ids[eom_idx + 1 :]
                 prev_turn_ids += missing_suffix
+            except ValueError:
+                pass
 
             prompt_messages = messages_and_env_response
             prompt_ids = prev_turn_ids + env_response_ids
