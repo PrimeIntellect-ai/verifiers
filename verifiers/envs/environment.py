@@ -470,7 +470,7 @@ class Environment(ABC):
             assert message_type == "chat", (
                 "get_model_response_with_tokens is only supported for chat tasks."
             )
-            if getattr(self, "tokens_client", None) is None:
+            if getattr(self, "generate_client", None) is None:
                 url_without_v1 = str(client.base_url).replace("/v1/", "")
                 generate_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
                 setattr(self, "generate_client", generate_client)
