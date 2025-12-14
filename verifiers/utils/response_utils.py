@@ -1,5 +1,5 @@
 import asyncio
-from functools import lru_cache
+from concurrent.futures import ProcessPoolExecutor
 from typing import Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
@@ -133,6 +133,9 @@ async def parse_response_messages(
     return completion_messages
 
 
+_TOKENS_CLIENT: AsyncOpenAI | None = None
+
+
 async def tokenize_vllm(
     client: AsyncOpenAI,
     messages: Messages,
@@ -143,13 +146,11 @@ async def tokenize_vllm(
 ) -> list[int]:
     """Tokenize messages using the vLLM /tokenize API."""
 
-    @lru_cache(maxsize=None)
-    def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
+    global _TOKENS_CLIENT
+    if _TOKENS_CLIENT is None:
         url_without_v1 = str(client.base_url).replace("/v1/", "")
-        tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
-        return tokens_client
-
-    tokens_client = get_tokens_client(client)
+        _TOKENS_CLIENT = client.copy(base_url=url_without_v1)
+    tokens_client = _TOKENS_CLIENT
 
     body = dict(
         model=model,
@@ -174,6 +175,31 @@ async def tokenize_vllm(
         raise vf.ModelError(e)
 
 
+_TOKENIZER = None
+_TOKENIZER_EXECUTOR = ProcessPoolExecutor(max_workers=1)
+
+
+def sync_tokenize_local(
+    tokenizer,
+    messages: Messages,
+    tools: list[ChatCompletionToolParam] | None,
+    extra_kwargs: dict = {},
+) -> list[int]:
+    default_kwargs = dict(add_generation_prompt=True)
+    default_kwargs.update(extra_kwargs)
+    if isinstance(messages, str):
+        return tokenizer.encode(messages, **default_kwargs)  # type: ignore
+    else:
+        return cast(
+            list[int],
+            tokenizer.apply_chat_template(
+                messages,  # type: ignore
+                tools=tools,  # type: ignore
+                **default_kwargs,  # type: ignore
+            ),
+        )
+
+
 async def tokenize_local(
     messages: Messages,
     tools: list[ChatCompletionToolParam] | None,
@@ -182,36 +208,19 @@ async def tokenize_local(
     **kwargs,
 ) -> list[int]:
     """Tokenize messages using a local tokenizer."""
-    from transformers import PreTrainedTokenizerBase  # type: ignore[unresolved-import]
+    from transformers import AutoTokenizer
 
-    def sync_tokenize_local(
-        messages: Messages,
-        tools: list[ChatCompletionToolParam] | None,
-        model: str,
-        extra_kwargs: dict = {},
-    ) -> list[int]:
-        @lru_cache(maxsize=None)
-        def get_tokenizer(model: str) -> PreTrainedTokenizerBase:
-            """Get tokenizer for a model, cached using LRU cache."""
-            from transformers import AutoTokenizer  # type: ignore[unresolved-import]
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        _TOKENIZER = AutoTokenizer.from_pretrained(model)
+    tokenizer = _TOKENIZER
 
-            return AutoTokenizer.from_pretrained(model)
-
-        tokenizer = get_tokenizer(model)
-        default_kwargs = dict(add_generation_prompt=True)
-        default_kwargs.update(extra_kwargs)
-        if isinstance(messages, str):
-            return tokenizer.encode(messages, **default_kwargs)  # type: ignore
-        else:
-            return cast(
-                list[int],
-                tokenizer.apply_chat_template(
-                    messages,  # type: ignore
-                    tools=tools,  # type: ignore
-                    **default_kwargs,  # type: ignore
-                ),
-            )
-
-    return await asyncio.to_thread(
-        sync_tokenize_local, messages, tools, model, extra_kwargs
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _TOKENIZER_EXECUTOR,
+        sync_tokenize_local,
+        tokenizer,
+        messages,
+        tools,
+        extra_kwargs,
     )
