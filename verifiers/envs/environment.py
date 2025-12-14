@@ -75,7 +75,6 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
-        use_token_prompts: bool = False,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -93,7 +92,6 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
-        self.use_token_prompts = use_token_prompts
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -519,6 +517,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -536,6 +535,7 @@ class Environment(ABC):
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
+        state["use_token_prompts"] = use_token_prompts
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -570,6 +570,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
     ) -> State:
         """
         Run a rollout for a given input.
@@ -635,6 +636,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
     ) -> State:
         """
         Run a rollout with a semaphore (generation only, no scoring).
@@ -645,6 +647,7 @@ class Environment(ABC):
                 client,
                 model,
                 sampling_args,
+                use_token_prompts,
             )
         return state
 
@@ -656,6 +659,7 @@ class Environment(ABC):
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
+        use_token_prompts: bool = False,
         **kwargs,
     ) -> list[State]:
         """Generate and score one group."""
@@ -666,6 +670,7 @@ class Environment(ABC):
                 client,
                 model,
                 gen_sampling_args,
+                use_token_prompts,
             )
             for input in group_inputs
         ]
@@ -756,6 +761,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         use_tqdm: bool = True,
+        use_token_prompts: bool = False,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs by group.
@@ -802,6 +808,7 @@ class Environment(ABC):
                     gen_sampling_args,
                     gen_sem,
                     score_sem,
+                    use_token_prompts,
                 )
             ): i
             for i, group in enumerate(group_list)
@@ -926,6 +933,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -946,6 +954,7 @@ class Environment(ABC):
             client=client,
             model=model,
             sampling_args=sampling_args,
+            use_token_prompts=use_token_prompts,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
@@ -961,6 +970,7 @@ class Environment(ABC):
         client: OpenAI | AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -987,15 +997,12 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            use_token_prompts=use_token_prompts,
         )
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
-
-    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
-        """Set whether the environment should use token prompts for rollouts."""
-        self.use_token_prompts = use_token_prompts
 
     make_dataset = make_dataset
 

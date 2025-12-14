@@ -215,7 +215,7 @@ class MultiTurnEnv(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
     ) -> State:
         """
         Generate a multi-turn rollout with the environment.
@@ -226,19 +226,16 @@ class MultiTurnEnv(vf.Environment):
         server extension, and is not recommended for general use outside of
         PRIME-RL.
         """
-        use_token_prompts = (
-            use_token_prompts
-            if use_token_prompts is not None
-            else self.use_token_prompts
+        state = await self.init_state(
+            input, client, model, sampling_args, use_token_prompts
         )
-        state = await self.init_state(input, client, model, sampling_args)
         try:
             state = await self.setup_state(state)
         except vf.Error as e:
             state["error"] = e
         while not await self.is_completed(state):
             try:
-                if use_token_prompts:
+                if state["use_token_prompts"]:
                     (
                         prompt_messages,
                         prompt_ids,

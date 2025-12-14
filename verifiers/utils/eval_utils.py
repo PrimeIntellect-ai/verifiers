@@ -110,18 +110,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
-    # prepare token prompts
-    if config.use_token_prompts:
-        logger.warning(
-            "Configured to use token prompts. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
-        )
-        vf_env.use_token_prompts = config.use_token_prompts
-        config.sampling_args["logprobs"] = True
-        config.sampling_args["extra_body"] = dict(
-            return_token_ids=True,
-            prompt_logprobs=True,
-        )
-
     # run evaluation
     results_path = get_eval_results_path(config)
     logger.info(f"Starting evaluation with model: {config.model}")
@@ -133,6 +121,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         client=client,
         model=config.model,
         sampling_args=config.sampling_args,
+        use_token_prompts=config.use_token_prompts,
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         max_concurrent=config.max_concurrent,

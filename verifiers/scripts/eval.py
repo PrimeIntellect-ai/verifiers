@@ -280,6 +280,18 @@ def main():
     if args.temperature is not None and "temperature" not in merged_sampling_args:
         merged_sampling_args["temperature"] = args.temperature
 
+    # setup for token prompts
+    if args.use_token_prompts:
+        logger.warning(
+            "Configured to use token prompts. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+        )
+        merged_sampling_args["logprobs"] = True
+        extra_body = dict(return_token_ids=True, prompt_logprobs=True)
+        if "extra_body" in merged_sampling_args:
+            merged_sampling_args["extra_body"].update(extra_body)
+        else:
+            merged_sampling_args["extra_body"] = extra_body
+
     # Build headers from repeated --header flags
     merged_headers: Dict[str, str] = {}
     for h in args.header or []:
