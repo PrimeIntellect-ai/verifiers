@@ -1,8 +1,9 @@
 """
 Synthetic data generation for verbatim copy task.
 
-Generates different types of text with varying complexity levels:
-- Structured data (JSON-like, CSV-like) using faker
+Generates different types of text content:
+- JSON formatted data using faker
+- CSV tabular data using faker
 - Random word sequences
 - Alphanumeric codes using UUIDs
 - Mixed content combining multiple types
@@ -21,13 +22,14 @@ from faker import Faker
 
 logger = logging.getLogger(__name__)
 
-# Data complexity levels (what kind of content is generated)
-DataComplexity = Literal["words", "structured", "codes", "mixed"]
+# Content types (what kind of content is generated)
+ContentType = Literal["words", "json", "csv", "codes", "mixed"]
 
-# Default target lengths (in characters) for each complexity level
-DEFAULT_TARGET_LENGTHS: dict[DataComplexity, int] = {
+# Default target lengths (in characters) for each content type
+DEFAULT_TARGET_LENGTHS: dict[ContentType, int] = {
     "words": 200,
-    "structured": 500,
+    "json": 500,
+    "csv": 500,
     "codes": 300,
     "mixed": 600,
 }
@@ -231,7 +233,7 @@ def generate_csv_data(
 
 
 def _generate_raw_content(
-    data_complexity: DataComplexity,
+    content_type: ContentType,
     target_length: int,
     seed: int | None,
     fake: Faker,
@@ -252,30 +254,31 @@ def _generate_raw_content(
     while current_length < needed_length:
         iter_seed = seed + iteration * 100 if seed is not None else None
 
-        if data_complexity == "words":
+        if content_type == "words":
             # Word sequences - familiar patterns
             chunk = generate_word_sequence(num_words=50, seed=iter_seed)
-        elif data_complexity == "structured":
-            # Structured data - JSON/CSV with numbers and special chars
-            choice = random.choice(["json", "csv"])
-            if choice == "json":
-                chunk = generate_structured_data(fake, num_records=3, seed=iter_seed)
-            else:
-                chunk = generate_csv_data(fake, num_rows=6, seed=iter_seed)
-        elif data_complexity == "codes":
+        elif content_type == "json":
+            # JSON structured data
+            chunk = generate_structured_data(fake, num_records=3, seed=iter_seed)
+        elif content_type == "csv":
+            # CSV tabular data
+            chunk = generate_csv_data(fake, num_rows=6, seed=iter_seed)
+        elif content_type == "codes":
             # Alphanumeric codes - UUIDs and short codes
             chunk = generate_alphanumeric_codes(
                 num_codes=10, code_format="mixed", seed=iter_seed
             )
         else:  # mixed
             # Rotate through different types
-            type_choice = iteration % 3
+            type_choice = iteration % 4
             if type_choice == 0:
                 chunk = generate_alphanumeric_codes(
                     num_codes=5, code_format="short", seed=iter_seed
                 )
             elif type_choice == 1:
                 chunk = generate_word_sequence(num_words=20, seed=iter_seed)
+            elif type_choice == 2:
+                chunk = generate_structured_data(fake, num_records=2, seed=iter_seed)
             else:
                 chunk = generate_csv_data(fake, num_rows=4, seed=iter_seed)
 
@@ -329,7 +332,7 @@ def _apply_fragmentation(
 
 
 def generate_sample(
-    data_complexity: DataComplexity = "structured",
+    content_type: ContentType = "json",
     target_length: int | None = None,
     mean_fragment_length: int | None = None,
     seed: int | None = None,
@@ -338,12 +341,13 @@ def generate_sample(
     Generate a single sample for the verbatim copy task.
 
     Args:
-        data_complexity: Type of content to generate:
-                         - "words": English word sequences
-                         - "structured": JSON or CSV formatted data
-                         - "codes": UUIDs and alphanumeric codes
-                         - "mixed": combination of all types
-        target_length: Target length in characters. If None, uses default for complexity.
+        content_type: Type of content to generate:
+                      - "words": English word sequences
+                      - "json": JSON formatted data
+                      - "csv": CSV tabular data
+                      - "codes": UUIDs and alphanumeric codes
+                      - "mixed": combination of all types
+        target_length: Target length in characters. If None, uses default for content type.
         mean_fragment_length: If set, enables fragmentation - content is sliced into
                               fragments of approximately this size (with random variation)
                               and concatenated. This creates tokenization-challenging
@@ -351,11 +355,11 @@ def generate_sample(
         seed: Random seed for reproducibility
 
     Returns:
-        Dict with 'text', 'data_complexity', 'target_length', and 'mean_fragment_length'
+        Dict with 'text', 'content_type', 'target_length', and 'mean_fragment_length'
     """
     # Resolve target_length
     if target_length is None:
-        target_length = DEFAULT_TARGET_LENGTHS[data_complexity]
+        target_length = DEFAULT_TARGET_LENGTHS[content_type]
 
     # Validate mean_fragment_length
     if mean_fragment_length is not None:
@@ -374,7 +378,7 @@ def generate_sample(
         fake.seed_instance(seed)
 
     # Generate raw content (over-produced)
-    raw_content = _generate_raw_content(data_complexity, target_length, seed, fake)
+    raw_content = _generate_raw_content(content_type, target_length, seed, fake)
 
     # Apply fragmentation or simple truncation
     if mean_fragment_length is not None:
@@ -387,7 +391,7 @@ def generate_sample(
 
     return {
         "text": text,
-        "data_complexity": data_complexity,
+        "content_type": content_type,
         "target_length": target_length,
         "mean_fragment_length": mean_fragment_length,
     }
@@ -395,7 +399,7 @@ def generate_sample(
 
 def generate_dataset(
     num_samples: int = 100,
-    data_complexity: DataComplexity | Literal["all"] = "all",
+    content_type: ContentType | Literal["all"] = "all",
     target_length: int | None = None,
     mean_fragment_length: int | None = None,
     seed: int | None = None,
@@ -405,50 +409,52 @@ def generate_dataset(
 
     Args:
         num_samples: Total number of samples to generate
-        data_complexity: Type of content for samples:
-                         - "words": English word sequences
-                         - "structured": JSON or CSV formatted data
-                         - "codes": UUIDs and alphanumeric codes
-                         - "mixed": combination of all types
-                         - "all": balanced mix across all types
-        target_length: Target length in characters. If None, uses default per complexity.
+        content_type: Type of content for samples:
+                      - "words": English word sequences
+                      - "json": JSON formatted data
+                      - "csv": CSV tabular data
+                      - "codes": UUIDs and alphanumeric codes
+                      - "mixed": combination of all types
+                      - "all": balanced mix across all types
+        target_length: Target length in characters. If None, uses default per content type.
         mean_fragment_length: If set, enables fragmentation for tokenization-challenging
                               sequences. If None, no fragmentation is applied.
         seed: Random seed for reproducibility. If None, uses system randomness.
 
     Returns:
-        List of sample dicts with 'text', 'data_complexity', 'target_length', etc.
+        List of sample dicts with 'text', 'content_type', 'target_length', etc.
     """
     random.seed(seed)
 
-    # Build list of complexities for each sample
-    if data_complexity == "all":
-        # Balanced distribution across all complexity levels
-        distribution: dict[DataComplexity, float] = {
-            "words": 0.25,
-            "structured": 0.35,
+    # Build list of content types for each sample
+    if content_type == "all":
+        # Balanced distribution across all content types
+        distribution: dict[ContentType, float] = {
+            "words": 0.20,
+            "json": 0.20,
+            "csv": 0.20,
             "codes": 0.25,
             "mixed": 0.15,
         }
-        complexities: list[DataComplexity] = []
-        for complexity, proportion in distribution.items():
+        content_types: list[ContentType] = []
+        for ct, proportion in distribution.items():
             count = int(num_samples * proportion)
-            complexities.extend([complexity] * count)
+            content_types.extend([ct] * count)
         # Fill remaining slots randomly
-        while len(complexities) < num_samples:
-            complexities.append(random.choice(list(distribution.keys())))
-        random.shuffle(complexities)
+        while len(content_types) < num_samples:
+            content_types.append(random.choice(list(distribution.keys())))
+        random.shuffle(content_types)
     else:
-        # Single complexity level for all samples
-        complexities = [data_complexity] * num_samples
+        # Single content type for all samples
+        content_types = [content_type] * num_samples
 
     # Generate samples
     samples = []
-    for i, sample_complexity in enumerate(complexities):
+    for i, sample_content_type in enumerate(content_types):
         # Ensure different seeds per sample (if seed is provided)
         sample_seed = seed + i * 1000 if seed is not None else None
         sample = generate_sample(
-            data_complexity=sample_complexity,
+            content_type=sample_content_type,
             target_length=target_length,
             mean_fragment_length=mean_fragment_length,
             seed=sample_seed,

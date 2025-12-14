@@ -16,34 +16,34 @@ echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
 echo ""
 
-# Ablation 1: Data complexity effect
+# Ablation 1: Content type effect
 # Fixed: target_length=500, mean_fragment_length=20
-echo "=== Ablation 1: Data Complexity ==="
-for complexity in words structured codes mixed all; do
-    echo "Running: data_complexity=$complexity"
+echo "=== Ablation 1: Content Type ==="
+for content_type in words json csv codes mixed all; do
+    echo "Running: content_type=$content_type"
     uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL -s \
-        -a "{\"num_samples\": $NUM_EXAMPLES, \"data_complexity\": \"$complexity\", \"target_length\": 500, \"mean_fragment_length\": 20, \"use_rlm\": false}"
+        -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$content_type\", \"target_length\": 500, \"mean_fragment_length\": 20, \"use_rlm\": false}"
 done
 
 # Ablation 2: Length scaling
-# Fixed: data_complexity="all", mean_fragment_length=20
+# Fixed: content_type="all", mean_fragment_length=20
 echo ""
 echo "=== Ablation 2: Target Length ==="
 for length in 250 500 750 1000; do
     echo "Running: target_length=$length"
     uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL -s \
-        -a "{\"num_samples\": $NUM_EXAMPLES, \"data_complexity\": \"all\", \"target_length\": $length, \"mean_fragment_length\": 20, \"use_rlm\": false}"
+        -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": $length, \"mean_fragment_length\": 20, \"use_rlm\": false}"
 done
 
 # Ablation 3: Fragmentation intensity
-# Fixed: data_complexity="all", target_length=500
+# Fixed: content_type="all", target_length=500
 echo ""
 echo "=== Ablation 3: Fragment Length ==="
 # Note: "null" in JSON for None
 for frag_length in null 10 25 50 100 150; do
     echo "Running: mean_fragment_length=$frag_length"
     uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL -s \
-        -a "{\"num_samples\": $NUM_EXAMPLES, \"data_complexity\": \"all\", \"target_length\": 500, \"mean_fragment_length\": $frag_length, \"use_rlm\": false}"
+        -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": 500, \"mean_fragment_length\": $frag_length, \"use_rlm\": false}"
 done
 
 echo ""
