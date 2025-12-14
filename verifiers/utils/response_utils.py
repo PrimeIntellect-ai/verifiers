@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
@@ -180,7 +180,7 @@ async def tokenize_vllm(
 
 
 _TOKENIZER = None
-_TOKENIZER_EXECUTOR = ProcessPoolExecutor(max_workers=1)
+_TOKENIZER_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
 def sync_tokenize_local(
