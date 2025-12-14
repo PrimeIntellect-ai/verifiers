@@ -122,7 +122,7 @@ class PythonEnv(SandboxEnv):
 
         rm -f "$command_fifo" "$response_fifo" "$ready_flag"
 
-        pip install -q {pip_install_packages}
+        {pip_install_command}
 
         python - <<'PY'
 import base64
@@ -157,6 +157,11 @@ PY
         max_startup_wait_seconds: int = 30,
         **kwargs: Any,
     ) -> None:
+        pip_install_command = (
+            f"pip install -q {pip_install_packages}"
+            if pip_install_packages.strip()
+            else ""
+        )
         start_command = self._START_COMMAND_TEMPLATE.format(
             command_fifo=self._COMMAND_FIFO,
             response_fifo=self._RESPONSE_FIFO,
@@ -169,7 +174,7 @@ PY
                     ready_flag=self._READY_FLAG,
                 ).encode("utf-8")
             ).decode("utf-8"),
-            pip_install_packages=pip_install_packages,
+            pip_install_command=pip_install_command,
         )
         self.max_startup_wait_seconds = max_startup_wait_seconds
         super().__init__(
