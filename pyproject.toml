@@ -42,6 +42,7 @@ dependencies = [
     "typing_extensions; python_version < '3.12'",
     "prime-sandboxes>=0.2.5",
     "wget>=3.2",
+    "seaborn>=0.13.2",
 ]
 
 [dependency-groups]
