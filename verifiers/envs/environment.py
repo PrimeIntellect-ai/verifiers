@@ -563,7 +563,7 @@ class Environment(ABC):
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
-        state["use_token_prompts"] = use_token_prompts
+        state["use_token_prompts"] = use_token_prompts or self.use_token_prompts
         state["tokenize_method"] = tokenize_method
         state["is_completed"] = False
         state["oai_tools"] = None
