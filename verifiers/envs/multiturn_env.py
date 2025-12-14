@@ -219,12 +219,6 @@ class MultiTurnEnv(vf.Environment):
     ) -> State:
         """
         Generate a multi-turn rollout with the environment.
-
-        If use_token_prompts is set, the environment will prepare a token
-        prompt. This requires that the inference server supports token-in
-        prompts. Currently, this is a hand-crated feature for PRIME-RL's vLLM
-        server extension, and is not recommended for general use outside of
-        PRIME-RL.
         """
         state = await self.init_state(
             input, client, model, sampling_args, use_token_prompts
