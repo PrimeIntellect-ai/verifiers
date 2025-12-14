@@ -75,6 +75,7 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
+        use_token_prompts: bool = False,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -92,6 +93,7 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
+        self.use_token_prompts = use_token_prompts
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -1049,6 +1051,10 @@ class Environment(ABC):
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
+
+    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
+        """Set whether to use token prompts for this environment."""
+        self.use_token_prompts = use_token_prompts
 
     make_dataset = make_dataset
 
