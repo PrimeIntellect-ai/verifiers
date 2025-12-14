@@ -1,10 +1,8 @@
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import Optional
 
-from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletionToolParam
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import (
@@ -19,6 +17,7 @@ from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
+    tokenize_vllm,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,49 +67,23 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages_and_ids(
         self, state: State, client: AsyncOpenAI
     ) -> tuple[Messages, list[int]]:
-        async def tokenize_vllm(
-            messages: Messages,
-            tools: list[ChatCompletionToolParam] | None,
-            model: str,
-            client: AsyncOpenAI,
-            default_body: dict = {},
-        ) -> list[int]:
-            """Tokenize a prompt using the vLLM tokenize API."""
-            if getattr(self, "tokens_client", None) is None:
-                url_without_v1 = str(client.base_url).replace("/v1/", "")
-                tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
-                setattr(self, "tokens_client", tokens_client)
-            else:
-                tokens_client = getattr(self, "tokens_client")
-            body = dict(
-                model=model,
-                messages=messages,
-                tools=tools,
-                **default_body,
-            )
-
-            # Copy from vllm/entrypoints/openai/protocol.py
-            class TokenizeResponse(BaseModel):
-                count: int
-                max_model_len: int
-                tokens: list[int]
-                token_strs: Optional[list[str]] = None
-
-            try:
-                tokenize_response = await tokens_client.post(
-                    "/tokenize", body=body, cast_to=TokenizeResponse
-                )
-                return tokenize_response.tokens
-            except Exception as e:
-                raise vf.ModelError(e)
+        if getattr(self, "tokens_client", None) is None:
+            url_without_v1 = str(client.base_url).replace("/v1/", "")
+            tokens_client: AsyncOpenAI = client.copy(base_url=url_without_v1)
+            setattr(self, "tokens_client", tokens_client)
+        else:
+            tokens_client = getattr(self, "tokens_client")
 
         if len(state["trajectory"]) == 0:
+            logger.warning(
+                "Calling `get_prompt_messages_and_ids` on the initial prompt. This creates unnecessary overhead, and should not happen. It is save to directly call /v1/chat/completions because no retokenization can happen on the initial prompt."
+            )
             prompt_messages = state["prompt"]
             prompt_ids = await tokenize_vllm(
+                tokens_client=tokens_client,
                 messages=state["prompt"],
                 tools=state["oai_tools"],
                 model=state["model"],
-                client=client,
             )
             return prompt_messages, prompt_ids
         else:
@@ -138,17 +111,17 @@ class MultiTurnEnv(vf.Environment):
 
             # Parallelize the two tokenization calls
             messages_ids_task = tokenize_vllm(
+                tokens_client=tokens_client,
                 messages=messages,
                 tools=state["oai_tools"],
                 model=state["model"],
-                client=client,
                 default_body=dict(add_generation_prompt=False),
             )
             messages_and_env_response_ids_task = tokenize_vllm(
+                tokens_client=tokens_client,
                 messages=messages_and_env_response,
                 tools=state["oai_tools"],
                 model=state["model"],
-                client=client,
             )
 
             messages_ids, messages_and_env_response_ids = await asyncio.gather(
@@ -229,7 +202,7 @@ class MultiTurnEnv(vf.Environment):
             state["error"] = e
         while not await self.is_completed(state):
             try:
-                if state["use_token_prompts"]:
+                if state["use_token_prompts"] and len(state["trajectory"]) > 0:
                     (
                         prompt_messages,
                         prompt_ids,
