@@ -1,94 +1,114 @@
 import asyncio
+import atexit
+import signal
 from typing import Dict, Optional
-
 from mcp.types import Tool
-
+from prime_sandboxes import SandboxClient, APIClient
 from .streaming_http import StreamingHTTPTransport
 from ..mcp_utils.models import MCPServerConfig
 
+_active_sandboxes = set()
+_cleanup_registered = False
+
+def _register_cleanup():
+    global _cleanup_registered
+    if _cleanup_registered:
+        return
+    
+    def cleanup():
+        if not _active_sandboxes:
+            return
+        client = SandboxClient(APIClient())
+        for sandbox_id in list(_active_sandboxes):
+            try:
+                client.delete(sandbox_id)
+            except Exception:
+                pass
+        _active_sandboxes.clear()
+    
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, lambda s, f: (cleanup(), signal.default_int_handler(s, f)))
+    signal.signal(signal.SIGTERM, lambda s, f: (cleanup(), exit(143)))
+    _cleanup_registered = True
+
+
 
 class SandboxTransport(StreamingHTTPTransport):
+    _async_client: Optional["AsyncSandboxClient"] = None
+
+    @classmethod
+    def get_client(cls) -> "AsyncSandboxClient":
+        if cls._async_client is None:
+            from prime_sandboxes import AsyncSandboxClient
+            cls._async_client = AsyncSandboxClient()
+            _register_cleanup()
+        return cls._async_client
+
     def __init__(
         self,
         config: MCPServerConfig,
-        sandbox_client,
         sandbox_request,
         port_to_expose: Optional[int] = None,
         **kwargs
     ):
-        self.sandbox_client = sandbox_client
         self.sandbox_request = sandbox_request
         self.sandbox_id: Optional[str] = None
         self.port_to_expose: Optional[int] = port_to_expose
-
-        self.port_exposed: bool = False
-        self.exposure_id: Optional[str] = None
-
         super().__init__(config, url="", **kwargs)
 
     async def create_sandbox(self) -> str:
-        """Create the sandbox and wait for it to be ready."""
-        sandbox = await self.sandbox_client.create(self.sandbox_request)
+        client = self.get_client()
+        sandbox = await client.create(self.sandbox_request)
         self.sandbox_id = sandbox.id
-        await self.sandbox_client.wait_for_creation(self.sandbox_id)
-        print(f"[SANDBOX] Sandbox created: {self.sandbox_id}", flush=True)
+        await client.wait_for_creation(self.sandbox_id)
+        _active_sandboxes.add(self.sandbox_id)
         return self.sandbox_id
 
     async def run_command(self, command: str) -> str:
-        """Run a command in the sandbox."""
         if not self.sandbox_id:
             raise RuntimeError("Sandbox not created yet")
-        result = await self.sandbox_client.execute_command(self.sandbox_id, command)
+        client = self.get_client()
+        result = await client.execute_command(self.sandbox_id, command)
         return result
 
     async def run_setup_commands(self) -> None:
-        """Run setup commands before starting the MCP server."""
         if not self.config.setup_commands:
             return
-        print(f"[SANDBOX] Running setup commands: {self.config.setup_commands}", flush=True)
         for cmd in self.config.setup_commands:
             await self.run_command(cmd)
 
     async def start_mcp_server(self) -> None:
         """Start the MCP server process in the sandbox."""
-        print(f"[SANDBOX] Starting MCP server...", flush=True)
-        # Build env vars string
-        env_str = ""
-        if self.config.env:
-            env_str = " ".join(f"{k}={v}" for k, v in self.config.env.items()) + " "
-
         cmd = f"{self.config.command} {' '.join(self.config.args or [])}"
-        bg_cmd = f"{env_str}nohup {cmd} > /tmp/mcp.log 2>&1 &"
+        bg_cmd = f"nohup {cmd} > /tmp/mcp.log 2>&1 &"
         await self.run_command(bg_cmd)
         await asyncio.sleep(3)
 
     async def expose_port(self) -> str:
-        """Expose a port on the sandbox and return the URL."""
-        print(f"[SANDBOX] Exposing port {self.port_to_expose}...", flush=True)
-        exposed = await self.sandbox_client.expose(self.sandbox_id, self.port_to_expose)
-        self.port_exposed = True
-        self.exposure_id = exposed.exposure_id
+        client = self.get_client()
+        exposed = await client.expose(
+            self.sandbox_id, 
+            self.port_to_expose
+        )
         self.url = f"{exposed.url}/mcp"
-        print(f"[SANDBOX] Exposed URL: {self.url}")
-
-        # wait for DNS propagation
-        print("[SANDBOX] Waiting 10s for DNS...")
+        # TODO: remove this when we have a better way to wait for the port to be exposed
         await asyncio.sleep(10)
-        print("[SANDBOX] DNS wait done")
         return self.url
 
     async def connect(self) -> Dict[str, Tool]:
-        """Connect to the MCP server (assumes sandbox is already set up)."""
-        print(f"[SANDBOX] Connecting to {self.url}...")
-        result = await super().connect()
-        print(f"[SANDBOX] Connected! Got {len(result)} tools")
-        return result
+        return await super().connect()
 
     async def disconnect(self) -> None:
-        """Disconnect from MCP server and delete the sandbox."""
         try:
             await super().disconnect()
         finally:
             if self.sandbox_id:
-                await self.sandbox_client.delete(self.sandbox_id)
+                client = self.get_client()
+                await client.delete(self.sandbox_id)
+                _active_sandboxes.discard(self.sandbox_id)
                 self.sandbox_id = None
+
+    async def delete_all_sandboxes(self) -> None:
+        client = self.get_client()
+        await client.bulk_delete(list(_active_sandboxes))
+        _active_sandboxes.clear()
