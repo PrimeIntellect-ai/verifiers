@@ -5,8 +5,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent, Tool
 
-from .base import MCPTransport
-from ..mcp_utils.models import MCPServerConfig
+from verifiers.utils.mcp_utils.transports.base import MCPTransport
+from verifiers.utils.mcp_utils.models import MCPServerConfig
 
 
 class StdioTransport(MCPTransport):

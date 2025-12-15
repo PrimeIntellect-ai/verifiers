@@ -4,8 +4,9 @@ import signal
 from typing import Dict, Optional
 from mcp.types import Tool
 from prime_sandboxes import SandboxClient, APIClient
-from .streaming_http import StreamingHTTPTransport
-from ..mcp_utils.models import MCPServerConfig
+
+from verifiers.utils.mcp_utils.transports.streaming_http import StreamingHTTPTransport
+from verifiers.utils.mcp_utils.models import MCPServerConfig
 
 _active_sandboxes = set()
 _cleanup_registered = False

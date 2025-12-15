@@ -1,9 +1,8 @@
 from typing import Any
 import copy
-
 from mcp.types import Tool
 
-from ..transports.base import MCPTransport
+from verifiers.utils.mcp_utils.transports.base import MCPTransport
 
 
 class MCPToolWrapper:

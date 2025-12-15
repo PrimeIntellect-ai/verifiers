@@ -5,8 +5,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent, Tool
 
-from .base import MCPTransport
-from ..mcp_utils.models import MCPServerConfig
+from verifiers.utils.mcp_utils.transports.base import MCPTransport
+from verifiers.utils.mcp_utils.models import MCPServerConfig
 
 
 class StreamingHTTPTransport(MCPTransport):
@@ -44,7 +44,6 @@ class StreamingHTTPTransport(MCPTransport):
         
         for attempt in range(self.max_retries):
             try:
-                # Use streamablehttp_client instead of sse_client
                 async with streamablehttp_client(self.url) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         self.session = session
@@ -55,7 +54,6 @@ class StreamingHTTPTransport(MCPTransport):
                         
                         self._ready.set()
                         
-                        # Keep alive until cancelled
                         while True:
                             await asyncio.sleep(1)
                             

@@ -1,9 +1,9 @@
 from typing import Callable, Dict, List, Literal, Optional
 
-from .transports.base import MCPTransport
-from .mcp_utils.models import MCPServerConfig, MCPTransportConfig
-from .mcp_utils.mcp_tool_wrapper import MCPToolWrapper
-from .mcp_utils.mcp_env_utils import validate_config, create_transport
+from verifiers.utils.mcp_utils.transports.base import MCPTransport
+from verifiers.utils.mcp_utils.models import MCPServerConfig, MCPTransportConfig
+from verifiers.utils.mcp_utils.mcp_tool_wrapper import MCPToolWrapper
+from verifiers.utils.mcp_utils.mcp_env_utils import validate_config, create_transport
 
 import verifiers as vf
 from verifiers import Messages, State
