@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
+from typing import Any, Callable, Dict, Protocol, Tuple, Union
 
 import gymnasium as gym
 from datasets import Dataset
@@ -100,28 +100,29 @@ class GymEnv(vf.MultiTurnEnv):
         if self.gym_id:
             return gym.make(self.gym_id, **self._env_kwargs)
         if self._env_cls:
-            return self._env_cls(**self._env_kwargs) # type: ignore
+            return self._env_cls(**self._env_kwargs)  # type: ignore
         raise ValueError("Configuration error")
 
-    async def setup_state(self, state: State) -> State:
-        env = self._make_env(state)
-        state["gym_env"] = env
-        
-        input_info = state.get("info", {}) or {}
-        obs, _ = _normalize_reset(env.reset(**input_info))
-        
-        obs_text = self.obs_to_text(obs)
+    def _build_initial_prompt(self, obs_text: str) -> vf.Messages:
+        """Build initial prompt from observation text, including system prompt and few-shot."""
         if self.message_type == "chat":
-            msgs = []
+            msgs: list[vf.Message] = []
             if self.system_prompt:
                 msgs.append({"role": "system", "content": self.system_prompt})
             if self.few_shot:
                 msgs.extend(self.few_shot)
             msgs.append({"role": "user", "content": obs_text})
-            state["prompt"] = msgs
-        else:
-            state["prompt"] = obs_text
+            return msgs
+        return obs_text
 
+    async def setup_state(self, state: State) -> State:
+        env = self._make_env(state)
+        state["gym_env"] = env
+
+        input_info = state.get("info", {}) or {}
+        obs, _ = _normalize_reset(env.reset(**input_info))
+
+        state["prompt"] = self._build_initial_prompt(self.obs_to_text(obs))
         state["gym_done"] = False
         return state
 
@@ -165,6 +166,7 @@ class GymEnv(vf.MultiTurnEnv):
         return str(obs_text)
 
     def obs_to_text(self, obs: Any) -> str:
+        """Convert observation to text. Override in subclass for custom formatting."""
         if self._obs_to_text_fn:
             return self._obs_to_text_fn(obs)
         return str(obs)
@@ -184,6 +186,6 @@ class GymEnv(vf.MultiTurnEnv):
             "example_id": range(n),
             "info": [{"seed": i} for i in range(n)],
             "task": ["gym"] * n,
-            "prompt": ["" if m_type=="completion" else []] * n,
-            "answer": [""] * n
+            "prompt": ["" if m_type == "completion" else []] * n,
+            "answer": [""] * n,
         })

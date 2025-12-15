@@ -1,6 +1,6 @@
 import verifiers as vf
-# Assuming the GymEnv class provided in previous turn is in 'gym_env.py'
-from gym_env import GymEnv 
+from verifiers.envs.gym_env import GymEnv
+
 from gem.envs.game_env.wordle import WordleEnv
 
 ### Prompt
@@ -19,78 +19,80 @@ I need to test vowels. "ADIEU" is a good start.
 \\boxed{ADIEU}
 """
 
-### Feedback Function
-def wordle_obs_cleaner(obs: str) -> str:
-    """
-    Optional: Clean GEM's observation if needed.
-    GEM obs usually comes as: "At turn X, you guessed Y\nFeedback:..."
-    This is already chat-friendly, so we can return it as-is.
-    """
-    return str(obs)
-
 ### Reward Functions
-def gem_accumulated_reward(state: vf.State, **kwargs) -> float:
+def gem_success_bonus(*, state: vf.State, **kwargs) -> float:
     """
-    GEM environments return dense rewards (intermediate milestones) + sparse terminal rewards.
-    We simply sum up the rewards returned by the environment step.
-    """
-    trajectory = state.get("trajectory", [])
-    total = sum(float(step.get("reward", 0.0) or 0.0) for step in trajectory)
-    return total
+    Reward for winning the game, based on GEM's success message in the final observation.
 
-def gem_success_bonus(state: vf.State, **kwargs) -> float:
-    """
-    Additional heuristic to reward strictly winning, based on GEM's success message.
+    The success message appears in the prompt of the last trajectory step,
+    which contains the environment's response to the previous action.
     """
     trajectory = state.get("trajectory", [])
     if not trajectory:
         return 0.0
-    
-    # Check the last environment response for the success string
+
+    # Check the last step's prompt for the success message
+    # (the prompt contains the env observation from the previous turn)
     last_step = trajectory[-1]
-    env_response = last_step.get("env_response", "")
-    
-    # Handle if env_response is a list of messages (chat) or string
-    content = env_response
-    if isinstance(env_response, list) and len(env_response) > 0:
-        content = env_response[-1].get("content", "")
-        
-    if "Congratulations!" in str(content):
+    prompt = last_step.get("prompt", [])
+
+    # Extract content from the last user message in the prompt
+    if isinstance(prompt, list):
+        for msg in reversed(prompt):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if "Congratulations!" in str(content):
+                    return 1.0
+                break
+    elif isinstance(prompt, str) and "Congratulations!" in prompt:
         return 1.0
+
     return 0.0
 
 ### Environment Loader
 def load_environment(
-    num_train_examples: int = 1000,
-    num_eval_examples: int = 20,
+    num_train_episodes: int = 1000,
+    num_eval_episodes: int = 20,
 ):
-    # 1. Define Rubric
-    rubric = vf.Rubric()
-    # GEM gives internal rewards for progress (milestones), so we use them
-    rubric.add_reward_func(gem_accumulated_reward, weight=1.0)
+    """
+    Load the GEM Wordle environment.
+
+    Args:
+        num_train_episodes: Number of training episodes (each with a random word).
+        num_eval_episodes: Number of evaluation episodes.
+    """
+    from datasets import Dataset
+
+    from verifiers.envs.gym_env import EpisodicSumRubric
+
+    # Rubric: sum of step rewards (dense) + success bonus (sparse)
+    rubric = EpisodicSumRubric(weight=1.0)
     rubric.add_reward_func(gem_success_bonus, weight=2.0)
 
-    # 2. Action Parser
-    # GEM handles parsing internally using regex for \boxed{}.
-    # We pass the raw model text (identity function) to env.step().
-    action_parser = lambda x: x 
+    # Build eval dataset with specified number of episodes
+    eval_dataset = Dataset.from_dict({
+        "example_id": list(range(num_eval_episodes)),
+        "info": [{"seed": i} for i in range(num_eval_episodes)],
+        "task": ["gem_wordle"] * num_eval_episodes,
+        "prompt": [[]] * num_eval_episodes,
+        "answer": [""] * num_eval_episodes,
+    })
 
-    # 3. Instantiate GymEnv with GEM class
     vf_env = GymEnv(
         env_cls=WordleEnv,
         env_kwargs={
             "word_length": 5,
             "max_turns": 20,
-            "only_real_words": True
+            "only_real_words": True,
         },
-        action_parser=action_parser,
-        obs_to_text=wordle_obs_cleaner,
+        # GEM handles \boxed{} parsing internally, so pass raw text
+        action_parser=lambda x: x,
         rubric=rubric,
-        num_train_episodes=num_train_examples,
+        num_train_episodes=num_train_episodes,
+        eval_dataset=eval_dataset,
         system_prompt=GEM_WORDLE_SYSTEM_PROMPT,
         message_type="chat",
-        # GymEnv will auto-generate a dummy dataset since GEM randomizes words internally on reset
-        auto_dummy_eval=True 
+        max_episode_steps=20,
     )
-    
+
     return vf_env
