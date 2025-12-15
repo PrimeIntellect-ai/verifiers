@@ -122,12 +122,12 @@ class MultiTurnEnv(vf.Environment):
                     return 0
 
                 max_possible = min(len(a), len(b))
-                for overlap_len in range(1, max_possible + 1):
+                for overlap_len in reversed(range(1, max_possible + 1)):
                     a_suffix = a[-overlap_len:]
                     b_prefix = b[:overlap_len]
 
-                    if a_suffix != b_prefix:
-                        return overlap_len - 1
+                    if a_suffix == b_prefix:
+                        return overlap_len
 
                 return 0
 
