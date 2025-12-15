@@ -7,7 +7,7 @@ def load_environment(**kwargs):
     ds = Dataset.from_dict(
         {
             "question": [
-                "Use the echo tool to echo back the message 'Hello World'",
+                "Check out what tools are available and try one that looks interesting to you",
             ],
             "answer": ["Hello World"],
         }
