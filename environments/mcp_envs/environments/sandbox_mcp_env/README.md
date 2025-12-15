@@ -1,27 +1,34 @@
 # sandbox-mcp-env
 
-> Replace the placeholders below, then remove this callout.
+1. Define the MCP server or servers you want to use
+2. Setup state will 
+    1. Start by creating a sandbox for the rollout and exposing a port
+    2. Then create transport(s) for the mcp servers which provide the interface for using the server
+    3. It will run any necessary commands required for the mcp server
+    4. Run the server in StreamableHTTP mode
+    5. Finally register the MCP server's available tools
+3. Rollout proceeds and agent can make mcp tool calls that are safe to interact within the sandbox
 
 ### Overview
 - **Environment ID**: `sandbox-mcp-env`
-- **Short description**: <one-sentence description>
-- **Tags**: <comma-separated tags>
+- **Short description**: MCPEnv via sandboxed streaming http MCP servers
+- **Tags**: mcp, sandbox
 
 ### Datasets
-- **Primary dataset(s)**: <name(s) and brief description>
-- **Source links**: <links>
-- **Split sizes**: <train/eval counts>
+- **Primary dataset(s)**: NA
+- **Source links**: NA
+- **Split sizes**: NA
 
 ### Task
-- **Type**: <single-turn | multi-turn | tool use>
-- **Parser**: <e.g., ThinkParser, XMLParser, custom>
-- **Rubric overview**: <briefly list reward functions and key metrics>
+- **Type**: tool use
+- **Parser**: NA
+- **Rubric overview**: NA
 
 ### Quickstart
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval sandbox-mcp-env
+uv run vf-eval sandbox-mcp-env -n 1 -r 1
 ```
 
 Configure model and sampling:
@@ -34,15 +41,14 @@ Notes:
 - Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
 
 ### Environment Arguments
-Document any supported environment arguments and their meaning. Example:
+Demo
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `foo` | str | `"bar"` | What this controls |
 | `max_examples` | int | `-1` | Limit on dataset size (use -1 for all) |
 
 ### Metrics
-Summarize key metrics your rubric emits and how they’re interpreted.
+Demo
 
 | Metric | Meaning |
 | ------ | ------- |
