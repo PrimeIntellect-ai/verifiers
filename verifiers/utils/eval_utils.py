@@ -110,6 +110,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
+    if config.use_token_prompts:
+        vf_env.set_use_token_prompts(True)
+        vf_env.set_tokenize_method(config.tokenize_method)
+        vf_env.set_exact_tokenization(config.exact_tokenization)
+
     # run evaluation
     results_path = get_eval_results_path(config)
     logger.info(f"Starting evaluation with model: {config.model}")
@@ -121,9 +126,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         client=client,
         model=config.model,
         sampling_args=config.sampling_args,
-        use_token_prompts=config.use_token_prompts,
-        tokenize_method=config.tokenize_method,
-        exact_tokenization=config.exact_tokenization,
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         max_concurrent=config.max_concurrent,

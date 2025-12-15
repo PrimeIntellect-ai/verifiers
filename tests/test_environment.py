@@ -1,7 +1,6 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
-from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -34,9 +33,6 @@ class SimpleEnvironment(Environment):
         client,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool = False,
-        tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = None,
     ):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)

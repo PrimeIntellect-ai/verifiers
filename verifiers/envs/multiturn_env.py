@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import Literal, cast
+from typing import cast
 
 from openai import AsyncOpenAI
 
@@ -265,22 +265,11 @@ class MultiTurnEnv(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool = False,
-        tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = None,
     ) -> State:
         """
         Generate a multi-turn rollout with the environment.
         """
-        state = await self.init_state(
-            input,
-            client,
-            model,
-            sampling_args,
-            use_token_prompts,
-            tokenize_method,
-            exact_tokenization,
-        )
+        state = await self.init_state(input, client, model, sampling_args)
         try:
             state = await self.setup_state(state)
         except vf.Error as e:
