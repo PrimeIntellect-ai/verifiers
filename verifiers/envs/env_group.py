@@ -275,10 +275,17 @@ class EnvGroup(vf.Environment):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
         return await env.rollout(
-            input, client, model, sampling_args, use_token_prompts, tokenize_method
+            input,
+            client,
+            model,
+            sampling_args,
+            use_token_prompts,
+            tokenize_method,
+            exact_tokenization,
         )
 
     def get_env_for_task(self, task: str) -> vf.Environment:
