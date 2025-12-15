@@ -68,9 +68,11 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
 
     printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
     printable_completions = [messages_to_printable(c) for c in results["completion"]]
+    errors = [s.get("error") for s in results["state"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
+        errors,
         results["reward"],
         step=0,
         num_samples=num_samples,
@@ -82,17 +84,16 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     )
     r = results["metadata"]["rollouts_per_example"]
     n = len(results["reward"]) // r
+    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
-        # rounded to 3 decimal places
-        trials = [round(results["reward"][(i * n) + j], 3) for j in range(n)]
+        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
     for k in results["metrics"]:
         v = results["metrics"][k]
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
-            # rounded to 3 decimal places
-            trials = [round(v[(i * n) + j], 3) for j in range(n)]
+            trials = [round(v[i + (j * r)], 3) for j in range(n)]
             out = f"r{i + 1}: {trials}"
             print(out)
 
@@ -168,12 +169,14 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
     clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
     save_info = any(info != {} for info in results["info"])
     save_answer = any(answer != "" for answer in results["answer"])
+    errors = [s.get("error") for s in results["state"]]
     results_dict = {
         "example_id": results["example_id"],
         "prompt": clean_prompts,
         "completion": clean_completions,
         "task": results["task"],
         "reward": results["reward"],
+        "error": [repr(e) if e is not None else None for e in errors],
         "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
         "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
         "total_ms": [s["timing"]["total_ms"] for s in results["state"]],

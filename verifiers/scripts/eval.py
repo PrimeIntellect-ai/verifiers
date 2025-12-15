@@ -3,6 +3,7 @@ import asyncio
 import importlib.resources
 import json
 import logging
+import os
 from typing import Any, Dict
 
 try:
@@ -219,7 +220,7 @@ def main():
     )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else "INFO")
+    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
     # apply defaults: CLI args take precedence, then env defaults, then global defaults
     env_defaults = get_env_eval_defaults(args.env_id)

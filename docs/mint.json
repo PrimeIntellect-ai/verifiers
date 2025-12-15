@@ -1,0 +1,17 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "navigation": [
+    {
+      "group": "Verifiers",
+      "pages": [
+        "source/index",
+        "source/overview",
+        "source/environments",
+        "source/components",
+        "source/training",
+        "source/development",
+        "source/api_reference"
+      ]
+    }
+  ]
+}

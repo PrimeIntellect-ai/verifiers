@@ -232,6 +232,27 @@ class EnvGroup(vf.Environment):
         )
         return dataset
 
+    def format_completion_dataset(
+        self, dataset: Dataset, map_kwargs: dict = {}
+    ) -> Dataset:
+        """
+        Ensure unique example_ids and mapped tasks across concatenated datasets.
+        """
+        # ensure unique example_ids across concatenated datasets
+        if "example_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["example_id"])
+
+        def add_example_id(example, i):
+            example["example_id"] = i
+            return example
+
+        dataset = dataset.map(add_example_id, with_indices=True, **map_kwargs)
+        assert "example_id" in dataset.column_names
+        assert "task" in dataset.column_names, (
+            "Task column should be set during concatenation in __init__"
+        )
+        return dataset
+
     async def init_state(
         self,
         input: RolloutInput,
