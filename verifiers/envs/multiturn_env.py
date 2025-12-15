@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import Literal
+from typing import Literal, cast
 
 from openai import AsyncOpenAI
 
@@ -153,10 +153,13 @@ class MultiTurnEnv(vf.Environment):
                 # that did not produce message delimiting tokens.
                 if getattr(self, "cached_suffix_ids", None) is None:
                     dummy_content = "World!"
-                    dummy_messages: vf.Messages = [
-                        {"role": "user", "content": "Hello"},
-                        {"role": "assistant", "content": dummy_content},
-                    ]
+                    dummy_messages = cast(
+                        vf.Messages,
+                        [
+                            {"role": "user", "content": "Hello"},
+                            {"role": "assistant", "content": dummy_content},
+                        ],
+                    )
                     dummy_content_ids = await tokenize(
                         client=client,
                         messages=dummy_content,
