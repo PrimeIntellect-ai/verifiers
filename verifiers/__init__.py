@@ -140,7 +140,7 @@ if TYPE_CHECKING:
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .envs.textarena_env import TextArenaEnv  # noqa: F401
-    from .envs.mcp.mcp_env import MCPEnv  # noqa: F401
+    from .envs.mcp_env import MCPEnv  # noqa: F401
     from .rl.trainer import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,
