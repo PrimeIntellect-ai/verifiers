@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent, Tool
 
 from .models import MCPServerConfig
@@ -35,27 +36,55 @@ class MCPServerConnection:
 
     async def _get_connection(self):
         try:
-            server_params = StdioServerParameters(
-                command=self.config.command,
-                args=self.config.args or [],
-                env=self.config.env,
-            )
+            if self.config.transport == "stdio":
+                if not self.config.command:
+                    raise ValueError("stdio transport requires 'command'")
+                server_params = StdioServerParameters(
+                    command=self.config.command,
+                    args=self.config.args or [],
+                    env=self.config.env,
+                )
 
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    self.session = session
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        self.session = session
 
-                    await session.initialize()
+                        await session.initialize()
 
-                    tools_response = await session.list_tools()
+                        tools_response = await session.list_tools()
 
-                    for tool in tools_response.tools:
-                        self.tools[tool.name] = tool
+                        for tool in tools_response.tools:
+                            self.tools[tool.name] = tool
 
-                    self._ready.set()
+                        self._ready.set()
 
-                    while True:
-                        await asyncio.sleep(1)
+                        while True:
+                            await asyncio.sleep(1)
+
+            elif self.config.transport == "http":
+                if not self.config.url:
+                    raise ValueError("http transport requires 'url'")
+
+                async with streamablehttp_client(
+                    self.config.url,
+                    headers=self.config.headers or {},
+                ) as (read, write, _get_session_id):
+                    async with ClientSession(read, write) as session:
+                        self.session = session
+
+                        await session.initialize()
+
+                        tools_response = await session.list_tools()
+
+                        for tool in tools_response.tools:
+                            self.tools[tool.name] = tool
+
+                        self._ready.set()
+
+                        while True:
+                            await asyncio.sleep(1)
+            else:
+                raise ValueError(f"Unknown transport: {self.config.transport}")
 
         except asyncio.CancelledError:
             raise
