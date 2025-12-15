@@ -1,6 +1,6 @@
 # Verifiers MCP Environments
 
-![MCP Environment Overview](../../../../mcp-env-v2/public/mcp-env.png)
+![MCP Environment Overview](../../../../mcp-env-v2/public/mcp-envs.png)
 
 The MCP Env abstraction aims to allow easily implementing Verifiers environments that use MCP servers and their corresponding tools instead of manually implementing tools.  MCP itself supports a few different paths for server builders depending on their use case and the MCP env should enable many of these setups.  
 
