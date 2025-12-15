@@ -77,6 +77,7 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = True,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -96,6 +97,7 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
         self.use_token_prompts = use_token_prompts
         self.tokenize_method = tokenize_method
+        self.exact_tokenization = exact_tokenization
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -548,6 +550,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = True,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -567,6 +570,7 @@ class Environment(ABC):
         state["sampling_args"] = sampling_args
         state["use_token_prompts"] = use_token_prompts or self.use_token_prompts
         state["tokenize_method"] = tokenize_method or self.tokenize_method
+        state["exact_tokenization"] = exact_tokenization or self.exact_tokenization
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -603,6 +607,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = True,
     ) -> State:
         """
         Run a rollout for a given input.
@@ -670,6 +675,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ) -> State:
         """
         Run a rollout with a semaphore (generation only, no scoring).
@@ -682,6 +688,7 @@ class Environment(ABC):
                 sampling_args,
                 use_token_prompts,
                 tokenize_method,
+                exact_tokenization,
             )
         return state
 
@@ -695,6 +702,7 @@ class Environment(ABC):
         score_sem: AsyncContextManager,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
         **kwargs,
     ) -> list[State]:
         """Generate and score one group."""
@@ -707,6 +715,7 @@ class Environment(ABC):
                 gen_sampling_args,
                 use_token_prompts,
                 tokenize_method,
+                exact_tokenization,
             )
             for input in group_inputs
         ]
@@ -725,6 +734,7 @@ class Environment(ABC):
         start_time: float,
         use_token_prompts: bool,
         tokenize_method: Literal["local", "vllm"] | None,
+        exact_tokenization: bool | None,
     ) -> GenerateOutputs:
         """Prepare GenerateOutputs from a list of completed states."""
         # Determine path_to_save
@@ -772,6 +782,7 @@ class Environment(ABC):
             path_to_save=path_to_save,
             use_token_prompts=use_token_prompts,
             tokenize_method=tokenize_method,
+            exact_tokenization=exact_tokenization,
         )
 
         return GenerateOutputs(
@@ -803,6 +814,7 @@ class Environment(ABC):
         use_tqdm: bool = True,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs by group.
@@ -851,6 +863,7 @@ class Environment(ABC):
                     score_sem,
                     use_token_prompts,
                     tokenize_method,
+                    exact_tokenization,
                 )
             ): i
             for i, group in enumerate(group_list)
@@ -893,6 +906,7 @@ class Environment(ABC):
                         start_time,
                         use_token_prompts,
                         tokenize_method,
+                        exact_tokenization,
                     )
                     self.logger.debug(
                         f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
@@ -915,6 +929,7 @@ class Environment(ABC):
             start_time,
             use_token_prompts,
             tokenize_method,
+            exact_tokenization,
         )
 
         # Save if requested
@@ -981,6 +996,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -1003,6 +1019,7 @@ class Environment(ABC):
             sampling_args=sampling_args,
             use_token_prompts=use_token_prompts,
             tokenize_method=tokenize_method,
+            exact_tokenization=exact_tokenization,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
@@ -1020,6 +1037,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = True,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
@@ -1040,6 +1058,7 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             tokenize_method=tokenize_method,
+            exact_tokenization=exact_tokenization,
             max_concurrent=max_concurrent,
             max_concurrent_generation=max_concurrent_generation,
             max_concurrent_scoring=max_concurrent_scoring,
@@ -1061,6 +1080,10 @@ class Environment(ABC):
     def set_tokenize_method(self, tokenize_method: Literal["local", "vllm"]) -> None:
         """Set the tokenization method for this environment."""
         self.tokenize_method = tokenize_method
+
+    def set_exact_tokenization(self, exact_tokenization: bool) -> None:
+        """Set whether to use exact tokenization for this environment."""
+        self.exact_tokenization = exact_tokenization
 
     make_dataset = make_dataset
 

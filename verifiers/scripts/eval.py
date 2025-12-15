@@ -232,6 +232,12 @@ def main():
         default=None,
         help="Whether to use local or remote (vLLM) tokenization. Only applicable if using token prompts. If None, will use vllm tokenization by default.",
     )
+    parser.add_argument(
+        "--exact-tokenization",
+        "-et",
+        action="store_true",
+        help="Whether to use exact tokenization. Exact tokenization means that the tokens prompt matches the chat template *exactly*, but it is more costly to compute.",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -300,6 +306,8 @@ def main():
             merged_sampling_args["extra_body"] = extra_body
         if args.tokenize_method is None:
             args.tokenize_method = "vllm"
+        if args.exact_tokenization is None:
+            args.exact_tokenization = True
         if args.tokenize_method == "local":
             try:
                 import transformers  # noqa
@@ -315,6 +323,11 @@ def main():
                 f"tokenize_method={args.tokenize_method} is only applicable if using token prompts. Ignoring."
             )
             args.tokenize_method = None
+        if args.exact_tokenization is not None:
+            logger.warning(
+                f"exact_tokenization={args.exact_tokenization} is only applicable if using token prompts. Ignoring."
+            )
+            args.exact_tokenization = None
 
     # Build headers from repeated --header flags
     merged_headers: Dict[str, str] = {}
@@ -341,6 +354,7 @@ def main():
         env_dir_path=args.env_dir_path,
         use_token_prompts=args.use_token_prompts,
         tokenize_method=args.tokenize_method,
+        exact_tokenization=args.exact_tokenization,
         # evaluation
         model=args.model,
         client_config=client_config,

@@ -67,9 +67,10 @@ class MultiTurnEnv(vf.Environment):
             return concat_messages([messages, env_response])
 
     async def get_prompt_messages_and_ids(
-        self, state: State, client: AsyncOpenAI, exact_tokenization: bool = True
+        self, state: State, client: AsyncOpenAI
     ) -> tuple[Messages, list[int]]:
         assert state["tokenize_method"] is not None
+        assert state["exact_tokenization"] is not None
         tokenize = (
             tokenize_vllm if state["tokenize_method"] == "vllm" else tokenize_local
         )
@@ -98,7 +99,7 @@ class MultiTurnEnv(vf.Environment):
             env_response = await self.env_response(messages, state)
             messages_and_env_response = concat_messages([messages, env_response])
 
-            if not exact_tokenization:
+            if not state["exact_tokenization"]:
                 env_response_ids = await tokenize(
                     client=client,
                     messages=env_response,
@@ -208,12 +209,19 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ) -> State:
         """
         Generate a multi-turn rollout with the environment.
         """
         state = await self.init_state(
-            input, client, model, sampling_args, use_token_prompts, tokenize_method
+            input,
+            client,
+            model,
+            sampling_args,
+            use_token_prompts,
+            tokenize_method,
+            exact_tokenization,
         )
         try:
             state = await self.setup_state(state)

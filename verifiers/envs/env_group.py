@@ -301,3 +301,9 @@ class EnvGroup(vf.Environment):
         self.tokenize_method = tokenize_method
         for env in self.envs:
             env.set_tokenize_method(tokenize_method)
+
+    def set_exact_tokenization(self, exact_tokenization: bool) -> None:
+        """Set whether to use exact tokenization for this environment group and all sub-environments."""
+        self.exact_tokenization = exact_tokenization
+        for env in self.envs:
+            env.set_exact_tokenization(exact_tokenization)
