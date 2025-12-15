@@ -417,7 +417,7 @@ class RLMEnv(SandboxEnv):
         interception_host: str | None = None,
         interception_port: int = 8766,
         pip_install_packages: str = "",
-        max_startup_wait_seconds: int = 30,
+        max_startup_wait_seconds: int = 120,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -956,10 +956,70 @@ if [ ! -f "{self._WORKER_PATH}" ]; then
     exit 1
 fi
 
-nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
+# Small delay to ensure filesystem is fully synced before reading script
+sleep 0.5
+
+# Retry starting the worker up to 3 times
+# Use touch to pre-create log file, bash -c for reliable backgrounding,
+# and check for content (-s) rather than just existence (-f)
+for attempt in 1 2 3; do
+    rm -f /tmp/rlm_worker.log
+    touch /tmp/rlm_worker.log
+    bash -c "nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &"
+    sleep 0.5
+    if [ -s /tmp/rlm_worker.log ]; then
+        break
+    fi
+    echo "Worker start attempt $attempt failed (log empty), retrying..." >&2
+    sleep 0.5
+done
+
+if [ ! -s /tmp/rlm_worker.log ]; then
+    echo "Failed to start worker after 3 attempts (log still empty)" >&2
+    cat /tmp/rlm_worker.log 2>&1 || echo "Could not read log"
+    exit 1
+fi
 """
         await self._execute_command_with_retry(sandbox_id, start_worker_cmd)
         await self._wait_for_worker_ready(sandbox_id)
+
+    async def _prepare_sandbox_and_start_worker(
+        self, state: State, context_dict: dict[str, Any]
+    ) -> None:
+        """Write files to sandbox and start the worker process."""
+        sandbox_id = state["sandbox_id"]
+        await self.sandbox_client.wait_for_creation(sandbox_id)
+        await self._write_json_to_sandbox(
+            sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
+        )
+        await self._write_json_to_sandbox(
+            sandbox_id,
+            {"ready": False, "content": ""},
+            self._ANSWER_FILE,
+            "rlm_answer.json",
+        )
+        await self._start_worker(state)
+
+    async def _recreate_sandbox(self, state: State) -> State:
+        """Delete the current sandbox and create a fresh one."""
+        old_sandbox_id = state.get("sandbox_id")
+        if old_sandbox_id:
+            # Remove from active sandboxes and delete
+            self.active_sandboxes.discard(old_sandbox_id)
+            try:
+                await self.sandbox_client.delete(old_sandbox_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
+
+        # Create new sandbox via parent's parent (SandboxEnv.setup_state)
+        # We need to call the grandparent to avoid re-running RLM setup
+        sandbox = await self.with_retry(self.sandbox_client.create)(
+            self.sandbox_request
+        )
+        self.active_sandboxes.add(sandbox.id)
+        logger.debug(f"Created replacement sandbox {sandbox.id}")
+        state["sandbox_id"] = sandbox.id
+        return state
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
@@ -978,28 +1038,30 @@ nohup python -u {self._WORKER_PATH} > /tmp/rlm_worker.log 2>&1 &
         # 3. Register rollout for sub-LLM routing
         self._register_rollout(state, rollout_id)
 
-        # 4. Build and write context
+        # 4. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
         context_dict = self._build_context_dict(context_data)
         state["rlm_context"] = context_dict
 
-        # 5. Prepare sandbox and start worker
-        await self.sandbox_client.wait_for_creation(sandbox_id)
-        await self._write_json_to_sandbox(
-            sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
-        )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            {"ready": False, "content": ""},
-            self._ANSWER_FILE,
-            "rlm_answer.json",
-        )
+        # 5. Prepare sandbox and start worker (with retry using fresh sandbox)
+        max_sandbox_retries = 2
 
-        # 6. Start worker
-        await self._start_worker(state)
+        for attempt in range(max_sandbox_retries):
+            try:
+                await self._prepare_sandbox_and_start_worker(state, context_dict)
+                break  # Success
+            except RuntimeError as e:
+                if "worker failed to start" in str(e) and attempt < max_sandbox_retries - 1:
+                    logger.warning(
+                        f"Worker startup failed (attempt {attempt + 1}/{max_sandbox_retries}), "
+                        f"recreating sandbox..."
+                    )
+                    state = await self._recreate_sandbox(state)
+                else:
+                    raise
+
         state["rlm_worker_ready"] = True
-
         return state
 
     def _build_context_dict(self, context_data: Any) -> dict[str, Any]:
