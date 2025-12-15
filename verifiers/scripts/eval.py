@@ -234,7 +234,7 @@ def main():
     parser.add_argument(
         "--exact-tokenization",
         "-et",
-        type=lambda t: t.lower() == "true",
+        action="store_true",
         default=None,
         help="Whether to use exact tokenization. Exact tokenization is more precise, but also more costly.",
     )
@@ -307,7 +307,7 @@ def main():
         if args.tokenize_method is None:
             args.tokenize_method = "vllm"
         if args.exact_tokenization is None:
-            args.exact_tokenization = True
+            args.exact_tokenization = False
         if args.tokenize_method == "local":
             try:
                 import transformers  # noqa
