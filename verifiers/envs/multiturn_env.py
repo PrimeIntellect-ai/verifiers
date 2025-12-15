@@ -136,7 +136,7 @@ class MultiTurnEnv(vf.Environment):
                 env_response_ids = await tokenize(
                     client=client,
                     messages=env_response,
-                    tools=state["oai_tools"],
+                    tools=None,
                     model=state["model"],
                 )
 
