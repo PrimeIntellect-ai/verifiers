@@ -75,7 +75,7 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
         **kwargs,
@@ -542,7 +542,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> State:
@@ -562,11 +562,7 @@ class Environment(ABC):
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
-        state["use_token_prompts"] = (
-            use_token_prompts
-            if use_token_prompts is not None
-            else self.use_token_prompts
-        )
+        state["use_token_prompts"] = use_token_prompts or self.use_token_prompts
         state["tokenize_method"] = (
             tokenize_method if tokenize_method is not None else self.tokenize_method
         )
@@ -609,7 +605,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> State:
@@ -677,7 +673,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> State:
@@ -704,7 +700,7 @@ class Environment(ABC):
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
         **kwargs,
@@ -816,7 +812,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         use_tqdm: bool = True,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> GenerateOutputs:
@@ -998,7 +994,7 @@ class Environment(ABC):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
         num_examples: int = -1,
@@ -1039,7 +1035,7 @@ class Environment(ABC):
         client: OpenAI | AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
         num_examples: int = -1,

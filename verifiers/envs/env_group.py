@@ -259,9 +259,20 @@ class EnvGroup(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool = False,
+        tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.init_state(input, client, model, sampling_args)
+        return await env.init_state(
+            input,
+            client,
+            model,
+            sampling_args,
+            use_token_prompts,
+            tokenize_method,
+            exact_tokenization,
+        )
 
     async def setup_state(self, state: vf.State) -> vf.State:
         env = self.get_env_for_task(state["task"])
@@ -273,7 +284,7 @@ class EnvGroup(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool | None = None,
+        use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> vf.State:
