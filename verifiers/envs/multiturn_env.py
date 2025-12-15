@@ -76,7 +76,7 @@ class MultiTurnEnv(vf.Environment):
         )
         if len(state["trajectory"]) == 0:
             logger.warning(
-                "Calling `get_prompt_messages_and_ids` on the initial prompt. This creates unnecessary overhead, and should not happen. It is save to directly call /v1/chat/completions because no retokenization can happen on the initial prompt."
+                "Calling `get_prompt_messages_and_ids` in first turn. This creates unnecessary overhead, and should not happen."
             )
             prompt_messages = state["prompt"]
             prompt_ids = await tokenize(
