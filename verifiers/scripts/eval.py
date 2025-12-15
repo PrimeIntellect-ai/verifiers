@@ -221,7 +221,6 @@ def main():
     parser.add_argument(
         "--use-token-prompts",
         "-utp",
-        default=False,
         action="store_true",
         help="Use token prompts. Requires that the inference server supports token-in prompts.",
     )
@@ -235,8 +234,9 @@ def main():
     parser.add_argument(
         "--exact-tokenization",
         "-et",
-        action="store_true",
-        help="Whether to use exact tokenization. Exact tokenization means that the tokens prompt matches the chat template *exactly*, but it is more costly to compute.",
+        type=lambda t: t.lower() == "true",
+        default=None,
+        help="Whether to use exact tokenization. Exact tokenization is more precise, but also more costly.",
     )
     args = parser.parse_args()
 

@@ -123,6 +123,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         sampling_args=config.sampling_args,
         use_token_prompts=config.use_token_prompts,
         tokenize_method=config.tokenize_method,
+        exact_tokenization=config.exact_tokenization,
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         max_concurrent=config.max_concurrent,

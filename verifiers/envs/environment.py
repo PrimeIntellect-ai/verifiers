@@ -77,7 +77,7 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = True,
+        exact_tokenization: bool | None = None,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -550,7 +550,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = True,
+        exact_tokenization: bool | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
@@ -568,9 +568,19 @@ class Environment(ABC):
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
-        state["use_token_prompts"] = use_token_prompts or self.use_token_prompts
-        state["tokenize_method"] = tokenize_method or self.tokenize_method
-        state["exact_tokenization"] = exact_tokenization or self.exact_tokenization
+        state["use_token_prompts"] = (
+            use_token_prompts
+            if use_token_prompts is not None
+            else self.use_token_prompts
+        )
+        state["tokenize_method"] = (
+            tokenize_method if tokenize_method is not None else self.tokenize_method
+        )
+        state["exact_tokenization"] = (
+            exact_tokenization
+            if exact_tokenization is not None
+            else self.exact_tokenization
+        )
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -607,7 +617,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = True,
+        exact_tokenization: bool | None = None,
     ) -> State:
         """
         Run a rollout for a given input.
@@ -1037,7 +1047,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         use_token_prompts: bool = False,
         tokenize_method: Literal["local", "vllm"] | None = None,
-        exact_tokenization: bool | None = True,
+        exact_tokenization: bool | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
