@@ -156,13 +156,6 @@ async def tokenize_vllm(
         _TOKENS_CLIENT = client.copy(base_url=url_without_v1)
     tokens_client = _TOKENS_CLIENT
 
-    body = dict(
-        model=model,
-        messages=messages,
-        tools=tools,
-        **extra_kwargs,
-    )
-
     # Copy from vllm/entrypoints/openai/protocol.py
     class TokenizeResponse(BaseModel):
         count: int
@@ -171,9 +164,25 @@ async def tokenize_vllm(
         token_strs: Optional[list[str]] = None
 
     try:
-        tokenize_response = await tokens_client.post(
-            "/tokenize", body=body, cast_to=TokenizeResponse
-        )
+        if isinstance(messages, str):
+            body = dict(
+                model=model,
+                prompt=messages,
+                **extra_kwargs,
+            )
+            tokenize_response = await tokens_client.post(
+                "/tokenize", body=body, cast_to=TokenizeResponse
+            )
+        else:
+            body = dict(
+                model=model,
+                messages=messages,
+                tools=tools,
+                **extra_kwargs,
+            )
+            tokenize_response = await tokens_client.post(
+                "/tokenize", body=body, cast_to=TokenizeResponse
+            )
         return tokenize_response.tokens
     except Exception as e:
         raise vf.ModelError(e)
