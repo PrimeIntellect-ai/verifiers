@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from abc import abstractmethod
 from typing import Literal
 
@@ -88,7 +87,6 @@ class MultiTurnEnv(vf.Environment):
             )
             return prompt_messages, prompt_ids
         else:
-            t0 = time.perf_counter()
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
             prev_turn_tokens = state["trajectory"][-1]["tokens"]
@@ -98,14 +96,9 @@ class MultiTurnEnv(vf.Environment):
             prev_turn_ids = prev_turn_prompt_ids + prev_turn_completion_ids
 
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-
-            t1 = time.perf_counter()
             env_response = await self.env_response(messages, state)
-            env_response_ms = (time.perf_counter() - t1) * 1000
-
             messages_and_env_response = concat_messages([messages, env_response])
 
-            t2 = time.perf_counter()
             if not state["exact_tokenization"]:
                 env_response_ids = await tokenize(
                     client=client,
@@ -182,13 +175,6 @@ class MultiTurnEnv(vf.Environment):
             prompt_messages = messages_and_env_response
             prompt_ids = prev_turn_ids + env_response_ids
 
-            tokenize_ms = (time.perf_counter() - t2) * 1000
-            total_ms = (time.perf_counter() - t0) * 1000
-            logger.debug(
-                f"[TIMING] get_prompt_messages_and_ids: "
-                f"env_response={env_response_ms:.1f}ms, tokenize={tokenize_ms:.1f}ms, total={total_ms:.1f}ms"
-            )
-
             return prompt_messages, prompt_ids
 
     async def add_model_response(
@@ -243,43 +229,17 @@ class MultiTurnEnv(vf.Environment):
             state["error"] = e
         while not await self.is_completed(state):
             try:
-                turn_start = time.perf_counter()
-                turn_num = len(state["trajectory"])
-
-                if state["use_token_prompts"] and turn_num > 0:
-                    prompt_start = time.perf_counter()
+                if state["use_token_prompts"] and len(state["trajectory"]) > 0:
                     (
                         prompt_messages,
                         prompt_ids,
                     ) = await self.get_prompt_messages_and_ids(state, client)
-                    prompt_ms = (time.perf_counter() - prompt_start) * 1000
-
-                    gen_start = time.perf_counter()
                     response = await self.get_model_response(
                         state, prompt_messages, prompt_ids=prompt_ids
                     )
-                    gen_ms = (time.perf_counter() - gen_start) * 1000
-
-                    total_ms = (time.perf_counter() - turn_start) * 1000
-                    logger.debug(
-                        f"[TIMING] Turn {turn_num} (token_prompts): "
-                        f"prompt_build={prompt_ms:.1f}ms, generate={gen_ms:.1f}ms, total={total_ms:.1f}ms"
-                    )
                 else:
-                    prompt_start = time.perf_counter()
                     prompt_messages = await self.get_prompt_messages(state)
-                    prompt_ms = (time.perf_counter() - prompt_start) * 1000
-
-                    gen_start = time.perf_counter()
                     response = await self.get_model_response(state, prompt_messages)
-                    gen_ms = (time.perf_counter() - gen_start) * 1000
-
-                    total_ms = (time.perf_counter() - turn_start) * 1000
-                    logger.debug(
-                        f"[TIMING] Turn {turn_num} (baseline): "
-                        f"prompt_build={prompt_ms:.1f}ms, generate={gen_ms:.1f}ms, total={total_ms:.1f}ms"
-                    )
-
                 await self.add_model_response(state, prompt_messages, response)
             except vf.Error as e:
                 state["error"] = e
