@@ -207,7 +207,7 @@ class MultiTurnEnv(vf.Environment):
         client: AsyncOpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
-        use_token_prompts: bool = False,
+        use_token_prompts: bool | None = None,
         tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
     ) -> State:

@@ -227,7 +227,7 @@ class EvalConfig(BaseModel):
     env_dir_path: str
     use_token_prompts: bool = False
     tokenize_method: Literal["local", "vllm"] | None
-    exact_tokenization: bool | None = True
+    exact_tokenization: bool | None = None
     # evaluation
     model: str
     client_config: ClientConfig
