@@ -6,13 +6,14 @@ from mcp.types import Tool
 from .streaming_http import StreamingHTTPTransport
 from ..mcp_utils.models import MCPServerConfig
 
+
 class SandboxTransport(StreamingHTTPTransport):
     def __init__(
-        self, 
+        self,
         config: MCPServerConfig,
         sandbox_client,
         sandbox_request,
-        port_to_expose,
+        port_to_expose: Optional[int] = None,
         **kwargs
     ):
         self.sandbox_client = sandbox_client
@@ -21,59 +22,73 @@ class SandboxTransport(StreamingHTTPTransport):
         self.port_to_expose: Optional[int] = port_to_expose
 
         self.port_exposed: bool = False
-        self.url: str = None
-        self.exposure_id: str = None
+        self.exposure_id: Optional[str] = None
 
         super().__init__(config, url="", **kwargs)
 
-
-    async def connect(self) -> Dict[str, Tool]:
+    async def create_sandbox(self) -> str:
+        """Create the sandbox and wait for it to be ready."""
         sandbox = await self.sandbox_client.create(self.sandbox_request)
         self.sandbox_id = sandbox.id
-
         await self.sandbox_client.wait_for_creation(self.sandbox_id)
+        print(f"[SANDBOX] Sandbox created: {self.sandbox_id}", flush=True)
+        return self.sandbox_id
 
-        if self.port_to_expose:
-            await self.expose_sandbox()
+    async def run_command(self, command: str) -> str:
+        """Run a command in the sandbox."""
+        if not self.sandbox_id:
+            raise RuntimeError("Sandbox not created yet")
+        result = await self.sandbox_client.execute_command(self.sandbox_id, command)
+        return result
 
-        start_cmd = f"nohup {self.config.command} {' '.join(self.config.args or [])} > /tmp/mcp.log 2>&1 &"
-        await self.sandbox_client.execute_command(
-            self.sandbox_id,
-            start_cmd
-        )
+    async def run_setup_commands(self) -> None:
+        """Run setup commands before starting the MCP server."""
+        if not self.config.setup_commands:
+            return
+        print(f"[SANDBOX] Running setup commands: {self.config.setup_commands}", flush=True)
+        for cmd in self.config.setup_commands:
+            await self.run_command(cmd)
 
-        # give the MCP server time to start
-        await asyncio.sleep(5)
+    async def start_mcp_server(self) -> None:
+        """Start the MCP server process in the sandbox."""
+        print(f"[SANDBOX] Starting MCP server...", flush=True)
+        # Build env vars string
+        env_str = ""
+        if self.config.env:
+            env_str = " ".join(f"{k}={v}" for k, v in self.config.env.items()) + " "
 
-        # debug: check if server started
-        ps_result = await self.sandbox_client.execute_command(self.sandbox_id, "ps aux")
-        print(f"[DEBUG] Processes: {ps_result}")
+        cmd = f"{self.config.command} {' '.join(self.config.args or [])}"
+        bg_cmd = f"{env_str}nohup {cmd} > /tmp/mcp.log 2>&1 &"
+        await self.run_command(bg_cmd)
+        await asyncio.sleep(3)
 
-        log_result = await self.sandbox_client.execute_command(self.sandbox_id, "cat /tmp/mcp.log 2>/dev/null || echo 'no log'")
-        print(f"[DEBUG] MCP log: {log_result}")
-
-        curl_result = await self.sandbox_client.execute_command(self.sandbox_id, "curl -s http://localhost:3000/mcp 2>&1 || echo 'curl failed'")
-        print(f"[DEBUG] Curl localhost: {curl_result}")
-
-        return await super().connect()
-
-    async def expose_sandbox(self) -> None:
-        exposed_sandbox = await self.sandbox_client.expose(
-            self.sandbox_id,
-            self.port_to_expose
-        )
-        # dns for port exposure takes some time so we wait
-        await asyncio.sleep(10)
+    async def expose_port(self) -> str:
+        """Expose a port on the sandbox and return the URL."""
+        print(f"[SANDBOX] Exposing port {self.port_to_expose}...", flush=True)
+        exposed = await self.sandbox_client.expose(self.sandbox_id, self.port_to_expose)
         self.port_exposed = True
-        self.url = f"{exposed_sandbox.url}/mcp"
-        self.exposure_id = exposed_sandbox.exposure_id
+        self.exposure_id = exposed.exposure_id
+        self.url = f"{exposed.url}/mcp"
+        print(f"[SANDBOX] Exposed URL: {self.url}")
 
+        # wait for DNS propagation
+        print("[SANDBOX] Waiting 10s for DNS...")
+        await asyncio.sleep(10)
+        print("[SANDBOX] DNS wait done")
+        return self.url
+
+    async def connect(self) -> Dict[str, Tool]:
+        """Connect to the MCP server (assumes sandbox is already set up)."""
+        print(f"[SANDBOX] Connecting to {self.url}...")
+        result = await super().connect()
+        print(f"[SANDBOX] Connected! Got {len(result)} tools")
+        return result
 
     async def disconnect(self) -> None:
-        await super().disconnect()
-
-        if self.sandbox_id:
-            await self.sandbox_client.delete(self.sandbox_id)
-            self.sandbox_id = None
-
-
+        """Disconnect from MCP server and delete the sandbox."""
+        try:
+            await super().disconnect()
+        finally:
+            if self.sandbox_id:
+                await self.sandbox_client.delete(self.sandbox_id)
+                self.sandbox_id = None

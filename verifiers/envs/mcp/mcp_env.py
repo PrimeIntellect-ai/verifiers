@@ -8,6 +8,7 @@ from .transports.stdio import StdioTransport
 from .transports.streaming_http import StreamingHTTPTransport
 from .mcp_utils.models import MCPServerConfig
 from .mcp_utils.mcp_tool_wrapper import MCPToolWrapper
+from .mcp_utils.mcp_env_utils import validate_config, get_server_url, create_transport
 
 import verifiers as vf
 from verifiers import Messages, State
@@ -66,7 +67,7 @@ class MCPEnv(vf.StatefulToolEnv):
         self.sandbox_client: Optional[AsyncSandboxClient] = None
         self.active_sandboxes: set[str] = set()
 
-        self._validate_config()
+        validate_config(transport_type, self.mcp_servers, self.connection_scope)
 
         self.session_transports: Dict[str, MCPTransport] = {}
 
@@ -96,110 +97,6 @@ class MCPEnv(vf.StatefulToolEnv):
                 lambda _, __: (self.cleanup_sandboxes(), exit(143))
             )
 
-    def _get_server_url(self, config: MCPServerConfig) -> str:
-        """Get URL for a server, checking config.url first, then http_urls dict."""
-        if config.url:
-            return config.url
-        if config.name in self.http_urls:
-            return self.http_urls[config.name]
-        raise ValueError(
-            f"No URL found for server '{config.name}'. "
-            f"Provide either 'url' in server config or add to 'http_urls' dict."
-        )
-
-    def _validate_config(self):
-        """Validate configuration based on transport type."""
-        if self.transport_type == "stdio":
-            # stdio requires command
-            missing_commands = [
-                s.name for s in self.mcp_servers
-                if not s.command
-            ]
-            if missing_commands:
-                raise ValueError(
-                    f"'command' is required for stdio transport. "
-                    f"Missing for servers: {missing_commands}"
-                )
-
-        elif self.transport_type == "http":
-            # http requires url (either in config or http_urls dict)
-            missing_urls = [
-                s.name for s in self.mcp_servers
-                if not s.url and s.name not in self.http_urls
-            ]
-            if missing_urls:
-                raise ValueError(
-                    f"URL required for HTTP transport. "
-                    f"Missing for servers: {missing_urls}. "
-                    f"Provide 'url' in server config or add to 'http_urls' dict."
-                )
-
-        elif self.transport_type == "sandbox":
-            # sandbox requires command for starting MCP server in sandbox
-            missing_commands = [
-                s.name for s in self.mcp_servers
-                if not s.command
-            ]
-            if missing_commands:
-                raise ValueError(
-                    f"'command' is required for sandbox transport. "
-                    f"Missing for servers: {missing_commands}"
-                )
-            
-            if self.connection_scope == "session":
-                self.logger.warning(
-                    "Using session scope with sandbox transport. "
-                    "This will create one sandbox for all rollouts."
-                )
-
-    async def create_transport(
-        self,
-        config: MCPServerConfig,
-    ) -> MCPTransport:
-        if self.transport_type == "stdio":
-            if not config.command:
-                raise ValueError(f"'command' required for stdio transport: {config.name}")
-            return StdioTransport(config)
-
-        elif self.transport_type == "http":
-            url = self._get_server_url(config)
-            return StreamingHTTPTransport(
-                config,
-                url=url,
-                timeout=self.http_timeout,
-                max_retries=self.http_max_retries
-            )
-
-        elif self.transport_type == "sandbox":
-            if not self.sandbox_client:
-                raise RuntimeError("Sandbox client not initialized")
-            if not config.command:
-                raise ValueError(f"'command' required for sandbox transport: {config.name}")
-
-            env_vars = {**self.sandbox_environment_vars, **(config.env or {})}
-
-            sandbox_request = CreateSandboxRequest(
-                name=f"mcp-{config.name}",
-                docker_image=self.sandbox_image,
-                start_command=self.sandbox_start_command,
-                cpu_cores=self.sandbox_cpu_cores,
-                memory_gb=self.sandbox_memory_gb,
-                disk_size_gb=self.sandbox_disk_size_gb,
-                timeout_minutes=self.sandbox_timeout_minutes,
-                environment_vars=env_vars,
-            )
-
-            return SandboxTransport(
-                config,
-                sandbox_client=self.sandbox_client,
-                sandbox_request=sandbox_request,
-                port_to_expose=self.sandbox_port_to_expose,
-                timeout=self.http_timeout,
-                max_retries=self.http_max_retries
-            )
-
-        else:
-            raise ValueError(f"Unknown transport type: {self.transport_type}")
 
     async def register_tools_from_transport(
         self,
@@ -231,25 +128,24 @@ class MCPEnv(vf.StatefulToolEnv):
             self.skipped_args[tool_name] = []
 
     async def setup_session_connections(self):
-        for config in self.mcp_servers:
-            transport = await self.create_transport(config)
-            await transport.connect()
-
-            self.session_transports[config.name] = transport
+        for server_config in self.mcp_servers:
+            transport = await create_transport(self, server_config)
 
             if self.transport_type == "sandbox":
-                sandbox_transport = transport
-                if sandbox_transport.sandbox_id:
-                    self.active_sandboxes.add(sandbox_transport.sandbox_id)
+                await transport.create_sandbox()
+                self.active_sandboxes.add(transport.sandbox_id)
+                await transport.run_setup_commands()
+                await transport.start_mcp_server()
+                await transport.expose_port()
 
-            await self.register_tools_from_transport(config.name, transport)
+            await transport.connect()
+
+            self.session_transports[server_config.name] = transport
+
+            await self.register_tools_from_transport(server_config.name, transport)
 
     async def setup_state(self, state: State, **kwargs) -> State:
         state = await super().setup_state(state, **kwargs)
-
-        if self.oai_tools:
-            state["info"]["oai_tools"] = self.oai_tools
-
 
         if self.connection_scope == "session":
             if not self.session_transports:
@@ -258,24 +154,30 @@ class MCPEnv(vf.StatefulToolEnv):
         elif self.connection_scope == "rollout":
             rollout_transports = {}
 
-            for config in self.mcp_servers:
-                transport = await self.create_transport(config)
-                await transport.connect()
-
-                rollout_transports[config.name] = transport
+            for server_config in self.mcp_servers:
+                transport = await create_transport(self, server_config)
 
                 if self.transport_type == "sandbox":
-                    sandbox_transport = transport
-                    if sandbox_transport.sandbox_id:
-                        self.active_sandboxes.add(sandbox_transport.sandbox_id)
+                    await transport.create_sandbox()
+                    self.active_sandboxes.add(transport.sandbox_id)
+                    await transport.run_setup_commands()
+                    await transport.start_mcp_server()
+                    await transport.expose_port()
 
-                await self.register_tools_from_transport(config.name, transport)
+                await transport.connect()
+                print(f"[MCP_ENV] Connected, registering tools...", flush=True)
+
+                rollout_transports[server_config.name] = transport
+
+                await self.register_tools_from_transport(server_config.name, transport)
+                print(f"[MCP_ENV] Tools registered", flush=True)
 
             state["mcp_transports"] = rollout_transports
 
         if self.oai_tools:
             state["info"]["oai_tools"] = self.oai_tools
 
+        print(f"[MCP_ENV] setup_state complete", flush=True)
         return state
 
     def update_tool_args(
@@ -297,18 +199,23 @@ class MCPEnv(vf.StatefulToolEnv):
         state: State,
         **kwargs
     ) -> bool:
+        print(f"[ROLLOUT] checking if completed")
         completed = await super().is_completed(messages, state, **kwargs)
 
         if completed and self.connection_scope == "rollout":
+            print(f"[ROLLOUT] is complete and connection scope rollout, cleaning transports")
             await self._cleanup_rollout_transports(state)
 
         return completed
 
     async def _cleanup_rollout_transports(self, state: State):
         rollout_transports = state.get("mcp_transports", {})
+        print(f"[ROLLOUT] cleaning up rollout transports: {rollout_transports}", flush=True)
 
         for transport in rollout_transports.values():
+            print(f"[ROLLOUT] disconnecting transport: {transport}", flush=True)
             await transport.disconnect()
+            print(f"[ROLLOUT] disconnected transport: {transport}", flush=True)
 
             if self.transport_type == "sandbox":
                 sandbox_transport = transport

@@ -56,11 +56,8 @@ class StreamingHTTPTransport(MCPTransport):
                         self._ready.set()
                         
                         # Keep alive until cancelled
-                        try:
-                            while True:
-                                await asyncio.sleep(1)
-                        except asyncio.CancelledError:
-                            pass  # Normal shutdown
+                        while True:
+                            await asyncio.sleep(1)
                             
             except asyncio.CancelledError:
                 # Normal cancellation during shutdown

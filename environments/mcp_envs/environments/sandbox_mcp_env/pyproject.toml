@@ -20,5 +20,5 @@ num_examples = 5
 rollouts_per_example = 3
 
 [tool.uv.sources]
-verifiers = { git = "https://github.com/primeintellect-ai/verifiers", "branch" = "cdreetz/mcp-env-v2" }
+verifiers = { path = "../../../.." }
 
