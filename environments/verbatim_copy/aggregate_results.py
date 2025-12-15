@@ -48,6 +48,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
         info = r.get("info", {})
         row = {
             # Ablation parameters (from info)
+            "mode": info.get("mode", "standard"),  # Inference mode: standard, rlm, rlm_tips
             "content_type": info.get("content_type"),
             "target_length": info.get("target_length"),
             "mean_fragment_length": info.get("mean_fragment_length"),
@@ -69,10 +70,10 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
 
 def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute summary statistics grouped by ablation parameters."""
-    group_cols = ["content_type", "target_length", "mean_fragment_length"]
+    group_cols = ["mode", "content_type", "target_length", "mean_fragment_length"]
     metric_cols = ["reward", "exact_match", "char_accuracy", "levenshtein_similarity"]
     
-    # Group and compute stats
+    # Group and compute stats per content type
     summary = df.groupby(group_cols, dropna=False)[metric_cols].agg(
         ["mean", "std", "count"]
     )
@@ -81,25 +82,41 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     summary.columns = ["_".join(col).strip() for col in summary.columns.values]
     summary = summary.reset_index()
     
+    # Also create "all" aggregation across content types
+    # This aggregates results for each (mode, target_length, mean_fragment_length) combination
+    all_group_cols = ["mode", "target_length", "mean_fragment_length"]
+    all_content_summary = df.groupby(all_group_cols, dropna=False)[metric_cols].agg(
+        ["mean", "std", "count"]
+    )
+    all_content_summary.columns = [
+        "_".join(col).strip() for col in all_content_summary.columns.values
+    ]
+    all_content_summary = all_content_summary.reset_index()
+    all_content_summary["content_type"] = "all"
+    
+    # Combine both summaries
+    summary = pd.concat([summary, all_content_summary], ignore_index=True)
+    
     return summary
 
 
 def print_summary_table(summary: pd.DataFrame):
     """Print a nicely formatted summary table."""
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 100)
     print("ABLATION RESULTS SUMMARY")
-    print("=" * 80)
+    print("=" * 100)
     
     # Sort by ablation parameters for readability
     summary = summary.sort_values(
-        ["content_type", "target_length", "mean_fragment_length"],
+        ["mode", "content_type", "target_length", "mean_fragment_length"],
         na_position="first"
     )
     
-    print(f"\n{'Config':<45} {'Reward':>12} {'Exact Match':>12} {'Char Acc':>12}")
-    print("-" * 85)
+    print(f"\n{'Mode':<10} {'Config':<40} {'Reward':>12} {'Exact Match':>12} {'Char Acc':>12}")
+    print("-" * 100)
     
     for _, row in summary.iterrows():
+        mode = row.get("mode", "standard")
         content_type = row["content_type"] or "all"
         length = int(row["target_length"]) if pd.notna(row["target_length"]) else "?"
         frag = int(row["mean_fragment_length"]) if pd.notna(row["mean_fragment_length"]) else "None"
@@ -110,9 +127,9 @@ def print_summary_table(summary: pd.DataFrame):
         exact = f"{row['exact_match_mean']:.3f}±{row['exact_match_std']:.3f}"
         char_acc = f"{row['char_accuracy_mean']:.3f}±{row['char_accuracy_std']:.3f}"
         
-        print(f"{config:<45} {reward:>12} {exact:>12} {char_acc:>12}")
+        print(f"{mode:<10} {config:<40} {reward:>12} {exact:>12} {char_acc:>12}")
     
-    print("-" * 85)
+    print("-" * 100)
     print(f"Total configurations: {len(summary)}")
 
 

@@ -231,6 +231,14 @@ def load_environment(
             prompt = prompt + _ENV_TIPS
         return prompt
 
+    # Determine mode string for tracking
+    if use_rlm and include_env_tips:
+        mode = "rlm_tips"
+    elif use_rlm:
+        mode = "rlm"
+    else:
+        mode = "standard"
+
     # Transform samples into dataset format
     dataset_records = []
     for sample in samples:
@@ -243,6 +251,7 @@ def load_environment(
                 "target_length": sample["target_length"],
                 "mean_fragment_length": sample["mean_fragment_length"],
                 "id": sample["id"],
+                "mode": mode,  # Track inference mode for aggregation
             },
         }
         dataset_records.append(record)

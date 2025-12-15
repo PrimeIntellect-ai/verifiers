@@ -2,20 +2,33 @@
 """
 Plot ablation results for verbatim_copy experiments.
 
-Creates a 2x3 grid of plots:
-- Top row: Individual metrics (reward vs each ablation variable)
-- Bottom row: Aggregation views (heatmap, distribution, scatter)
+Creates a 2x3 grid of plots or individual plots:
+- Top row: Mode comparison plots (reward by mode across different dimensions)
+- Bottom row: Detailed views (heatmap, distribution, scatter)
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
+    python plot_results.py --image scatter --linear-fit --exclude-perfect
+    python plot_results.py --image content
 """
 
 import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
+
+
+# Mode styling for consistent visualization
+MODE_STYLES = {
+    "standard": {"color": "#E24A33", "marker": "o", "linestyle": "-"},
+    "rlm": {"color": "#348ABD", "marker": "s", "linestyle": "--"},
+    "rlm_tips": {"color": "#988ED5", "marker": "^", "linestyle": ":"},
+}
+
+MODE_ORDER = ["standard", "rlm", "rlm_tips"]
 
 
 def load_data(csv_path: Path) -> pd.DataFrame:
@@ -27,132 +40,147 @@ def load_data(csv_path: Path) -> pd.DataFrame:
         lambda x: "None" if pd.isna(x) else str(int(x))
     )
     
+    # Ensure mode column exists (backward compatibility)
+    if "mode" not in df.columns:
+        df["mode"] = "standard"
+    
     return df
 
 
-def plot_reward_vs_content_type(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 1: Reward vs content_type (bar chart)."""
+def plot_mode_comparison_by_content(ax: plt.Axes, df: pd.DataFrame):
+    """Plot 1: Mode comparison across content types (grouped bar chart)."""
     # Filter to target_length=500, mean_fragment_length=20
     filtered = df[(df["target_length"] == 500) & (df["mean_fragment_length"] == 20)]
     
-    # Order content types
-    order = ["words", "json", "csv", "codes", "mixed"]
-    filtered = filtered.set_index("content_type").loc[order].reset_index()
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
     
-    colors = sns.color_palette("husl", len(order))
-    bars = ax.bar(
-        filtered["content_type"],
-        filtered["reward_mean"],
-        color=colors,
-        edgecolor="black",
-        linewidth=1,
-    )
+    x = range(len(content_types))
+    width = 0.25
+    
+    for i, mode in enumerate(modes):
+        mode_data = filtered[filtered["mode"] == mode]
+        # Reindex to ensure correct order
+        rewards = []
+        for ct in content_types:
+            ct_data = mode_data[mode_data["content_type"] == ct]
+            rewards.append(ct_data["reward_mean"].values[0] if len(ct_data) > 0 else 0)
+        
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            rewards,
+            width,
+            label=mode,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
     
     ax.set_xlabel("Content Type")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Content Type\n(len=500, frag=20)")
+    ax.set_title("Mode Comparison by Content Type\n(len=500, frag=20)")
     ax.set_ylim(0, 1.1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(content_types)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    
-    # Add value labels on bars
-    for bar, val in zip(bars, filtered["reward_mean"]):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.05,
-            f"{val:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
+    ax.legend(loc="lower right", fontsize=8)
 
 
-def plot_reward_vs_length(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 2: Reward vs target_length (line plot)."""
-    # Filter to mean_fragment_length=20, show all content types
-    filtered = df[df["mean_fragment_length"] == 20]
+def plot_mode_comparison_by_length(ax: plt.Axes, df: pd.DataFrame):
+    """Plot 2: Mode comparison across target lengths (line plot)."""
+    # Filter to mean_fragment_length=20, content_type="all"
+    filtered = df[(df["mean_fragment_length"] == 20) & (df["content_type"] == "all")]
     
-    content_types = ["words", "json", "csv", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(content_types))
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
     
-    for content_type, color in zip(content_types, colors):
-        data = filtered[filtered["content_type"] == content_type].sort_values("target_length")
+    for mode in modes:
+        data = filtered[filtered["mode"] == mode].sort_values("target_length")
         if len(data) > 0:
+            style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o", "linestyle": "-"})
             ax.plot(
                 data["target_length"],
                 data["reward_mean"],
-                label=content_type,
-                marker="o",
-                color=color,
+                label=mode,
+                marker=style["marker"],
+                color=style["color"],
+                linestyle=style["linestyle"],
                 linewidth=2,
                 markersize=8,
             )
     
     ax.set_xlabel("Target Length (chars)")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Target Length\n(frag=20, by content type)")
+    ax.set_title("Mode Comparison vs Target Length\n(content=all, frag=20)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="lower left", fontsize=8)
 
 
-def plot_reward_vs_fragmentation(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 3: Reward vs mean_fragment_length (line plot)."""
-    # Filter to target_length=500, show all content types
-    filtered = df[df["target_length"] == 500]
+def plot_mode_comparison_by_fragmentation(ax: plt.Axes, df: pd.DataFrame):
+    """Plot 3: Mode comparison across fragment lengths (line plot)."""
+    # Filter to target_length=500, content_type="all"
+    filtered = df[(df["target_length"] == 500) & (df["content_type"] == "all")]
     
-    content_types = ["words", "json", "csv", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(content_types))
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
+    x_labels_set = False
     
-    for content_type, color in zip(content_types, colors):
-        data = filtered[filtered["content_type"] == content_type].copy()
+    for mode in modes:
+        data = filtered[filtered["mode"] == mode].copy()
         # Sort by fragment length, putting None first
         data["sort_key"] = data["mean_fragment_length"].fillna(-1)
         data = data.sort_values("sort_key")
         
         if len(data) > 0:
-            # Use frag_label for x-axis
+            style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o", "linestyle": "-"})
             x_positions = range(len(data))
             ax.plot(
                 x_positions,
                 data["reward_mean"],
-                label=content_type,
-                marker="o",
-                color=color,
+                label=mode,
+                marker=style["marker"],
+                color=style["color"],
+                linestyle=style["linestyle"],
                 linewidth=2,
                 markersize=8,
             )
             
             # Set x-tick labels only once
-            if content_type == content_types[0]:
-                ax.set_xticks(x_positions)
+            if not x_labels_set:
+                ax.set_xticks(list(x_positions))
                 ax.set_xticklabels(data["frag_label"], rotation=45)
+                x_labels_set = True
     
     ax.set_xlabel("Mean Fragment Length")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward vs Fragment Length\n(len=500, by content type)")
+    ax.set_title("Mode Comparison vs Fragment Length\n(content=all, len=500)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="lower left", fontsize=8)
 
 
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 4: Heatmap of reward by content_type × fragment_length."""
-    # Filter to target_length=500
-    filtered = df[df["target_length"] == 500].copy()
+    """Plot 4: Heatmap of reward by mode × content_type (aggregated across all configs)."""
+    # Filter to target_length=500, mean_fragment_length=20 for cleaner comparison
+    filtered = df[(df["target_length"] == 500) & (df["mean_fragment_length"] == 20)].copy()
     
-    # Create pivot table
+    # Create pivot table: mode × content_type
     pivot = filtered.pivot_table(
         values="reward_mean",
-        index="content_type",
-        columns="frag_label",
+        index="mode",
+        columns="content_type",
         aggfunc="mean",
     )
     
     # Reorder rows and columns
-    row_order = ["words", "json", "csv", "codes", "mixed"]
-    col_order = ["None"] + [str(x) for x in sorted([int(c) for c in pivot.columns if c != "None"])]
+    row_order = [m for m in MODE_ORDER if m in pivot.index]
+    col_order = ["words", "json", "csv", "codes", "mixed"]
     
-    pivot = pivot.reindex(index=row_order, columns=[c for c in col_order if c in pivot.columns])
+    pivot = pivot.reindex(
+        index=row_order, 
+        columns=[c for c in col_order if c in pivot.columns]
+    )
     
     sns.heatmap(
         pivot,
@@ -166,26 +194,30 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
         linewidths=0.5,
     )
     
-    ax.set_xlabel("Mean Fragment Length")
-    ax.set_ylabel("Content Type")
-    ax.set_title("Reward Heatmap\n(len=500)")
+    ax.set_xlabel("Content Type")
+    ax.set_ylabel("Mode")
+    ax.set_title("Reward Heatmap: Mode × Content\n(len=500, frag=20)")
 
 
 def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 5: Distribution of rewards across all configs."""
-    # Create violin plot by content type
-    content_types = ["words", "json", "csv", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(content_types))
+    """Plot 5: Distribution of rewards by mode (across all configs)."""
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
     
     data_for_plot = []
-    for content_type in content_types:
-        rewards = df[df["content_type"] == content_type]["reward_mean"].values
+    colors = []
+    for mode in modes:
+        rewards = df[df["mode"] == mode]["reward_mean"].values
         data_for_plot.append(rewards)
+        colors.append(MODE_STYLES.get(mode, {"color": "gray"})["color"])
     
-    parts = ax.violinplot(data_for_plot, positions=range(len(content_types)), showmeans=True)
+    if not data_for_plot:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        return
+    
+    parts = ax.violinplot(data_for_plot, positions=range(len(modes)), showmeans=True)
     
     # Color the violins
-    for i, (pc, color) in enumerate(zip(parts["bodies"], colors)):
+    for pc, color in zip(parts["bodies"], colors):
         pc.set_facecolor(color)
         pc.set_alpha(0.7)
     
@@ -193,39 +225,92 @@ def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
     for partname in ["cbars", "cmins", "cmaxes", "cmeans"]:
         parts[partname].set_color("black")
     
-    ax.set_xticks(range(len(content_types)))
-    ax.set_xticklabels(content_types)
-    ax.set_xlabel("Content Type")
+    ax.set_xticks(range(len(modes)))
+    ax.set_xticklabels(modes)
+    ax.set_xlabel("Mode")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward Distribution by Content Type\n(all configs)")
+    ax.set_title("Reward Distribution by Mode\n(all configs)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
 
 
-def plot_char_vs_exact(ax: plt.Axes, df: pd.DataFrame):
-    """Plot 6: Char accuracy vs Exact match scatter."""
-    content_types = ["words", "json", "csv", "codes", "mixed"]
-    colors = sns.color_palette("husl", len(content_types))
+def plot_char_vs_exact(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    linear_fit: bool = False,
+    exclude_perfect: bool = False,
+):
+    """Plot 6: Char accuracy vs Exact match scatter, colored by mode.
     
-    for content_type, color in zip(content_types, colors):
-        data = df[df["content_type"] == content_type]
+    Args:
+        ax: Matplotlib axes to plot on
+        df: DataFrame with aggregated results
+        linear_fit: If True, add linear regression lines for each mode
+        exclude_perfect: If True, exclude exact_match=1.0 points from linear fit
+    """
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+    
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
         ax.scatter(
             data["exact_match_mean"],
             data["char_accuracy_mean"],
-            label=content_type,
-            color=color,
+            label=mode,
+            color=style["color"],
+            marker=style["marker"],
             s=80,
             alpha=0.7,
             edgecolors="black",
             linewidth=0.5,
         )
+        
+        # Add linear fit if requested
+        if linear_fit:
+            fit_data = data
+            if exclude_perfect:
+                fit_data = data[data["exact_match_mean"] < 1.0]
+            
+            if len(fit_data) >= 2:
+                x = fit_data["exact_match_mean"].values
+                y = fit_data["char_accuracy_mean"].values
+                
+                # Linear regression using numpy
+                slope, intercept = np.polyfit(x, y, 1)
+                
+                # Calculate R² value
+                y_pred = slope * x + intercept
+                ss_res = np.sum((y - y_pred) ** 2)
+                ss_tot = np.sum((y - np.mean(y)) ** 2)
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                
+                # Plot fit line across the data range
+                x_line = np.linspace(x.min(), x.max(), 100)
+                y_line = slope * x_line + intercept
+                
+                fit_label = f"{mode} fit (R²={r_squared:.2f})"
+                ax.plot(
+                    x_line,
+                    y_line,
+                    color=style["color"],
+                    linestyle="--",
+                    alpha=0.6,
+                    linewidth=1.5,
+                    label=fit_label,
+                )
     
     # Add diagonal line (perfect correlation)
     ax.plot([0, 1], [0, 1], "k--", alpha=0.3, label="y=x")
     
     ax.set_xlabel("Exact Match (Reward)")
     ax.set_ylabel("Character Accuracy")
-    ax.set_title("Char Accuracy vs Exact Match\n(all configs)")
+    
+    # Update title based on options
+    title = "Char Accuracy vs Exact Match\n(all configs, by mode)"
+    if linear_fit and exclude_perfect:
+        title += "\n[fit excludes perfect matches]"
+    ax.set_title(title)
+    
     ax.set_xlim(0.5, 1.05)
     ax.set_ylim(0.85, 1.02)
     ax.legend(loc="lower right", fontsize=8)
@@ -248,17 +333,66 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     # Set style
     sns.set_style("whitegrid")
     
-    # Top row: Individual metrics
-    plot_reward_vs_content_type(axes[0, 0], df)
-    plot_reward_vs_length(axes[0, 1], df)
-    plot_reward_vs_fragmentation(axes[0, 2], df)
+    # Top row: Mode comparison plots
+    plot_mode_comparison_by_content(axes[0, 0], df)
+    plot_mode_comparison_by_length(axes[0, 1], df)
+    plot_mode_comparison_by_fragmentation(axes[0, 2], df)
     
-    # Bottom row: Aggregations
+    # Bottom row: Aggregations and detailed views
     plot_heatmap(axes[1, 0], df)
     plot_distribution(axes[1, 1], df)
     plot_char_vs_exact(axes[1, 2], df)
     
-    plt.suptitle("Verbatim Copy Ablation Results", fontsize=14, fontweight="bold", y=1.02)
+    plt.suptitle("Verbatim Copy Ablation Results: Mode Comparison", fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Plot saved to: {output_path}")
+    
+    plt.show()
+
+
+# Mapping of plot names to (function, figsize, title)
+PLOT_REGISTRY = {
+    "content": (plot_mode_comparison_by_content, (10, 7), "Mode Comparison by Content Type"),
+    "length": (plot_mode_comparison_by_length, (10, 7), "Mode Comparison vs Target Length"),
+    "fragmentation": (plot_mode_comparison_by_fragmentation, (10, 7), "Mode Comparison vs Fragment Length"),
+    "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
+    "distribution": (plot_distribution, (10, 7), "Reward Distribution by Mode"),
+    "scatter": (plot_char_vs_exact, (10, 7), "Char Accuracy vs Exact Match"),
+}
+
+
+def create_single_plot(
+    plot_name: str,
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    **kwargs,
+):
+    """Create a single standalone plot.
+    
+    Args:
+        plot_name: Name of the plot to create (from PLOT_REGISTRY)
+        df: DataFrame with aggregated results
+        output_path: Optional path to save the plot
+        **kwargs: Additional arguments passed to the plot function (e.g., linear_fit)
+    """
+    if plot_name not in PLOT_REGISTRY:
+        raise ValueError(f"Unknown plot: {plot_name}. Available: {list(PLOT_REGISTRY.keys())}")
+    
+    func, figsize, title = PLOT_REGISTRY[plot_name]
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.set_style("whitegrid")
+    
+    # Pass kwargs only to functions that accept them (scatter plot)
+    if plot_name == "scatter":
+        func(ax, df, **kwargs)
+    else:
+        func(ax, df)
+    
+    plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
     
     if output_path:
@@ -269,7 +403,24 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot verbatim_copy ablation results")
+    parser = argparse.ArgumentParser(
+        description="Plot verbatim_copy ablation results",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Show main 2x3 grid
+    python plot_results.py
+    
+    # Show individual scatter plot with linear fit
+    python plot_results.py --image scatter --linear-fit
+    
+    # Scatter plot with fit excluding perfect matches
+    python plot_results.py --image scatter --linear-fit --exclude-perfect
+    
+    # Save individual plot to file
+    python plot_results.py --image content -o content_plot.png
+""",
+    )
     parser.add_argument(
         "--input",
         "-i",
@@ -284,6 +435,26 @@ def main():
         default=None,
         help="Output image file path (optional, shows interactive plot if not set)",
     )
+    parser.add_argument(
+        "--image",
+        choices=["main", "content", "length", "fragmentation", "heatmap", "distribution", "scatter"],
+        default="main",
+        help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",
+    )
+    
+    # Scatter plot specific options
+    scatter_group = parser.add_argument_group("scatter plot options")
+    scatter_group.add_argument(
+        "--linear-fit",
+        action="store_true",
+        help="Add linear regression lines for each mode (scatter plot only)",
+    )
+    scatter_group.add_argument(
+        "--exclude-perfect",
+        action="store_true",
+        help="Exclude exact_match=1.0 points from linear fit calculation (scatter plot only)",
+    )
+    
     args = parser.parse_args()
     
     if not args.input.exists():
@@ -294,7 +465,16 @@ def main():
     df = load_data(args.input)
     print(f"Loaded {len(df)} configurations from {args.input}")
     
-    create_plots(df, args.output)
+    if args.image == "main":
+        create_plots(df, args.output)
+    else:
+        # Build kwargs for plot-specific options
+        kwargs = {}
+        if args.image == "scatter":
+            kwargs["linear_fit"] = args.linear_fit
+            kwargs["exclude_perfect"] = args.exclude_perfect
+        
+        create_single_plot(args.image, df, args.output, **kwargs)
 
 
 if __name__ == "__main__":
