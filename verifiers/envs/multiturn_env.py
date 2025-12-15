@@ -182,7 +182,7 @@ class MultiTurnEnv(vf.Environment):
                 else:
                     suffix_ids = getattr(self, "cached_suffix_ids")
                 overlap_len = find_largest_overlap(prev_turn_ids, suffix_ids)
-                prev_turn_ids += suffix_ids[-overlap_len:]
+                prev_turn_ids += suffix_ids[overlap_len:]
             else:
                 # in 'exact' tokenization mode, we build the env_response_ids by
                 # tokenizing a (a) all previous messages + env response (b) all
