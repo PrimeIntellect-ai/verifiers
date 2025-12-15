@@ -118,7 +118,7 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
-    "MCPEnv": "verifiers.envs.mcp.mcp_env:MCPEnv",
+    "MCPEnv": "verifiers.envs.mcp_env:MCPEnv",
 }
 
 
