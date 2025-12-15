@@ -352,9 +352,6 @@ def main():
         env_id=args.env_id,
         env_args=args.env_args,
         env_dir_path=args.env_dir_path,
-        use_token_prompts=args.use_token_prompts,
-        tokenize_method=args.tokenize_method,
-        exact_tokenization=args.exact_tokenization,
         # evaluation
         model=args.model,
         client_config=client_config,
@@ -364,6 +361,9 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
+        use_token_prompts=args.use_token_prompts,
+        tokenize_method=args.tokenize_method,
+        exact_tokenization=args.exact_tokenization,
         # logging
         print_results=True,
         verbose=args.verbose,

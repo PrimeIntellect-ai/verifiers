@@ -15,6 +15,9 @@ def _make_metadata(config) -> GenerateMetadata:
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         sampling_args=config.sampling_args,
+        use_token_prompts=config.use_token_prompts,
+        tokenize_method=config.tokenize_method,
+        exact_tokenization=config.exact_tokenization,
         date="1970-01-01",
         time_ms=0.0,
         avg_reward=0.0,
@@ -51,6 +54,8 @@ def _run_cli(monkeypatch, overrides):
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
         "use_token_prompts": False,
+        "tokenize_method": None,
+        "exact_tokenization": None,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)

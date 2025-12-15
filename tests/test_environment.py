@@ -1,6 +1,7 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -33,6 +34,9 @@ class SimpleEnvironment(Environment):
         client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool | None = None,
+        tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)
@@ -81,6 +85,9 @@ def _make_metadata(
         num_examples=num_examples,
         rollouts_per_example=rollouts_per_example,
         sampling_args={},
+        use_token_prompts=False,
+        tokenize_method=None,
+        exact_tokenization=None,
         date="1970-01-01",
         time_ms=0.0,
         avg_reward=0.0,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from datasets import Dataset
@@ -42,6 +43,9 @@ class DummyEnvironment(Environment):
         client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        use_token_prompts: bool | None = None,
+        tokenize_method: Literal["local", "vllm"] | None = None,
+        exact_tokenization: bool | None = None,
     ):
         state = await self.init_state(
             input, client=client, model=model, sampling_args=sampling_args
@@ -99,6 +103,9 @@ def _make_metadata(
         avg_metrics={},
         state_columns=[],
         path_to_save=Path("test.jsonl"),
+        use_token_prompts=False,
+        tokenize_method=None,
+        exact_tokenization=None,
     )
 
 
