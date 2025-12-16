@@ -105,9 +105,9 @@ async def get_prompt_ids(
     def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
         """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
 
-        def find_last_index(lst: list[int], value: int) -> int:
-            for i in range(len(lst) - 1, -1, -1):
-                if lst[i] == value:
+        def find_last_index(lst: list[int], target: int) -> int:
+            for i, value in enumerate(reversed(lst)):
+                if value == target:
                     return i
             raise ValueError
 
