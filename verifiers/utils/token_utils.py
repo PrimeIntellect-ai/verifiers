@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from typing import Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
@@ -13,6 +14,14 @@ _TOKENS_CLIENT: AsyncOpenAI | None = None
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=None)
+def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
+    logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
+    url_without_v1 = str(client.base_url).replace("/v1/", "")
+    tokens_client = client.copy(base_url=url_without_v1)
+    return tokens_client
+
+
 async def tokenize_vllm(
     client: AsyncOpenAI,
     messages: Messages,
@@ -23,12 +32,7 @@ async def tokenize_vllm(
 ) -> list[int]:
     """Tokenize messages using the vLLM /tokenize API."""
 
-    global _TOKENS_CLIENT
-    if _TOKENS_CLIENT is None:
-        logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
-        url_without_v1 = str(client.base_url).replace("/v1/", "")
-        _TOKENS_CLIENT = client.copy(base_url=url_without_v1)
-    tokens_client = _TOKENS_CLIENT
+    tokens_client = get_tokens_client(client)
 
     # Copy from vllm/entrypoints/openai/protocol.py
     class TokenizeResponse(BaseModel):
