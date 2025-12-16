@@ -219,10 +219,11 @@ def main():
         help="Name of dataset to save to Hugging Face Hub",
     )
     parser.add_argument(
-        "--use-token-prompts",
-        "-utp",
-        action="store_true",
-        help="Use token prompts. Requires that the inference server supports token-in prompts.",
+        "--extra-env-kwargs",
+        "-x",
+        type=json.loads,
+        default={},
+        help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     args = parser.parse_args()
 
@@ -279,18 +280,6 @@ def main():
     if args.temperature is not None and "temperature" not in merged_sampling_args:
         merged_sampling_args["temperature"] = args.temperature
 
-    # setup for token prompts
-    if args.use_token_prompts:
-        merged_sampling_args["logprobs"] = True
-        extra_body = dict(return_token_ids=True, prompt_logprobs=True)
-        if "extra_body" in merged_sampling_args:
-            merged_sampling_args["extra_body"].update(extra_body)
-        else:
-            merged_sampling_args["extra_body"] = extra_body
-        logger.warning(
-            "Configured to use token prompts. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
-        )
-
     # Build headers from repeated --header flags
     merged_headers: Dict[str, str] = {}
     for h in args.header or []:
@@ -314,6 +303,7 @@ def main():
         env_id=args.env_id,
         env_args=args.env_args,
         env_dir_path=args.env_dir_path,
+        extra_env_kwargs=args.extra_env_kwargs,
         # evaluation
         model=args.model,
         client_config=client_config,
@@ -323,7 +313,6 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
-        use_token_prompts=args.use_token_prompts,
         # logging
         print_results=True,
         verbose=args.verbose,

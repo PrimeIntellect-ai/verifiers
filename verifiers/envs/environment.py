@@ -49,7 +49,10 @@ from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.path_utils import get_results_path
-from verifiers.utils.token_utils import get_prompt_ids
+from verifiers.utils.token_utils import (
+    get_prompt_ids,
+    prepare_sampling_args_for_token_prompts,
+)
 
 if TYPE_CHECKING:
     pass
@@ -76,7 +79,7 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
-        use_token_prompts: bool = False,
+        interleaved_rollouts: bool = False,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -94,7 +97,14 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
-        self.use_token_prompts = use_token_prompts
+
+        self.interleaved_rollouts = interleaved_rollouts
+        if self.interleaved_rollouts:
+            self.logger.warning(
+                "Environment is configured to use interleaved rollouts. All model responses will after turn 1 will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+            )
+            self.max_workers = max_workers
+
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -140,7 +150,6 @@ class Environment(ABC):
                 if key != "extra_body":
                     self.sampling_args[key] = value
 
-        self.max_workers = max_workers
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -328,14 +337,14 @@ class Environment(ABC):
         """
         Get model response for a given prompt (chat or completion).
 
-        If prompt_ids are provided (True if `use_token_prompts` is set), the
-        model response is obtained by calling a custom /generate endpoint. Note,
-        that this only works if the inference server implements this endpoint.
-        Currently, this is a hand-crafted feature for PRIME-RL's vLLM server
-        extension, and is not recommended for general use.
-
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
+
+        If interleaved_rollouts is set, the model response is obtained by
+        calling a custom token-in endpoint. Note, that this only works if the
+        inference server implements this endpoint.  Currently, this is a
+        hand-crafted feature for PRIME-RL's vLLM server extension, and is not
+        recommended for general use.
         """
 
         def resolve_optional_args(
@@ -510,9 +519,11 @@ class Environment(ABC):
         client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
             client, model, oai_tools, sampling_args, message_type
         )
-        normalized_sampling_args = normalize_sampling_args(sampling_args)
+        sampling_args = normalize_sampling_args(sampling_args)
+        if self.interleaved_rollouts:
+            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
-        if state.get("use_token_prompts") and len(state["trajectory"]) > 0:
+        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
             prompt_ids = await get_prompt_ids(state, prompt, client)
             return await get_model_response_with_tokens(
                 client=client,
@@ -520,7 +531,7 @@ class Environment(ABC):
                 prompt=prompt,
                 prompt_ids=prompt_ids,
                 oai_tools=oai_tools,
-                sampling_args=normalized_sampling_args,
+                sampling_args=sampling_args,
                 message_type=message_type,
             )
         else:
@@ -529,7 +540,7 @@ class Environment(ABC):
                 model=model,
                 prompt=prompt,
                 oai_tools=oai_tools,
-                sampling_args=normalized_sampling_args,
+                sampling_args=sampling_args,
                 message_type=message_type,
             )
 
@@ -556,7 +567,6 @@ class Environment(ABC):
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
-        state["use_token_prompts"] = self.use_token_prompts
         state["is_completed"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
@@ -748,7 +758,6 @@ class Environment(ABC):
             },
             state_columns=state_columns or [],
             path_to_save=path_to_save,
-            use_token_prompts=self.use_token_prompts,
         )
 
         return GenerateOutputs(
@@ -1014,10 +1023,6 @@ class Environment(ABC):
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
-
-    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
-        """Set whether to use token prompts for this environment."""
-        self.use_token_prompts = use_token_prompts
 
     make_dataset = make_dataset
 

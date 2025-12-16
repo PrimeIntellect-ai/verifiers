@@ -155,7 +155,6 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
-    use_token_prompts: bool
 
 
 class GenerateOutputs(TypedDict):
@@ -231,7 +230,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
-    use_token_prompts: bool = False
+    extra_env_kwargs: dict = {}
     # logging
     print_results: bool = False
     verbose: bool = False

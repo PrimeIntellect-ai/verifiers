@@ -5,7 +5,7 @@ from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
-from verifiers.types import Messages
+from verifiers.types import Messages, SamplingArgs
 from verifiers.utils.message_utils import concat_messages
 
 _TOKENS_CLIENT: AsyncOpenAI | None = None
@@ -62,12 +62,27 @@ async def tokenize_vllm(
         raise vf.ModelError(e)
 
 
+def prepare_sampling_args_for_token_prompts(
+    sampling_args: SamplingArgs,
+) -> SamplingArgs:
+    """Ensures necessary fields are set for token prompts to work."""
+    sampling_args["logprobs"] = True
+    extra_body = dict(return_token_ids=True, prompt_logprobs=True)
+    if "extra_body" in sampling_args:
+        sampling_args["extra_body"].update(extra_body)
+    else:
+        sampling_args["extra_body"] = extra_body
+    return sampling_args
+
+
 async def get_prompt_ids(
     state: vf.State, prompt_messages: Messages, client: AsyncOpenAI
 ) -> list[int]:
     """
-    Build prompt_ids corresponding to prompt_messages. We assume that this
-    method is called *before* making the model response from prompt_messages.
+    Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
+    that this method is called *before* making the model response from
+    prompt_messages, i.e. the previous turn's prompt and completion do not yet
+    include the environment response and next turn's model response.
     """
     prev_turn_prompt = state["trajectory"][-1]["prompt"]
     prev_turn_completion = state["trajectory"][-1]["completion"]

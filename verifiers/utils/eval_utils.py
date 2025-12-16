@@ -110,8 +110,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
-    if config.use_token_prompts:
-        vf_env.set_use_token_prompts(True)
+    # set extra environment kwargs
+    if config.extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+        for k, v in config.extra_env_kwargs.items():
+            setattr(vf_env, k, v)
 
     # run evaluation
     results_path = get_eval_results_path(config)
