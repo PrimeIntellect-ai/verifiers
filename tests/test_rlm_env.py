@@ -738,6 +738,50 @@ class TestContextLimitWarning:
 
         assert "[CONTEXT LIMIT WARNING]" not in output
 
+    @pytest.mark.asyncio
+    async def test_no_warning_when_thresholds_equal(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """No warning when warning threshold equals force threshold (would be useless)."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                context_warning_threshold=0.90,
+                context_force_finish_threshold=0.90,  # Equal to warning
+            )
+            env.sandbox_client = mock_sandbox_client
+            env.max_seq_len = 10000
+            env._execute_code = AsyncMock(
+                return_value={
+                    "status": "ok",
+                    "stdout": "output",
+                    "stderr": "",
+                    "result": None,
+                    "execution_count": 1,
+                    "answer": {"ready": False, "content": ""},
+                }
+            )
+
+            # 9000 tokens = 90%, exactly at both thresholds
+            mock_response = MagicMock()
+            mock_response.usage = MagicMock(prompt_tokens=9000)
+            state = {
+                "trajectory": [{"response": mock_response}],
+                "context_warning_sent": False,
+            }
+
+            output = await env.call_python_repl("print('test')", "sandbox_123", state)
+
+            # Warning should NOT be sent since force stop will trigger immediately
+            assert "[CONTEXT LIMIT WARNING]" not in output
+            assert state["context_warning_sent"] is False
+
+            env.active_sandboxes.clear()
+
 
 class TestContextLimitStopCondition:
     """Tests for context_limit_reached stop condition."""

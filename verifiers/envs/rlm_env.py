@@ -454,6 +454,7 @@ class RLMEnv(SandboxEnv):
         rubric: Rubric | None = None,
         **kwargs,
     ):
+        assert context_warning_threshold <= context_force_finish_threshold
         self.sub_model = sub_model
         self.sub_tools = sub_tools or []
         self.sub_tool_max_turns = sub_tool_max_turns
@@ -1259,12 +1260,15 @@ PY
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
-        # Inject context limit warning if approaching limit
+        # Inject context limit warning if approaching limit (but not yet at force stop)
         if self.max_seq_len and not state.get("context_warning_sent"):
             prompt_tokens = self._get_prompt_tokens(state)
             warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
+            force_threshold = int(
+                self.max_seq_len * self.context_force_finish_threshold
+            )
 
-            if prompt_tokens >= warning_threshold:
+            if prompt_tokens >= warning_threshold and prompt_tokens < force_threshold:
                 state["context_warning_sent"] = True
                 pct = prompt_tokens / self.max_seq_len
                 output += (
