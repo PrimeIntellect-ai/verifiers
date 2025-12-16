@@ -49,6 +49,7 @@ from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.token_utils import get_prompt_ids
 
 if TYPE_CHECKING:
     pass
@@ -318,7 +319,6 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages,
-        prompt_ids: list[int] | None = None,
         client: AsyncOpenAI | None = None,
         model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
@@ -512,7 +512,8 @@ class Environment(ABC):
         )
         normalized_sampling_args = normalize_sampling_args(sampling_args)
 
-        if prompt_ids is not None:
+        if state.get("use_token_prompts") and len(state["trajectory"]) > 0:
+            prompt_ids = await get_prompt_ids(state, prompt, client)
             return await get_model_response_with_tokens(
                 client=client,
                 model=model,
