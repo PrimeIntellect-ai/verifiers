@@ -374,7 +374,7 @@ class Environment(ABC):
 
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             """
-            Norbalize sampling arguments. Mainly does 2 things:
+            Normalize sampling arguments. Mainly does 2 things:
             - if max_tokens is provided for chat, rename to max_completion_tokens
             - drop any None-valued entries to avoid sending to the client
             """
