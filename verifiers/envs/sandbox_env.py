@@ -58,9 +58,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
-        stop_errors: list[type[Exception]] | None = [vf.SandboxError],
+        stop_errors: list[type[Exception]] | None = None,
         **kwargs,
     ):
+        stop_errors = stop_errors or [vf.SandboxError]
         super().__init__(stop_errors=stop_errors, **kwargs)
         self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
