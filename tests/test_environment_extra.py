@@ -99,9 +99,6 @@ def _make_metadata(
         avg_metrics={},
         state_columns=[],
         path_to_save=Path("test.jsonl"),
-        use_token_prompts=False,
-        tokenize_method=None,
-        exact_tokenization=None,
     )
 
 
