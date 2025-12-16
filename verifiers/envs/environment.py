@@ -1042,7 +1042,7 @@ class Environment(ABC):
         self.interleaved_rollouts = interleaved_rollouts
         if self.interleaved_rollouts:
             self.logger.warning(
-                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
 
     make_dataset = make_dataset
