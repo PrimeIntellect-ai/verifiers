@@ -1354,9 +1354,7 @@ PY
             # Compute and store sub-LLM metrics from trajectory data
             if sub_steps:
                 batch_ids = [
-                    s["extras"].get("batch_id")
-                    for s in sub_steps
-                    if s.get("extras")
+                    s["extras"].get("batch_id") for s in sub_steps if s.get("extras")
                 ]
                 batch_counts = Counter(b for b in batch_ids if b)
 

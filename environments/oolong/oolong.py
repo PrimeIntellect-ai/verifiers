@@ -298,16 +298,18 @@ Respond either "yes" or "no" only."""
             """Metric: Mean batch size across all llm_batch() invocations."""
             return float(state.get("sub_llm_mean_batch_size", 0.0))
 
-        reward_funcs.extend([
-            sub_llm_call_count,
-            sub_llm_prompt_tokens,
-            sub_llm_completion_tokens,
-            sub_llm_total_tool_calls,
-            sub_llm_total_turns,
-            sub_llm_batch_count,
-            sub_llm_max_batch_size,
-            sub_llm_mean_batch_size,
-        ])
+        reward_funcs.extend(
+            [
+                sub_llm_call_count,
+                sub_llm_prompt_tokens,
+                sub_llm_completion_tokens,
+                sub_llm_total_tool_calls,
+                sub_llm_total_turns,
+                sub_llm_batch_count,
+                sub_llm_max_batch_size,
+                sub_llm_mean_batch_size,
+            ]
+        )
         weights.extend([0.0] * 8)
 
     rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
