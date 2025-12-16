@@ -35,7 +35,7 @@ def load_environment(
     *,
     max_turns: int = 32,
     # RLM mode options
-    use_rlm: bool = False,
+    use_rlm: bool = True,
     rlm_max_iterations: int = 50,
     rlm_sub_model: str | None = None,
     rlm_max_sub_llm_parallelism: int = 5,
