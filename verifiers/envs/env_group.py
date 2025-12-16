@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Literal, Mapping
+from typing import TYPE_CHECKING, AsyncContextManager, Mapping
 
 from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
@@ -285,23 +285,3 @@ class EnvGroup(vf.Environment):
         self.max_seq_len = max_seq_len
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
-
-    def set_use_token_prompts(self, use_token_prompts: bool) -> None:
-        """Set whether to use token prompts for this environment group and all sub-environments."""
-        self.use_token_prompts = use_token_prompts
-        for env in self.envs:
-            env.set_use_token_prompts(use_token_prompts)
-
-    def set_tokenize_method(
-        self, tokenize_method: Literal["local", "vllm"] | None
-    ) -> None:
-        """Set the tokenization method for this environment group and all sub-environments."""
-        self.tokenize_method = tokenize_method
-        for env in self.envs:
-            env.set_tokenize_method(tokenize_method)
-
-    def set_exact_tokenization(self, exact_tokenization: bool | None) -> None:
-        """Set whether to use exact tokenization for this environment group and all sub-environments."""
-        self.exact_tokenization = exact_tokenization
-        for env in self.envs:
-            env.set_exact_tokenization(exact_tokenization)
