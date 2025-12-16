@@ -61,7 +61,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         stop_errors: list[type[Exception]] | None = None,
         **kwargs,
     ):
-        super().__init__(stop_errors=stop_errors or [vf.SandboxError], **kwargs)
+        super().__init__(
+            stop_errors=stop_errors if stop_errors is not None else [vf.SandboxError],
+            **kwargs,
+        )
         self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
         self.sandbox_request = CreateSandboxRequest(
