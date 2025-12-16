@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from functools import wraps
 
 from openai import RateLimitError
 
@@ -26,6 +27,7 @@ def with_rate_limit_retry(
     """
 
     def decorator(func):
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             for attempt in range(max_retries):
                 try:

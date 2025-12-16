@@ -26,7 +26,6 @@ import logging
 import textwrap
 import time
 import uuid
-from collections import Counter
 from typing import Any, Callable
 
 from aiohttp import web
@@ -52,6 +51,7 @@ class SubLLMTurn(TypedDict):
 
     prompt_messages: list[dict]  # Messages before this LLM call
     response: ModelResponse  # Full response object (with token_ids, logprobs)
+    tool_call_count: int  # Number of tool calls made in this turn
 
 
 class SubLLMResult(TypedDict):
@@ -117,6 +117,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         
         Returns a dict with 'content' and 'metadata' keys.
         """
+        import uuid as _uuid
         if not INTERCEPTION_URL:
             return {{
                 "content": "Error: Sub-LLM interception URL not configured",
@@ -124,14 +125,16 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             }}
         
         try:
+            request_id = _uuid.uuid4().hex[:8]
             payload = {{
                 "model": SUB_MODEL or "default",
                 "messages": [{{"role": "user", "content": prompt}}],
                 "_batch_id": batch_id,
+                "_request_id": request_id,
             }}
             # Add any extra kwargs
             for k, v in kwargs.items():
-                if k not in ("model", "messages", "_batch_id"):
+                if k not in ("model", "messages", "_batch_id", "_request_id"):
                     payload[k] = v
             
             resp = requests.post(
@@ -644,23 +647,23 @@ class RLMEnv(SandboxEnv):
                 logprobs=True,
             )
 
-            # Store this turn
-            turns.append(
-                SubLLMTurn(
-                    prompt_messages=prompt_snapshot,
-                    response=response,
-                )
-            )
-
-            # Accumulate tokens from this call
             prompt_tokens, completion_tokens = self._extract_tokens(response)
             total_prompt_tokens += prompt_tokens
             total_completion_tokens += completion_tokens
 
             assistant_message = response.choices[0].message
             tool_calls = getattr(assistant_message, "tool_calls", None)
+            turn_tool_count = len(tool_calls) if tool_calls else 0
+            tool_call_count += turn_tool_count
 
-            # If no tool calls, we're done
+            turns.append(
+                SubLLMTurn(
+                    prompt_messages=prompt_snapshot,
+                    response=response,
+                    tool_call_count=turn_tool_count,
+                )
+            )
+
             if not tool_calls:
                 final_content = assistant_message.content or ""
                 return SubLLMResult(
@@ -673,12 +676,9 @@ class RLMEnv(SandboxEnv):
                     max_turns_reached=False,
                 )
 
-            # Add assistant message with tool calls to conversation
             current_messages.append(assistant_message.model_dump())
 
-            # Execute all tool calls
             for tool_call in tool_calls:
-                tool_call_count += 1
                 tool_name = tool_call.function.name
                 try:
                     tool_args = json.loads(tool_call.function.arguments)
@@ -700,7 +700,6 @@ class RLMEnv(SandboxEnv):
             }
         )
 
-        # Snapshot messages before final call
         prompt_snapshot = [dict(m) for m in current_messages]
 
         response = await client.chat.completions.create(
@@ -709,11 +708,11 @@ class RLMEnv(SandboxEnv):
             logprobs=True,
         )
 
-        # Store final turn
         turns.append(
             SubLLMTurn(
                 prompt_messages=prompt_snapshot,
                 response=response,
+                tool_call_count=0,
             )
         )
 
@@ -783,6 +782,7 @@ class RLMEnv(SandboxEnv):
 
         messages = request_body.get("messages", [])
         batch_id = request_body.get("_batch_id", "")
+        request_id = request_body.get("_request_id", "")
 
         # Prepend system message with \boxed{} instruction
         messages_with_system = [
@@ -816,11 +816,11 @@ class RLMEnv(SandboxEnv):
                 num_turns = 1
                 max_turns_reached = False
                 final_content = response.choices[0].message.content or ""
-                # Create single turn for simple path
                 turns = [
                     SubLLMTurn(
                         prompt_messages=[dict(m) for m in messages_with_system],
                         response=response,
+                        tool_call_count=0,
                     )
                 ]
 
@@ -853,7 +853,9 @@ class RLMEnv(SandboxEnv):
                             "is_sub_llm_call": True,
                             "parent_turn": parent_turn,
                             "batch_id": batch_id,
+                            "request_id": request_id,
                             "timestamp": timestamp,
+                            "tool_call_count": turn["tool_call_count"],
                         },
                     )
                     context.setdefault("sub_llm_trajectory_steps", []).append(
@@ -1353,12 +1355,26 @@ PY
 
             # Compute and store sub-LLM metrics from trajectory data
             if sub_steps:
-                batch_ids = [
-                    s["extras"].get("batch_id") for s in sub_steps if s.get("extras")
-                ]
-                batch_counts = Counter(b for b in batch_ids if b)
+                # Extract batch_id and request_id pairs
+                batch_request_pairs = set()
+                unique_batch_ids = set()
+                for s in sub_steps:
+                    extras = s.get("extras", {})
+                    batch_id = extras.get("batch_id")
+                    request_id = extras.get("request_id")
+                    if batch_id:
+                        unique_batch_ids.add(batch_id)
+                        if request_id:
+                            batch_request_pairs.add((batch_id, request_id))
 
-                state["sub_llm_call_count"] = len(sub_steps)
+                # Count requests per batch for batch size metrics
+                requests_per_batch: dict[str, set[str]] = {}
+                for batch_id, request_id in batch_request_pairs:
+                    requests_per_batch.setdefault(batch_id, set()).add(request_id)
+                batch_sizes = [len(reqs) for reqs in requests_per_batch.values()]
+
+                # Number of prompts processed (unique HTTP requests)
+                state["sub_llm_call_count"] = len(batch_request_pairs)
                 state["sub_llm_prompt_tokens"] = sum(
                     getattr(
                         getattr(s.get("response"), "usage", None), "prompt_tokens", 0
@@ -1380,14 +1396,10 @@ PY
                     for s in sub_steps
                 )
                 state["sub_llm_total_turns"] = len(sub_steps)
-                state["sub_llm_batch_count"] = len(batch_counts)
-                state["sub_llm_max_batch_size"] = (
-                    max(batch_counts.values()) if batch_counts else 0
-                )
+                state["sub_llm_batch_count"] = len(unique_batch_ids)
+                state["sub_llm_max_batch_size"] = max(batch_sizes) if batch_sizes else 0
                 state["sub_llm_mean_batch_size"] = (
-                    sum(batch_counts.values()) / len(batch_counts)
-                    if batch_counts
-                    else 0.0
+                    sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
                 )
 
             # Prepend sub-LLM trajectory steps if enabled
