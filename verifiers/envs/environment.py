@@ -1,5 +1,6 @@
 import asyncio
 import atexit
+import functools
 import inspect
 import json
 import logging
@@ -391,6 +392,37 @@ class Environment(ABC):
                 sampling_args.pop("max_completion_tokens")
             return {k: v for k, v in sampling_args.items() if v is not None}
 
+        def handle_overlong_prompt(func):
+            """Decorator to handle overlong prompt errors from the model API."""
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    # in case of making a request with an overlong prompt, e.g
+                    # we raise a special overlong prompt error
+                    if isinstance(e, BadRequestError):
+                        error_text = e.response.text.lower()
+                        context_length_phrases = [
+                            "this model's maximum context length is",
+                            "is longer than the model's context length",
+                            "exceeds the model's context length",
+                            "exceed the configured limit",
+                            "exceeds the configured limit",
+                            "exceeded model",
+                        ]
+                        if any(
+                            phrase in error_text for phrase in context_length_phrases
+                        ):
+                            self.logger.debug("Caught overlong prompt.")
+                            raise vf.OverlongPromptError(e)
+                    # in all other case we raise a generic model error
+                    raise vf.ModelError(e)
+
+            return wrapper
+
+        @handle_overlong_prompt
         async def get_model_response(
             client: AsyncOpenAI,
             model: str,
@@ -400,74 +432,57 @@ class Environment(ABC):
             message_type: MessageType,
         ) -> ModelResponse:
             """Convenience function for wrapping (chat, completion) API calls."""
-            try:
-                if message_type == "chat":
-                    assert isinstance(prompt, list)
-                    prompt = strip_nones_from_content(prompt)
-                    # --- detect audio parts and force text-only modality if caller didn't set one ---
+            if message_type == "chat":
+                assert isinstance(prompt, list)
+                prompt = strip_nones_from_content(prompt)
+                # --- detect audio parts and force text-only modality if caller didn't set one ---
+                has_audio = False
+                try:
+                    for m in prompt:
+                        c = m.get("content")
+                        if isinstance(c, list):
+                            for p in c:
+                                if isinstance(p, dict) and str(
+                                    p.get("type", "")
+                                ).startswith("input_audio"):
+                                    has_audio = True
+                                    break
+                        if has_audio:
+                            break
+                except Exception:
                     has_audio = False
-                    try:
-                        for m in prompt:
-                            c = m.get("content")
-                            if isinstance(c, list):
-                                for p in c:
-                                    if isinstance(p, dict) and str(
-                                        p.get("type", "")
-                                    ).startswith("input_audio"):
-                                        has_audio = True
-                                        break
-                            if has_audio:
-                                break
-                    except Exception:
-                        has_audio = False
-                    if has_audio and "modalities" not in sampling_args:
-                        sampling_args = {
-                            **sampling_args,
-                            "modalities": ["text"],
-                        }
+                if has_audio and "modalities" not in sampling_args:
+                    sampling_args = {
+                        **sampling_args,
+                        "modalities": ["text"],
+                    }
 
-                    if oai_tools:
-                        response = await client.chat.completions.create(
-                            model=model,
-                            messages=prompt,
-                            tools=oai_tools,
-                            **sampling_args,
-                        )
-                    else:
-                        response = await client.chat.completions.create(
-                            model=model,
-                            messages=prompt,
-                            **sampling_args,
-                        )
-                    return response
-                elif message_type == "completion":
-                    if oai_tools:
-                        raise ValueError(
-                            "oai_tools are not supported for completion tasks."
-                        )
-                    assert isinstance(prompt, str)
-                    response = await client.completions.create(
-                        model=model, prompt=prompt, **sampling_args
+                if oai_tools:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=prompt,
+                        tools=oai_tools,
+                        **sampling_args,
                     )
-                    return response
-            except Exception as e:
-                # in case of making a request with an overlong prompt, e.g from a too-long
-                # environment response, we return a dummy response to with finish_reason "length"
-                if isinstance(e, BadRequestError):
-                    error_text = e.response.text.lower()
-                    context_length_phrases = [
-                        "this model's maximum context length is",
-                        "is longer than the model's context length",
-                        "exceeds the model's context length",
-                        "exceed the configured limit",
-                        "exceeds the configured limit",
-                        "exceeded model",
-                    ]
-                    if any(phrase in error_text for phrase in context_length_phrases):
-                        self.logger.debug("Caught overlong prompt.")
-                        raise vf.OverlongPromptError(e)
-                raise vf.ModelError(e)
+                else:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=prompt,
+                        **sampling_args,
+                    )
+                return response
+            elif message_type == "completion":
+                if oai_tools:
+                    raise ValueError(
+                        "oai_tools are not supported for completion tasks."
+                    )
+                assert isinstance(prompt, str)
+                response = await client.completions.create(
+                    model=model, prompt=prompt, **sampling_args
+                )
+                return response
 
+        @handle_overlong_prompt
         async def get_model_response_with_tokens(
             client: AsyncOpenAI,
             model: str,
@@ -477,7 +492,11 @@ class Environment(ABC):
             sampling_args: SamplingArgs,
             message_type: MessageType,
         ) -> ModelResponse:
-            """Convenience function for getting a model response with pre-tokenized prompt."""
+            """
+            Get a model response with pre-tokenized prompt from custom
+            /v1/chat/completions/tokens endpoint (only available in PRIME-RL's
+            vLLM server extension)
+            """
             assert message_type == "chat", (
                 "get_model_response_with_tokens is only supported for chat tasks."
             )
@@ -492,29 +511,11 @@ class Environment(ABC):
                 **extra_body,
             )
 
-            try:
-                return await client.post(
-                    "/chat/completions/tokens",
-                    body=body,
-                    cast_to=ChatCompletion,
-                )
-            except Exception as e:
-                # in case of making a request with an overlong prompt, e.g from a too-long
-                # environment response, we return a dummy response to with finish_reason "length"
-                if isinstance(e, BadRequestError):
-                    error_text = e.response.text.lower()
-                    context_length_phrases = [
-                        "this model's maximum context length is",
-                        "is longer than the model's context length",
-                        "exceeds the model's context length",
-                        "exceed the configured limit",
-                        "exceeds the configured limit",
-                        "exceeded model",
-                    ]
-                    if any(phrase in error_text for phrase in context_length_phrases):
-                        self.logger.debug("Caught overlong prompt.")
-                        raise vf.OverlongPromptError(e)
-                raise vf.ModelError(e)
+            return await client.post(
+                "/chat/completions/tokens",
+                body=body,
+                cast_to=ChatCompletion,
+            )
 
         client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
             client, model, oai_tools, sampling_args, message_type
