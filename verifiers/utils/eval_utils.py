@@ -112,7 +112,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     if config.use_token_prompts:
         vf_env.set_use_token_prompts(True)
-        vf_env.set_tokenize_method(config.tokenize_method)
         vf_env.set_exact_tokenization(config.exact_tokenization)
 
     # run evaluation

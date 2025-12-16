@@ -1,6 +1,4 @@
-import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
@@ -186,57 +184,3 @@ async def tokenize_vllm(
         return tokenize_response.tokens
     except Exception as e:
         raise vf.ModelError(e)
-
-
-_TOKENIZER = None
-_TOKENIZER_EXECUTOR = ThreadPoolExecutor(
-    max_workers=128, thread_name_prefix="tokenizer"
-)
-
-
-def sync_tokenize_local(
-    tokenizer,
-    messages: Messages,
-    tools: list[ChatCompletionToolParam] | None,
-    extra_kwargs: dict = {},
-) -> list[int]:
-    default_kwargs = dict(add_generation_prompt=True)
-    default_kwargs.update(extra_kwargs)
-    if isinstance(messages, str):
-        return tokenizer.encode(messages, **default_kwargs)  # type: ignore
-    else:
-        return cast(
-            list[int],
-            tokenizer.apply_chat_template(
-                messages,  # type: ignore
-                tools=tools,  # type: ignore
-                **default_kwargs,  # type: ignore
-            ),
-        )
-
-
-async def tokenize_local(
-    messages: Messages,
-    tools: list[ChatCompletionToolParam] | None,
-    model: str,
-    extra_kwargs: dict = {},
-    **kwargs,
-) -> list[int]:
-    """Tokenize messages using a local tokenizer."""
-    from transformers import AutoTokenizer
-
-    global _TOKENIZER
-    if _TOKENIZER is None:
-        logger.debug(f"Lazily loading local tokenizer for {model}")
-        _TOKENIZER = AutoTokenizer.from_pretrained(model)
-    tokenizer = _TOKENIZER
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _TOKENIZER_EXECUTOR,
-        sync_tokenize_local,
-        tokenizer,
-        messages,
-        tools,
-        extra_kwargs,
-    )

@@ -18,7 +18,6 @@ from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
-    tokenize_local,
     tokenize_vllm,
 )
 
@@ -69,17 +68,13 @@ class MultiTurnEnv(vf.Environment):
     async def get_prompt_messages_and_ids(
         self, state: State, client: AsyncOpenAI
     ) -> tuple[Messages, list[int]]:
-        assert state["tokenize_method"] is not None
         assert state["exact_tokenization"] is not None
-        tokenize = (
-            tokenize_vllm if state["tokenize_method"] == "vllm" else tokenize_local
-        )
         if len(state["trajectory"]) == 0:
             logger.warning(
                 "Calling `get_prompt_messages_and_ids` in first turn. This creates unnecessary overhead, and should not happen."
             )
             prompt_messages = state["prompt"]
-            prompt_ids = await tokenize(
+            prompt_ids = await tokenize_vllm(
                 client=client,
                 messages=state["prompt"],
                 tools=state["oai_tools"],
@@ -133,7 +128,7 @@ class MultiTurnEnv(vf.Environment):
 
             if not state["exact_tokenization"]:  # default
                 # we build the env_response_ids using simple tokenization
-                env_response_ids = await tokenize(
+                env_response_ids = await tokenize_vllm(
                     client=client,
                     messages=env_response,
                     tools=None,
@@ -160,13 +155,13 @@ class MultiTurnEnv(vf.Environment):
                             {"role": "assistant", "content": dummy_content},
                         ],
                     )
-                    dummy_content_ids = await tokenize(
+                    dummy_content_ids = await tokenize_vllm(
                         client=client,
                         messages=dummy_content,
                         tools=state["oai_tools"],
                         model=state["model"],
                     )
-                    dummy_messages_ids = await tokenize(
+                    dummy_messages_ids = await tokenize_vllm(
                         client=client,
                         messages=dummy_messages,
                         tools=state["oai_tools"],
@@ -197,14 +192,14 @@ class MultiTurnEnv(vf.Environment):
                 # templates, the assert will trigger. in this case, building
                 # token prompts from past messages is not the right thing to do
                 # anyways, and one should use branching rollouts.
-                messages_ids_task = tokenize(
+                messages_ids_task = tokenize_vllm(
                     client=client,
                     messages=messages,
                     tools=state["oai_tools"],
                     model=state["model"],
                     extra_kwargs=dict(add_generation_prompt=False),
                 )
-                messages_and_env_response_ids_task = tokenize(
+                messages_and_env_response_ids_task = tokenize_vllm(
                     client=client,
                     messages=messages_and_env_response,
                     tools=state["oai_tools"],

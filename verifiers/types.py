@@ -98,7 +98,6 @@ class State(dict):
     model: str
     sampling_args: SamplingArgs | None
     use_token_prompts: bool
-    tokenize_method: Literal["local", "vllm"] | None
     exact_tokenization: bool | None
     # created during rollout
     is_completed: bool

@@ -76,7 +76,6 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         use_token_prompts: bool = False,
-        tokenize_method: Literal["local", "vllm"] | None = None,
         exact_tokenization: bool | None = None,
         **kwargs,
     ):
@@ -96,7 +95,6 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
         self.use_token_prompts = use_token_prompts
-        self.tokenize_method = tokenize_method
         self.exact_tokenization = exact_tokenization
         if self.message_type == "chat":
             if dataset is not None:
@@ -560,7 +558,6 @@ class Environment(ABC):
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["use_token_prompts"] = self.use_token_prompts
-        state["tokenize_method"] = self.tokenize_method
         state["exact_tokenization"] = self.exact_tokenization
         state["is_completed"] = False
         state["oai_tools"] = None
@@ -754,7 +751,6 @@ class Environment(ABC):
             state_columns=state_columns or [],
             path_to_save=path_to_save,
             use_token_prompts=self.use_token_prompts,
-            tokenize_method=self.tokenize_method,
             exact_tokenization=self.exact_tokenization,
         )
 
@@ -1025,12 +1021,6 @@ class Environment(ABC):
     def set_use_token_prompts(self, use_token_prompts: bool) -> None:
         """Set whether to use token prompts for this environment."""
         self.use_token_prompts = use_token_prompts
-
-    def set_tokenize_method(
-        self, tokenize_method: Literal["local", "vllm"] | None
-    ) -> None:
-        """Set the tokenization method for this environment."""
-        self.tokenize_method = tokenize_method
 
     def set_exact_tokenization(self, exact_tokenization: bool | None) -> None:
         """Set whether to use exact tokenization for this environment."""
