@@ -1025,6 +1025,10 @@ class Environment(ABC):
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
 
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        """Set the interleaved rollouts flag for this environment."""
+        self.interleaved_rollouts = interleaved_rollouts
+
     make_dataset = make_dataset
 
 
