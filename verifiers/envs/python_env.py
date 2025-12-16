@@ -2,6 +2,7 @@ import base64
 import json
 import sys
 import textwrap
+import time
 from typing import Any
 
 if sys.version_info < (3, 12):
@@ -235,14 +236,19 @@ PY
         state.pop("python_state", None)
 
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
+        s = time.time()
         try:
             await self._wait_for_sandbox_ready(sandbox_id)
             wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
+            self.logger.debug(f"Setting up Python worker in sandbox {sandbox_id}")
             result = await self.sandbox_client.execute_command(
                 sandbox_id, wait_script, timeout=self.max_startup_wait_seconds
             )
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr)
+            self.logger.debug(
+                f"Waited {time.time() - s:.1f}s for Python worker to be ready"
+            )
         except Exception as e:
             raise PythonWorkerNotReadyError(e)
 
