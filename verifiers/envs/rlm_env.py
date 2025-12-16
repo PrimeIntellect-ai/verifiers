@@ -419,6 +419,10 @@ class RLMEnv(SandboxEnv):
                    When True (default), sub-LLM turns are prepended to the trajectory as
                    TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
                    When False, sub-LLM calls happen but are not stored.
+        context_warning_threshold: Fraction of max_seq_len at which to warn the model
+                   to finish (default: 0.80). Only active if max_seq_len is set.
+        context_force_finish_threshold: Fraction of max_seq_len at which to force stop
+                   the rollout (default: 0.95). Only active if max_seq_len is set.
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -445,6 +449,8 @@ class RLMEnv(SandboxEnv):
         pip_install_packages: str = "",
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
+        context_warning_threshold: float = 0.80,
+        context_force_finish_threshold: float = 0.95,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -461,6 +467,8 @@ class RLMEnv(SandboxEnv):
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
+        self.context_warning_threshold = context_warning_threshold
+        self.context_force_finish_threshold = context_force_finish_threshold
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -1065,6 +1073,10 @@ fi
                     raise
 
         state["rlm_worker_ready"] = True
+
+        # Initialize context warning flag (feature enabled if max_seq_len is set)
+        state["context_warning_sent"] = False
+
         return state
 
     def _build_context_dict(self, context_data: Any) -> dict[str, Any]:
@@ -1192,6 +1204,19 @@ PY
         return output
 
     # =========================================================================
+    # Context Limit Management
+    # =========================================================================
+
+    def _get_prompt_tokens(self, state: State) -> int:
+        """Get prompt token count from the latest trajectory response."""
+        if not state.get("trajectory"):
+            return 0
+        response = state["trajectory"][-1].get("response")
+        if response and hasattr(response, "usage") and response.usage:
+            return getattr(response.usage, "prompt_tokens", 0) or 0
+        return 0
+
+    # =========================================================================
     # REPL Tool
     # =========================================================================
 
@@ -1233,6 +1258,20 @@ PY
         if answer.get("ready", False):
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
+
+        # Inject context limit warning if approaching limit
+        if self.max_seq_len and not state.get("context_warning_sent"):
+            prompt_tokens = self._get_prompt_tokens(state)
+            warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
+
+            if prompt_tokens >= warning_threshold:
+                state["context_warning_sent"] = True
+                pct = prompt_tokens / self.max_seq_len
+                output += (
+                    f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
+                    f"{self.max_seq_len:,} tokens ({pct:.0%}). Please finalize your answer "
+                    "soon by setting answer['ready'] = True."
+                )
 
         return output
 
@@ -1276,6 +1315,35 @@ PY
     async def answer_ready(self, state: State) -> bool:
         """Stop when model sets answer['ready'] = True."""
         return "final_answer" in state
+
+    @vf.stop
+    async def context_limit_reached(self, state: State) -> bool:
+        """Force stop when approaching context limit to prevent API errors."""
+        if not self.max_seq_len:
+            return False
+
+        prompt_tokens = self._get_prompt_tokens(state)
+        force_threshold = int(self.max_seq_len * self.context_force_finish_threshold)
+
+        if prompt_tokens >= force_threshold:
+            # Preserve any partial answer the model has set
+            if "final_answer" not in state:
+                # Try to read answer from sandbox if available
+                sandbox_id = state.get("sandbox_id")
+                if sandbox_id:
+                    try:
+                        result = await self._execute_command_with_retry(
+                            sandbox_id,
+                            f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
+                        )
+                        answer = json.loads(result.stdout.strip())
+                        state["final_answer"] = answer.get("content", "")
+                    except Exception:
+                        state["final_answer"] = ""
+                else:
+                    state["final_answer"] = ""
+            return True
+        return False
 
     # =========================================================================
     # Cleanup

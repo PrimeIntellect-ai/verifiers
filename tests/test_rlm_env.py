@@ -552,6 +552,325 @@ class TestStopConditions:
 
 
 # =============================================================================
+# Context Limit Management
+# =============================================================================
+
+
+class TestContextLimitConfiguration:
+    """Tests for context limit configuration parameters."""
+
+    def test_default_thresholds(self, rlm_env):
+        """Default context limit thresholds are set correctly."""
+        assert rlm_env.context_warning_threshold == 0.80
+        assert rlm_env.context_force_finish_threshold == 0.95
+
+    def test_custom_thresholds(self, mock_sandbox_client, mock_dataset):
+        """Custom context limit thresholds can be set."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                context_warning_threshold=0.70,
+                context_force_finish_threshold=0.90,
+            )
+
+            assert env.context_warning_threshold == 0.70
+            assert env.context_force_finish_threshold == 0.90
+
+            # Cleanup
+            env.active_sandboxes.clear()
+
+
+class TestGetPromptTokens:
+    """Tests for _get_prompt_tokens helper method."""
+
+    def test_returns_zero_for_empty_trajectory(self, rlm_env):
+        """Returns 0 when trajectory is empty."""
+        state = {"trajectory": []}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 0
+
+    def test_returns_zero_for_missing_trajectory(self, rlm_env):
+        """Returns 0 when trajectory is missing."""
+        state = {}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 0
+
+    def test_returns_zero_for_missing_response(self, rlm_env):
+        """Returns 0 when response is missing from trajectory."""
+        state = {"trajectory": [{"response": None}]}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 0
+
+    def test_returns_zero_for_missing_usage(self, rlm_env):
+        """Returns 0 when response has no usage attribute."""
+        mock_response = MagicMock(spec=[])  # No usage attribute
+        state = {"trajectory": [{"response": mock_response}]}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 0
+
+    def test_returns_prompt_tokens_from_usage(self, rlm_env):
+        """Returns prompt_tokens from response.usage."""
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=5000)
+        state = {"trajectory": [{"response": mock_response}]}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 5000
+
+    def test_returns_zero_for_none_prompt_tokens(self, rlm_env):
+        """Returns 0 when prompt_tokens is None."""
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=None)
+        state = {"trajectory": [{"response": mock_response}]}
+        result = rlm_env._get_prompt_tokens(state)
+        assert result == 0
+
+
+class TestContextLimitWarning:
+    """Tests for context limit warning injection."""
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_max_seq_len_not_set(self, rlm_env):
+        """No warning injected when max_seq_len is not set."""
+        rlm_env.max_seq_len = None
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {"trajectory": [], "context_warning_sent": False}
+        output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
+
+        assert "[CONTEXT LIMIT WARNING]" not in output
+        assert state["context_warning_sent"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_warning_below_threshold(self, rlm_env):
+        """No warning when tokens are below threshold."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        # 5000 tokens = 50% of 10000, below 80% threshold
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=5000)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "context_warning_sent": False,
+        }
+
+        output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
+
+        assert "[CONTEXT LIMIT WARNING]" not in output
+        assert state["context_warning_sent"] is False
+
+    @pytest.mark.asyncio
+    async def test_warning_at_threshold(self, rlm_env):
+        """Warning injected when tokens reach threshold."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        # 8000 tokens = 80% of 10000, at threshold
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=8000)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "context_warning_sent": False,
+        }
+
+        output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
+
+        assert "[CONTEXT LIMIT WARNING]" in output
+        assert "8,000" in output  # Formatted token count
+        assert "10,000" in output  # Formatted max
+        assert "80%" in output  # Percentage
+        assert state["context_warning_sent"] is True
+
+    @pytest.mark.asyncio
+    async def test_warning_only_sent_once(self, rlm_env):
+        """Warning is only sent once per rollout."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=8500)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "context_warning_sent": True,  # Already sent
+        }
+
+        output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
+
+        assert "[CONTEXT LIMIT WARNING]" not in output
+
+
+class TestContextLimitStopCondition:
+    """Tests for context_limit_reached stop condition."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_max_seq_len_not_set(self, rlm_env):
+        """Returns False when max_seq_len is not set."""
+        rlm_env.max_seq_len = None
+        state = {"trajectory": []}
+        result = await rlm_env.context_limit_reached(state)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_below_force_threshold(self, rlm_env):
+        """Returns False when below force threshold."""
+        rlm_env.max_seq_len = 10000
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9000)  # 90%, below 95%
+        state = {"trajectory": [{"response": mock_response}]}
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_at_force_threshold(self, rlm_env):
+        """Returns True when at force threshold."""
+        rlm_env.max_seq_len = 10000
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9500)  # 95%, at threshold
+        state = {"trajectory": [{"response": mock_response}]}
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is True
+        assert "final_answer" in state
+
+    @pytest.mark.asyncio
+    async def test_preserves_existing_final_answer(self, rlm_env):
+        """Preserves existing final_answer when stopping."""
+        rlm_env.max_seq_len = 10000
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9600)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "final_answer": "existing answer",
+        }
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is True
+        assert state["final_answer"] == "existing answer"
+
+    @pytest.mark.asyncio
+    async def test_reads_answer_from_sandbox(self, rlm_env):
+        """Reads partial answer from sandbox when stopping."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(stdout='{"content": "partial answer from sandbox"}')
+        )
+
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9700)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "sandbox_id": "sandbox_123",
+        }
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is True
+        assert state["final_answer"] == "partial answer from sandbox"
+
+    @pytest.mark.asyncio
+    async def test_handles_sandbox_read_error(self, rlm_env):
+        """Handles errors when reading answer from sandbox."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(stdout="invalid json")
+        )
+
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9800)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "sandbox_id": "sandbox_123",
+        }
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is True
+        assert state["final_answer"] == ""
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_sandbox(self, rlm_env):
+        """Handles missing sandbox_id when stopping."""
+        rlm_env.max_seq_len = 10000
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=9900)
+        state = {"trajectory": [{"response": mock_response}]}
+
+        result = await rlm_env.context_limit_reached(state)
+
+        assert result is True
+        assert state["final_answer"] == ""
+
+
+class TestContextWarningSentInitialization:
+    """Tests for context_warning_sent flag initialization."""
+
+    @pytest.mark.asyncio
+    async def test_context_warning_sent_initialized_in_setup_state(self, rlm_env):
+        """context_warning_sent is initialized to False in setup_state."""
+        rlm_env._ensure_interception_server = AsyncMock()
+        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
+            return_value="https://test.trycloudflare.com"
+        )
+        rlm_env._write_json_to_sandbox = AsyncMock()
+        rlm_env._wait_for_worker_ready = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env.setup_state(state)
+
+        assert "context_warning_sent" in result
+        assert result["context_warning_sent"] is False
+
+
+# =============================================================================
 # 6. Sub-LLM Tool Infrastructure
 # =============================================================================
 
