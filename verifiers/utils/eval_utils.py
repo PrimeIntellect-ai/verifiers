@@ -113,8 +113,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # set extra environment kwargs
     if config.extra_env_kwargs:
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        for k, v in config.extra_env_kwargs.items():
-            setattr(vf_env, k, v)
+        vf_env.set_kwargs(**config.extra_env_kwargs)
 
     # run evaluation
     results_path = get_eval_results_path(config)

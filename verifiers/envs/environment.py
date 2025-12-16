@@ -99,11 +99,8 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
 
-        self.interleaved_rollouts = interleaved_rollouts
-        if self.interleaved_rollouts:
-            self.logger.warning(
-                "Environment is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
-            )
+        if interleaved_rollouts:
+            self.set_interleaved_rollouts(True)
 
         if self.message_type == "chat":
             if dataset is not None:
@@ -1028,6 +1025,26 @@ class Environment(ABC):
     def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
         """Set the interleaved rollouts flag for this environment."""
         self.interleaved_rollouts = interleaved_rollouts
+        if self.interleaved_rollouts:
+            self.logger.warning(
+                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+            )
+
+    def set_kwargs(self, **kwargs) -> None:
+        """
+        Set environment attributes, using setter methods when available.
+
+        For each kwarg, checks if a `set_{key}` method exists and calls it,
+        otherwise falls back to setattr. This ensures proper propagation for
+        attributes like `interleaved_rollouts` in EnvGroup.
+        """
+        for key, value in kwargs.items():
+            setter_name = f"set_{key}"
+            setter = getattr(self, setter_name, None)
+            if setter is not None and callable(setter):
+                setter(value)
+            else:
+                setattr(self, key, value)
 
     make_dataset = make_dataset
 
