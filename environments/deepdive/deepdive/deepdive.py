@@ -26,7 +26,6 @@ from .config import (
     SERPER_API_URL,
 )
 from .formatting import format_serper_results, truncate_text
-from .metrics_logger import MetricsLogger, create_logging_reward_func
 from .open_one import open_one
 from .rate_limit import with_rate_limit_retry
 
@@ -55,8 +54,6 @@ def load_environment(
     redundancy_penalty_weight: float = 0.0,
     debug: bool = False,
     finish_with_tool: bool = False,
-    # Metrics logging
-    metrics_output_path: str | None = None,
 ) -> vf.Environment:
     # === Dataset ===
     raw_split = load_dataset(dataset_name, split=dataset_split)
@@ -235,14 +232,6 @@ def load_environment(
         judge_rubric.add_reward_func(sub_llm_batch_count, weight=0.0)
         judge_rubric.add_reward_func(sub_llm_max_batch_size, weight=0.0)
         judge_rubric.add_reward_func(sub_llm_mean_batch_size, weight=0.0)
-
-    # === Metrics Logging ===
-    # If metrics_output_path is provided, add a logging reward function
-    # This logs detailed per-rollout metrics to a JSON file for statistical analysis
-    if metrics_output_path:
-        metrics_logger = MetricsLogger(metrics_output_path)
-        logging_reward = create_logging_reward_func(metrics_logger, is_rlm_mode=use_rlm)
-        judge_rubric.add_reward_func(logging_reward, weight=0.0)
 
     # === RLM Mode ===
     if use_rlm:

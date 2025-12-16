@@ -17,15 +17,12 @@ Needle types:
 Multi-needle support with partial credit scoring.
 """
 
-import json
 import logging
 import random
 import re
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from datasets import Dataset
-from filelock import FileLock
 
 import verifiers as vf
 from verifiers import RLMEnv
@@ -96,279 +93,6 @@ NEEDLE_WORDS = [
     "peruse",
     "ruminate",
 ]
-
-
-# =============================================================================
-# Metrics Logging
-# =============================================================================
-
-
-class MetricsLogger:
-    """Thread-safe JSON metrics logger for needle-in-haystack experiments.
-
-    Writes metrics incrementally to a JSON file in columnar format (dict of lists)
-    for easy loading into pandas. Uses file locking for safe concurrent access.
-
-    Usage:
-        logger = MetricsLogger("results/metrics.json")
-        logger.log(example_id=1, exact_match=1.0, num_lines=1024, ...)
-    """
-
-    def __init__(self, output_path: str | Path):
-        self.output_path = Path(output_path)
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.lock_path = self.output_path.with_suffix(".lock")
-        self._lock = FileLock(self.lock_path)
-
-        # Initialize file with empty structure if it doesn't exist
-        if not self.output_path.exists():
-            self._write_metrics(self._empty_metrics())
-
-    def _empty_metrics(self) -> dict[str, list]:
-        """Return empty metrics structure with all tracked fields."""
-        return {
-            # Identifiers
-            "example_id": [],
-            # Experiment parameters
-            "num_lines": [],
-            "num_needles": [],
-            "needle_type": [],
-            "needle_position": [],
-            "needle_variance": [],
-            "use_rlm": [],
-            "seed": [],
-            # Performance
-            "exact_match": [],
-            "partial_match": [],  # fraction of needles found
-            "needles_found": [],  # count of needles found
-            "final_answer": [],
-            # Main branch metrics
-            "main_turns": [],
-            "main_tool_calls": [],
-            "main_prompt_tokens": [],
-            "main_completion_tokens": [],
-            # Sub-LLM metrics (RLM only - will be 0 for standard mode)
-            "sub_llm_calls": [],
-            "sub_llm_total_tool_calls": [],
-            "sub_llm_prompt_tokens": [],
-            "sub_llm_completion_tokens": [],
-            "sub_llm_total_turns": [],
-            "sub_llm_batch_count": [],
-            "sub_llm_max_batch_size": [],
-            "sub_llm_mean_batch_size": [],
-            # Totals
-            "total_prompt_tokens": [],
-            "total_completion_tokens": [],
-            "total_tokens": [],
-            "total_tool_calls": [],
-            # Timing
-            "generation_ms": [],
-            "scoring_ms": [],
-            "total_ms": [],
-            # Error tracking
-            "had_error": [],
-            "error_message": [],
-        }
-
-    def _read_metrics(self) -> dict[str, list]:
-        """Read current metrics from file."""
-        with open(self.output_path, "r") as f:
-            return json.load(f)
-
-    def _write_metrics(self, metrics: dict[str, list]):
-        """Write metrics to file."""
-        with open(self.output_path, "w") as f:
-            json.dump(metrics, f, indent=2)
-
-    def log(self, **kwargs: Any):
-        """Thread-safe logging of a single rollout's metrics."""
-        with self._lock:
-            metrics = self._read_metrics()
-            for key, value in kwargs.items():
-                if key not in metrics:
-                    metrics[key] = []
-                metrics[key].append(value)
-            self._write_metrics(metrics)
-
-
-def _create_logging_reward_func(
-    metrics_logger: MetricsLogger,
-    is_rlm_mode: bool,
-    num_lines: int,
-    num_needles: int,
-    needle_type: str,
-    needle_position: float | None,
-    needle_variance: float,
-    seed: int | None,
-):
-    """Create a 0-weight reward function that logs metrics.
-
-    Args:
-        metrics_logger: MetricsLogger instance to write metrics to.
-        is_rlm_mode: Whether this is running in RLM mode.
-        num_lines: Number of lines in the haystack (experiment parameter).
-        num_needles: Number of needles hidden (experiment parameter).
-        needle_type: Type of needles ("word" or "numeric").
-        needle_position: Needle position setting (experiment parameter).
-        needle_variance: Needle variance setting (experiment parameter).
-        seed: Random seed used (experiment parameter).
-
-    Returns:
-        A reward function that logs metrics and returns 0.0 (no effect on reward).
-    """
-
-    def logging_reward(state: dict, **kwargs) -> float:
-        try:
-            # Extract main branch metrics from trajectory
-            main_tool_calls = 0
-            main_prompt_tokens = 0
-            main_completion_tokens = 0
-
-            for step in state.get("trajectory", []):
-                response = step.get("response")
-                if response:
-                    # Count tool calls
-                    if hasattr(response, "choices"):
-                        for choice in response.choices:
-                            msg = getattr(choice, "message", None)
-                            if msg and getattr(msg, "tool_calls", None):
-                                main_tool_calls += len(msg.tool_calls)
-                    # Count tokens
-                    usage = getattr(response, "usage", None)
-                    if usage:
-                        main_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                        main_completion_tokens += (
-                            getattr(usage, "completion_tokens", 0) or 0
-                        )
-
-            # Get sub-LLM metrics (will be 0 for non-RLM mode)
-            sub_llm_calls = state.get("sub_llm_call_count", 0)
-            sub_llm_total_tool_calls = state.get("sub_llm_total_tool_calls", 0)
-            sub_llm_prompt_tokens = state.get("sub_llm_prompt_tokens", 0)
-            sub_llm_completion_tokens = state.get("sub_llm_completion_tokens", 0)
-            sub_llm_total_turns = state.get("sub_llm_total_turns", 0)
-            sub_llm_batch_count = state.get("sub_llm_batch_count", 0)
-            sub_llm_max_batch_size = state.get("sub_llm_max_batch_size", 0)
-            sub_llm_mean_batch_size = state.get("sub_llm_mean_batch_size", 0.0)
-
-            # Calculate totals
-            total_prompt_tokens = main_prompt_tokens + sub_llm_prompt_tokens
-            total_completion_tokens = main_completion_tokens + sub_llm_completion_tokens
-            total_tokens = total_prompt_tokens + total_completion_tokens
-            total_tool_calls = main_tool_calls + sub_llm_total_tool_calls
-
-            # Get timing info
-            timing = state.get("timing", {})
-
-            # Get final answer
-            if is_rlm_mode:
-                final_answer = state.get("final_answer", "")
-            else:
-                completion = state.get("completion", [])
-                if completion and isinstance(completion, list):
-                    final_answer = completion[-1].get("content", "")
-                else:
-                    final_answer = str(completion) if completion else ""
-
-            # Calculate match metrics using the shared helper
-            expected_needles = _parse_answer_list(state.get("answer", ""))
-            found_needles = _extract_found_needles(
-                final_answer, expected_needles, needle_type
-            )
-            needles_found_count = len(found_needles)
-            partial_match = (
-                needles_found_count / len(expected_needles) if expected_needles else 0.0
-            )
-            exact_match = 1.0 if needles_found_count == len(expected_needles) else 0.0
-
-            # Log all metrics
-            metrics_logger.log(
-                example_id=state.get("example_id", -1),
-                # Experiment parameters
-                num_lines=num_lines,
-                num_needles=num_needles,
-                needle_type=needle_type,
-                needle_position=needle_position,
-                needle_variance=needle_variance,
-                use_rlm=is_rlm_mode,
-                seed=seed,
-                # Performance
-                exact_match=exact_match,
-                partial_match=partial_match,
-                needles_found=needles_found_count,
-                final_answer=str(final_answer)[:500],  # Truncate for storage
-                # Main branch
-                main_turns=len(state.get("trajectory", [])),
-                main_tool_calls=main_tool_calls,
-                main_prompt_tokens=main_prompt_tokens,
-                main_completion_tokens=main_completion_tokens,
-                # Sub-LLM (RLM only)
-                sub_llm_calls=sub_llm_calls,
-                sub_llm_total_tool_calls=sub_llm_total_tool_calls,
-                sub_llm_prompt_tokens=sub_llm_prompt_tokens,
-                sub_llm_completion_tokens=sub_llm_completion_tokens,
-                sub_llm_total_turns=sub_llm_total_turns,
-                sub_llm_batch_count=sub_llm_batch_count,
-                sub_llm_max_batch_size=sub_llm_max_batch_size,
-                sub_llm_mean_batch_size=sub_llm_mean_batch_size,
-                # Totals
-                total_prompt_tokens=total_prompt_tokens,
-                total_completion_tokens=total_completion_tokens,
-                total_tokens=total_tokens,
-                total_tool_calls=total_tool_calls,
-                # Timing
-                generation_ms=timing.get("generation_ms", 0),
-                scoring_ms=timing.get("scoring_ms", 0),
-                total_ms=timing.get("total_ms", 0),
-                # Success
-                had_error=False,
-                error_message="",
-            )
-            return 0.0  # No effect on reward
-
-        except Exception as e:
-            # Log the error but don't crash the evaluation
-            try:
-                metrics_logger.log(
-                    example_id=state.get("example_id", -1),
-                    num_lines=num_lines,
-                    num_needles=num_needles,
-                    needle_type=needle_type,
-                    needle_position=needle_position,
-                    needle_variance=needle_variance,
-                    use_rlm=is_rlm_mode,
-                    seed=seed,
-                    exact_match=-1,
-                    partial_match=-1,
-                    needles_found=-1,
-                    final_answer="",
-                    main_turns=0,
-                    main_tool_calls=0,
-                    main_prompt_tokens=0,
-                    main_completion_tokens=0,
-                    sub_llm_calls=0,
-                    sub_llm_total_tool_calls=0,
-                    sub_llm_prompt_tokens=0,
-                    sub_llm_completion_tokens=0,
-                    sub_llm_total_turns=0,
-                    sub_llm_batch_count=0,
-                    sub_llm_max_batch_size=0,
-                    sub_llm_mean_batch_size=0.0,
-                    total_prompt_tokens=0,
-                    total_completion_tokens=0,
-                    total_tokens=0,
-                    total_tool_calls=0,
-                    generation_ms=0,
-                    scoring_ms=0,
-                    total_ms=0,
-                    had_error=True,
-                    error_message=str(e)[:200],
-                )
-            except Exception:
-                pass  # Don't crash if even error logging fails
-            return 0.0
-
-    return logging_reward
 
 
 # =============================================================================
@@ -576,7 +300,6 @@ def load_environment(
     needle_variance: float = 0.0,
     use_rlm: bool = True,
     seed: int | None = None,
-    metrics_output_path: str | None = None,
     **kwargs,
 ) -> vf.Environment:
     """
@@ -598,8 +321,6 @@ def load_environment(
         use_rlm: If True, use RLMEnv with context in info["context"].
                  If False, use SingleTurnEnv with context in the prompt.
         seed: Random seed for reproducible dataset generation. If None, uses random state.
-        metrics_output_path: Optional path to JSON file for logging per-rollout metrics.
-                             Metrics are appended, allowing multiple runs to share one file.
         **kwargs: Additional arguments passed to the environment (e.g., interception_host for RLM)
 
     Returns:
@@ -702,21 +423,6 @@ def load_environment(
 
     dataset = Dataset.from_list(dataset_rows)
 
-    # Setup metrics logging if path is provided
-    metrics_logger = None
-    if metrics_output_path:
-        metrics_logger = MetricsLogger(metrics_output_path)
-        logging_reward = _create_logging_reward_func(
-            metrics_logger=metrics_logger,
-            is_rlm_mode=use_rlm,
-            num_lines=num_lines,
-            num_needles=num_needles,
-            needle_type=needle_type,
-            needle_position=needle_position,
-            needle_variance=needle_variance,
-            seed=seed,
-        )
-
     # Create reward functions that work with multi-needle and partial credit
     if use_rlm:
         # RLM mode: reward functions use state["final_answer"]
@@ -781,10 +487,6 @@ def load_environment(
         ]
         weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-        if metrics_logger:
-            reward_funcs.append(logging_reward)
-            weights.append(0.0)
-
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 
         env = RLMEnv(
@@ -827,10 +529,6 @@ def load_environment(
 
         reward_funcs = [partial_match_reward, exact_match_reward]
         weights = [1.0, 0.0]  # Use partial match as main reward
-
-        if metrics_logger:
-            reward_funcs.append(logging_reward)
-            weights.append(0.0)
 
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 
