@@ -156,8 +156,6 @@ class GenerateMetadata(TypedDict):
     state_columns: list[str]
     path_to_save: Path
     use_token_prompts: bool
-    tokenize_method: Literal["local", "vllm"] | None
-    exact_tokenization: bool | None
 
 
 class GenerateOutputs(TypedDict):
@@ -234,8 +232,6 @@ class EvalConfig(BaseModel):
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
     use_token_prompts: bool = False
-    tokenize_method: Literal["local", "vllm"] | None
-    exact_tokenization: bool | None = None
     # logging
     print_results: bool = False
     verbose: bool = False
