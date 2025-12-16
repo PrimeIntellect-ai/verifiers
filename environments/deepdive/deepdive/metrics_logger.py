@@ -54,6 +54,9 @@ class MetricsLogger:
             "sub_llm_prompt_tokens": [],
             "sub_llm_completion_tokens": [],
             "sub_llm_total_turns": [],
+            "sub_llm_batch_count": [],
+            "sub_llm_max_batch_size": [],
+            "sub_llm_mean_batch_size": [],
             # Totals
             "total_prompt_tokens": [],
             "total_completion_tokens": [],
@@ -154,6 +157,9 @@ def create_logging_reward_func(logger: MetricsLogger, is_rlm_mode: bool = False)
             sub_llm_prompt_tokens = state.get("sub_llm_prompt_tokens", 0)
             sub_llm_completion_tokens = state.get("sub_llm_completion_tokens", 0)
             sub_llm_total_turns = state.get("sub_llm_total_turns", 0)
+            sub_llm_batch_count = state.get("sub_llm_batch_count", 0)
+            sub_llm_max_batch_size = state.get("sub_llm_max_batch_size", 0)
+            sub_llm_mean_batch_size = state.get("sub_llm_mean_batch_size", 0.0)
 
             # Calculate totals
             total_prompt_tokens = main_prompt_tokens + sub_llm_prompt_tokens
@@ -211,6 +217,9 @@ def create_logging_reward_func(logger: MetricsLogger, is_rlm_mode: bool = False)
                 sub_llm_prompt_tokens=sub_llm_prompt_tokens,
                 sub_llm_completion_tokens=sub_llm_completion_tokens,
                 sub_llm_total_turns=sub_llm_total_turns,
+                sub_llm_batch_count=sub_llm_batch_count,
+                sub_llm_max_batch_size=sub_llm_max_batch_size,
+                sub_llm_mean_batch_size=sub_llm_mean_batch_size,
                 # Totals
                 total_prompt_tokens=total_prompt_tokens,
                 total_completion_tokens=total_completion_tokens,
@@ -245,6 +254,9 @@ def create_logging_reward_func(logger: MetricsLogger, is_rlm_mode: bool = False)
                     sub_llm_prompt_tokens=0,
                     sub_llm_completion_tokens=0,
                     sub_llm_total_turns=0,
+                    sub_llm_batch_count=0,
+                    sub_llm_max_batch_size=0,
+                    sub_llm_mean_batch_size=0.0,
                     total_prompt_tokens=0,
                     total_completion_tokens=0,
                     total_tokens=0,

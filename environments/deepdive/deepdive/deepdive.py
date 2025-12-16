@@ -191,6 +191,51 @@ def load_environment(
         redundancy_penalty_func, weight=-redundancy_penalty_weight
     )
 
+    # === Sub-LLM Metrics (RLM mode only) ===
+    # Always add these so they appear in metrics output
+    if use_rlm:
+
+        def sub_llm_call_count(state: dict, **kwargs) -> float:
+            """Metric: Number of sub-LLM calls made during rollout."""
+            return float(state.get("sub_llm_call_count", 0))
+
+        def sub_llm_prompt_tokens(state: dict, **kwargs) -> float:
+            """Metric: Total prompt tokens consumed by sub-LLM calls."""
+            return float(state.get("sub_llm_prompt_tokens", 0))
+
+        def sub_llm_completion_tokens(state: dict, **kwargs) -> float:
+            """Metric: Total completion tokens from sub-LLM calls."""
+            return float(state.get("sub_llm_completion_tokens", 0))
+
+        def sub_llm_total_tool_calls(state: dict, **kwargs) -> float:
+            """Metric: Total tool calls made by sub-LLMs."""
+            return float(state.get("sub_llm_total_tool_calls", 0))
+
+        def sub_llm_total_turns(state: dict, **kwargs) -> float:
+            """Metric: Total turns (LLM calls) made by sub-LLMs."""
+            return float(state.get("sub_llm_total_turns", 0))
+
+        def sub_llm_batch_count(state: dict, **kwargs) -> float:
+            """Metric: Number of llm_batch() invocations during rollout."""
+            return float(state.get("sub_llm_batch_count", 0))
+
+        def sub_llm_max_batch_size(state: dict, **kwargs) -> float:
+            """Metric: Maximum batch size (peak parallelism) in a single llm_batch() call."""
+            return float(state.get("sub_llm_max_batch_size", 0))
+
+        def sub_llm_mean_batch_size(state: dict, **kwargs) -> float:
+            """Metric: Mean batch size across all llm_batch() invocations."""
+            return float(state.get("sub_llm_mean_batch_size", 0.0))
+
+        judge_rubric.add_reward_func(sub_llm_call_count, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_prompt_tokens, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_completion_tokens, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_total_tool_calls, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_total_turns, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_batch_count, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_max_batch_size, weight=0.0)
+        judge_rubric.add_reward_func(sub_llm_mean_batch_size, weight=0.0)
+
     # === Metrics Logging ===
     # If metrics_output_path is provided, add a logging reward function
     # This logs detailed per-rollout metrics to a JSON file for statistical analysis

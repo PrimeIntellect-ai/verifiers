@@ -94,6 +94,9 @@ class MetricsLogger:
             "sub_llm_prompt_tokens": [],
             "sub_llm_completion_tokens": [],
             "sub_llm_total_turns": [],
+            "sub_llm_batch_count": [],
+            "sub_llm_max_batch_size": [],
+            "sub_llm_mean_batch_size": [],
             # Totals
             "total_prompt_tokens": [],
             "total_completion_tokens": [],
@@ -176,6 +179,9 @@ def _create_logging_reward_func(
             sub_llm_prompt_tokens = state.get("sub_llm_prompt_tokens", 0)
             sub_llm_completion_tokens = state.get("sub_llm_completion_tokens", 0)
             sub_llm_total_turns = state.get("sub_llm_total_turns", 0)
+            sub_llm_batch_count = state.get("sub_llm_batch_count", 0)
+            sub_llm_max_batch_size = state.get("sub_llm_max_batch_size", 0)
+            sub_llm_mean_batch_size = state.get("sub_llm_mean_batch_size", 0.0)
 
             # Calculate totals
             total_prompt_tokens = main_prompt_tokens + sub_llm_prompt_tokens
@@ -254,6 +260,9 @@ def _create_logging_reward_func(
                 sub_llm_prompt_tokens=sub_llm_prompt_tokens,
                 sub_llm_completion_tokens=sub_llm_completion_tokens,
                 sub_llm_total_turns=sub_llm_total_turns,
+                sub_llm_batch_count=sub_llm_batch_count,
+                sub_llm_max_batch_size=sub_llm_max_batch_size,
+                sub_llm_mean_batch_size=sub_llm_mean_batch_size,
                 # Totals
                 total_prompt_tokens=total_prompt_tokens,
                 total_completion_tokens=total_completion_tokens,
@@ -291,6 +300,9 @@ def _create_logging_reward_func(
                     sub_llm_prompt_tokens=0,
                     sub_llm_completion_tokens=0,
                     sub_llm_total_turns=0,
+                    sub_llm_batch_count=0,
+                    sub_llm_max_batch_size=0,
+                    sub_llm_mean_batch_size=0.0,
                     total_prompt_tokens=0,
                     total_completion_tokens=0,
                     total_tokens=0,
@@ -532,6 +544,53 @@ Respond either "yes" or "no" only."""
     # Build reward functions list
     reward_funcs = [judge_reward, exact_match_reward, contains_answer_reward]
     weights = [1.0, 0.0, 0.0]
+
+    # Add sub-LLM metrics for RLM mode (0-weighted, just for logging)
+    if use_rlm:
+
+        def sub_llm_call_count(state: vf.State, **_kwargs) -> float:
+            """Metric: Number of sub-LLM calls made during rollout."""
+            return float(state.get("sub_llm_call_count", 0))
+
+        def sub_llm_prompt_tokens(state: vf.State, **_kwargs) -> float:
+            """Metric: Total prompt tokens consumed by sub-LLM calls."""
+            return float(state.get("sub_llm_prompt_tokens", 0))
+
+        def sub_llm_completion_tokens(state: vf.State, **_kwargs) -> float:
+            """Metric: Total completion tokens from sub-LLM calls."""
+            return float(state.get("sub_llm_completion_tokens", 0))
+
+        def sub_llm_total_tool_calls(state: vf.State, **_kwargs) -> float:
+            """Metric: Total tool calls made by sub-LLMs."""
+            return float(state.get("sub_llm_total_tool_calls", 0))
+
+        def sub_llm_total_turns(state: vf.State, **_kwargs) -> float:
+            """Metric: Total turns (LLM calls) made by sub-LLMs."""
+            return float(state.get("sub_llm_total_turns", 0))
+
+        def sub_llm_batch_count(state: vf.State, **_kwargs) -> float:
+            """Metric: Number of llm_batch() invocations during rollout."""
+            return float(state.get("sub_llm_batch_count", 0))
+
+        def sub_llm_max_batch_size(state: vf.State, **_kwargs) -> float:
+            """Metric: Maximum batch size (peak parallelism) in a single llm_batch() call."""
+            return float(state.get("sub_llm_max_batch_size", 0))
+
+        def sub_llm_mean_batch_size(state: vf.State, **_kwargs) -> float:
+            """Metric: Mean batch size across all llm_batch() invocations."""
+            return float(state.get("sub_llm_mean_batch_size", 0.0))
+
+        reward_funcs.extend([
+            sub_llm_call_count,
+            sub_llm_prompt_tokens,
+            sub_llm_completion_tokens,
+            sub_llm_total_tool_calls,
+            sub_llm_total_turns,
+            sub_llm_batch_count,
+            sub_llm_max_batch_size,
+            sub_llm_mean_batch_size,
+        ])
+        weights.extend([0.0] * 8)
 
     # Setup metrics logging if path is provided
     if metrics_output_path:
