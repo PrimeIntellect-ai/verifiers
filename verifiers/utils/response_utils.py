@@ -1,4 +1,3 @@
-import logging
 from typing import cast
 
 from verifiers.types import (
@@ -10,8 +9,6 @@ from verifiers.types import (
     ModelResponse,
     TrajectoryStepTokens,
 )
-
-logger = logging.getLogger(__name__)
 
 
 async def parse_response_tokens(
