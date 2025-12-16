@@ -99,8 +99,7 @@ class Environment(ABC):
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
 
-        if interleaved_rollouts:
-            self.set_interleaved_rollouts(True)
+        self.set_interleaved_rollouts(interleaved_rollouts)
 
         if self.message_type == "chat":
             if dataset is not None:
