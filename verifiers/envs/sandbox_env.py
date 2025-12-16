@@ -58,9 +58,10 @@ class SandboxEnv(vf.StatefulToolEnv):
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
+        stop_errors: list[type[Exception]] | None = [vf.SandboxError],
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(stop_errors=stop_errors, **kwargs)
         self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
         self.sandbox_request = CreateSandboxRequest(
@@ -93,6 +94,7 @@ class SandboxEnv(vf.StatefulToolEnv):
     async def _wait_for_sandbox_ready(self, sandbox_id: str):
         """Wait for sandbox to be created"""
         s = time.time()
+        self.logger.debug(f"Waiting for sandbox {sandbox_id} to be ready")
         try:
             await self.sandbox_client.wait_for_creation(sandbox_id)
         except Exception as e:
