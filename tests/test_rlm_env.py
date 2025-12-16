@@ -7,7 +7,6 @@ import pytest
 from datasets import Dataset
 
 from verifiers.envs.rlm_env import RLMEnv
-from verifiers.rubrics.rubric import Rubric
 
 
 # =============================================================================
@@ -602,21 +601,15 @@ class TestRunSubLLMWithTools:
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
-        (
-            result,
-            prompt_tokens,
-            completion_tokens,
-            tool_call_count,
-            num_turns,
-            max_turns_reached,
-        ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
-        assert "choices" in result
-        assert tool_call_count == 0
-        assert num_turns == 1
-        assert max_turns_reached is False
+        assert result["final_content"] == "Final answer"
+        assert result["tool_call_count"] == 0
+        assert result["num_turns"] == 1
+        assert result["max_turns_reached"] is False
+        assert len(result["turns"]) == 1
 
     @pytest.mark.asyncio
     async def test_executes_tool_calls(self, rlm_env_with_sub_tools):
@@ -667,7 +660,7 @@ class TestRunSubLLMWithTools:
         )
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
-        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
@@ -799,7 +792,7 @@ class TestHandleSubLLMRequest:
             }
         )
 
-        response = await rlm_env._handle_sub_llm_request(mock_request)
+        await rlm_env._handle_sub_llm_request(mock_request)
 
         mock_client.chat.completions.create.assert_called_once()
         call_kwargs = mock_client.chat.completions.create.call_args
@@ -837,7 +830,7 @@ class TestHandleSubLLMRequest:
             }
         )
 
-        response = await rlm_env_with_sub_tools._handle_sub_llm_request(mock_request)
+        await rlm_env_with_sub_tools._handle_sub_llm_request(mock_request)
 
         # Should have called with tools parameter
         call_kwargs = mock_client.chat.completions.create.call_args
@@ -899,149 +892,17 @@ class TestPostRollout:
 
 
 # =============================================================================
-# 8. Sub-LLM Metrics Tracking
+# 8. Sub-LLM Trajectory Steps (new implementation)
 # =============================================================================
 
 
-class TestSubLLMMetricsInitialization:
-    """Tests for sub-LLM metrics initialization."""
+class TestSubLLMTrajectorySteps:
+    """Tests for sub-LLM trajectory step creation."""
 
     @pytest.mark.asyncio
-    async def test_initializes_metrics_in_active_rollouts(self, rlm_env):
-        """Initializes sub-LLM metrics tracking in active_rollouts."""
-        rlm_env._ensure_interception_server = AsyncMock()
-        rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
-            return_value="https://test.trycloudflare.com"
-        )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
-
-        state = {"info": {}, "model": "test-model", "client": MagicMock()}
-        result = await rlm_env.setup_state(state)
-
-        rollout_context = rlm_env.active_rollouts[result["rollout_id"]]
-        assert rollout_context["sub_llm_call_count"] == 0
-        assert rollout_context["sub_llm_prompt_tokens"] == 0
-        assert rollout_context["sub_llm_completion_tokens"] == 0
-
-
-class TestSubLLMMetricsTracking:
-    """Tests for sub-LLM metrics tracking in _handle_sub_llm_request."""
-
-    @pytest.mark.asyncio
-    async def test_appends_call_to_list(self, rlm_env):
-        """Appends call data to sub_llm_calls list for each sub-LLM request."""
-        rollout_id = "rlm_test123"
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(
-            return_value={
-                "choices": [{"message": {"content": "response"}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
-            }
-        )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-
-        rlm_env.active_rollouts[rollout_id] = {
-            "client": mock_client,
-            "model": "test-model",
-            "sub_model": "gpt-4",
-        }
-
-        mock_request = MagicMock()
-        mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(
-            return_value={
-                "messages": [{"role": "user", "content": "test"}],
-            }
-        )
-
-        await rlm_env._handle_sub_llm_request(mock_request)
-
-        context = rlm_env.active_rollouts[rollout_id]
-        sub_llm_calls = context.get("sub_llm_calls", [])
-        assert len(sub_llm_calls) == 1
-        assert sub_llm_calls[0]["metadata"]["prompt_tokens"] == 10
-        assert sub_llm_calls[0]["metadata"]["completion_tokens"] == 20
-
-    @pytest.mark.asyncio
-    async def test_accumulates_across_requests(self, rlm_env):
-        """Accumulates call data across multiple sub-LLM requests."""
-        rollout_id = "rlm_test123"
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(
-            return_value={
-                "choices": [{"message": {"content": "response"}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
-            }
-        )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-
-        # Pre-populate with 5 existing calls
-        existing_calls = [
-            {"metadata": {"prompt_tokens": 20, "completion_tokens": 40}}
-            for _ in range(5)
-        ]
-        rlm_env.active_rollouts[rollout_id] = {
-            "client": mock_client,
-            "model": "test-model",
-            "sub_model": "gpt-4",
-            "sub_llm_calls": existing_calls,
-        }
-
-        mock_request = MagicMock()
-        mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(
-            return_value={
-                "messages": [{"role": "user", "content": "test"}],
-            }
-        )
-
-        await rlm_env._handle_sub_llm_request(mock_request)
-
-        context = rlm_env.active_rollouts[rollout_id]
-        sub_llm_calls = context.get("sub_llm_calls", [])
-        assert len(sub_llm_calls) == 6
-        # New call should have the new tokens
-        assert sub_llm_calls[-1]["metadata"]["prompt_tokens"] == 10
-        assert sub_llm_calls[-1]["metadata"]["completion_tokens"] == 20
-
-    @pytest.mark.asyncio
-    async def test_handles_missing_usage(self, rlm_env):
-        """Handles responses without usage data gracefully."""
-        rollout_id = "rlm_test123"
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.model_dump = MagicMock(
-            return_value={
-                "choices": [{"message": {"content": "response"}}],
-                # No "usage" field
-            }
-        )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-
-        rlm_env.active_rollouts[rollout_id] = {
-            "client": mock_client,
-            "model": "test-model",
-            "sub_model": "gpt-4",
-        }
-
-        mock_request = MagicMock()
-        mock_request.match_info = {"rollout_id": rollout_id}
-        mock_request.json = AsyncMock(
-            return_value={
-                "messages": [{"role": "user", "content": "test"}],
-            }
-        )
-
-        await rlm_env._handle_sub_llm_request(mock_request)
-
-        context = rlm_env.active_rollouts[rollout_id]
-        sub_llm_calls = context.get("sub_llm_calls", [])
-        assert len(sub_llm_calls) == 1
-        assert sub_llm_calls[0]["metadata"]["prompt_tokens"] == 0
-        assert sub_llm_calls[0]["metadata"]["completion_tokens"] == 0
+    async def test_include_sub_llm_in_trajectory_default(self, rlm_env):
+        """Default is to include sub-LLM calls in trajectory."""
+        assert rlm_env.include_sub_llm_in_trajectory is True
 
 
 class TestSubLLMMetricsWithTools:
@@ -1101,128 +962,120 @@ class TestSubLLMMetricsWithTools:
         )
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
-        (
-            response_dict,
-            prompt_tokens,
-            completion_tokens,
-            tool_call_count,
-            num_turns,
-            max_turns_reached,
-        ) = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
             mock_client, "gpt-4", messages
         )
 
         # Should accumulate tokens from both calls
-        assert prompt_tokens == 150  # 50 + 100
-        assert completion_tokens == 50  # 30 + 20
-        assert tool_call_count == 1  # One tool call was made
-        assert num_turns == 2  # Two LLM calls: one with tool call, one final
-        assert max_turns_reached is False
+        assert result["total_prompt_tokens"] == 150  # 50 + 100
+        assert result["total_completion_tokens"] == 50  # 30 + 20
+        assert result["tool_call_count"] == 1  # One tool call was made
+        assert result["num_turns"] == 2  # Two LLM calls: one with tool call, one final
+        assert result["max_turns_reached"] is False
+        assert len(result["turns"]) == 2  # Two turns recorded
 
 
-class TestSubLLMMetricsCleanup:
-    """Tests for metrics cleanup."""
-
-    @pytest.mark.asyncio
-    async def test_derives_metrics_from_calls_list(self, rlm_env):
-        """Derives sub-LLM metrics from sub_llm_calls list during cleanup."""
-        rollout_id = "rlm_test123"
-        # Populate sub_llm_calls list with call data
-        sub_llm_calls = [
-            {
-                "metadata": {
-                    "prompt_tokens": 30,
-                    "completion_tokens": 60,
-                    "tool_call_count": 1,
-                    "num_turns": 2,
-                }
-            },
-            {
-                "metadata": {
-                    "prompt_tokens": 50,
-                    "completion_tokens": 100,
-                    "tool_call_count": 2,
-                    "num_turns": 3,
-                }
-            },
-            {
-                "metadata": {
-                    "prompt_tokens": 70,
-                    "completion_tokens": 140,
-                    "tool_call_count": 0,
-                    "num_turns": 1,
-                }
-            },
-        ]
-        rlm_env.active_rollouts[rollout_id] = {
-            "client": MagicMock(),
-            "sub_llm_calls": sub_llm_calls,
-        }
-
-        state = {"rollout_id": rollout_id}
-        await rlm_env.cleanup_rlm_state(state)
-
-        # Metrics should be derived from the calls list
-        assert state["sub_llm_call_count"] == 3
-        assert state["sub_llm_prompt_tokens"] == 150  # 30 + 50 + 70
-        assert state["sub_llm_completion_tokens"] == 300  # 60 + 100 + 140
-        assert state["sub_llm_total_tool_calls"] == 3  # 1 + 2 + 0
-        assert state["sub_llm_total_turns"] == 6  # 2 + 3 + 1
+class TestSubLLMCleanup:
+    """Tests for sub-LLM cleanup."""
 
     @pytest.mark.asyncio
-    async def test_handles_missing_calls_list_gracefully(self, rlm_env):
-        """Handles missing sub_llm_calls list in active_rollouts gracefully."""
+    async def test_prepends_trajectory_steps_during_cleanup(self, rlm_env):
+        """Prepends sub-LLM trajectory steps to main trajectory during cleanup."""
+        from verifiers.types import TrajectoryStep
+
         rollout_id = "rlm_test123"
+        # Create mock sub-LLM trajectory steps
+        sub_step1 = TrajectoryStep(
+            prompt=[{"role": "user", "content": "sub prompt 1"}],
+            completion=[{"role": "assistant", "content": "sub response 1"}],
+            response=None,
+            tokens=None,
+            reward=None,
+            advantage=None,
+            extras={"is_sub_llm_call": True, "timestamp": 1.0},
+        )
+        sub_step2 = TrajectoryStep(
+            prompt=[{"role": "user", "content": "sub prompt 2"}],
+            completion=[{"role": "assistant", "content": "sub response 2"}],
+            response=None,
+            tokens=None,
+            reward=None,
+            advantage=None,
+            extras={"is_sub_llm_call": True, "timestamp": 2.0},
+        )
         rlm_env.active_rollouts[rollout_id] = {
             "client": MagicMock(),
-            # No sub_llm_calls field
+            "sub_llm_trajectory_steps": [sub_step2, sub_step1],  # Out of order
         }
 
-        state = {"rollout_id": rollout_id}
+        # Main trajectory step
+        main_step = TrajectoryStep(
+            prompt=[{"role": "user", "content": "main prompt"}],
+            completion=[{"role": "assistant", "content": "main response"}],
+            response=None,
+            tokens=None,
+            reward=None,
+            advantage=None,
+            extras={},
+        )
+        state = {"rollout_id": rollout_id, "trajectory": [main_step]}
         await rlm_env.cleanup_rlm_state(state)
 
-        assert state["sub_llm_call_count"] == 0
-        assert state["sub_llm_prompt_tokens"] == 0
-        assert state["sub_llm_completion_tokens"] == 0
+        # Trajectory should have sub-LLM steps (sorted by timestamp) prepended
+        assert len(state["trajectory"]) == 3
+        assert state["trajectory"][0]["extras"].get("is_sub_llm_call") is True
+        assert (
+            state["trajectory"][0]["extras"]["timestamp"] == 1.0
+        )  # First by timestamp
+        assert state["trajectory"][1]["extras"]["timestamp"] == 2.0
+        assert state["trajectory"][2]["extras"].get("is_sub_llm_call") is not True
 
-
-class TestSubLLMMetricsRubric:
-    """Tests for automatic sub-LLM metrics rubric."""
-
-    def test_rubric_includes_metric_functions(self, rlm_env):
-        """Rubric includes 0-weighted metric functions."""
-        func_names = rlm_env.rubric._get_reward_func_names()
-        assert "sub_llm_calls" in func_names
-        assert "sub_llm_prompt_tokens" in func_names
-        assert "sub_llm_completion_tokens" in func_names
-
-    def test_metric_weights_are_zero(self, rlm_env):
-        """Metric functions have weight 0."""
-        names = rlm_env.rubric._get_reward_func_names()
-        weights = rlm_env.rubric._get_reward_weights()
-        name_to_weight = dict(zip(names, weights))
-        assert name_to_weight["sub_llm_calls"] == 0.0
-        assert name_to_weight["sub_llm_prompt_tokens"] == 0.0
-        assert name_to_weight["sub_llm_completion_tokens"] == 0.0
-
-    def test_user_rubric_combined(self, mock_sandbox_client, mock_dataset):
-        """User rubric is combined with internal metrics rubric."""
-
-        def custom_reward(state) -> float:
-            return 1.0
-
-        user_rubric = Rubric(funcs=[custom_reward], weights=[1.0])
+    @pytest.mark.asyncio
+    async def test_no_prepend_when_disabled(self, mock_sandbox_client, mock_dataset):
+        """Does not prepend sub-LLM steps when include_sub_llm_in_trajectory=False."""
+        from verifiers.types import TrajectoryStep
 
         with (
             patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
         ):
             mock_client_cls.return_value = mock_sandbox_client
-            env = RLMEnv(dataset=mock_dataset, rubric=user_rubric)
+            env = RLMEnv(
+                dataset=mock_dataset,
+                include_sub_llm_in_trajectory=False,
+            )
+            env.sandbox_client = mock_sandbox_client
 
-            func_names = env.rubric._get_reward_func_names()
-            # Should have both internal metrics and user reward
-            assert "sub_llm_calls" in func_names
-            assert "sub_llm_prompt_tokens" in func_names
-            assert "sub_llm_completion_tokens" in func_names
-            assert "custom_reward" in func_names
+            rollout_id = "rlm_test123"
+            sub_step = TrajectoryStep(
+                prompt=[{"role": "user", "content": "sub prompt"}],
+                completion=[{"role": "assistant", "content": "sub response"}],
+                response=None,
+                tokens=None,
+                reward=None,
+                advantage=None,
+                extras={"is_sub_llm_call": True, "timestamp": 1.0},
+            )
+            env.active_rollouts[rollout_id] = {
+                "client": MagicMock(),
+                "sub_llm_trajectory_steps": [sub_step],
+            }
+
+            main_step = TrajectoryStep(
+                prompt=[{"role": "user", "content": "main prompt"}],
+                completion=[{"role": "assistant", "content": "main response"}],
+                response=None,
+                tokens=None,
+                reward=None,
+                advantage=None,
+                extras={},
+            )
+            state = {"rollout_id": rollout_id, "trajectory": [main_step]}
+            await env.cleanup_rlm_state(state)
+
+            # Should only have main step
+            assert len(state["trajectory"]) == 1
+            assert state["trajectory"][0]["extras"].get("is_sub_llm_call") is not True
+
+            # Cleanup
+            env.active_sandboxes.clear()

@@ -33,14 +33,36 @@ from aiohttp import web
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
 from verifiers.rubrics.rubric import Rubric
-from verifiers.rubrics.rubric_group import RubricGroup
-from verifiers.types import Messages, State
+from verifiers.types import Messages, ModelResponse, State, TrajectoryStep, TypedDict
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.response_utils import (
+    parse_response_messages,
+    parse_response_tokens,
+)
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.tunnel import TunnelPool
 
 logger = logging.getLogger(__name__)
+
+
+class SubLLMTurn(TypedDict):
+    """A single turn in a sub-LLM call (used by RLMEnv)."""
+
+    prompt_messages: list[dict]  # Messages before this LLM call
+    response: ModelResponse  # Full response object (with token_ids, logprobs)
+
+
+class SubLLMResult(TypedDict):
+    """Result of a sub-LLM call, possibly with multiple turns (used by RLMEnv)."""
+
+    final_content: str
+    turns: list[SubLLMTurn]
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    tool_call_count: int
+    num_turns: int
+    max_turns_reached: bool
 
 
 # Worker script that runs inside the sandbox - handles code execution only
@@ -393,6 +415,10 @@ class RLMEnv(SandboxEnv):
         interception_port: Port for interception server (default: 8766)
         pip_install_packages: Space-separated packages to install (default: "requests")
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 30)
+        include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
+                   When True (default), sub-LLM turns are prepended to the trajectory as
+                   TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
+                   When False, sub-LLM calls happen but are not stored.
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -418,6 +444,7 @@ class RLMEnv(SandboxEnv):
         interception_port: int = 8766,
         pip_install_packages: str = "",
         max_startup_wait_seconds: int = 120,
+        include_sub_llm_in_trajectory: bool = True,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -433,6 +460,7 @@ class RLMEnv(SandboxEnv):
         self.interception_port = interception_port
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
+        self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -474,18 +502,11 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
-        # Create internal metrics rubric and combine with user rubric
-        internal_rubric = self._create_metrics_rubric()
-        if rubric is not None:
-            combined_rubric = RubricGroup(rubrics=[internal_rubric, rubric])
-        else:
-            combined_rubric = internal_rubric
-
         super().__init__(
             sandbox_name="rlm-env",
             start_command=start_command,
             max_turns=max_iterations,
-            rubric=combined_rubric,
+            rubric=rubric,
             **kwargs,
         )
 
@@ -495,55 +516,6 @@ class RLMEnv(SandboxEnv):
 
         # Add the Python REPL tool (sandbox_id and state are injected via update_tool_args)
         self.add_tool(self.call_python_repl, args_to_skip=["sandbox_id", "state"])
-
-    def _create_metrics_rubric(self) -> Rubric:
-        """Create internal rubric with 0-weighted sub-LLM metrics."""
-
-        def sub_llm_calls(state: State) -> float:
-            """Number of sub-LLM calls made during rollout."""
-            return float(state.get("sub_llm_call_count", 0))
-
-        def sub_llm_prompt_tokens(state: State) -> float:
-            """Total prompt tokens consumed by sub-LLM calls."""
-            return float(state.get("sub_llm_prompt_tokens", 0))
-
-        def sub_llm_completion_tokens(state: State) -> float:
-            """Total completion tokens from sub-LLM calls."""
-            return float(state.get("sub_llm_completion_tokens", 0))
-
-        def sub_llm_total_tool_calls(state: State) -> float:
-            """Total tool calls made by sub-LLMs."""
-            return float(state.get("sub_llm_total_tool_calls", 0))
-
-        def sub_llm_total_turns(state: State) -> float:
-            """Total turns (LLM calls) made by sub-LLMs."""
-            return float(state.get("sub_llm_total_turns", 0))
-
-        def sub_llm_batch_count(state: State) -> float:
-            """Number of llm_batch() invocations during rollout."""
-            return float(state.get("sub_llm_batch_count", 0))
-
-        def sub_llm_max_batch_size(state: State) -> float:
-            """Maximum batch size (peak parallelism) in a single llm_batch() call."""
-            return float(state.get("sub_llm_max_batch_size", 0))
-
-        def sub_llm_mean_batch_size(state: State) -> float:
-            """Mean batch size across all llm_batch() invocations."""
-            return float(state.get("sub_llm_mean_batch_size", 0.0))
-
-        return Rubric(
-            funcs=[
-                sub_llm_calls,
-                sub_llm_prompt_tokens,
-                sub_llm_completion_tokens,
-                sub_llm_total_tool_calls,
-                sub_llm_total_turns,
-                sub_llm_batch_count,
-                sub_llm_max_batch_size,
-                sub_llm_mean_batch_size,
-            ],
-            weights=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        )
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -640,27 +612,39 @@ class RLMEnv(SandboxEnv):
 
     async def _run_sub_llm_with_tools(
         self, client: Any, model: str, messages: list[dict]
-    ) -> tuple[dict, int, int, int, int, bool]:
+    ) -> SubLLMResult:
         """
         Run a sub-LLM call with tool-calling loop.
 
         Returns:
-            Tuple of (response_dict, total_prompt_tokens, total_completion_tokens,
-                      tool_call_count, num_turns, max_turns_reached)
+            SubLLMResult with full turn data for each LLM call in the loop.
         """
         current_messages = list(messages)
         total_prompt_tokens = 0
         total_completion_tokens = 0
         tool_call_count = 0
         num_turns = 0
+        turns: list[SubLLMTurn] = []
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            # Make LLM call with tools
+            # Snapshot messages before this call
+            prompt_snapshot = [dict(m) for m in current_messages]
+
+            # Make LLM call with tools and logprobs
             response = await client.chat.completions.create(
                 model=model,
                 messages=current_messages,
                 tools=self.sub_oai_tools if self.sub_oai_tools else None,
+                logprobs=True,
+            )
+
+            # Store this turn
+            turns.append(
+                SubLLMTurn(
+                    prompt_messages=prompt_snapshot,
+                    response=response,
+                )
             )
 
             # Accumulate tokens from this call
@@ -673,18 +657,15 @@ class RLMEnv(SandboxEnv):
 
             # If no tool calls, we're done
             if not tool_calls:
-                response_dict = (
-                    response.model_dump()
-                    if hasattr(response, "model_dump")
-                    else dict(response)
-                )
-                return (
-                    response_dict,
-                    total_prompt_tokens,
-                    total_completion_tokens,
-                    tool_call_count,
-                    num_turns,
-                    False,  # max_turns_reached
+                final_content = assistant_message.content or ""
+                return SubLLMResult(
+                    final_content=final_content,
+                    turns=turns,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    tool_call_count=tool_call_count,
+                    num_turns=num_turns,
+                    max_turns_reached=False,
                 )
 
             # Add assistant message with tool calls to conversation
@@ -713,9 +694,22 @@ class RLMEnv(SandboxEnv):
                 "Based on the information gathered, provide your final answer inside \\boxed{}.",
             }
         )
+
+        # Snapshot messages before final call
+        prompt_snapshot = [dict(m) for m in current_messages]
+
         response = await client.chat.completions.create(
             model=model,
             messages=current_messages,
+            logprobs=True,
+        )
+
+        # Store final turn
+        turns.append(
+            SubLLMTurn(
+                prompt_messages=prompt_snapshot,
+                response=response,
+            )
         )
 
         # Accumulate tokens from final call
@@ -723,16 +717,15 @@ class RLMEnv(SandboxEnv):
         total_prompt_tokens += prompt_tokens
         total_completion_tokens += completion_tokens
 
-        response_dict = (
-            response.model_dump() if hasattr(response, "model_dump") else dict(response)
-        )
-        return (
-            response_dict,
-            total_prompt_tokens,
-            total_completion_tokens,
-            tool_call_count,
-            num_turns,
-            True,  # max_turns_reached
+        final_content = response.choices[0].message.content or ""
+        return SubLLMResult(
+            final_content=final_content,
+            turns=turns,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            tool_call_count=tool_call_count,
+            num_turns=num_turns,
+            max_turns_reached=True,
         )
 
     # =========================================================================
@@ -795,73 +788,83 @@ class RLMEnv(SandboxEnv):
         try:
             # Use tool-calling loop if sub_tools are configured
             if self.sub_tools:
-                (
-                    response_dict,
-                    prompt_tokens,
-                    completion_tokens,
-                    tool_call_count,
-                    num_turns,
-                    max_turns_reached,
-                ) = await self._run_sub_llm_with_tools(
+                result = await self._run_sub_llm_with_tools(
                     client, sub_model, messages_with_system
                 )
+                final_content = result["final_content"]
+                prompt_tokens = result["total_prompt_tokens"]
+                completion_tokens = result["total_completion_tokens"]
+                tool_call_count = result["tool_call_count"]
+                num_turns = result["num_turns"]
+                max_turns_reached = result["max_turns_reached"]
+                turns = result["turns"]
             else:
-                # Original simple path
+                # Simple path - single turn, no tools, with logprobs
                 response = await client.chat.completions.create(
                     model=sub_model,
                     messages=messages_with_system,
+                    logprobs=True,
                 )
-                response_dict = (
-                    response.model_dump()
-                    if hasattr(response, "model_dump")
-                    else dict(response)
-                )
-                # Extract tokens from simple path
-                usage = response_dict.get("usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0) or 0
-                completion_tokens = usage.get("completion_tokens", 0) or 0
+                # Extract tokens
+                prompt_tokens, completion_tokens = self._extract_tokens(response)
                 tool_call_count = 0
-                num_turns = 1  # Simple path is always 1 turn
+                num_turns = 1
                 max_turns_reached = False
+                final_content = response.choices[0].message.content or ""
+                # Create single turn for simple path
+                turns = [
+                    SubLLMTurn(
+                        prompt_messages=[dict(m) for m in messages_with_system],
+                        response=response,
+                    )
+                ]
 
-            # Extract boxed answer from response (falls back to full content if no \boxed{})
-            if response_dict.get("choices"):
-                for choice in response_dict["choices"]:
-                    message = choice.get("message", {})
-                    content = message.get("content", "")
-                    if content:
-                        message["content"] = extract_boxed_answer(content)
+            # Extract boxed answer for response to sandbox
+            boxed_content = extract_boxed_answer(final_content)
 
-            # Save full sub-LLM call data (metrics are derived from this in cleanup)
-            response_content = ""
-            if response_dict.get("choices"):
-                response_content = (
-                    response_dict["choices"][0].get("message", {}).get("content", "")
-                )
-            context.setdefault("sub_llm_calls", []).append(
-                {
-                    "turn": context.get("current_turn", 0),
-                    "timestamp": time.time(),
-                    "request": {"messages": messages},
-                    "response": {"content": response_content},
-                    "metadata": {
-                        "batch_id": batch_id,
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "tool_call_count": tool_call_count,
-                        "num_turns": num_turns,
-                        "max_turns_reached": max_turns_reached,
-                    },
-                }
-            )
+            # Build TrajectorySteps if enabled
+            if self.include_sub_llm_in_trajectory:
+                parent_turn = context.get("current_turn", 0)
+                timestamp = time.time()
 
-            # Add metadata to response for the worker to parse
-            response_dict["_rlm_metadata"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "tool_call_count": tool_call_count,
-                "num_turns": num_turns,
-                "max_turns_reached": max_turns_reached,
+                for turn in turns:
+                    # Parse tokens from response
+                    tokens = await parse_response_tokens(
+                        turn["response"], "chat", self.max_seq_len
+                    )
+                    # Parse completion messages
+                    completion_messages = await parse_response_messages(
+                        turn["response"], "chat"
+                    )
+
+                    trajectory_step = TrajectoryStep(
+                        prompt=turn["prompt_messages"],
+                        completion=completion_messages,
+                        response=turn["response"],
+                        tokens=tokens,
+                        reward=None,
+                        advantage=None,
+                        extras={
+                            "is_sub_llm_call": True,
+                            "parent_turn": parent_turn,
+                            "batch_id": batch_id,
+                            "timestamp": timestamp,
+                        },
+                    )
+                    context.setdefault("sub_llm_trajectory_steps", []).append(
+                        trajectory_step
+                    )
+
+            # Build response dict for sandbox
+            response_dict = {
+                "choices": [{"message": {"content": boxed_content}}],
+                "_rlm_metadata": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "tool_call_count": tool_call_count,
+                    "num_turns": num_turns,
+                    "max_turns_reached": max_turns_reached,
+                },
             }
 
             return web.json_response(response_dict)
@@ -927,9 +930,6 @@ class RLMEnv(SandboxEnv):
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
-            "sub_llm_call_count": 0,
-            "sub_llm_prompt_tokens": 0,
-            "sub_llm_completion_tokens": 0,
         }
 
     async def _start_worker(self, state: State) -> None:
@@ -1052,7 +1052,10 @@ fi
                 await self._prepare_sandbox_and_start_worker(state, context_dict)
                 break  # Success
             except RuntimeError as e:
-                if "worker failed to start" in str(e) and attempt < max_sandbox_retries - 1:
+                if (
+                    "worker failed to start" in str(e)
+                    and attempt < max_sandbox_retries - 1
+                ):
                     logger.warning(
                         f"Worker startup failed (attempt {attempt + 1}/{max_sandbox_retries}), "
                         f"recreating sandbox..."
@@ -1280,43 +1283,20 @@ PY
 
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
-        """Cleanup RLM-specific state."""
+        """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
 
-            # Copy full sub-LLM call data for training frameworks
-            sub_llm_calls = context.get("sub_llm_calls", [])
-            state["sub_llm_calls"] = sub_llm_calls
-
-            # Derive metrics from call data (single source of truth)
-            state["sub_llm_call_count"] = len(sub_llm_calls)
-            state["sub_llm_prompt_tokens"] = sum(
-                c["metadata"]["prompt_tokens"] for c in sub_llm_calls
-            )
-            state["sub_llm_completion_tokens"] = sum(
-                c["metadata"]["completion_tokens"] for c in sub_llm_calls
-            )
-            state["sub_llm_total_tool_calls"] = sum(
-                c["metadata"]["tool_call_count"] for c in sub_llm_calls
-            )
-            state["sub_llm_total_turns"] = sum(
-                c["metadata"]["num_turns"] for c in sub_llm_calls
-            )
-
-            # Compute batch-level parallelism metrics
-            batches: dict[str, int] = {}
-            for call in sub_llm_calls:
-                batch_id = call["metadata"].get("batch_id", "")
-                if batch_id:
-                    batches[batch_id] = batches.get(batch_id, 0) + 1
-
-            batch_sizes = list(batches.values())
-            state["sub_llm_batch_count"] = len(batch_sizes)
-            state["sub_llm_max_batch_size"] = max(batch_sizes) if batch_sizes else 0
-            state["sub_llm_mean_batch_size"] = (
-                sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
-            )
+            # Prepend sub-LLM trajectory steps if enabled
+            if self.include_sub_llm_in_trajectory:
+                sub_steps = context.get("sub_llm_trajectory_steps", [])
+                if sub_steps:
+                    # Sort by timestamp (completion-order)
+                    sub_steps_sorted = sorted(
+                        sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
+                    )
+                    state["trajectory"] = sub_steps_sorted + state["trajectory"]
 
             del self.active_rollouts[rollout_id]
 
