@@ -103,7 +103,6 @@ class Environment(ABC):
             self.logger.warning(
                 "Environment is configured to use interleaved rollouts. All model responses will after turn 1 will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
             )
-            self.max_workers = max_workers
 
         if self.message_type == "chat":
             if dataset is not None:
@@ -150,6 +149,7 @@ class Environment(ABC):
                 if key != "extra_body":
                     self.sampling_args[key] = value
 
+        self.max_workers = max_workers
         for key, value in kwargs.items():
             setattr(self, key, value)
 
