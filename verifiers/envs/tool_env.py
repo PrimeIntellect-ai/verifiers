@@ -28,7 +28,7 @@ class ToolEnv(vf.MultiTurnEnv):
         }
         super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
 
-    def _should_stop_for_error(self, err: vf.Error) -> bool:
+    def _should_stop_for_error(self, err: Exception) -> bool:
         """Check if error is in stop_errors."""
         return any(isinstance(err, err_type) for err_type in self.stop_errors)
 
@@ -84,9 +84,8 @@ class ToolEnv(vf.MultiTurnEnv):
                     tool_call.get("function", {}).get("arguments", "")
                 )
             except Exception as e:
-                err = vf.ToolParseError(cause=e)
-                if self._should_stop_for_error(err):
-                    raise err
+                if self._should_stop_for_error(e):
+                    raise vf.ToolParseError(e)
                 tool_messages.append(
                     cast(
                         vf.Message,
@@ -105,9 +104,8 @@ class ToolEnv(vf.MultiTurnEnv):
                 )
                 tool_messages.append(tool_message)
             except Exception as e:
-                err = vf.ToolCallError(cause=e)
-                if self._should_stop_for_error(err):
-                    raise err
+                if self._should_stop_for_error(e):
+                    raise vf.ToolCallError(e)
                 tool_messages.append(
                     cast(
                         vf.Message,
