@@ -26,6 +26,7 @@ import logging
 import textwrap
 import time
 import uuid
+from collections import Counter
 from typing import Any, Callable
 
 from aiohttp import web
@@ -1348,16 +1349,56 @@ PY
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
+            sub_steps = context.get("sub_llm_trajectory_steps", [])
+
+            # Compute and store sub-LLM metrics from trajectory data
+            if sub_steps:
+                batch_ids = [
+                    s["extras"].get("batch_id")
+                    for s in sub_steps
+                    if s.get("extras")
+                ]
+                batch_counts = Counter(b for b in batch_ids if b)
+
+                state["sub_llm_call_count"] = len(sub_steps)
+                state["sub_llm_prompt_tokens"] = sum(
+                    getattr(
+                        getattr(s.get("response"), "usage", None), "prompt_tokens", 0
+                    )
+                    or 0
+                    for s in sub_steps
+                )
+                state["sub_llm_completion_tokens"] = sum(
+                    getattr(
+                        getattr(s.get("response"), "usage", None),
+                        "completion_tokens",
+                        0,
+                    )
+                    or 0
+                    for s in sub_steps
+                )
+                state["sub_llm_total_tool_calls"] = sum(
+                    s.get("extras", {}).get("tool_call_count", 0) or 0
+                    for s in sub_steps
+                )
+                state["sub_llm_total_turns"] = len(sub_steps)
+                state["sub_llm_batch_count"] = len(batch_counts)
+                state["sub_llm_max_batch_size"] = (
+                    max(batch_counts.values()) if batch_counts else 0
+                )
+                state["sub_llm_mean_batch_size"] = (
+                    sum(batch_counts.values()) / len(batch_counts)
+                    if batch_counts
+                    else 0.0
+                )
 
             # Prepend sub-LLM trajectory steps if enabled
-            if self.include_sub_llm_in_trajectory:
-                sub_steps = context.get("sub_llm_trajectory_steps", [])
-                if sub_steps:
-                    # Sort by timestamp (completion-order)
-                    sub_steps_sorted = sorted(
-                        sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
-                    )
-                    state["trajectory"] = sub_steps_sorted + state["trajectory"]
+            if self.include_sub_llm_in_trajectory and sub_steps:
+                # Sort by timestamp (completion-order)
+                sub_steps_sorted = sorted(
+                    sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
+                )
+                state["trajectory"] = sub_steps_sorted + state["trajectory"]
 
             del self.active_rollouts[rollout_id]
 
