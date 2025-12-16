@@ -7,14 +7,14 @@ def load_environment(
     dataset_split: str = "train",
     num_train_examples: int = -1,
     max_turns: int = 100,
-    max_startup_wait_seconds: int = 30,
+    max_startup_wait_seconds: int = 60,
     pip_install_packages: str = "numpy sympy scipy",
     sandbox_cpu_cores: int = 1,
     sandbox_memory_gb: int = 2,
     sandbox_disk_size_gb: int = 5,
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 30,
+    sandbox_timeout_per_command_seconds: int = 60,
     **kwargs,
 ):
     dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
