@@ -97,8 +97,6 @@ class State(dict):
     client: AsyncOpenAI
     model: str
     sampling_args: SamplingArgs | None
-    use_token_prompts: bool
-    exact_tokenization: bool | None
     # created during rollout
     is_completed: bool
     stop_condition: str | None
