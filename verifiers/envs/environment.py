@@ -423,7 +423,7 @@ class Environment(ABC):
             return wrapper
 
         @handle_overlong_prompt
-        async def get_model_response(
+        async def get_model_response_with_messages(
             client: AsyncOpenAI,
             model: str,
             prompt: Messages,
@@ -536,7 +536,7 @@ class Environment(ABC):
                 message_type=message_type,
             )
         else:
-            return await get_model_response(
+            return await get_model_response_with_messages(
                 client=client,
                 model=model,
                 prompt=prompt,
