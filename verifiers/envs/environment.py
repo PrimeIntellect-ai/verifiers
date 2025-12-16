@@ -102,7 +102,7 @@ class Environment(ABC):
         self.interleaved_rollouts = interleaved_rollouts
         if self.interleaved_rollouts:
             self.logger.warning(
-                "Environment is configured to use interleaved rollouts. All model responses will after turn 1 will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+                "Environment is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
             )
 
         if self.message_type == "chat":
