@@ -42,6 +42,7 @@ Put your final copied text inside \\boxed{}."""
 # Environment-specific tips for RLM mode (used for SFT data generation)
 # These tips are wrapped in <env_tips> tags so they can be removed during training
 _ENV_TIPS = """
+
 <env_tips>
 Strategy for verbatim copying:
 1. Write your initial attempt to answer["content"]
@@ -225,7 +226,7 @@ def load_environment(
     # Build prompt for each sample
     def build_prompt(sample: dict) -> str:
         text = sample["text"]
-        prompt = f"Copy the text contained within the <text> tags exactly (do not include the tags themselves):\n<text>\n{text}\n</text>"
+        prompt = f"Copy the text contained within the <text> tags exactly (do not include the tags themselves):\n\n<text>{text}</text>"
         # Add environment tips for RLM mode if requested
         if use_rlm and include_env_tips:
             prompt = prompt + _ENV_TIPS
