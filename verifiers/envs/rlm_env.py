@@ -421,8 +421,6 @@ class RLMEnv(SandboxEnv):
                    When False, sub-LLM calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
-        context_force_finish_threshold: Fraction of max_seq_len at which to force stop
-                   the rollout (default: 0.95). Only active if max_seq_len is set.
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -450,11 +448,9 @@ class RLMEnv(SandboxEnv):
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
-        context_force_finish_threshold: float = 0.95,
         rubric: Rubric | None = None,
         **kwargs,
     ):
-        assert context_warning_threshold <= context_force_finish_threshold
         self.sub_model = sub_model
         self.sub_tools = sub_tools or []
         self.sub_tool_max_turns = sub_tool_max_turns
@@ -469,7 +465,6 @@ class RLMEnv(SandboxEnv):
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
-        self.context_force_finish_threshold = context_force_finish_threshold
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -1260,15 +1255,12 @@ PY
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
-        # Inject context limit warning if approaching limit (but not yet at force stop)
+        # Inject context limit warning if approaching limit
         if self.max_seq_len and not state.get("context_warning_sent"):
             prompt_tokens = self._get_prompt_tokens(state)
             warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
-            force_threshold = int(
-                self.max_seq_len * self.context_force_finish_threshold
-            )
 
-            if prompt_tokens >= warning_threshold and prompt_tokens < force_threshold:
+            if prompt_tokens >= warning_threshold:
                 state["context_warning_sent"] = True
                 pct = prompt_tokens / self.max_seq_len
                 output += (
@@ -1321,18 +1313,15 @@ PY
         return "final_answer" in state
 
     @vf.stop
-    async def context_limit_reached(self, state: State) -> bool:
-        """Force stop when approaching context limit to prevent API errors."""
-        if not self.max_seq_len:
+    async def prompt_too_long(self, state: State) -> bool:
+        """Stop when API returns overlong prompt error."""
+        if not state.get("trajectory"):
             return False
 
-        prompt_tokens = self._get_prompt_tokens(state)
-        force_threshold = int(self.max_seq_len * self.context_force_finish_threshold)
-
-        if prompt_tokens >= force_threshold:
-            # Preserve any partial answer the model has set
+        response = state["trajectory"][-1].get("response")
+        if response and getattr(response, "id", None) == "overlong-prompt":
+            # Extract answer from sandbox if not already set
             if "final_answer" not in state:
-                # Try to read answer from sandbox if available
                 sandbox_id = state.get("sandbox_id")
                 if sandbox_id:
                     try:
