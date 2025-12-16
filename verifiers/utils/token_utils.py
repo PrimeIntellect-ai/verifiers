@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=None)
 def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
     logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
-    url_without_v1 = str(client.base_url).replace("/v1/", "")
-    tokens_client = client.copy(base_url=url_without_v1)
+    base_url = str(client.base_url).rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+    tokens_client = client.copy(base_url=base_url)
     return tokens_client
 
 
