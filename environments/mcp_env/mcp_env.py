@@ -1,20 +1,82 @@
 import asyncio
 import atexit
 import os
+import socket
 import threading
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Sequence
 
 from datasets import Dataset
 from dotenv import load_dotenv
+
+import verifiers as vf
 from src.mcp_server_connection import MCPServerConnection
 from src.mcp_tool_wrapper import MCPToolWrapper
 from src.models import MCPServerConfig
-
-import verifiers as vf
 from verifiers.envs.tool_env import ToolEnv
 from verifiers.types import Message
 
 load_dotenv()
+
+def _allocate_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def build_streamable_http_server_config(
+    *,
+    name: str,
+    command: str | None = None,
+    args: Sequence[str] | None = None,
+    env: Dict[str, str | None] | None = None,
+    headers: Dict[str, str] | None = None,
+    url: str | None = None,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    url_path: str = "/mcp",
+    description: str | None = None,
+) -> Dict[str, object]:
+    """Build a StreamableHTTP MCP server configuration.
+
+    The helper allocates a port when launching a local process and supports
+    placeholder substitution in command arguments. Placeholders `{port}`,
+    `{host}`, and `{path}` are expanded automatically so launch commands can be
+    written declaratively.
+    """
+
+    normalized_path = url_path if url_path.startswith("/") else f"/{url_path}"
+
+    if url:
+        target_url = url
+    else:
+        port = port or _allocate_port()
+        target_url = f"http://{host}:{port}{normalized_path}"
+
+    format_kwargs = {
+        "port": port,
+        "host": host,
+        "path": normalized_path,
+        "url": target_url,
+    }
+
+    formatted_args: List[str] | None = None
+    if args is not None:
+        formatted_args = [arg.format(**format_kwargs) for arg in args]
+
+    sanitized_env = None
+    if env:
+        sanitized_env = {k: v for k, v in env.items() if v is not None}
+
+    return {
+        "name": name,
+        "transport": "streamablehttp",
+        "command": command,
+        "args": formatted_args,
+        "env": sanitized_env,
+        "headers": headers,
+        "url": target_url,
+        "description": description or f"StreamableHTTP server '{name}'",
+    }
 
 EXA_FETCH_TOOLS = [
     {
@@ -55,6 +117,9 @@ class MCPEnv(ToolEnv):
                     self.mcp_servers.append(MCPServerConfig(**server))
                 else:
                     self.mcp_servers.append(server)
+        else:
+            for server in EXA_FETCH_TOOLS:
+                self.mcp_servers.append(MCPServerConfig(**server))
 
         self.server_connections: Dict[str, MCPServerConnection] = {}
         self.mcp_tools: Dict[str, MCPToolWrapper] = {}
@@ -150,7 +215,7 @@ class MCPEnv(ToolEnv):
 
 
 def load_environment(
-    mcp_servers: list = EXA_FETCH_TOOLS, dataset=None, **kwargs
+    mcp_servers: list | None = None, dataset=None, **kwargs
 ) -> vf.Environment:
     """Load an MCPEnv environment with fetch server for testing."""
     dataset = dataset or Dataset.from_dict(
@@ -169,8 +234,9 @@ def load_environment(
         return 1.0 if "yes" in judge_response.lower() else 0.0
 
     rubric.add_reward_func(judge_reward, weight=1.0)
+    server_configs = mcp_servers or EXA_FETCH_TOOLS
     vf_env = MCPEnv(
-        mcp_servers=mcp_servers,
+        mcp_servers=server_configs,
         dataset=dataset,
         rubric=rubric,
         **kwargs,
