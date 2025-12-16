@@ -18,8 +18,8 @@ from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
-    tokenize_vllm,
 )
+from verifiers.utils.token_utils import tokenize_vllm
 
 logger = logging.getLogger(__name__)
 
