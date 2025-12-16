@@ -30,10 +30,20 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
     print(f"Found {len(results_files)} result files")
 
     for results_file in results_files:
+        # Read metadata.json for model info
+        metadata_file = results_file.parent / "metadata.json"
+        metadata = {}
+        if metadata_file.exists():
+            with open(metadata_file) as f:
+                metadata = json.load(f)
+
+        model = metadata.get("model", "unknown")
+
         with open(results_file) as f:
             for line in f:
                 if line.strip():
                     result = json.loads(line)
+                    result["_model"] = model
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
@@ -47,6 +57,8 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
     for r in results:
         info = r.get("info", {})
         row = {
+            # Model (from metadata)
+            "model": r.get("_model", "unknown"),
             # Ablation parameters (from info)
             "mode": info.get(
                 "mode", "standard"
@@ -72,7 +84,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
 
 def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute summary statistics grouped by ablation parameters."""
-    group_cols = ["mode", "content_type", "target_length", "mean_fragment_length"]
+    group_cols = ["model", "mode", "content_type", "target_length", "mean_fragment_length"]
     metric_cols = ["reward", "exact_match", "char_accuracy", "levenshtein_similarity"]
 
     # Group and compute stats per content type
@@ -85,8 +97,8 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     summary = summary.reset_index()
 
     # Also create "all" aggregation across content types
-    # This aggregates results for each (mode, target_length, mean_fragment_length) combination
-    all_group_cols = ["mode", "target_length", "mean_fragment_length"]
+    # This aggregates results for each (model, mode, target_length, mean_fragment_length) combination
+    all_group_cols = ["model", "mode", "target_length", "mean_fragment_length"]
     all_content_summary = df.groupby(all_group_cols, dropna=False)[metric_cols].agg(
         ["mean", "std", "count"]
     )
@@ -102,24 +114,37 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+def normalize_model_name(model: str) -> str:
+    """Create display-friendly model name."""
+    # Handle OpenRouter format: openrouter/provider/model-name
+    if model.startswith("openrouter/"):
+        parts = model.split("/")
+        return parts[-1] if len(parts) >= 3 else model
+    # Handle other formats like organization/model
+    if "/" in model:
+        return model.split("/")[-1]
+    return model
+
+
 def print_summary_table(summary: pd.DataFrame):
     """Print a nicely formatted summary table."""
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 120)
     print("ABLATION RESULTS SUMMARY")
-    print("=" * 100)
+    print("=" * 120)
 
     # Sort by ablation parameters for readability
     summary = summary.sort_values(
-        ["mode", "content_type", "target_length", "mean_fragment_length"],
+        ["model", "mode", "content_type", "target_length", "mean_fragment_length"],
         na_position="first",
     )
 
     print(
-        f"\n{'Mode':<10} {'Config':<40} {'Reward':>12} {'Exact Match':>12} {'Char Acc':>12}"
+        f"\n{'Model':<20} {'Mode':<10} {'Config':<35} {'Reward':>12} {'Exact Match':>12} {'Char Acc':>12}"
     )
-    print("-" * 100)
+    print("-" * 120)
 
     for _, row in summary.iterrows():
+        model = normalize_model_name(row.get("model", "unknown"))
         mode = row.get("mode", "standard")
         content_type = row["content_type"] or "all"
         length = int(row["target_length"]) if pd.notna(row["target_length"]) else "?"
@@ -135,9 +160,9 @@ def print_summary_table(summary: pd.DataFrame):
         exact = f"{row['exact_match_mean']:.3f}±{row['exact_match_std']:.3f}"
         char_acc = f"{row['char_accuracy_mean']:.3f}±{row['char_accuracy_std']:.3f}"
 
-        print(f"{mode:<10} {config:<40} {reward:>12} {exact:>12} {char_acc:>12}")
+        print(f"{model:<20} {mode:<10} {config:<35} {reward:>12} {exact:>12} {char_acc:>12}")
 
-    print("-" * 100)
+    print("-" * 120)
     print(f"Total configurations: {len(summary)}")
 
 

@@ -435,6 +435,18 @@ Examples:
     # Show main 2x3 grid
     python plot_results.py
     
+    # List available models
+    python plot_results.py --list-models
+    
+    # Filter to a specific model
+    python plot_results.py --model gpt-5-mini
+    
+    # Substring match for model (handy for OpenRouter models)
+    python plot_results.py --model claude
+    
+    # Combine model filter with specific plot
+    python plot_results.py -M gpt-5-mini --image scatter --linear-fit
+    
     # Show individual scatter plot with linear fit
     python plot_results.py --image scatter --linear-fit
     
@@ -474,6 +486,20 @@ Examples:
         help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",
     )
 
+    # Model filtering options
+    parser.add_argument(
+        "--model",
+        "-M",
+        type=str,
+        default=None,
+        help="Filter results to a specific model (supports substring matching)",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List available models in the data and exit",
+    )
+
     # Scatter plot specific options
     scatter_group = parser.add_argument_group("scatter plot options")
     scatter_group.add_argument(
@@ -495,6 +521,45 @@ Examples:
         return
 
     df = load_data(args.input)
+
+    # Handle --list-models (early exit like --help)
+    if args.list_models:
+        if "model" not in df.columns:
+            print("No model column found in data.")
+            print("Re-run aggregate_results.py to include model information.")
+            return
+
+        models = sorted(df["model"].unique())
+        print(f"Available models ({len(models)} total):")
+        for model in models:
+            count = len(df[df["model"] == model])
+            print(f"  {model}  ({count} configurations)")
+        return
+
+    # Filter by model if specified
+    if args.model:
+        if "model" not in df.columns:
+            print("Warning: No model column found in data, --model filter ignored.")
+            print("Re-run aggregate_results.py to include model information.")
+        else:
+            original_count = len(df)
+            # Try exact match first, then substring
+            if args.model in df["model"].unique():
+                df = df[df["model"] == args.model]
+            else:
+                mask = df["model"].str.contains(args.model, case=False, na=False)
+                df = df[mask]
+
+            if len(df) == 0:
+                print(f"Error: No results found for model '{args.model}'")
+                print("Use --list-models to see available models.")
+                return
+
+            matched_models = df["model"].unique()
+            print(f"Filtered: {original_count} -> {len(df)} configurations")
+            if len(matched_models) > 1:
+                print(f"  Matched models: {list(matched_models)}")
+
     print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
