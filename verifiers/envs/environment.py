@@ -1018,18 +1018,6 @@ class Environment(ABC):
             save_every=save_every,
         )
 
-    def set_max_seq_len(self, max_seq_len: int | None) -> None:
-        """Set the maximum sequence length for this environment."""
-        self.max_seq_len = max_seq_len
-
-    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved rollouts flag for this environment."""
-        self.interleaved_rollouts = interleaved_rollouts
-        if self.interleaved_rollouts:
-            self.logger.warning(
-                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
-            )
-
     def set_kwargs(self, **kwargs) -> None:
         """
         Set environment attributes, using setter methods when available.
@@ -1045,6 +1033,18 @@ class Environment(ABC):
                 setter(value)
             else:
                 setattr(self, key, value)
+
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment."""
+        self.max_seq_len = max_seq_len
+
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        """Set the interleaved rollouts flag for this environment."""
+        self.interleaved_rollouts = interleaved_rollouts
+        if self.interleaved_rollouts:
+            self.logger.warning(
+                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension, and is not recommended for general use."
+            )
 
     make_dataset = make_dataset
 
