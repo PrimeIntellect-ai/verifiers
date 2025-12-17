@@ -68,11 +68,6 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages: Messages,
         response: ModelResponse,
     ):
-        if response is not None and response.id == "overlong-prompt":
-            state["prompt_too_long"] = True
-        # Some providers (e.g. OpenRouter) return None for response or response.choices
-        if response is None or not response.choices:
-            raise vf.ModelError(ValueError("Model returned no response choices"))
         completion_messages = await parse_response_messages(response, self.message_type)
         tokens = await parse_response_tokens(
             response, self.message_type, self.max_seq_len

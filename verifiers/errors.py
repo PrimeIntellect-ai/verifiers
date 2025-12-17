@@ -14,6 +14,12 @@ class ModelError(Error):
     pass
 
 
+class EmptyModelResponseError(ModelError):
+    """Used to catch empty or invalid model responses (e.g. response.choices is None)."""
+
+    pass
+
+
 class OverlongPromptError(Error):
     """Used to catch overlong prompt errors (e.g. prompt + requested number of tokens exceeds model context length)"""
 

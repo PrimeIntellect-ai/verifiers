@@ -522,7 +522,7 @@ class Environment(ABC):
 
         if self.interleaved_rollouts and len(state["trajectory"]) > 0:
             prompt_ids = await get_prompt_ids(state, prompt, client)
-            return await get_model_response_with_tokens(
+            response = await get_model_response_with_tokens(
                 client=client,
                 model=model,
                 prompt=prompt,
@@ -532,7 +532,7 @@ class Environment(ABC):
                 message_type=message_type,
             )
         else:
-            return await get_model_response_with_messages(
+            response = await get_model_response_with_messages(
                 client=client,
                 model=model,
                 prompt=prompt,
@@ -540,6 +540,13 @@ class Environment(ABC):
                 sampling_args=sampling_args,
                 message_type=message_type,
             )
+
+        # Some providers (e.g. OpenRouter) return None for response.choices
+        if response is None or not response.choices:
+            raise vf.EmptyModelResponseError(
+                ValueError("Model returned no response choices")
+            )
+        return response
 
     async def init_state(
         self,
