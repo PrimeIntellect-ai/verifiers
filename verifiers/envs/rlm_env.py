@@ -37,6 +37,7 @@ from verifiers.types import Messages, ModelResponse, State, TrajectoryStep, Type
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.response_utils import (
+    parse_is_truncated,
     parse_response_messages,
     parse_response_tokens,
 )
@@ -861,6 +862,13 @@ class RLMEnv(SandboxEnv):
                     completion_messages = await parse_response_messages(
                         turn["response"], "chat"
                     )
+                    # Check if response was truncated
+                    response_is_truncated = await parse_is_truncated(
+                        turn["response"], "chat"
+                    )
+                    is_truncated = response_is_truncated or (
+                        tokens is not None and bool(tokens.get("is_truncated"))
+                    )
 
                     trajectory_step = TrajectoryStep(
                         prompt=turn["prompt_messages"],
@@ -869,6 +877,7 @@ class RLMEnv(SandboxEnv):
                         tokens=tokens,
                         reward=None,
                         advantage=None,
+                        is_truncated=is_truncated,
                         extras={
                             "is_sub_llm_call": True,
                             "parent_turn": parent_turn,
