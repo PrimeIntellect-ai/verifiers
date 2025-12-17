@@ -832,7 +832,8 @@ class RLMEnv(SandboxEnv):
                 parent_turn = context.get("current_turn", 0)
                 timestamp = time.time()
 
-                for turn in turns:
+                total_sub_turns = len(turns)
+                for sub_turn_index, turn in enumerate(turns):
                     # Parse tokens from response
                     tokens = await parse_response_tokens(
                         turn["response"], "chat", self.max_seq_len
@@ -854,6 +855,8 @@ class RLMEnv(SandboxEnv):
                             "parent_turn": parent_turn,
                             "batch_id": batch_id,
                             "request_id": request_id,
+                            "sub_turn_index": sub_turn_index,
+                            "total_sub_turns": total_sub_turns,
                             "timestamp": timestamp,
                             "tool_call_count": turn["tool_call_count"],
                         },
