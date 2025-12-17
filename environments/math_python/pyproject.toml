@@ -1,13 +1,16 @@
 [project]
 name = "math-python"
-description = "Solve math problems using Python in a sandbox environment"
-tags = ["tool-use", "math", "sandbox", "train", "prime-sandboxes", "python", "coding"]
-version = "0.1.9"
+description = "Multi-turn math environment with Python tool"
+tags = ["multi-turn", "tools", "sandbox", "train", "math", "python"]
+version = "0.1.10"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.8.post1",
+    "verifiers>=0.1.8",
     "math-verify>=0.8.0",
 ]
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "453c209" }
 
 [build-system]
 requires = ["hatchling"]
