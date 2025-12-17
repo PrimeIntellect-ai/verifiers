@@ -169,7 +169,7 @@ class GenerateOutputs(TypedDict):
     example_id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]]
-    stop_conditions: list[str] | None
+    stop_conditions: list[str | None]
     is_truncated: list[bool]
     metadata: GenerateMetadata
 
