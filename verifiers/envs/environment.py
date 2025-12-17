@@ -1,5 +1,6 @@
 import asyncio
 import atexit
+import functools
 import inspect
 import json
 import logging
@@ -24,6 +25,7 @@ from typing import (
 
 from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
+from openai.types.chat import ChatCompletion
 
 import verifiers as vf
 from verifiers.parsers.parser import Parser
@@ -48,6 +50,10 @@ from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.token_utils import (
+    get_prompt_ids,
+    prepare_sampling_args_for_token_prompts,
+)
 
 if TYPE_CHECKING:
     pass
@@ -74,6 +80,7 @@ class Environment(ABC):
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
+        interleaved_rollouts: bool = False,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
@@ -91,6 +98,9 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
+
+        self.set_interleaved_rollouts(interleaved_rollouts)
+
         if self.message_type == "chat":
             if dataset is not None:
                 self.dataset = self.format_dataset(
@@ -326,33 +336,98 @@ class Environment(ABC):
 
         Convenience function for wrapping (chat, completion) API calls.
         Returns special error messages for context length issues.
-        """
-        # resolve optional argument, fallback to state or class defaults
-        client = client or state["client"]
-        model = model or state["model"]
-        oai_tools = oai_tools or state["oai_tools"]
-        sampling_args = cast(
-            SamplingArgs, sampling_args or state["sampling_args"] or {}
-        )
-        message_type = message_type or self.message_type
-        assert model is not None
-        assert client is not None
 
-        # normalize sampling args:
-        # - if max_tokens is provided for chat, rename to max_completion_tokens
-        # - drop any None-valued entries to avoid sending to the client
-        if "max_tokens" in sampling_args:
-            if sampling_args["max_tokens"] is None:
-                sampling_args.pop("max_tokens")
-            elif message_type == "chat":
-                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-        if (
-            "max_completion_tokens" in sampling_args
-            and sampling_args["max_completion_tokens"] is None
-        ):
-            sampling_args.pop("max_completion_tokens")
-        clean_sampling_args = {k: v for k, v in sampling_args.items() if v is not None}
-        try:
+        If interleaved_rollouts is set, the model response is obtained by
+        calling a custom token-in endpoint. Note, that this only works if the
+        inference server implements this endpoint.  Currently, this is a
+        hand-crafted feature for PRIME-RL's vLLM server extension, and is not
+        recommended for general use.
+        """
+
+        def resolve_optional_args(
+            client: AsyncOpenAI | None,
+            model: str | None,
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs | None,
+            message_type: MessageType | None,
+        ) -> tuple[
+            AsyncOpenAI,
+            str,
+            list[ChatCompletionToolParam] | None,
+            SamplingArgs,
+            MessageType,
+        ]:
+            """Resolve optional arguments, fallback to state or class defaults."""
+            client = client or state["client"]
+            model = model or state["model"]
+            assert client is not None and model is not None
+            oai_tools = oai_tools or state["oai_tools"]
+            sampling_args = cast(
+                SamplingArgs, sampling_args or state["sampling_args"] or {}
+            )
+            message_type = message_type or self.message_type
+            return client, model, oai_tools, sampling_args, message_type
+
+        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
+            """
+            Normalize sampling arguments. Mainly does 2 things:
+            - if max_tokens is provided for chat, rename to max_completion_tokens
+            - drop any None-valued entries to avoid sending to the client
+            """
+            if "max_tokens" in sampling_args:
+                if sampling_args["max_tokens"] is None:
+                    sampling_args.pop("max_tokens")
+                elif message_type == "chat":
+                    sampling_args["max_completion_tokens"] = sampling_args.pop(
+                        "max_tokens"
+                    )
+            if (
+                "max_completion_tokens" in sampling_args
+                and sampling_args["max_completion_tokens"] is None
+            ):
+                sampling_args.pop("max_completion_tokens")
+            return {k: v for k, v in sampling_args.items() if v is not None}
+
+        def handle_overlong_prompt(func):
+            """Decorator to handle overlong prompt errors from the model API."""
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    # in case of making a request with an overlong prompt, e.g
+                    # we raise a special overlong prompt error
+                    if isinstance(e, BadRequestError):
+                        error_text = e.response.text.lower()
+                        context_length_phrases = [
+                            "this model's maximum context length is",
+                            "is longer than the model's context length",
+                            "exceeds the model's context length",
+                            "exceed the configured limit",
+                            "exceeds the configured limit",
+                            "exceeded model",
+                        ]
+                        if any(
+                            phrase in error_text for phrase in context_length_phrases
+                        ):
+                            self.logger.debug("Caught overlong prompt.")
+                            raise vf.OverlongPromptError(e)
+                    # in all other case we raise a generic model error
+                    raise vf.ModelError(e)
+
+            return wrapper
+
+        @handle_overlong_prompt
+        async def get_model_response_with_messages(
+            client: AsyncOpenAI,
+            model: str,
+            prompt: Messages,
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs,
+            message_type: MessageType,
+        ) -> ModelResponse:
+            """Convenience function for wrapping (chat, completion) API calls."""
             if message_type == "chat":
                 assert isinstance(prompt, list)
                 prompt = strip_nones_from_content(prompt)
@@ -372,9 +447,9 @@ class Environment(ABC):
                             break
                 except Exception:
                     has_audio = False
-                if has_audio and "modalities" not in clean_sampling_args:
-                    clean_sampling_args = {
-                        **clean_sampling_args,
+                if has_audio and "modalities" not in sampling_args:
+                    sampling_args = {
+                        **sampling_args,
                         "modalities": ["text"],
                     }
 
@@ -383,13 +458,13 @@ class Environment(ABC):
                         model=model,
                         messages=prompt,
                         tools=oai_tools,
-                        **clean_sampling_args,
+                        **sampling_args,
                     )
                 else:
                     response = await client.chat.completions.create(
                         model=model,
                         messages=prompt,
-                        **clean_sampling_args,
+                        **sampling_args,
                     )
                 return response
             elif message_type == "completion":
@@ -399,26 +474,72 @@ class Environment(ABC):
                     )
                 assert isinstance(prompt, str)
                 response = await client.completions.create(
-                    model=model, prompt=prompt, **clean_sampling_args
+                    model=model, prompt=prompt, **sampling_args
                 )
                 return response
-        except Exception as e:
-            # in case of making a request with an overlong prompt, e.g from a too-long
-            # environment response, we return a dummy response to with finish_reason "length"
-            if isinstance(e, BadRequestError):
-                error_text = e.response.text.lower()
-                context_length_phrases = [
-                    "this model's maximum context length is",
-                    "is longer than the model's context length",
-                    "exceeds the model's context length",
-                    "exceed the configured limit",
-                    "exceeds the configured limit",
-                    "exceeded model",
-                ]
-                if any(phrase in error_text for phrase in context_length_phrases):
-                    self.logger.debug("Caught overlong prompt.")
-                    raise vf.OverlongPromptError(e)
-            raise vf.ModelError(e)
+
+        @handle_overlong_prompt
+        async def get_model_response_with_tokens(
+            client: AsyncOpenAI,
+            model: str,
+            prompt: Messages,
+            prompt_ids: list[int],
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs,
+            message_type: MessageType,
+        ) -> ModelResponse:
+            """
+            Get a model response with pre-tokenized prompt from custom
+            /v1/chat/completions/tokens endpoint (only available in PRIME-RL's
+            vLLM server extension)
+            """
+            assert message_type == "chat", (
+                "get_model_response_with_tokens is only supported for chat tasks."
+            )
+
+            extra_body = sampling_args.pop("extra_body", {})
+            body = dict(
+                model=model,
+                messages=prompt,
+                tools=oai_tools,
+                tokens=prompt_ids,
+                **sampling_args,
+                **extra_body,
+            )
+
+            return await client.post(
+                "/chat/completions/tokens",
+                body=body,
+                cast_to=ChatCompletion,
+            )
+
+        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
+            client, model, oai_tools, sampling_args, message_type
+        )
+        sampling_args = normalize_sampling_args(sampling_args)
+        if self.interleaved_rollouts:
+            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
+
+        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
+            prompt_ids = await get_prompt_ids(state, prompt, client)
+            return await get_model_response_with_tokens(
+                client=client,
+                model=model,
+                prompt=prompt,
+                prompt_ids=prompt_ids,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
+        else:
+            return await get_model_response_with_messages(
+                client=client,
+                model=model,
+                prompt=prompt,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
 
     async def init_state(
         self,
@@ -896,9 +1017,33 @@ class Environment(ABC):
             save_every=save_every,
         )
 
+    def set_kwargs(self, **kwargs) -> None:
+        """
+        Set environment attributes, using setter methods when available.
+
+        For each kwarg, checks if a `set_{key}` method exists and calls it,
+        otherwise falls back to setattr. This ensures proper propagation for
+        attributes like `interleaved_rollouts` in EnvGroup.
+        """
+        for key, value in kwargs.items():
+            setter_name = f"set_{key}"
+            setter = getattr(self, setter_name, None)
+            if setter is not None and callable(setter):
+                setter(value)
+            else:
+                setattr(self, key, value)
+
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
+
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        """Set the interleaved rollouts flag for this environment."""
+        self.interleaved_rollouts = interleaved_rollouts
+        if self.interleaved_rollouts:
+            self.logger.warning(
+                f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
+            )
 
     make_dataset = make_dataset
 

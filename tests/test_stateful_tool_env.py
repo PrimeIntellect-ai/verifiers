@@ -1,6 +1,7 @@
 """Tests for the StatefulToolEnv class."""
 
 import json
+from json import JSONDecodeError
 
 import pytest
 from openai.types.chat import ChatCompletionUserMessageParam
@@ -92,7 +93,7 @@ class TestStatefulToolEnv:
 
         class ParseErrorStatefulToolEnv(vf.StatefulToolEnv):
             def __init__(self, **kwargs):
-                super().__init__(tools=[], stop_errors=[vf.ToolParseError], **kwargs)
+                super().__init__(tools=[], stop_errors=[JSONDecodeError], **kwargs)
 
             def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
                 return tool_args
@@ -158,9 +159,7 @@ class TestStatefulToolEnv:
 
         class ErrorStatefulToolEnv(vf.StatefulToolEnv):
             def __init__(self, **kwargs):
-                super().__init__(
-                    tools=[faulty_tool], stop_errors=[vf.ToolCallError], **kwargs
-                )
+                super().__init__(tools=[faulty_tool], stop_errors=[Exception], **kwargs)
 
             def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
                 return tool_args

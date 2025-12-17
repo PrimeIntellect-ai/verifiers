@@ -94,8 +94,8 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI | None
-    model: str | None
+    client: AsyncOpenAI
+    model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
@@ -228,6 +228,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
+    extra_env_kwargs: dict = {}
     # logging
     print_results: bool = False
     verbose: bool = False

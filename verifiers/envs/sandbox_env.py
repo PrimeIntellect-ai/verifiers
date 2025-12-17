@@ -58,9 +58,13 @@ class SandboxEnv(vf.StatefulToolEnv):
         backoff_factor: float = 2.0,
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
+        stop_errors: list[type[Exception]] | None = None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            stop_errors=stop_errors if stop_errors is not None else [vf.SandboxError],
+            **kwargs,
+        )
         self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = AsyncSandboxClient()
         self.sandbox_request = CreateSandboxRequest(
@@ -90,11 +94,15 @@ class SandboxEnv(vf.StatefulToolEnv):
         ).wraps
         self.add_tool(self.bash, args_to_skip=["sandbox_id", "sandbox_state"])
 
-    async def _wait_for_sandbox_ready(self, sandbox_id: str):
+    async def _wait_for_sandbox_ready(
+        self, sandbox_state: SandboxState, sandbox_id: str
+    ):
         """Wait for sandbox to be created"""
         s = time.time()
+        self.logger.debug(f"Waiting for sandbox {sandbox_id} to be ready")
         try:
             await self.sandbox_client.wait_for_creation(sandbox_id)
+            sandbox_state["ready"] = True
         except Exception as e:
             raise SandboxNotReadyError(e)
         self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
@@ -105,8 +113,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         """Execute `command` inside persistent sandbox container."""
         # sandbox_id is passed via update_tool_args, not seen by model
         if not sandbox_state["ready"]:
-            await self._wait_for_sandbox_ready(sandbox_id)
-            sandbox_state["ready"] = True
+            await self._wait_for_sandbox_ready(sandbox_state, sandbox_id)
 
         s = time.time()
         self.logger.debug(f"Executing command {command} in sandbox {sandbox_id}")
