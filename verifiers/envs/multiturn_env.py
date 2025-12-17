@@ -70,17 +70,13 @@ class MultiTurnEnv(vf.Environment):
     ):
         if response is not None and response.id == "overlong-prompt":
             state["prompt_too_long"] = True
-        try:
-            completion_messages = await parse_response_messages(
-                response, self.message_type
-            )
-            tokens = await parse_response_tokens(
-                response, self.message_type, self.max_seq_len
-            )
-        except Exception as e:
-            # Example: response.choices is None, which happens with OpenRouter models
-            # This triggers a TypeError in parse_response_tokens
-            raise vf.ModelError(e)
+        # Some providers (e.g. OpenRouter) return None for response or response.choices
+        if response is None or not response.choices:
+            raise vf.ModelError(ValueError("Model returned no response choices"))
+        completion_messages = await parse_response_messages(response, self.message_type)
+        tokens = await parse_response_tokens(
+            response, self.message_type, self.max_seq_len
+        )
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
