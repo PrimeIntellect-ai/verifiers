@@ -108,7 +108,7 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     errors = [e for e in errors if e is not None]
     if errors:
         print(
-            f"errors: {', '.join([f'{k}: {v / len(errors):.3f}' for k, v in Counter(errors).items()])}"
+            f"errors: {', '.join([f'{k}: {v / len(errors):.3f}' for k, v in Counter([type(e).__name__ for e in errors]).items()])}"
         )
 
 
