@@ -107,5 +107,8 @@ class MultiTurnEnv(vf.Environment):
                 response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
             except vf.Error as e:
-                state["error"] = e
+                if isinstance(e, vf.OverlongPromptError):
+                    state["prompt_too_long"] = True
+                else:
+                    state["error"] = e
         return state
