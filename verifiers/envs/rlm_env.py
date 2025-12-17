@@ -1018,6 +1018,9 @@ fi
             except Exception as e:
                 logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
 
+        # Wait a second to make absolutely sure that the sandbox is deleted
+        await asyncio.sleep(1)
+
         # Create new sandbox via parent's parent (SandboxEnv.setup_state)
         # We need to call the grandparent to avoid re-running RLM setup
         sandbox = await self.with_retry(self.sandbox_client.create)(
@@ -1052,7 +1055,7 @@ fi
         state["rlm_context"] = context_dict
 
         # 5. Prepare sandbox and start worker (with retry using fresh sandbox)
-        max_sandbox_retries = 2
+        max_sandbox_retries = 5
 
         for attempt in range(max_sandbox_retries):
             try:
