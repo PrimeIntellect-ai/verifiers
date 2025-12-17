@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Protocol, Tuple, Union
+from collections.abc import Callable
+from typing import Any, Protocol, cast
 
 import gymnasium as gym
 from datasets import Dataset
@@ -9,52 +10,73 @@ import verifiers as vf
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import MessageType, State
 
+
+def _identity(x: str) -> str:
+    return x
+
+
 # ---------- Types & Protocols ----------
-ResetOut = Union[Any, Tuple[Any, Dict[str, Any]]]
-StepOut = Union[
-    Tuple[Any, float, bool, bool, Dict[str, Any]],
-    Tuple[Any, float, bool, Dict[str, Any]],
-]
+ResetOut = Any | tuple[Any, dict[str, Any]]
+StepOut = (
+    tuple[Any, float, bool, bool, dict[str, Any]]
+    | tuple[Any, float, bool, dict[str, Any]]
+)
+
 
 class StepResetEnv(Protocol):
-    def reset(self, **kwargs) -> ResetOut: ...
-    def step(self, action: Any) -> StepOut: ...
+    def reset(self, **kwargs: Any) -> ResetOut:
+        ...
 
-def _normalize_reset(out: ResetOut) -> Tuple[Any, Dict[str, Any]]:
+    def step(self, action: Any) -> StepOut:
+        ...
+
+
+def _normalize_reset(out: ResetOut) -> tuple[Any, dict[str, Any]]:
     if isinstance(out, tuple) and len(out) == 2:
-        return out
+        return cast(tuple[Any, dict[str, Any]], out)
     return out, {}
 
-def _normalize_step(out: StepOut) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+
+def _normalize_step(out: StepOut) -> tuple[Any, float, bool, bool, dict[str, Any]]:
     if isinstance(out, (tuple, list)):
         if len(out) == 5:
-            return out  # type: ignore
-        elif len(out) == 4:
-            obs, reward, done, info = out  # type: ignore
+            return cast(tuple[Any, float, bool, bool, dict[str, Any]], out)
+        if len(out) == 4:
+            obs, reward, done, info = cast(tuple[Any, float, bool, dict[str, Any]], out)
             return obs, float(reward), bool(done), False, info
-    raise RuntimeError(f"env.step() returned {type(out)}, expected tuple of length 4 or 5")
+    raise RuntimeError(
+        f"env.step() returned {type(out)}, expected tuple of length 4 or 5"
+    )
 
 # ---------- Default Components ----------
 def sum_step_rewards(*, state: State, **_) -> float:
-    return float(sum(float(step.get("reward", 0.0) or 0.0) for step in state.get("trajectory", [])))
+    return float(
+        sum(
+            float(step.get("reward", 0.0) or 0.0)
+            for step in state.get("trajectory", [])
+        )
+    )
+
 
 class EpisodicSumRubric(Rubric):
-    def __init__(self, weight: float = 1.0, **kwargs):
+    def __init__(self, weight: float = 1.0, **kwargs: Any):
         super().__init__(funcs=[sum_step_rewards], weights=[weight], **kwargs)
+
 
 # ---------- GymEnv ----------
 class GymEnv(vf.MultiTurnEnv):
     """
     Universal runner for Gym-compatible environments.
     """
+
     def __init__(
         self,
         # Factory Args
         gym_id: str | None = None,
-        env_cls: type | None = None,
-        env_kwargs: Dict[str, Any] | None = None,
+        env_cls: type[StepResetEnv] | None = None,
+        env_kwargs: dict[str, Any] | None = None,
         # Interface Args
-        action_parser: Callable[[str], Any] = lambda x: x, # Default to identity
+        action_parser: Callable[[str], Any] = _identity,
         obs_to_text: Callable[[Any], str] | None = None,
         # Dataset Args
         dataset: Dataset | None = None,
@@ -73,19 +95,26 @@ class GymEnv(vf.MultiTurnEnv):
         self.gym_id = gym_id
         self._env_cls = env_cls
         self._env_kwargs = dict(env_kwargs or {})
-        
+
         self.action_parser = action_parser
         self._obs_to_text_fn = obs_to_text
-        self.max_episode_steps_override = max_episode_steps
 
         # Auto-Dataset Generation
         if dataset is None and auto_dummy_eval:
             dataset = self._build_auto_dataset(num_train_episodes, message_type)
             if eval_dataset is None:
-                eval_dataset = Dataset.from_dict({
-                    "prompt": [""], "answer": [""], "info": [{}], 
-                    "task": ["default"], "example_id": [0]
-                })
+                empty_prompt: str | list = (
+                    "" if message_type == "completion" else []
+                )
+                eval_dataset = Dataset.from_dict(
+                    {
+                        "prompt": [empty_prompt],
+                        "answer": [""],
+                        "info": [{}],
+                        "task": ["default"],
+                        "example_id": [0],
+                    }
+                )
 
         super().__init__(
             dataset=dataset,
@@ -100,11 +129,11 @@ class GymEnv(vf.MultiTurnEnv):
         if self.gym_id:
             return gym.make(self.gym_id, **self._env_kwargs)
         if self._env_cls:
-            return self._env_cls(**self._env_kwargs)  # type: ignore
+            return self._env_cls(**self._env_kwargs)
         raise ValueError("Configuration error")
 
     def _build_initial_prompt(self, obs_text: str) -> vf.Messages:
-        """Build initial prompt from observation text, including system prompt and few-shot."""
+        """Build initial prompt from the initial observation text."""
         if self.message_type == "chat":
             msgs: list[vf.Message] = []
             if self.system_prompt:
@@ -126,9 +155,11 @@ class GymEnv(vf.MultiTurnEnv):
         state["gym_done"] = False
         return state
 
-    async def env_response(self, messages: vf.Messages, state: State, **kwargs) -> vf.Messages:
+    async def env_response(
+        self, messages: vf.Messages, state: State, **kwargs: Any
+    ) -> vf.Messages:
         env = state["gym_env"]
-        
+
         # 1. Parse Answer (String Extraction) using self.parser
         raw_text = self.parser.parse_answer(messages)
         if raw_text is None:
@@ -145,11 +176,14 @@ class GymEnv(vf.MultiTurnEnv):
         except Exception as e:
             state["gym_done"] = True
             state["trajectory"][-1]["reward"] = 0.0
-            return [{"role": "user", "content": f"Action Parsing Error: {e}"}]
+            err_text = f"Action Parsing Error: {e}"
+            if self.message_type == "chat":
+                return [{"role": "user", "content": err_text}]
+            return err_text
 
         # 3. Step Environment
         obs, reward, term, trunc, info = _normalize_step(env.step(action))
-        
+
         # 4. Update State
         state["trajectory"][-1]["reward"] = reward
         state["trajectory"][-1]["extras"]["gym_info"] = info
@@ -181,11 +215,13 @@ class GymEnv(vf.MultiTurnEnv):
         if env and hasattr(env, "close"):
             env.close()
 
-    def _build_auto_dataset(self, n: int, m_type: str) -> Dataset:
-        return Dataset.from_dict({
-            "example_id": range(n),
-            "info": [{"seed": i} for i in range(n)],
-            "task": ["gym"] * n,
-            "prompt": ["" if m_type == "completion" else []] * n,
-            "answer": [""] * n,
-        })
+    def _build_auto_dataset(self, n: int, message_type: MessageType) -> Dataset:
+        return Dataset.from_dict(
+            {
+                "example_id": range(n),
+                "info": [{"seed": i} for i in range(n)],
+                "task": ["gym"] * n,
+                "prompt": ["" if message_type == "completion" else []] * n,
+                "answer": [""] * n,
+            }
+        )
