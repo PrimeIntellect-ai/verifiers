@@ -32,13 +32,15 @@ def _silence_openai_http_logs() -> None:
     for name in ("openai", "openai._base_client", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
-### Prompt
+
+# Prompt
 # GEM relies on regex matching for \boxed{}, so we instruct the model accordingly.
 GEM_WORDLE_SYSTEM_PROMPT = """You are a competitive Wordle player.
 Your goal is to guess the secret 5-letter word within 20 turns.
 
 In each turn:
-1. Think step-by-step about the feedback (G=Green/Correct, Y=Yellow/Wrong Pos, X=Gray/Wrong).
+1. Think step-by-step about the feedback
+   (G=Green/Correct, Y=Yellow/Wrong Pos, X=Gray/Wrong).
 2. Output your final guess inside \\boxed{YOUR_GUESS}.
 
 Example:
@@ -48,10 +50,12 @@ I need to test vowels. "ADIEU" is a good start.
 \\boxed{ADIEU}
 """
 
-### Reward Functions
+
+# Reward Functions
 def gem_success_bonus(*, state: vf.State, **kwargs) -> float:
     """
-    Reward for winning the game, based on GEM's success message in the final observation.
+    Reward for winning the game, based on GEM's success message in the final
+    observation.
 
     The success message appears in the prompt of the last trajectory step,
     which contains the environment's response to the previous action.
@@ -82,7 +86,8 @@ def gem_success_bonus(*, state: vf.State, **kwargs) -> float:
 def win_rate(*, state: vf.State, **kwargs) -> float:
     return gem_success_bonus(state=state, **kwargs)
 
-### Environment Loader
+
+# Environment Loader
 def load_environment(
     num_train_episodes: int = 1000,
     num_eval_episodes: int = 20,
@@ -122,8 +127,8 @@ def load_environment(
             "max_turns": 20,
             "only_real_words": True,
         },
-        # GEM handles \boxed{} parsing internally and applies its own format/validity penalties
-        # (e.g. missing boxed guess terminates with a small negative reward), so pass raw text.
+        # GEM parses \boxed{} internally and applies its own format/validity penalties,
+        # so pass raw text.
         action_parser=lambda x: x,
         rubric=rubric,
         num_train_episodes=num_train_episodes,
