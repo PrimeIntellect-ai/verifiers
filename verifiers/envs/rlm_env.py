@@ -1415,6 +1415,25 @@ PY
 
             del self.active_rollouts[rollout_id]
 
+        # Compute main RLM metrics from trajectory (excluding sub-LLM steps)
+        state["main_rlm_turns"] = state.get("turn", 0)
+
+        main_prompt_tokens = 0
+        main_completion_tokens = 0
+        for step in state.get("trajectory", []):
+            # Skip sub-LLM trajectory steps
+            if step.get("extras", {}).get("is_sub_llm_call"):
+                continue
+            response = step.get("response")
+            if response and hasattr(response, "usage") and response.usage:
+                main_prompt_tokens += getattr(response.usage, "prompt_tokens", 0) or 0
+                main_completion_tokens += (
+                    getattr(response.usage, "completion_tokens", 0) or 0
+                )
+
+        state["main_rlm_prompt_tokens"] = main_prompt_tokens
+        state["main_rlm_completion_tokens"] = main_completion_tokens
+
         # Release tunnel
         tunnel_url = state.get("tunnel_url")
         if tunnel_url and self._tunnel_pool:
