@@ -1,5 +1,5 @@
 [project]
-name = "verbatim_copy"
+name = "verbatim-copy"
 version = "0.1.0"
 description = "Verbatim text copying environment for RLM vs standard LLM comparison"
 tags = ["rl", "rlm", "copying", "benchmark"]

@@ -30,7 +30,7 @@ ROLLOUTS=1
 # Comment out modes to skip them
 MODES=("rlm" "rlm_tips" "standard")
 
-uv run vf-install verbatim_copy
+uv run vf-install verbatim-copy
 
 echo "=== Verbatim Copy Ablations ==="
 echo "Models: ${MODELS[*]}"
@@ -81,7 +81,7 @@ for mode in "${MODES[@]}"; do
     echo "=== Ablation 1: Content Type ($mode) ==="
     for content_type in words json csv codes mixed all; do
         echo "Running: mode=$mode, content_type=$content_type"
-        uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
+        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
             -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$content_type\", \"target_length\": 500, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
     done
 
@@ -91,7 +91,7 @@ for mode in "${MODES[@]}"; do
     echo "=== Ablation 2: Target Length ($mode) ==="
     for length in 250 500 750 1000; do
         echo "Running: mode=$mode, target_length=$length"
-        uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
+        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
             -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": $length, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
     done
 
@@ -102,7 +102,7 @@ for mode in "${MODES[@]}"; do
     # Note: "null" in JSON for None
     for frag_length in null 10 25 50 100 150; do
         echo "Running: mode=$mode, mean_fragment_length=$frag_length"
-        uv run vf-eval verbatim_copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
+        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
             -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": 500, \"mean_fragment_length\": $frag_length, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
     done
 
