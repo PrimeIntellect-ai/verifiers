@@ -67,6 +67,7 @@ class TrajectoryStep(TypedDict):
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
+    is_truncated: bool
     extras: dict[str, Any]
 
 
@@ -167,6 +168,8 @@ class GenerateOutputs(TypedDict):
     example_id: list[int]
     reward: list[float]
     metrics: dict[str, list[float]]
+    stop_conditions: list[str] | None
+    is_truncated: list[bool]
     metadata: GenerateMetadata
 
 

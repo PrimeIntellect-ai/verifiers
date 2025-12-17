@@ -14,6 +14,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
+    parse_is_truncated,
     parse_response_messages,
     parse_response_tokens,
 )
@@ -71,8 +72,12 @@ class MultiTurnEnv(vf.Environment):
         if response is not None and response.id == "overlong-prompt":
             state["prompt_too_long"] = True
         completion_messages = await parse_response_messages(response, self.message_type)
+        response_is_truncated = await parse_is_truncated(response, self.message_type)
         tokens = await parse_response_tokens(
             response, self.message_type, self.max_seq_len
+        )
+        is_truncated = response_is_truncated or (
+            tokens and tokens.get("is_truncated") or False
         )
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
@@ -81,6 +86,7 @@ class MultiTurnEnv(vf.Environment):
             tokens=tokens,
             reward=None,
             advantage=None,
+            is_truncated=is_truncated,
             extras={},
         )
         trajectory_step["completion"] = completion_messages
