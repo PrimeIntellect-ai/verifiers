@@ -115,6 +115,7 @@ class MultiTurnEnv(vf.Environment):
             except vf.Error as e:
                 if isinstance(e, vf.OverlongPromptError):
                     state["prompt_too_long"] = True
+                    state["is_truncated"] = True
                 else:
                     state["error"] = e
         return state

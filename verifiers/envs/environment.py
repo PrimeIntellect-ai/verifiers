@@ -565,6 +565,7 @@ class Environment(ABC):
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
+        state["is_truncated"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
             state["oai_tools"] = state["info"]["oai_tools"]
@@ -621,6 +622,9 @@ class Environment(ABC):
     async def _render_stop(self, state: State, condition) -> bool:
         if await condition(state):
             state["is_completed"] = True
+            state["is_truncated"] = state.get("is_truncated", False) or any(
+                step.get("is_truncated", False) for step in state.get("trajectory", [])
+            )
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 self.logger.error(
@@ -725,10 +729,7 @@ class Environment(ABC):
         example_ids = [state.get("example_id", 0) for state in all_states]
         rewards = [state.get("reward", 0.0) for state in all_states]
         stop_conditions = [state.get("stop_condition", None) for state in all_states]
-        is_truncated = [
-            any(step.get("is_truncated", False) for step in state.get("trajectory", []))
-            for state in all_states
-        ]
+        is_truncated = [state.get("is_truncated", False) for state in all_states]
 
         metrics: dict[str, list[float]] = {}
         for state in all_states:

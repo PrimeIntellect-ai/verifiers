@@ -100,6 +100,7 @@ class State(dict):
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
+    is_truncated: bool
     stop_condition: str | None
     oai_tools: list[ChatCompletionToolParam]
     trajectory: list[TrajectoryStep]
