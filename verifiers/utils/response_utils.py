@@ -85,7 +85,8 @@ async def parse_response_tokens(
             is_truncated = False
     else:
         overlong_prompt = False
-        is_truncated = False
+        # if max_model_len or max_tokens (per turn) is hit during completion
+        is_truncated = response.choices[0].finish_reason == "length"
     return TrajectoryStepTokens(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
