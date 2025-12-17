@@ -35,7 +35,7 @@ class Rubric:
         weights: list[float] | None = None,
         parser: vf.Parser | None = None,
     ):
-        self.logger = logging.getLogger(f"verifiers.rubrics.{self.__class__.__name__}")
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         self.funcs = funcs or []
         self.weights = weights or []

@@ -14,7 +14,7 @@ class Parser:
     """
 
     def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
-        self.logger = logging.getLogger(f"verifiers.parsers.{self.__class__.__name__}")
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.extract_fn = extract_fn
 
     def parse(self, text: str) -> Any:
