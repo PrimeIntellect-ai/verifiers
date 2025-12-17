@@ -29,12 +29,39 @@ from .formatting import format_serper_results, truncate_text
 from .open_one import open_one
 from .rate_limit import with_rate_limit_retry
 
+# Environment-specific tips for RLM mode (used for SFT data generation)
+# These tips are wrapped in <env_tips> tags so they can be removed during training
+_ENV_TIPS = """
+
+<env_tips>
+Strategy for deep research tasks:
+
+1. **Decompose the question**: Break the main question into multiple smaller, focused research sub-tasks that can be investigated independently.
+
+2. **Parallel sub-LLM research**: Use `llm_batch()` to dispatch these sub-tasks in parallel. Each sub-LLM has access to web search tools (search, open) and can:
+   - Search for relevant information
+   - Open promising results to read full content
+   - Extract and summarize key facts
+
+3. **Synthesize findings**: After collecting sub-LLM responses, combine and cross-reference their findings. Look for:
+   - Consistent facts across sources (high confidence)
+   - Contradictions that need resolution
+   - Gaps that require follow-up research
+
+4. **Iterate if needed**: If the initial research reveals new questions or missing information, dispatch another batch of targeted sub-tasks. Repeat until you have sufficient evidence.
+
+5. **Finalize**: Write your synthesized answer to `answer["content"]`, verify it addresses the original question, then set `answer["ready"] = True`.
+
+Key insight: Sub-LLMs handle the verbose web content, returning concise summaries. This keeps your context clean while leveraging deep research.
+</env_tips>"""
+
 
 def load_environment(
     *,
     max_turns: int = 32,
     # RLM mode options
     use_rlm: bool = True,
+    include_env_tips: bool = False,
     rlm_max_iterations: int = 50,
     rlm_sub_model: str | None = None,
     rlm_max_sub_llm_parallelism: int = 5,
@@ -65,6 +92,9 @@ def load_environment(
         if use_rlm:
             # RLM mode: just the question, RLM system prompt handles instructions
             prompt_content = q
+            # Add environment tips if requested (for SFT data generation)
+            if include_env_tips:
+                prompt_content = prompt_content + _ENV_TIPS
         else:
             # Standard mode: add suffix unless using finish tool
             prompt_content = q + ("" if finish_with_tool else PROMPT_SUFFIX)
