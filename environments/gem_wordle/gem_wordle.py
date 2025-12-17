@@ -122,7 +122,8 @@ def load_environment(
             "max_turns": 20,
             "only_real_words": True,
         },
-        # GEM handles \boxed{} parsing internally, so pass raw text
+        # GEM handles \boxed{} parsing internally and applies its own format/validity penalties
+        # (e.g. missing boxed guess terminates with a small negative reward), so pass raw text.
         action_parser=lambda x: x,
         rubric=rubric,
         num_train_episodes=num_train_episodes,
