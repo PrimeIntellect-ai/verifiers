@@ -7,11 +7,13 @@ Creates focused plots comparing modes and subsets:
 - Mode comparison by subset (bar chart)
 - RLM metrics comparison
 - Context length vs reward analysis
+- Optional timing plots: timing_by_subset, timing_vs_context, timing_efficiency
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image reward
     python plot_results.py --image subset
+    python plot_results.py --image timing_by_subset
 """
 
 import argparse
@@ -375,6 +377,159 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper right", fontsize=9)
 
 
+def plot_timing_by_subset(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing comparison across subsets (grouped bar chart)."""
+    # Aggregate across models for each subset/mode combination
+    agg_df = (
+        df.groupby(["subset", "mode"])
+        .agg(
+            {
+                "total_ms_mean": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    subsets = [s for s in SUBSET_ORDER if s in agg_df["subset"].unique()]
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+
+    x = range(len(subsets))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = agg_df[agg_df["mode"] == mode]
+        times = []
+        for subset in subsets:
+            subset_data = mode_data[mode_data["subset"] == subset]
+            if len(subset_data) > 0 and pd.notna(
+                subset_data["total_ms_mean"].values[0]
+            ):
+                times.append(subset_data["total_ms_mean"].values[0] / 1000)
+            else:
+                times.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            times,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Subset")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing by Subset\n(aggregated across models)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([SUBSET_LABELS.get(s, s) for s in subsets])
+    ax.legend(loc="upper right", fontsize=9)
+
+
+def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing vs context length scatter, colored by mode."""
+    # Need context_length_mean for this plot
+    if "context_length_mean" not in df.columns:
+        ax.text(
+            0.5,
+            0.5,
+            "Context length data not available\nin aggregated results",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Filter out rows with missing data
+        valid_data = data.dropna(subset=["context_length_mean", "total_ms_mean"])
+
+        if len(valid_data) > 0:
+            # Convert context length to thousands
+            context_k = valid_data["context_length_mean"] / 1000
+            # Convert timing to seconds
+            times = valid_data["total_ms_mean"] / 1000
+
+            ax.scatter(
+                context_k,
+                times,
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                color=style["color"],
+                marker=style["marker"],
+                s=80,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+            # Add linear fit if enough points
+            if len(valid_data) >= 3:
+                x_vals = context_k.values
+                y_vals = times.values
+                mask = ~(np.isnan(x_vals) | np.isnan(y_vals))
+                if mask.sum() >= 2:
+                    x_clean = x_vals[mask]
+                    y_clean = y_vals[mask]
+                    slope, intercept = np.polyfit(x_clean, y_clean, 1)
+                    x_line = np.linspace(x_clean.min(), x_clean.max(), 100)
+                    y_line = slope * x_line + intercept
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        color=style["color"],
+                        linestyle="--",
+                        alpha=0.5,
+                        linewidth=1.5,
+                    )
+
+    ax.set_xlabel("Context Length (K chars)")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing vs Context Length\n(by mode)")
+    ax.legend(loc="upper left", fontsize=8)
+
+
+def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Reward vs timing scatter (cost-benefit analysis)."""
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Filter out rows with missing data
+        valid_data = data.dropna(subset=["total_ms_mean", "judge_reward_mean"])
+
+        if len(valid_data) > 0:
+            # Convert to seconds
+            times = valid_data["total_ms_mean"] / 1000
+
+            ax.scatter(
+                times,
+                valid_data["judge_reward_mean"],
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                color=style["color"],
+                marker=style["marker"],
+                s=60,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Judge Reward (Accuracy)")
+    ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    ax.legend(loc="lower right", fontsize=8)
+
+
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Heatmap of reward by mode × subset."""
     # Create pivot table: mode × subset
@@ -452,6 +607,10 @@ PLOT_REGISTRY = {
     "rlm_metrics": (plot_rlm_metrics, (10, 7), "RLM Usage Metrics"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "context": (plot_context_vs_reward, (10, 7), "Context Length vs Reward"),
+    # Additional timing plots
+    "timing_by_subset": (plot_timing_by_subset, (10, 7), "Timing by Subset"),
+    "timing_vs_context": (plot_timing_vs_context, (10, 7), "Timing vs Context Length"),
+    "timing_efficiency": (plot_timing_efficiency, (10, 7), "Timing Efficiency"),
 }
 
 
@@ -509,6 +668,11 @@ Examples:
     
     # Save plot to file
     python plot_results.py --image reward -o reward_plot.png
+    
+    # Additional timing plots
+    python plot_results.py --image timing_by_subset    # Timing by subset
+    python plot_results.py --image timing_vs_context   # Timing vs context length
+    python plot_results.py --image timing_efficiency   # Reward vs time tradeoff
 """,
     )
     parser.add_argument(
@@ -535,6 +699,10 @@ Examples:
             "rlm_metrics",
             "timing",
             "context",
+            # Additional timing plots
+            "timing_by_subset",
+            "timing_vs_context",
+            "timing_efficiency",
         ],
         default="main",
         help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",

@@ -7,11 +7,13 @@ Creates focused plots comparing modes across models:
 - RLM metrics comparison
 - Timing comparison
 - Standard mode tool usage
+- Optional: timing_vs_accuracy (cost-benefit analysis)
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image accuracy
     python plot_results.py --image rlm_metrics
+    python plot_results.py --image timing_vs_accuracy
 """
 
 import argparse
@@ -274,6 +276,41 @@ def plot_standard_tool_usage(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper right", fontsize=9)
 
 
+def plot_timing_vs_accuracy(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Accuracy vs timing scatter (cost-benefit analysis)."""
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Filter out rows with missing data
+        valid_data = data.dropna(subset=["total_ms_mean", "correct_answer_mean"])
+
+        if len(valid_data) > 0:
+            # Convert to seconds
+            times = valid_data["total_ms_mean"] / 1000
+
+            ax.scatter(
+                times,
+                valid_data["correct_answer_mean"],
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                color=style["color"],
+                marker=style["marker"],
+                s=100,
+                alpha=0.8,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Accuracy (Correct Answer)")
+    ax.set_title("Timing vs Accuracy\n(by mode)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    ax.legend(loc="lower right", fontsize=9)
+
+
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     """Create the 2x2 grid of plots."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -308,6 +345,8 @@ PLOT_REGISTRY = {
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "rlm_metrics": (plot_rlm_metrics, (12, 7), "RLM Usage Metrics"),
     "tool_usage": (plot_standard_tool_usage, (10, 7), "Standard Mode Tool Usage"),
+    # Additional timing plots
+    "timing_vs_accuracy": (plot_timing_vs_accuracy, (10, 7), "Timing vs Accuracy"),
 }
 
 
@@ -362,6 +401,9 @@ Examples:
     
     # Save plot to file
     python plot_results.py --image accuracy -o accuracy_plot.png
+    
+    # Timing vs accuracy analysis
+    python plot_results.py --image timing_vs_accuracy
 """,
     )
     parser.add_argument(
@@ -380,7 +422,14 @@ Examples:
     )
     parser.add_argument(
         "--image",
-        choices=["main", "accuracy", "timing", "rlm_metrics", "tool_usage"],
+        choices=[
+            "main",
+            "accuracy",
+            "timing",
+            "rlm_metrics",
+            "tool_usage",
+            "timing_vs_accuracy",
+        ],
         default="main",
         help="Which plot to generate: 'main' for 2x2 grid, or individual plot name",
     )

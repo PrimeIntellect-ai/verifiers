@@ -5,11 +5,13 @@ Plot ablation results for verbatim_copy experiments.
 Creates a 2x3 grid of plots or individual plots:
 - Top row: Mode comparison plots (reward by mode across different dimensions)
 - Bottom row: Detailed views (heatmap, distribution, scatter)
+- Optional timing plots: timing, timing_by_length, timing_by_content, timing_efficiency
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image scatter --linear-fit --exclude-perfect
     python plot_results.py --image content
+    python plot_results.py --image timing_by_length
 """
 
 import argparse
@@ -331,6 +333,161 @@ def plot_char_vs_exact(
     )
 
 
+def plot_timing_by_mode(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing comparison across modes (bar chart)."""
+    # Aggregate across all configs for each mode
+    agg_df = (
+        df.groupby("mode")
+        .agg(
+            {
+                "total_ms_mean": "mean",
+                "total_ms_std": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+    x = range(len(modes))
+
+    times = []
+    errors = []
+    colors = []
+    for mode in modes:
+        mode_data = agg_df[agg_df["mode"] == mode]
+        if len(mode_data) > 0 and pd.notna(mode_data["total_ms_mean"].values[0]):
+            times.append(
+                mode_data["total_ms_mean"].values[0] / 1000
+            )  # Convert to seconds
+            errors.append(
+                mode_data["total_ms_std"].values[0] / 1000
+                if pd.notna(mode_data["total_ms_std"].values[0])
+                else 0
+            )
+        else:
+            times.append(0)
+            errors.append(0)
+        colors.append(MODE_STYLES.get(mode, {"color": "gray"})["color"])
+
+    bars = ax.bar(
+        x, times, yerr=errors, color=colors, edgecolor="black", linewidth=0.5, capsize=3
+    )
+
+    ax.set_xlabel("Mode")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Average Rollout Time by Mode\n(aggregated across all configs)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(modes)
+
+
+def plot_timing_by_length(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing vs target length by mode (line plot)."""
+    # Filter to mean_fragment_length=20, content_type="all"
+    filtered = df[(df["mean_fragment_length"] == 20) & (df["content_type"] == "all")]
+
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
+
+    for mode in modes:
+        data = filtered[filtered["mode"] == mode].sort_values("target_length")
+        if len(data) > 0 and "total_ms_mean" in data.columns:
+            style = MODE_STYLES.get(
+                mode, {"color": "gray", "marker": "o", "linestyle": "-"}
+            )
+            # Convert to seconds
+            times = data["total_ms_mean"] / 1000
+            ax.plot(
+                data["target_length"],
+                times,
+                label=mode,
+                marker=style["marker"],
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=2,
+                markersize=8,
+            )
+
+    ax.set_xlabel("Target Length (chars)")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing vs Target Length\n(content=all, frag=20)")
+    ax.legend(loc="upper left", fontsize=8)
+
+
+def plot_timing_by_content(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing by content type across modes (grouped bar chart)."""
+    # Filter to target_length=500, mean_fragment_length=20
+    filtered = df[(df["target_length"] == 500) & (df["mean_fragment_length"] == 20)]
+
+    content_types = ["words", "json", "csv", "codes", "mixed"]
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
+
+    x = range(len(content_types))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = filtered[filtered["mode"] == mode]
+        times = []
+        for ct in content_types:
+            ct_data = mode_data[mode_data["content_type"] == ct]
+            if len(ct_data) > 0 and pd.notna(ct_data["total_ms_mean"].values[0]):
+                times.append(ct_data["total_ms_mean"].values[0] / 1000)
+            else:
+                times.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            times,
+            width,
+            label=mode,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Content Type")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing by Content Type\n(len=500, frag=20)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(content_types)
+    ax.legend(loc="upper right", fontsize=8)
+
+
+def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Reward vs timing scatter (cost-benefit analysis)."""
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Filter out rows with missing timing data
+        valid_data = data.dropna(subset=["total_ms_mean", "reward_mean"])
+
+        if len(valid_data) > 0:
+            # Convert to seconds
+            times = valid_data["total_ms_mean"] / 1000
+
+            ax.scatter(
+                times,
+                valid_data["reward_mean"],
+                label=mode,
+                color=style["color"],
+                marker=style["marker"],
+                s=60,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Reward (Exact Match)")
+    ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    ax.legend(loc="lower right", fontsize=8)
+
+
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
@@ -383,6 +540,11 @@ PLOT_REGISTRY = {
     "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
     "distribution": (plot_distribution, (10, 7), "Reward Distribution by Mode"),
     "scatter": (plot_char_vs_exact, (10, 7), "Char Accuracy vs Exact Match"),
+    # Timing plots
+    "timing": (plot_timing_by_mode, (10, 7), "Timing by Mode"),
+    "timing_by_length": (plot_timing_by_length, (10, 7), "Timing vs Target Length"),
+    "timing_by_content": (plot_timing_by_content, (10, 7), "Timing by Content Type"),
+    "timing_efficiency": (plot_timing_efficiency, (10, 7), "Timing Efficiency"),
 }
 
 
@@ -455,6 +617,12 @@ Examples:
     
     # Save individual plot to file
     python plot_results.py --image content -o content_plot.png
+    
+    # Timing plots (optional)
+    python plot_results.py --image timing              # Basic timing by mode
+    python plot_results.py --image timing_by_length    # Timing scaling with text length
+    python plot_results.py --image timing_by_content   # Timing by content type
+    python plot_results.py --image timing_efficiency   # Reward vs time tradeoff
 """,
     )
     parser.add_argument(
@@ -481,6 +649,11 @@ Examples:
             "heatmap",
             "distribution",
             "scatter",
+            # Timing plots
+            "timing",
+            "timing_by_length",
+            "timing_by_content",
+            "timing_efficiency",
         ],
         default="main",
         help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",

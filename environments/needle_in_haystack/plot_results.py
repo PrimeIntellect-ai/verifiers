@@ -7,11 +7,13 @@ Creates focused plots comparing modes across different ablation dimensions:
 - Mode comparison vs context size (num_lines)
 - Mode comparison vs needle count
 - RLM metrics comparison
+- Optional timing plots: timing, timing_vs_context, timing_vs_needles, timing_efficiency
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image needle_type
     python plot_results.py --image context_size
+    python plot_results.py --image timing_vs_context
 """
 
 import argparse
@@ -355,6 +357,178 @@ def plot_partial_vs_exact(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="lower right", fontsize=8)
 
 
+def plot_timing_by_mode(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing comparison across modes (bar chart)."""
+    # Aggregate across all configs for each mode
+    agg_df = (
+        df.groupby("mode")
+        .agg(
+            {
+                "total_ms_mean": "mean",
+                "total_ms_std": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+    x = range(len(modes))
+
+    times = []
+    errors = []
+    colors = []
+    for mode in modes:
+        mode_data = agg_df[agg_df["mode"] == mode]
+        if len(mode_data) > 0 and pd.notna(mode_data["total_ms_mean"].values[0]):
+            times.append(
+                mode_data["total_ms_mean"].values[0] / 1000
+            )  # Convert to seconds
+            errors.append(
+                mode_data["total_ms_std"].values[0] / 1000
+                if pd.notna(mode_data["total_ms_std"].values[0])
+                else 0
+            )
+        else:
+            times.append(0)
+            errors.append(0)
+        colors.append(MODE_STYLES.get(mode, {"color": "gray"})["color"])
+
+    ax.bar(
+        x, times, yerr=errors, color=colors, edgecolor="black", linewidth=0.5, capsize=3
+    )
+
+    ax.set_xlabel("Mode")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Average Rollout Time by Mode\n(aggregated across all configs)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([MODE_LABELS.get(m, m).replace("\n", " ") for m in modes])
+
+
+def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing vs context size (num_lines) by mode (line plot).
+
+    This is a critical plot for understanding how timing scales with context length.
+    """
+    # Filter to baseline config: needle_type="word", num_needles=1
+    filtered = df[(df["needle_type"] == "word") & (df["num_needles"] == 1)]
+
+    # Aggregate across models
+    agg_df = (
+        filtered.groupby(["num_lines", "mode"])
+        .agg(
+            {
+                "total_ms_mean": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+
+    for mode in modes:
+        data = agg_df[agg_df["mode"] == mode].sort_values("num_lines")
+        if len(data) > 0 and "total_ms_mean" in data.columns:
+            style = MODE_STYLES.get(
+                mode, {"color": "gray", "marker": "o", "linestyle": "-"}
+            )
+            # Convert to seconds
+            times = data["total_ms_mean"] / 1000
+            ax.plot(
+                data["num_lines"] / 1000,  # Convert to thousands
+                times,
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                marker=style["marker"],
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=2,
+                markersize=8,
+            )
+
+    ax.set_xlabel("Context Size (K lines)")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing vs Context Size\n(type=word, needles=1)")
+    ax.legend(loc="upper left", fontsize=8)
+
+
+def plot_timing_vs_needles(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Timing vs needle count by mode (line plot)."""
+    # Filter to baseline config: needle_type="word", num_lines=10000
+    filtered = df[(df["needle_type"] == "word") & (df["num_lines"] == 10000)]
+
+    # Aggregate across models
+    agg_df = (
+        filtered.groupby(["num_needles", "mode"])
+        .agg(
+            {
+                "total_ms_mean": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+
+    for mode in modes:
+        data = agg_df[agg_df["mode"] == mode].sort_values("num_needles")
+        if len(data) > 0 and "total_ms_mean" in data.columns:
+            style = MODE_STYLES.get(
+                mode, {"color": "gray", "marker": "o", "linestyle": "-"}
+            )
+            # Convert to seconds
+            times = data["total_ms_mean"] / 1000
+            ax.plot(
+                data["num_needles"],
+                times,
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                marker=style["marker"],
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=2,
+                markersize=8,
+            )
+
+    ax.set_xlabel("Number of Needles")
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Timing vs Needle Count\n(type=word, lines=10K)")
+    ax.set_xticks([1, 3, 5])
+    ax.legend(loc="upper left", fontsize=8)
+
+
+def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Reward vs timing scatter (cost-benefit analysis)."""
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Filter out rows with missing data
+        valid_data = data.dropna(subset=["total_ms_mean", "partial_match_mean"])
+
+        if len(valid_data) > 0:
+            # Convert to seconds
+            times = valid_data["total_ms_mean"] / 1000
+
+            ax.scatter(
+                times,
+                valid_data["partial_match_mean"],
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                color=style["color"],
+                marker=style["marker"],
+                s=60,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Partial Match Reward")
+    ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    ax.legend(loc="lower right", fontsize=8)
+
+
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
@@ -399,6 +573,11 @@ PLOT_REGISTRY = {
     "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
     "rlm_metrics": (plot_rlm_metrics, (10, 7), "RLM Usage Metrics"),
     "partial_exact": (plot_partial_vs_exact, (10, 7), "Partial vs Exact Match"),
+    # Timing plots
+    "timing": (plot_timing_by_mode, (10, 7), "Timing by Mode"),
+    "timing_vs_context": (plot_timing_vs_context, (10, 7), "Timing vs Context Size"),
+    "timing_vs_needles": (plot_timing_vs_needles, (10, 7), "Timing vs Needle Count"),
+    "timing_efficiency": (plot_timing_efficiency, (10, 7), "Timing Efficiency"),
 }
 
 
@@ -452,6 +631,12 @@ Examples:
     
     # Save plot to file
     python plot_results.py --image needle_type -o needle_type.png
+    
+    # Timing plots (optional)
+    python plot_results.py --image timing              # Basic timing by mode
+    python plot_results.py --image timing_vs_context   # Timing scaling with context size
+    python plot_results.py --image timing_vs_needles   # Timing scaling with needle count
+    python plot_results.py --image timing_efficiency   # Reward vs time tradeoff
 """,
     )
     parser.add_argument(
@@ -478,6 +663,11 @@ Examples:
             "heatmap",
             "rlm_metrics",
             "partial_exact",
+            # Timing plots
+            "timing",
+            "timing_vs_context",
+            "timing_vs_needles",
+            "timing_efficiency",
         ],
         default="main",
         help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",
