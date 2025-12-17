@@ -18,7 +18,6 @@ set -e
 #   "openrouter:xiaomi/mimo-v2-flash:free"
 MODELS=(
     "openrouter:xiaomi/mimo-v2-flash:free"
-    "openrouter:allenai/olmo-3.1-32b-think:free"
     "openrouter:moonshotai/kimi-k2-thinking"
     "gpt-5-mini"
 )

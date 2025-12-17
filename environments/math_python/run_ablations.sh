@@ -12,9 +12,11 @@ set -e
 # Model configurations
 # - OpenAI models: just use the model name (e.g., "gpt-4.1-mini")
 # - OpenRouter models: prefix with "openrouter:" (e.g., "openrouter:anthropic/claude-3.5-sonnet")
+
 MODELS=(
-    "gpt-4.1-mini"
-    "gpt-4.1"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:moonshotai/kimi-k2-thinking"
+    "gpt-5-mini"
 )
 
 NUM_EXAMPLES=50

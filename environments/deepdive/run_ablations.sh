@@ -16,9 +16,11 @@ set -e
 #   "gpt-4.1-mini"
 #   "gpt-4.1"
 #   "openrouter:anthropic/claude-3.5-sonnet"
+
 MODELS=(
-    "gpt-4.1-mini"
-    "gpt-4.1"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:moonshotai/kimi-k2-thinking"
+    "gpt-5-mini"
 )
 
 # Fewer examples than verbatim-copy since web search is slower/costlier
