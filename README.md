@@ -13,7 +13,7 @@ Verifiers: Environments for LLM Reinforcement Learning
 </h3>
 
 <p align="center">
-  <a href="https://docs.primeintellect.ai/verifiers">Documentation</a> •
+  <a href="https://verifiers.readthedocs.io/en/latest/">Documentation</a> •
   <a href="https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars">Environments Hub</a> •
   <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a>
 </p>
