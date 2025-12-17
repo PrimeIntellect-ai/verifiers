@@ -1,8 +1,7 @@
 import logging
-import asyncio
 from abc import abstractmethod
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import (
@@ -23,10 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class MultiTurnEnv(vf.Environment):
-    def __init__(self, max_turns: int = -1, max_retries: int = 3, **kwargs):
+    def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
-        self.max_retries = max_retries
 
     async def setup_state(self, state: State) -> State:
         return state
@@ -44,11 +42,6 @@ class MultiTurnEnv(vf.Environment):
     async def max_turns_reached(self, state: State) -> bool:
         """Check if the maximum number of turns has been reached."""
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
-
-    @vf.stop
-    async def error_occurred(self, state: State) -> bool:
-        """Stop if an unrecoverable error occurred after max retries."""
-        return state.get("error") is not None
 
     @abstractmethod
     async def env_response(
