@@ -69,8 +69,6 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages: Messages,
         response: ModelResponse,
     ):
-        if response is not None and response.id == "overlong-prompt":
-            state["prompt_too_long"] = True
         completion_messages = await parse_response_messages(response, self.message_type)
         response_is_truncated = await parse_is_truncated(response, self.message_type)
         tokens = await parse_response_tokens(
