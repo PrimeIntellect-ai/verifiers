@@ -1,7 +1,36 @@
+import logging
+from typing import Any
+
 import verifiers as vf
 from verifiers.envs.gym_env import GymEnv
 
-from gem.envs.game_env.wordle import WordleEnv
+
+def _patch_nltk_download_quiet() -> None:
+    """
+    GEM (or its dependencies) may call `nltk.download(...)` at import time and print
+    noisy `[nltk_data] ...` logs. Force `quiet=True` if NLTK is installed.
+    """
+    try:
+        import nltk
+    except ImportError:
+        return
+
+    original_download = getattr(nltk, "_vf_original_download", None)
+    if original_download is None:
+        original_download = nltk.download
+        setattr(nltk, "_vf_original_download", original_download)
+
+    def download_quiet(*args: Any, **kwargs: Any) -> Any:
+        return original_download(*args, **{**kwargs, "quiet": True})
+
+    setattr(nltk, "download", download_quiet)
+
+
+def _silence_openai_http_logs() -> None:
+    # GEM (or its deps) may configure root logging to INFO, which makes OpenAI/httpx
+    # per-request logs noisy during evals.
+    for name in ("openai", "openai._base_client", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 ### Prompt
 # GEM relies on regex matching for \boxed{}, so we instruct the model accordingly.
@@ -64,6 +93,10 @@ def load_environment(
     from datasets import Dataset
 
     from verifiers.envs.gym_env import EpisodicSumRubric
+
+    _patch_nltk_download_quiet()
+    _silence_openai_http_logs()
+    from gem.envs.game_env.wordle import WordleEnv
 
     # Rubric: sum of step rewards (dense) + success bonus (sparse)
     rubric = EpisodicSumRubric(weight=1.0)
