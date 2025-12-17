@@ -724,6 +724,11 @@ class Environment(ABC):
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]
         rewards = [state.get("reward", 0.0) for state in all_states]
+        stop_conditions = [state.get("stop_condition", None) for state in all_states]
+        is_truncated = [
+            any(step.get("is_truncated", False) for step in state.get("trajectory", []))
+            for state in all_states
+        ]
 
         metrics: dict[str, list[float]] = {}
         for state in all_states:
@@ -767,6 +772,8 @@ class Environment(ABC):
             example_id=example_ids,
             reward=rewards,
             metrics=metrics,
+            stop_conditions=stop_conditions,
+            is_truncated=is_truncated,
             metadata=metadata,
         )
 
