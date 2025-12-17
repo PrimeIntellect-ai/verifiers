@@ -37,12 +37,16 @@ class MathRubric(vf.Rubric):
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
 
-    async def correct_answer(self, parser: vf.Parser, completion: vf.Messages, answer: str, **kwargs) -> float:
+    async def correct_answer(
+        self, parser: vf.Parser, completion: vf.Messages, answer: str, **kwargs
+    ) -> float:
         """Reward function that checks if the final answer matches the expected answer."""
 
         async def _correct_answer() -> float:
             try:
-                response = (await asyncio.to_thread(parser.parse_answer, completion)) or ""
+                response = (
+                    await asyncio.to_thread(parser.parse_answer, completion)
+                ) or ""
                 if response == "":
                     return 0.0
 
@@ -78,7 +82,9 @@ class MathRubric(vf.Rubric):
                 return 0.0
 
         try:
-            return await asyncio.wait_for(_correct_answer(), timeout=self.timeout_seconds)
+            return await asyncio.wait_for(
+                _correct_answer(), timeout=self.timeout_seconds
+            )
         except asyncio.TimeoutError:
             return 0.0
 
@@ -111,14 +117,19 @@ def load_environment(
 ):
     dataset = load_dataset(dataset_name, dataset_subset, split=dataset_split).map(
         lambda x: {
-            "question": instruction_prompt + "\n\n" + x[question_key] if instruction_prompt else x[question_key],
+            "question": instruction_prompt + "\n\n" + x[question_key]
+            if instruction_prompt
+            else x[question_key],
             "answer": x[answer_key],
             "info": x.get(info_key, {}),
         },
         **map_kwargs,
     )
     if difficulty_key is not None:
-        dataset = dataset.filter(lambda x: min_avg_reward <= x[difficulty_key] <= max_avg_reward, **filter_kwargs)
+        dataset = dataset.filter(
+            lambda x: min_avg_reward <= x[difficulty_key] <= max_avg_reward,
+            **filter_kwargs,
+        )
     if dataset_shuffle:
         dataset = dataset.shuffle(seed=dataset_seed)
 
