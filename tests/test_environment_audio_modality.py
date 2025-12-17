@@ -3,7 +3,7 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
-from tests.mock_openai_client import MockOpenAIClient
+from tests.mock_openai_client import MockCompletionResponse, MockOpenAIClient
 from verifiers.envs.singleturn_env import SingleTurnEnv
 from verifiers.types import RolloutInput
 
@@ -19,7 +19,7 @@ class MockClientWithKwargsCapture(MockOpenAIClient):
 
         async def _wrap_create(**kwargs):
             self._captured_kwargs = kwargs
-            return {"ok": True}
+            return MockCompletionResponse("test response")
 
         self.chat.completions.create = _wrap_create
 
