@@ -4,11 +4,13 @@ Needle in Haystack Environment.
 Tests a model's ability to find specific pieces of information ("needles")
 hidden within a large body of text ("haystack").
 
-Supports two modes:
-- RLM mode (use_rlm=True): Uses RLMEnv with context in info["context"], model
-  explores using Python code in the REPL
+Supports three modes:
 - Standard mode (use_rlm=False): Uses SingleTurnEnv with context directly in the
   prompt, model must search through the text directly
+- RLM mode (use_rlm=True): Uses RLMEnv with context in info["context"], model
+  explores using Python code in the REPL
+- RLM with tips (use_rlm=True, include_env_tips=True): RLM mode with environment-
+  specific tips suggesting Python/regex for efficient search
 
 Needle types:
 - "word": Camouflaged word needles - uncommon words hidden among common words
@@ -93,6 +95,18 @@ NEEDLE_WORDS = [
     "peruse",
     "ruminate",
 ]
+
+
+# =============================================================================
+# Environment Tips (for SFT data generation)
+# =============================================================================
+
+# Environment-specific tips for RLM mode (used for SFT data generation)
+# These tips are wrapped in <env_tips> tags so they can be removed during training
+_ENV_TIPS = """
+<env_tips>
+This is a text search problem. Use Python string methods or `re` to scan the context efficiently.
+</env_tips>"""
 
 
 # =============================================================================
@@ -299,6 +313,7 @@ def load_environment(
     needle_position: float | None = None,
     needle_variance: float = 0.0,
     use_rlm: bool = True,
+    include_env_tips: bool = False,
     seed: int | None = None,
     **kwargs,
 ) -> vf.Environment:
@@ -320,6 +335,9 @@ def load_environment(
                          Ignored if needle_position is None.
         use_rlm: If True, use RLMEnv with context in info["context"].
                  If False, use SingleTurnEnv with context in the prompt.
+        include_env_tips: If True and use_rlm=True, include environment-specific
+                          strategy tips in the prompt (wrapped in <env_tips> tags).
+                          Useful for SFT data generation. Ignored if use_rlm=False.
         seed: Random seed for reproducible dataset generation. If None, uses random state.
         **kwargs: Additional arguments passed to the environment (e.g., interception_host for RLM)
 
@@ -375,13 +393,17 @@ def load_environment(
                     "Return all words/numbers you found, separated by commas."
                 )
 
+            prompt_content = f"{task_description} {response_format}"
+            if include_env_tips:
+                prompt_content = prompt_content + _ENV_TIPS
+
             dataset_rows.append(
                 {
                     "example_id": i,
                     "prompt": [
                         {
                             "role": "user",
-                            "content": f"{task_description} {response_format}",
+                            "content": prompt_content,
                         }
                     ],
                     "task": "needle-in-haystack",
