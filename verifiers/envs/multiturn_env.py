@@ -77,7 +77,7 @@ class MultiTurnEnv(vf.Environment):
             response, self.message_type, self.max_seq_len
         )
         is_truncated = response_is_truncated or (
-            tokens and tokens.get("is_truncated") or False
+            tokens is not None and bool(tokens.get("is_truncated"))
         )
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
