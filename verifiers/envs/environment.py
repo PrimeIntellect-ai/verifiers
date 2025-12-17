@@ -541,8 +541,10 @@ class Environment(ABC):
                 message_type=message_type,
             )
 
-        # Some providers (e.g. OpenRouter) return None for response.choices
-        if response is None or not response.choices:
+        # Some providers (e.g. OpenRouter) may return None for response or response.choices
+        if response is None:
+            raise vf.EmptyModelResponseError(ValueError("Model returned no response"))
+        if response.choices is None:
             raise vf.EmptyModelResponseError(
                 ValueError("Model returned no response choices")
             )
