@@ -510,6 +510,9 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
+        # Logprobs support detection (None = not tested yet)
+        self._sub_llm_supports_logprobs: bool | None = None
+
         super().__init__(
             sandbox_name="rlm-env",
             start_command=start_command,
@@ -599,6 +602,22 @@ class RLMEnv(SandboxEnv):
             getattr(usage, "completion_tokens", 0) or 0,
         )
 
+    async def _test_logprobs_support(self, client: Any, model: str) -> bool:
+        """Test if model supports logprobs with a minimal API call."""
+        try:
+            await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                logprobs=True,
+            )
+            return True
+        except Exception as e:
+            error_text = str(e).lower()
+            if "403" in error_text and "logprob" in error_text:
+                return False
+            raise  # Re-raise other errors
+
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
     ) -> dict:
@@ -639,12 +658,12 @@ class RLMEnv(SandboxEnv):
             # Snapshot messages before this call
             prompt_snapshot = [dict(m) for m in current_messages]
 
-            # Make LLM call with tools and logprobs
+            # Make LLM call with tools and logprobs (if supported)
             response = await client.chat.completions.create(
                 model=model,
                 messages=current_messages,
                 tools=self.sub_oai_tools if self.sub_oai_tools else None,
-                logprobs=True,
+                logprobs=self._sub_llm_supports_logprobs or None,
             )
 
             prompt_tokens, completion_tokens = self._extract_tokens(response)
@@ -705,7 +724,7 @@ class RLMEnv(SandboxEnv):
         response = await client.chat.completions.create(
             model=model,
             messages=current_messages,
-            logprobs=True,
+            logprobs=self._sub_llm_supports_logprobs or None,
         )
 
         turns.append(
@@ -804,11 +823,11 @@ class RLMEnv(SandboxEnv):
                 max_turns_reached = result["max_turns_reached"]
                 turns = result["turns"]
             else:
-                # Simple path - single turn, no tools, with logprobs
+                # Simple path - single turn, no tools, with logprobs (if supported)
                 response = await client.chat.completions.create(
                     model=sub_model,
                     messages=messages_with_system,
-                    logprobs=True,
+                    logprobs=self._sub_llm_supports_logprobs or None,
                 )
                 # Extract tokens
                 prompt_tokens, completion_tokens = self._extract_tokens(response)
@@ -1051,13 +1070,22 @@ fi
         # 3. Register rollout for sub-LLM routing
         self._register_rollout(state, rollout_id)
 
-        # 4. Build context
+        # 4. Test logprobs support on first rollout
+        if self._sub_llm_supports_logprobs is None:
+            client = state.get("client")
+            sub_model = self.sub_model or state.get("model")
+            if client and sub_model:
+                self._sub_llm_supports_logprobs = await self._test_logprobs_support(
+                    client, sub_model
+                )
+
+        # 5. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
         context_dict = self._build_context_dict(context_data)
         state["rlm_context"] = context_dict
 
-        # 5. Prepare sandbox and start worker (with retry using fresh sandbox)
+        # 6. Prepare sandbox and start worker (with retry using fresh sandbox)
         max_sandbox_retries = 5
 
         for attempt in range(max_sandbox_retries):

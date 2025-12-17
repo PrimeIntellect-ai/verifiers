@@ -384,6 +384,7 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
@@ -406,6 +407,7 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
@@ -427,6 +429,7 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         context_data = {"key": "value"}
         state = {
@@ -835,6 +838,7 @@ class TestContextWarningSentInitialization:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
