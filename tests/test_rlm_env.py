@@ -740,29 +740,25 @@ class TestPromptTooLongStopCondition:
     """Tests for prompt_too_long stop condition."""
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_empty_trajectory(self, rlm_env):
-        """Returns False when trajectory is empty."""
-        state = {"trajectory": []}
+    async def test_returns_false_when_flag_not_set(self, rlm_env):
+        """Returns False when prompt_too_long flag is not set."""
+        state = {}
         result = await rlm_env.prompt_too_long(state)
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_normal_response(self, rlm_env):
-        """Returns False for normal (non-overlong) response."""
-        mock_response = MagicMock()
-        mock_response.id = "chatcmpl-123"  # Normal response ID
-        state = {"trajectory": [{"response": mock_response}]}
+    async def test_returns_false_when_flag_is_false(self, rlm_env):
+        """Returns False when prompt_too_long flag is False."""
+        state = {"prompt_too_long": False}
 
         result = await rlm_env.prompt_too_long(state)
 
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_returns_true_for_overlong_response(self, rlm_env):
-        """Returns True when response has overlong-prompt ID."""
-        mock_response = MagicMock()
-        mock_response.id = "overlong-prompt"
-        state = {"trajectory": [{"response": mock_response}]}
+    async def test_returns_true_when_flag_is_set(self, rlm_env):
+        """Returns True when prompt_too_long flag is True."""
+        state = {"prompt_too_long": True}
 
         result = await rlm_env.prompt_too_long(state)
 
@@ -772,10 +768,8 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_preserves_existing_final_answer(self, rlm_env):
         """Preserves existing final_answer when stopping."""
-        mock_response = MagicMock()
-        mock_response.id = "overlong-prompt"
         state = {
-            "trajectory": [{"response": mock_response}],
+            "prompt_too_long": True,
             "final_answer": "existing answer",
         }
 
@@ -791,10 +785,8 @@ class TestPromptTooLongStopCondition:
             return_value=MagicMock(stdout='{"content": "partial answer from sandbox"}')
         )
 
-        mock_response = MagicMock()
-        mock_response.id = "overlong-prompt"
         state = {
-            "trajectory": [{"response": mock_response}],
+            "prompt_too_long": True,
             "sandbox_id": "sandbox_123",
         }
 
@@ -810,10 +802,8 @@ class TestPromptTooLongStopCondition:
             return_value=MagicMock(stdout="invalid json")
         )
 
-        mock_response = MagicMock()
-        mock_response.id = "overlong-prompt"
         state = {
-            "trajectory": [{"response": mock_response}],
+            "prompt_too_long": True,
             "sandbox_id": "sandbox_123",
         }
 
@@ -825,9 +815,7 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_handles_missing_sandbox(self, rlm_env):
         """Handles missing sandbox_id when stopping."""
-        mock_response = MagicMock()
-        mock_response.id = "overlong-prompt"
-        state = {"trajectory": [{"response": mock_response}]}
+        state = {"prompt_too_long": True}
 
         result = await rlm_env.prompt_too_long(state)
 

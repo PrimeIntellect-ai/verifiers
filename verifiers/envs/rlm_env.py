@@ -1034,13 +1034,13 @@ fi
         state["sandbox_id"] = sandbox.id
         return state
 
-    async def setup_state(self, state: State) -> State:
+    async def setup_state(self, state: State, **kwargs) -> State:
         """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
         # 1. Create sandbox via parent
-        state = await super().setup_state(state)
+        state = await super().setup_state(state, **kwargs)
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
-            raise RuntimeError("Sandbox ID not set")
+            raise vf.SandboxError(Exception("Sandbox ID not set"))
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -1064,9 +1064,9 @@ fi
             try:
                 await self._prepare_sandbox_and_start_worker(state, context_dict)
                 break  # Success
-            except RuntimeError as e:
+            except vf.SandboxError as e:
                 if (
-                    "worker failed to start" in str(e)
+                    "worker failed to start" in str(e.cause)
                     and attempt < max_sandbox_retries - 1
                 ):
                     logger.warning(
@@ -1129,8 +1129,8 @@ fi
             logger.error(
                 f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
             )
-            raise RuntimeError(
-                f"RLM worker failed to start: {debug_result.stdout[:500]}"
+            raise vf.SandboxError(
+                Exception(f"RLM worker failed to start: {debug_result.stdout[:500]}")
             )
 
     # =========================================================================
@@ -1324,28 +1324,25 @@ PY
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
         """Stop when API returns overlong prompt error."""
-        if not state.get("trajectory"):
+        if not state.get("prompt_too_long", False):
             return False
 
-        response = state["trajectory"][-1].get("response")
-        if response and getattr(response, "id", None) == "overlong-prompt":
-            # Extract answer from sandbox if not already set
-            if "final_answer" not in state:
-                sandbox_id = state.get("sandbox_id")
-                if sandbox_id:
-                    try:
-                        result = await self._execute_command_with_retry(
-                            sandbox_id,
-                            f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
-                        )
-                        answer = json.loads(result.stdout.strip())
-                        state["final_answer"] = answer.get("content", "")
-                    except Exception:
-                        state["final_answer"] = ""
-                else:
+        # Extract answer from sandbox if not already set
+        if "final_answer" not in state:
+            sandbox_id = state.get("sandbox_id")
+            if sandbox_id:
+                try:
+                    result = await self._execute_command_with_retry(
+                        sandbox_id,
+                        f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
+                    )
+                    answer = json.loads(result.stdout.strip())
+                    state["final_answer"] = answer.get("content", "")
+                except Exception:
                     state["final_answer"] = ""
-            return True
-        return False
+            else:
+                state["final_answer"] = ""
+        return True
 
     # =========================================================================
     # Cleanup
