@@ -78,6 +78,10 @@ def gem_success_bonus(*, state: vf.State, **kwargs) -> float:
 
     return 0.0
 
+
+def win_rate(*, state: vf.State, **kwargs) -> float:
+    return gem_success_bonus(state=state, **kwargs)
+
 ### Environment Loader
 def load_environment(
     num_train_episodes: int = 1000,
@@ -100,7 +104,7 @@ def load_environment(
 
     # Rubric: sum of step rewards (dense) + success bonus (sparse)
     rubric = EpisodicSumRubric(weight=1.0)
-    rubric.add_reward_func(gem_success_bonus, weight=2.0)
+    rubric.add_reward_func(win_rate, weight=0.0)
 
     # Build eval dataset with specified number of episodes
     eval_dataset = Dataset.from_dict({
