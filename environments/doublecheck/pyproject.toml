@@ -6,6 +6,7 @@ version = "0.1.6"
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.8",
+    "math_verify>=0.8.0",
 ]
 
 [build-system]

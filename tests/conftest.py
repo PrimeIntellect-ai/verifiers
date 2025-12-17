@@ -15,6 +15,7 @@ from verifiers import (
     State,
     StatefulToolEnv,
     ThinkParser,
+    ToolCallError,
     ToolEnv,
     XMLParser,
     stop,
@@ -353,7 +354,7 @@ def square_tool(x: int) -> int:
 
 
 def faulty_tool() -> None:
-    raise ValueError("failure")
+    raise ToolCallError(cause=ValueError("failure"))
 
 
 class BasicToolEnv(ToolEnv):

@@ -2,45 +2,83 @@ name: Test
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - '**.py'
-      - 'pyproject.toml'
-      - '.github/workflows/test.yml'
+      - "**.py"
+      - "pyproject.toml"
+      - ".github/workflows/test.yml"
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - '**.py'
-      - 'pyproject.toml'
-      - '.github/workflows/test.yml'
+      - "**.py"
+      - "pyproject.toml"
+      - ".github/workflows/test.yml"
 
 jobs:
   test:
+    name: Verifiers
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-    
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        version: "latest"
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: uv sync
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Install prime
-      run: uv pip install prime
-    
-    - name: Run tests
-      run: |
-        uv run pytest tests/ -v --cov=verifiers --cov-report=xml --cov-report=term
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install prime
+        run: uv pip install prime
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
+  test-envs:
+    name: Environments
+    runs-on: ubuntu-latest
+    env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Detect changed environments
+        id: changed-envs
+        if: github.event_name == 'pull_request'
+        uses: tj-actions/changed-files@v47
+        with:
+          path: environments
+          dir_names: true
+          dir_names_max_depth: 1
+          separator: ","
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install prime
+        run: uv pip install prime
+
+      - name: Run environment tests
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            export CHANGED_ENVS="${{ steps.changed-envs.outputs.all_changed_files || 'none' }}"
+            echo "CHANGED_ENVS: $CHANGED_ENVS"
+          fi
+          uv run pytest tests/test_envs.py -vv

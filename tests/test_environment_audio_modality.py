@@ -2,8 +2,10 @@
 import pytest
 from datasets import Dataset
 
+import verifiers as vf
 from tests.mock_openai_client import MockOpenAIClient
 from verifiers.envs.singleturn_env import SingleTurnEnv
+from verifiers.types import RolloutInput
 
 DUMMY_B64 = "ZHVtbXk="
 
@@ -41,7 +43,7 @@ def test_environment():
 async def test_sets_modalities_text_when_audio_and_missing(
     mock_client, test_environment
 ):
-    prompt = [
+    prompt: vf.Messages = [
         {
             "role": "user",
             "content": [
@@ -54,14 +56,13 @@ async def test_sets_modalities_text_when_audio_and_missing(
         }
     ]
 
-    await test_environment.get_model_response(
+    state = await test_environment.init_state(
+        input=RolloutInput(example_id=0, task="test", prompt=prompt),
         client=mock_client,
         model="gpt-4o-audio-preview",
-        prompt=prompt,
-        oai_tools=None,
-        sampling_args=None,
-        message_type=None,
     )
+
+    await test_environment.get_model_response(state, prompt)
 
     kwargs = mock_client.get_kwargs()
     assert kwargs is not None
@@ -71,7 +72,7 @@ async def test_sets_modalities_text_when_audio_and_missing(
 
 @pytest.mark.asyncio
 async def test_does_not_override_existing_modalities(mock_client, test_environment):
-    prompt = [
+    prompt: vf.Messages = [
         {
             "role": "user",
             "content": [
@@ -83,14 +84,13 @@ async def test_does_not_override_existing_modalities(mock_client, test_environme
         }
     ]
 
-    await test_environment.get_model_response(
+    state = await test_environment.init_state(
+        input=RolloutInput(example_id=0, task="test", prompt=prompt),
         client=mock_client,
         model="gpt-4o-audio-preview",
-        prompt=prompt,
         sampling_args={"modalities": ["text", "audio"]},
-        oai_tools=None,
-        message_type=None,
     )
+    await test_environment.get_model_response(state, prompt)
 
     kwargs = mock_client.get_kwargs()
     assert kwargs is not None
@@ -99,16 +99,13 @@ async def test_does_not_override_existing_modalities(mock_client, test_environme
 
 @pytest.mark.asyncio
 async def test_does_not_add_modalities_when_no_audio(mock_client, test_environment):
-    prompt = [{"role": "user", "content": "hello"}]
-
-    await test_environment.get_model_response(
+    prompt: vf.Messages = [{"role": "user", "content": "hello"}]
+    state = await test_environment.init_state(
+        input=RolloutInput(example_id=0, task="test", prompt=prompt),
         client=mock_client,
         model="gpt-4.1-mini",
-        prompt=prompt,
-        sampling_args=None,
-        oai_tools=None,
-        message_type=None,
     )
+    await test_environment.get_model_response(state, prompt)
 
     kwargs = mock_client.get_kwargs()
     assert kwargs is not None

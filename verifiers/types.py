@@ -7,6 +7,8 @@ from typing import (
     Literal,
 )
 
+from verifiers.errors import Error
+
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
 else:
@@ -92,8 +94,8 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI | None
-    model: str | None
+    client: AsyncOpenAI
+    model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
@@ -105,6 +107,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
+    error: Error | None
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
@@ -225,6 +228,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
+    extra_env_kwargs: dict = {}
     # logging
     print_results: bool = False
     verbose: bool = False

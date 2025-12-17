@@ -31,6 +31,11 @@ class MultiTurnEnv(vf.Environment):
     async def setup_state(self, state: State) -> State:
         return state
 
+    @vf.stop(priority=100)  # high priority to always check for errors first
+    async def has_error(self, state: State, **kwargs) -> bool:
+        """Abrupts rollout early if an error has occurred."""
+        return state.get("error") is not None
+
     @vf.stop
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
@@ -99,56 +104,15 @@ class MultiTurnEnv(vf.Environment):
         Generate a multi-turn rollout with the environment.
         """
         state = await self.init_state(input, client, model, sampling_args)
-        state = await self.setup_state(state)
-        num_retries = 0
+        try:
+            state = await self.setup_state(state)
+        except vf.Error as e:
+            state["error"] = e
         while not await self.is_completed(state):
-            # Save trajectory length to restore on error (avoids copying non-picklable objects
-            # like AsyncOpenAI client, and preserves State class forwarding behavior)
-            trajectory_len = len(state["trajectory"])
-            prompt_messages = await self.get_prompt_messages(state)
             try:
-                response = await self.get_model_response(
-                    client,
-                    model,
-                    prompt_messages,
-                    oai_tools=state["oai_tools"],
-                    sampling_args=sampling_args,
-                    message_type=self.message_type,
-                )
+                prompt_messages = await self.get_prompt_messages(state)
+                response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
-                num_retries = 0
-            except BadRequestError as e:
-                num_retries += 1
-                logger.warning(
-                    f"BadRequestError (attempt {num_retries}/{self.max_retries}): {e}"
-                )
-                if num_retries > self.max_retries:
-                    # Gracefully fail instead of crashing
-                    logger.warning(
-                        f"Max retries ({self.max_retries}) exceeded, marking rollout as failed"
-                    )
-                    state["error"] = str(e)
-                    # Create error message as fake completion so judge sees the error
-                    error_completion = [
-                        {"role": "assistant", "content": f"[Error: {e}]"}
-                    ]
-                    trajectory_step = TrajectoryStep(
-                        prompt=prompt_messages,
-                        completion=error_completion,
-                        response=None,
-                        tokens=None,
-                        reward=None,
-                        advantage=None,
-                        extras={"error": str(e)},
-                    )
-                    state["trajectory"].append(trajectory_step)
-                    # Don't break - let the loop check is_completed, which will trigger
-                    # error_occurred stop condition and run cleanup properly
-                    continue
-                # Restore trajectory to before the failed attempt
-                state["trajectory"] = state["trajectory"][:trajectory_len]
-                state.pop("prompt_too_long", None)
-                await asyncio.sleep(1)
-                continue
-
+            except vf.Error as e:
+                state["error"] = e
         return state
