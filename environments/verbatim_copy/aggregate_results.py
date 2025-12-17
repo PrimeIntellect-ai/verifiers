@@ -84,7 +84,13 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
 
 def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute summary statistics grouped by ablation parameters."""
-    group_cols = ["model", "mode", "content_type", "target_length", "mean_fragment_length"]
+    group_cols = [
+        "model",
+        "mode",
+        "content_type",
+        "target_length",
+        "mean_fragment_length",
+    ]
     metric_cols = ["reward", "exact_match", "char_accuracy", "levenshtein_similarity"]
 
     # Group and compute stats per content type
@@ -160,7 +166,9 @@ def print_summary_table(summary: pd.DataFrame):
         exact = f"{row['exact_match_mean']:.3f}±{row['exact_match_std']:.3f}"
         char_acc = f"{row['char_accuracy_mean']:.3f}±{row['char_accuracy_std']:.3f}"
 
-        print(f"{model:<20} {mode:<10} {config:<35} {reward:>12} {exact:>12} {char_acc:>12}")
+        print(
+            f"{model:<20} {mode:<10} {config:<35} {reward:>12} {exact:>12} {char_acc:>12}"
+        )
 
     print("-" * 120)
     print(f"Total configurations: {len(summary)}")
