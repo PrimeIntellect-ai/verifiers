@@ -17,11 +17,11 @@ MODELS=(
 )
 
 # Fewer examples since long-context evaluation is slow/costly
-NUM_EXAMPLES=50
+NUM_EXAMPLES=200
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
-MODES=("standard" "rlm" "rlm_tips")
+MODES=("rlm" "rlm_tips" "standard")
 
 # Subset configurations: "synth", "synth_with_labels", "real"
 SUBSETS=("synth" "synth_with_labels" "real")

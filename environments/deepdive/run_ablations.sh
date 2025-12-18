@@ -23,13 +23,12 @@ MODELS=(
     "gpt-5-mini"
 )
 
-# Fewer examples than verbatim-copy since web search is slower/costlier
-NUM_EXAMPLES=50
+NUM_EXAMPLES=200
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
 # Comment out modes to skip them
-MODES=("standard" "rlm" "rlm_tips")
+MODES=("rlm" "rlm_tips" "standard")
 
 uv run vf-install deepdive
 
@@ -87,4 +86,4 @@ done
 
 echo "=== All ablations complete ==="
 echo "Results saved to: environments/deepdive/outputs/evals/"
-echo "Run 'python environments/deepdive/aggregate_results.py' to analyze."
+echo "Run 'uv run environments/deepdive/aggregate_results.py' to analyze."

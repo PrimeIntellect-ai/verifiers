@@ -20,11 +20,11 @@ MODELS=(
     "gpt-5-mini"
 )
 
-NUM_EXAMPLES=50
+NUM_EXAMPLES=200
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
-MODES=("standard" "rlm" "rlm_tips")
+MODES=("rlm" "rlm_tips" "standard")
 
 uv run vf-install needle-in-haystack
 
