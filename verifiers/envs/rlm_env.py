@@ -1463,6 +1463,9 @@ PY
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
         """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
+        # Save main trajectory length BEFORE prepending sub-LLM steps
+        main_trajectory_len = len(state.get("trajectory", []))
+
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
@@ -1519,7 +1522,7 @@ PY
             del self.active_rollouts[rollout_id]
 
         # Compute main RLM metrics from trajectory (excluding sub-LLM steps)
-        state["main_rlm_turns"] = state.get("turn", 0)
+        state["main_rlm_turns"] = main_trajectory_len
 
         main_prompt_tokens, main_completion_tokens = 0, 0
         for step in state.get("trajectory", []):
