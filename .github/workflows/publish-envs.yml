@@ -84,4 +84,17 @@ jobs:
           ENV_ID: ${{ matrix.env_id }}
         run: |
           echo "Publishing $ENV_ID"
-          prime env push -p "environments/$ENV_ID"
+          set +e
+          output=$(prime env push -p "environments/$ENV_ID" 2>&1)
+          exit_code=$?
+          echo "$output"
+          set -e
+
+          if [ $exit_code -eq 0 ]; then
+            echo "✅ Successfully published $ENV_ID"
+          elif echo "$output" | grep -q "content hash.*already exists"; then
+            echo "::warning::Environment $ENV_ID already exists with the same content hash. Skipping upload."
+          else
+            echo "::error::Failed to publish $ENV_ID"
+            exit $exit_code
+          fi
