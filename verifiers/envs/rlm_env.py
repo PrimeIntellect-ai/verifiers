@@ -2,7 +2,7 @@
 Recursive Language Model (RLM) Environment.
 
 Implements the RLM inference strategy where language models can decompose and
-recursively interact with input context of unbounded length through REPL environments.
+recursively interact with input data of unbounded length through REPL environments.
 
 Based on: https://www.alexzhang.dev/blog/recursive-language-models
 
@@ -13,8 +13,8 @@ Architecture:
 
 Key features:
 - Works with any dataset that has a normal prompt
-- Optional large context can be provided in info["context"]
-- Root model only sees query, not full context (unless it peeks via code)
+- Optional large input data can be provided in info["context"]
+- Root model only sees query, not full input data (unless it peeks via code)
 - Model can make recursive sub-LLM calls via llm_batch() function
 - Final answer returned via answer variable
 """
@@ -101,11 +101,12 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
         ensure_fifo(fifo_path)
 
-    # Load context from file (written by setup_state)
-    context = {{"input_data": None, "input_data_metadata": {{"type": "none", "size": 0}}}}
+    # Load extra_data from file (written by setup_state)
+    extra_data = None
     if Path(CONTEXT_FILE).exists():
         with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            context = json.load(f)
+            _full_context = json.load(f)
+            extra_data = _full_context.get("input_data")
 
     # Initialize answer structure
     answer = {{"ready": False, "content": ""}}
@@ -194,7 +195,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     # Persistent execution namespace
     namespace: dict[str, object] = {{
         "__name__": "__main__",
-        "context": context,
+        "extra_data": extra_data,
         "answer": answer,
         "llm_batch": llm_batch,
     }}
@@ -329,11 +330,12 @@ You will write code, see its output, then write more code based on what you lear
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls.
 
+## Input Data Metadata
+{metadata_summary}
+
 ## Available Variables and Functions (inside the REPL)
 
-- `context`: A dictionary containing:
-  - `context["input_data_metadata"]`: Metadata about the input (type, size, structure, etc.)
-  - `context["input_data"]`: The actual input data
+- `extra_data`: The actual input data you need to process.
 
 - `answer`: A dictionary for your final answer:
   - `answer["content"]`: Your answer (string) - write and update this throughout execution
@@ -351,27 +353,23 @@ Use the `call_python_repl` tool to execute Python code. The REPL maintains state
 
 ## Workflow
 
-**Step 1: Inspect metadata first**
-Call the tool with: `print(context["input_data_metadata"])`
-Wait for output. This tells you the data type, size, and structure before you look at the actual data.
-
-**Step 2: Explore the data based on what you learned**
-```
-data = context["input_data"]
-print(type(data))
-print(data[:500] if isinstance(data, str) else data[:3])
+**Step 1: Explore the data**
+```python
+# Inspect the format of the provided data
+print(type(extra_data))
+print(extra_data[:500] if isinstance(extra_data, str) else extra_data[:3])
 ```
 Wait for output. Now you know the actual format.
 
-**Step 3: Process and build your answer**
-```
+**Step 2: Process and build your answer**
+```python
 # Based on what you've seen, write code to solve the task
 answer["content"] = "your current best answer"
 ```
 You can update `answer["content"]` multiple times as you refine your solution.
 
-**Step 4: Verify and finalize (only after reviewing output)**
-```
+**Step 3: Verify and finalize (only after reviewing output)**
+```python
 print(f"My answer: {answer['content']}")
 # Only after confirming this looks correct:
 answer["ready"] = True
@@ -380,10 +378,9 @@ answer["ready"] = True
 ## Important Rules
 
 1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
-2. **Start with metadata** - always run `print(context["input_data_metadata"])` before accessing `input_data`
-3. **One step at a time** - make small tool calls, see output, then continue
-4. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
-5. You can think in natural language between tool calls - reasoning and planning are encouraged
+2. **One step at a time** - make small tool calls, see output, then continue
+3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+4. You can think in natural language between tool calls - reasoning and planning are encouraged
 
 The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
@@ -394,16 +391,16 @@ class RLMEnv(SandboxEnv):
     Recursive Language Model Environment.
 
     Extends SandboxEnv to provide a Python REPL environment where the model can:
-    - Interact with large context stored as a variable
-    - Make recursive sub-LLM calls via llm_batch()
-    - Return final answers via an answer variable
+    - Interact with large input data stored as a variable (`extra_data`)
+    - Make recursive sub-LLM calls via `llm_batch()`
+    - Return final answers via an `answer` variable
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
     - Sandbox is used only for code execution (persistent Python worker)
     - Sub-LLM calls from sandbox code are intercepted via HTTP proxy
 
-    Works with any dataset that has a normal prompt. Context can optionally
+    Works with any dataset that has a normal prompt. Input data can optionally
     be provided in info[context_key] for large data that shouldn't be in the prompt.
 
     Args:
@@ -414,7 +411,7 @@ class RLMEnv(SandboxEnv):
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
-        context_key: Key in info containing optional context data (default: "context")
+        context_key: Key in info containing optional input data (default: "context")
         system_prompt: Custom system prompt (default: RLM standard prompt)
         interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
         interception_port: Port for interception server (default: 8766)
@@ -590,6 +587,18 @@ class RLMEnv(SandboxEnv):
             "in your prompt.\n"
         )
 
+        return "\n".join(lines)
+
+    def _generate_metadata_documentation(self, metadata: dict[str, Any]) -> str:
+        """Generate a concise summary of input data metadata for the system prompt."""
+        if not metadata:
+            return "No input data metadata available."
+
+        lines = ["The environment contains the following input data in `extra_data`:"]
+        for key, value in metadata.items():
+            # Format key for better readability
+            display_key = key.replace("_", " ").title()
+            lines.append(f"- **{display_key}**: `{value}`")
         return "\n".join(lines)
 
     @staticmethod
@@ -1268,9 +1277,7 @@ PY
 
         The REPL maintains state across calls and provides access to:
 
-        - `context`: A dictionary containing:
-          - `context["input_data_metadata"]`: Metadata about the input (type, size, etc.)
-          - `context["input_data"]`: The actual input data
+        - `extra_data`: The actual input data you need to process.
 
         - `answer`: A dictionary for your final answer:
           - `answer["content"]`: Your answer (string) - update this as you work
@@ -1329,8 +1336,20 @@ PY
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
-            # Build system prompt with packages and sub-tool documentation
+            # Build system prompt with metadata, packages and sub-tool documentation
+            metadata = state.get("rlm_context", {}).get("input_data_metadata", {})
+            metadata_summary = self._generate_metadata_documentation(metadata)
+
             base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+            if "{metadata_summary}" in base_system_prompt:
+                # Use replace instead of format to avoid conflict with curly braces from Python code
+                base_system_prompt = base_system_prompt.replace(
+                    "{metadata_summary}", metadata_summary
+                )
+            else:
+                # If custom prompt doesn't have placeholder, prepend it
+                base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+
             packages_docs = self._generate_packages_documentation()
             sub_tools_docs = self._generate_sub_tools_documentation()
             system_prompt = base_system_prompt + packages_docs + sub_tools_docs
