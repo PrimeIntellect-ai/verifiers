@@ -97,6 +97,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     INTERCEPTION_URL = os.environ.get("RLM_INTERCEPTION_URL", "")
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
+    SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
 
     def ensure_fifo(path: str) -> None:
         if os.path.exists(path):
@@ -147,7 +148,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             resp = requests.post(
                 INTERCEPTION_URL,
                 json=payload,
-                timeout=300,
+                timeout=SUB_LLM_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -428,6 +429,9 @@ class RLMEnv(SandboxEnv):
                    When False, sub-LLM calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
+        code_execution_timeout: Timeout in seconds for code execution (default: 600).
+                   This is longer than the default command timeout to allow for
+                   llm_batch calls which can take several minutes.
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -455,6 +459,7 @@ class RLMEnv(SandboxEnv):
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
+        code_execution_timeout: int = 600,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -472,6 +477,7 @@ class RLMEnv(SandboxEnv):
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
+        self.code_execution_timeout = code_execution_timeout
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -1005,10 +1011,12 @@ class RLMEnv(SandboxEnv):
         sandbox_id = state["sandbox_id"]
         interception_url = state["interception_url"]
 
+        sub_llm_timeout = max(10, int(self.code_execution_timeout * 0.9))
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
+export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
 
 # Sync filesystem and verify worker script exists
 sync 2>/dev/null || true
@@ -1232,7 +1240,20 @@ PY
             """
         )
 
-        result = await self._execute_command_with_retry(sandbox_id, command)
+        try:
+            result = await self._execute_command_with_retry(
+                sandbox_id, command, timeout=self.code_execution_timeout
+            )
+        except vf.SandboxError as e:
+            error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
+            return {
+                "status": "error",
+                "stdout": "",
+                "stderr": "",
+                "result": f"Code execution failed: {error_msg}",
+                "answer": {"ready": False, "content": ""},
+            }
+
         if not result.stdout:
             return {
                 "status": "error",
@@ -1241,6 +1262,7 @@ PY
                 "result": "Worker returned no output",
                 "answer": {"ready": False, "content": ""},
             }
+
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as e:
