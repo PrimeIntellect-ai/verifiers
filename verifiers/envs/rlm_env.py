@@ -1399,6 +1399,27 @@ PY
     # Stop Conditions
     # =========================================================================
 
+    async def _ensure_final_answer(self, state: State) -> None:
+        """Read final answer from sandbox if not already set."""
+        if "final_answer" in state:
+            return
+
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            state["final_answer"] = ""
+            return
+
+        try:
+            result = await self._execute_command_with_retry(
+                sandbox_id,
+                f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
+            )
+            answer = json.loads(result.stdout.strip())
+            state["final_answer"] = answer.get("content", "")
+        except Exception as e:
+            logger.warning(f"Failed to read RLM answer: {e}")
+            state["final_answer"] = ""
+
     @vf.stop
     async def answer_ready(self, state: State) -> bool:
         """Stop when model sets answer['ready'] = True."""
@@ -1410,21 +1431,7 @@ PY
         if not state.get("prompt_too_long", False):
             return False
 
-        # Extract answer from sandbox if not already set
-        if "final_answer" not in state:
-            sandbox_id = state.get("sandbox_id")
-            if sandbox_id:
-                try:
-                    result = await self._execute_command_with_retry(
-                        sandbox_id,
-                        f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
-                    )
-                    answer = json.loads(result.stdout.strip())
-                    state["final_answer"] = answer.get("content", "")
-                except Exception:
-                    state["final_answer"] = ""
-            else:
-                state["final_answer"] = ""
+        await self._ensure_final_answer(state)
         return True
 
     # =========================================================================
@@ -1461,22 +1468,13 @@ PY
 
                 # Number of prompts processed (unique HTTP requests)
                 state["sub_llm_call_count"] = len(batch_request_pairs)
-                state["sub_llm_prompt_tokens"] = sum(
-                    getattr(
-                        getattr(s.get("response"), "usage", None), "prompt_tokens", 0
-                    )
-                    or 0
-                    for s in sub_steps
-                )
-                state["sub_llm_completion_tokens"] = sum(
-                    getattr(
-                        getattr(s.get("response"), "usage", None),
-                        "completion_tokens",
-                        0,
-                    )
-                    or 0
-                    for s in sub_steps
-                )
+                sub_prompt_tokens, sub_completion_tokens = 0, 0
+                for s in sub_steps:
+                    p, c = self._extract_tokens(s.get("response"))
+                    sub_prompt_tokens += p
+                    sub_completion_tokens += c
+                state["sub_llm_prompt_tokens"] = sub_prompt_tokens
+                state["sub_llm_completion_tokens"] = sub_completion_tokens
                 state["sub_llm_total_tool_calls"] = sum(
                     s.get("extras", {}).get("tool_call_count", 0) or 0
                     for s in sub_steps
@@ -1501,18 +1499,14 @@ PY
         # Compute main RLM metrics from trajectory (excluding sub-LLM steps)
         state["main_rlm_turns"] = state.get("turn", 0)
 
-        main_prompt_tokens = 0
-        main_completion_tokens = 0
+        main_prompt_tokens, main_completion_tokens = 0, 0
         for step in state.get("trajectory", []):
             # Skip sub-LLM trajectory steps
             if step.get("extras", {}).get("is_sub_llm_call"):
                 continue
-            response = step.get("response")
-            if response and hasattr(response, "usage") and response.usage:
-                main_prompt_tokens += getattr(response.usage, "prompt_tokens", 0) or 0
-                main_completion_tokens += (
-                    getattr(response.usage, "completion_tokens", 0) or 0
-                )
+            p, c = self._extract_tokens(step.get("response"))
+            main_prompt_tokens += p
+            main_completion_tokens += c
 
         state["main_rlm_prompt_tokens"] = main_prompt_tokens
         state["main_rlm_completion_tokens"] = main_completion_tokens
@@ -1524,21 +1518,4 @@ PY
 
     async def post_rollout(self, state: State):
         """Read final answer from sandbox if not already set."""
-        if "final_answer" in state:
-            return
-
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            state["final_answer"] = ""
-            return
-
-        try:
-            result = await self._execute_command_with_retry(
-                sandbox_id,
-                f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
-            )
-            answer = json.loads(result.stdout.strip())
-            state["final_answer"] = answer.get("content", "")
-        except Exception as e:
-            logger.warning(f"Failed to read RLM answer: {e}")
-            state["final_answer"] = ""
+        await self._ensure_final_answer(state)
