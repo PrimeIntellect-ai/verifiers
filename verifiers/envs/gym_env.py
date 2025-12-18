@@ -166,6 +166,9 @@ class GymEnv(vf.MultiTurnEnv):
             # Fallback to raw content if parser fails or returns None
             last_completion = state["trajectory"][-1]["completion"]
             if isinstance(last_completion, list):
+                assert (
+                    len(last_completion) > 0
+                ), "Empty completion messages in last trajectory step."
                 raw_text = str(last_completion[-1]["content"])
             else:
                 raw_text = str(last_completion)
