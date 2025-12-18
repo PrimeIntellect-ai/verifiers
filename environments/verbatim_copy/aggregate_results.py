@@ -91,7 +91,16 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "target_length",
         "mean_fragment_length",
     ]
-    metric_cols = ["reward", "exact_match", "char_accuracy", "levenshtein_similarity"]
+    metric_cols = [
+        "reward",
+        "exact_match",
+        "char_accuracy",
+        "levenshtein_similarity",
+        # Timing (used by plot_results.py timing plots)
+        "generation_ms",
+        "scoring_ms",
+        "total_ms",
+    ]
 
     # Group and compute stats per content type
     summary = df.groupby(group_cols, dropna=False)[metric_cols].agg(
@@ -188,8 +197,8 @@ def main():
         "--output",
         "-o",
         type=Path,
-        default=None,
-        help="Output CSV file path (optional)",
+        default=Path(__file__).parent / "outputs" / "aggregate.csv",
+        help="Output CSV file path",
     )
     parser.add_argument(
         "--raw-output",
@@ -219,9 +228,9 @@ def main():
     print_summary_table(summary)
 
     # Save summary if output path provided
-    if args.output:
-        summary.to_csv(args.output, index=False)
-        print(f"\nSummary saved to: {args.output}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(args.output, index=False)
+    print(f"\nSummary saved to: {args.output}")
 
 
 if __name__ == "__main__":

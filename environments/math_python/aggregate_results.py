@@ -128,6 +128,7 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
     metric_cols = [
         "correct_answer",
         "generation_ms",
+        "scoring_ms",
         "total_ms",
         # Tool metrics (standard mode)
         "num_turns",
@@ -265,8 +266,8 @@ def main():
         "--output",
         "-o",
         type=Path,
-        default=None,
-        help="Output CSV file path (optional)",
+        default=Path(__file__).parent / "outputs" / "aggregate.csv",
+        help="Output CSV file path",
     )
     parser.add_argument(
         "--raw-output",
@@ -296,9 +297,9 @@ def main():
     print_summary_table(summary)
 
     # Save summary if output path provided
-    if args.output:
-        summary.to_csv(args.output, index=False)
-        print(f"\nSummary saved to: {args.output}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(args.output, index=False)
+    print(f"\nSummary saved to: {args.output}")
 
 
 if __name__ == "__main__":
