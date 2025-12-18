@@ -29,9 +29,14 @@ import uuid
 from typing import Any, Callable
 
 from aiohttp import web
+from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
-from verifiers.envs.sandbox_env import SandboxEnv
+from verifiers.envs.sandbox_env import (
+    SandboxCreationError,
+    SandboxEnv,
+    SandboxNotReadyError,
+)
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, ModelResponse, State, TrajectoryStep, TypedDict
 from verifiers.utils.async_utils import maybe_await
@@ -929,11 +934,27 @@ class RLMEnv(SandboxEnv):
     # State Management
     # =========================================================================
 
-    async def _execute_command_with_retry(self, sandbox_id: str, command: str):
+    async def _execute_command_with_retry(
+        self, sandbox_id: str, command: str, timeout: int | None = None
+    ):
         """Execute command with retry logic for transient sandbox errors."""
-        return await self.with_retry(self.sandbox_client.execute_command)(
-            sandbox_id, command
-        )
+        effective_timeout = timeout or self.timeout_per_command_seconds
+        s = time.time()
+        logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
+        try:
+            result = await self.with_retry(self.sandbox_client.execute_command)(
+                sandbox_id, command, timeout=effective_timeout
+            )
+        except CommandTimeoutError as e:
+            logger.warning(
+                f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
+            )
+            raise vf.SandboxError(cause=e)
+        except Exception as e:
+            raise vf.SandboxError(cause=e)
+        elapsed = time.time() - s
+        logger.debug(f"Command completed in {elapsed:.1f}s")
+        return result
 
     def update_tool_args(
         self,
@@ -1035,7 +1056,10 @@ fi
     ) -> None:
         """Write files to sandbox and start the worker process."""
         sandbox_id = state["sandbox_id"]
-        await self.sandbox_client.wait_for_creation(sandbox_id)
+        try:
+            await self.sandbox_client.wait_for_creation(sandbox_id)
+        except Exception as e:
+            raise SandboxNotReadyError(e)
         await self._write_json_to_sandbox(
             sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
         )
@@ -1063,9 +1087,12 @@ fi
 
         # Create new sandbox via parent's parent (SandboxEnv.setup_state)
         # We need to call the grandparent to avoid re-running RLM setup
-        sandbox = await self.with_retry(self.sandbox_client.create)(
-            self.sandbox_request
-        )
+        try:
+            sandbox = await self.with_retry(self.sandbox_client.create)(
+                self.sandbox_request
+            )
+        except Exception as e:
+            raise SandboxCreationError(e)
         self.active_sandboxes.add(sandbox.id)
         logger.debug(f"Created replacement sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
