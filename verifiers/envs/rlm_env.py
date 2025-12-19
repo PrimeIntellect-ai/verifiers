@@ -1246,13 +1246,8 @@ PY
             )
         except vf.SandboxError as e:
             error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
-            return {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "result": f"Code execution failed: {error_msg}",
-                "answer": {"ready": False, "content": ""},
-            }
+            logger.error(f"Sandbox infrastructure error during code execution: {error_msg}")
+            raise
 
         if not result.stdout:
             return {
