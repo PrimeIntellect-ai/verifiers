@@ -38,7 +38,7 @@ run_eval_deepseek() {
     
     uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
-        -S '{"extra_body": {"reasoning": {"enabled": true}}}' \
+        -S '{"extra_body": {"reasoning": {"enabled": true}, "provider": {"only": ["google-vertex"], "allow_fallbacks": false, "require_parameters": true}}}' \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
 }
 
@@ -58,8 +58,17 @@ run_eval_openrouter() {
     local USE_RLM="$2"
     local INCLUDE_ENV_TIPS="$3"
     
+    # Determine provider based on model
+    local PROVIDER_JSON=""
+    if [[ "$MODEL" == xiaomi/* ]]; then
+        PROVIDER_JSON='"provider": {"only": ["xiaomi/fp8"], "allow_fallbacks": false, "require_parameters": true}'
+    elif [[ "$MODEL" == z-ai/* ]]; then
+        PROVIDER_JSON='"provider": {"only": ["z-ai"], "allow_fallbacks": false, "require_parameters": true}'
+    fi
+    
     uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
+        -S "{\"extra_body\": {$PROVIDER_JSON}}" \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
 }
 
