@@ -459,7 +459,7 @@ class RLMEnv(SandboxEnv):
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
-        code_execution_timeout: int = 600,
+        code_execution_timeout: int = 120,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -1246,7 +1246,9 @@ PY
             )
         except vf.SandboxError as e:
             error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
-            logger.error(f"Sandbox infrastructure error during code execution: {error_msg}")
+            logger.error(
+                f"Sandbox infrastructure error during code execution: {error_msg}"
+            )
             raise
 
         if not result.stdout:
