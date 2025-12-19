@@ -23,6 +23,7 @@ MODELS=(
 
 NUM_EXAMPLES=50
 ROLLOUTS=1
+CONCURRENCY=50
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
 MODES=("rlm" "rlm_tips" "standard")
@@ -36,7 +37,7 @@ run_eval_deepseek() {
     local USE_RLM="$2"
     local INCLUDE_ENV_TIPS="$3"
     
-    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
         -S '{"extra_body": {"reasoning": {"enabled": true}, "provider": {"only": ["google-vertex"], "allow_fallbacks": false, "require_parameters": true}}}' \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
@@ -47,7 +48,7 @@ run_eval_prime() {
     local USE_RLM="$2"
     local INCLUDE_ENV_TIPS="$3"
     
-    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k PRIME_API_KEY -b https://api.pinference.ai/api/v1 \
         --header 'X-Prime-Team-ID: clyvldofb0000gg1kx39rgzjq' \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
@@ -66,7 +67,7 @@ run_eval_openrouter() {
         PROVIDER_JSON='"provider": {"only": ["z-ai"], "allow_fallbacks": false, "require_parameters": true}'
     fi
     
-    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
         -S "{\"extra_body\": {$PROVIDER_JSON}}" \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
@@ -77,7 +78,7 @@ run_eval_openai() {
     local USE_RLM="$2"
     local INCLUDE_ENV_TIPS="$3"
     
-    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -s -a "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
 }
 

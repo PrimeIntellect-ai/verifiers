@@ -40,6 +40,7 @@ MODELS_STANDARD=(
 
 NUM_EXAMPLES=50
 ROLLOUTS=1
+CONCURRENCY=50
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
 MODES=("rlm" "rlm_tips" "standard")
@@ -58,7 +59,7 @@ run_eval_deepseek() {
     local MODEL="$1"
     local ENV_ARGS="$2"
     
-    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
         -S '{"extra_body": {"reasoning": {"enabled": true}, "provider": {"only": ["google-vertex"], "allow_fallbacks": false, "require_parameters": true}}}' \
         -s -a "$ENV_ARGS"
@@ -68,7 +69,7 @@ run_eval_prime() {
     local MODEL="$1"
     local ENV_ARGS="$2"
     
-    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k PRIME_API_KEY -b https://api.pinference.ai/api/v1 \
         --header 'X-Prime-Team-ID: clyvldofb0000gg1kx39rgzjq' \
         -s -a "$ENV_ARGS"
@@ -86,7 +87,7 @@ run_eval_openrouter() {
         PROVIDER_JSON='"provider": {"only": ["z-ai"], "allow_fallbacks": false, "require_parameters": true}'
     fi
     
-    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
         -S "{\"extra_body\": {$PROVIDER_JSON}}" \
         -s -a "$ENV_ARGS"
@@ -96,7 +97,7 @@ run_eval_openai() {
     local MODEL="$1"
     local ENV_ARGS="$2"
     
-    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
         -s -a "$ENV_ARGS"
 }
 
