@@ -276,6 +276,72 @@ def plot_standard_tool_usage(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper right", fontsize=9)
 
 
+def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Token usage comparison (RLM modes only)."""
+    # Filter to RLM modes only
+    rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
+
+    if len(rlm_df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No RLM data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    models = rlm_df["model"].unique()
+    modes = [m for m in ["rlm", "rlm_tips"] if m in rlm_df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.35
+
+    for i, mode in enumerate(modes):
+        mode_data = rlm_df[rlm_df["mode"] == mode]
+
+        # Total tokens = main RLM + sub-LLM tokens
+        total_tokens = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_prompt = model_data["main_rlm_prompt_tokens_mean"].values[0] or 0
+                main_completion = (
+                    model_data["main_rlm_completion_tokens_mean"].values[0] or 0
+                )
+                sub_prompt = model_data["sub_llm_prompt_tokens_mean"].values[0] or 0
+                sub_completion = (
+                    model_data["sub_llm_completion_tokens_mean"].values[0] or 0
+                )
+                total_tokens.append(
+                    main_prompt + main_completion + sub_prompt + sub_completion
+                )
+            else:
+                total_tokens.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            total_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Total Tokens")
+    ax.set_title("Token Usage by Mode (RLM only)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    ax.legend(loc="upper right", fontsize=9)
+
+
 def plot_timing_vs_accuracy(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Accuracy vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -345,6 +411,7 @@ PLOT_REGISTRY = {
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "rlm_metrics": (plot_rlm_metrics, (12, 7), "RLM Usage Metrics"),
     "tool_usage": (plot_standard_tool_usage, (10, 7), "Standard Mode Tool Usage"),
+    "tokens": (plot_token_usage, (10, 7), "Token Usage"),
     # Additional timing plots
     "timing_vs_accuracy": (plot_timing_vs_accuracy, (10, 7), "Timing vs Accuracy"),
 }
@@ -428,6 +495,7 @@ Examples:
             "timing",
             "rlm_metrics",
             "tool_usage",
+            "tokens",
             "timing_vs_accuracy",
         ],
         default="main",

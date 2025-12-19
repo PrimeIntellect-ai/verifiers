@@ -314,7 +314,8 @@ def load_environment(
     needle_variance: float = 0.0,
     use_rlm: bool = True,
     include_env_tips: bool = False,
-    seed: int | None = None,
+    shuffle: bool = False,
+    seed: int = 42,
     **kwargs,
 ) -> vf.Environment:
     """
@@ -338,15 +339,15 @@ def load_environment(
         include_env_tips: If True and use_rlm=True, include environment-specific
                           strategy tips in the prompt (wrapped in <env_tips> tags).
                           Useful for SFT data generation. Ignored if use_rlm=False.
-        seed: Random seed for reproducible dataset generation. If None, uses random state.
+        shuffle: Whether to shuffle the dataset.
+        seed: Random seed for data generation and shuffling.
         **kwargs: Additional arguments passed to the environment (e.g., interception_host for RLM)
 
     Returns:
         Configured environment instance (RLMEnv or SingleTurnEnv)
     """
-    # Set seed for reproducibility if provided
-    if seed is not None:
-        random.seed(seed)
+    # Set seed for reproducibility
+    random.seed(seed)
 
     # Build prompts based on needle type and count
     if needle_type == "word":
@@ -444,6 +445,9 @@ def load_environment(
             )
 
     dataset = Dataset.from_list(dataset_rows)
+
+    if shuffle:
+        dataset = dataset.shuffle(seed=seed)
 
     # Create reward functions that work with multi-needle and partial credit
     if use_rlm:

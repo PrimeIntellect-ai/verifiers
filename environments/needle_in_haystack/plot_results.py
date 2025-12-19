@@ -529,6 +529,75 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="lower right", fontsize=8)
 
 
+def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Token usage comparison (RLM modes only)."""
+    # Filter to RLM modes only
+    rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
+
+    if len(rlm_df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No RLM data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    # Aggregate across all configs for each mode
+    agg_df = (
+        rlm_df.groupby("mode")
+        .agg(
+            {
+                "main_rlm_prompt_tokens_mean": "mean",
+                "main_rlm_completion_tokens_mean": "mean",
+                "sub_llm_prompt_tokens_mean": "mean",
+                "sub_llm_completion_tokens_mean": "mean",
+            }
+        )
+        .reset_index()
+    )
+
+    modes = [m for m in ["rlm", "rlm_tips"] if m in agg_df["mode"].unique()]
+
+    x = range(len(modes))
+    width = 0.6
+
+    total_tokens = []
+    colors = []
+    for mode in modes:
+        mode_data = agg_df[agg_df["mode"] == mode]
+        if len(mode_data) > 0:
+            main_prompt = mode_data["main_rlm_prompt_tokens_mean"].values[0] or 0
+            main_completion = (
+                mode_data["main_rlm_completion_tokens_mean"].values[0] or 0
+            )
+            sub_prompt = mode_data["sub_llm_prompt_tokens_mean"].values[0] or 0
+            sub_completion = mode_data["sub_llm_completion_tokens_mean"].values[0] or 0
+            total_tokens.append(
+                main_prompt + main_completion + sub_prompt + sub_completion
+            )
+        else:
+            total_tokens.append(0)
+        colors.append(MODE_STYLES.get(mode, {"color": "gray"})["color"])
+
+    ax.bar(
+        x,
+        total_tokens,
+        width,
+        color=colors,
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    ax.set_xlabel("Mode")
+    ax.set_ylabel("Total Tokens")
+    ax.set_title("Token Usage by Mode (RLM only)\n(aggregated across all configs)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([MODE_LABELS.get(m, m).replace("\n", " ") for m in modes])
+
+
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
@@ -573,6 +642,7 @@ PLOT_REGISTRY = {
     "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
     "rlm_metrics": (plot_rlm_metrics, (10, 7), "RLM Usage Metrics"),
     "partial_exact": (plot_partial_vs_exact, (10, 7), "Partial vs Exact Match"),
+    "tokens": (plot_token_usage, (10, 7), "Token Usage"),
     # Timing plots
     "timing": (plot_timing_by_mode, (10, 7), "Timing by Mode"),
     "timing_vs_context": (plot_timing_vs_context, (10, 7), "Timing vs Context Size"),
@@ -663,6 +733,7 @@ Examples:
             "heatmap",
             "rlm_metrics",
             "partial_exact",
+            "tokens",
             # Timing plots
             "timing",
             "timing_vs_context",

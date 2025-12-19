@@ -6,109 +6,211 @@
 # - standard: Single-turn LLM generation
 # - rlm: RLM with REPL access (no tips)
 # - rlm_tips: RLM with environment-specific tips
+#
+# And three ablation dimensions:
+# - content_type: words, json, csv, codes, mixed, all
+# - target_length: 250, 500, 750, 1000
+# - mean_fragment_length: null, 10, 25, 50, 100, 150
+#
+# Model groups:
+# - MODELS_FULL: Run all ablations (deepseek, intellect-3)
+# - MODELS_STANDARD: Run only default setting (broader model coverage)
+#   Default: mode=rlm_tips, content_type=all, target_length=500, mean_fragment_length=20
 
 set -e
 
-# Model configurations
-# - OpenAI models: just use the model name (e.g., "gpt-5-mini")
-# - OpenRouter models: prefix with "openrouter:" (e.g., "openrouter:xiaomi/mimo-v2-flash:free")
-# Examples:
-#   "gpt-5-mini"
-#   "openrouter:anthropic/claude-3-5-sonnet"
-#   "openrouter:xiaomi/mimo-v2-flash:free"
-MODELS=(
-    "openrouter:xiaomi/mimo-v2-flash:free"
-    "openrouter:moonshotai/kimi-k2-thinking"
-    "gpt-5-mini"
+# =============================================================================
+# MODEL CONFIGURATIONS
+# =============================================================================
+
+# MODELS_FULL: These models run ALL ablations
+# Used for comprehensive testing with our core models
+MODELS_FULL=(
+    "deepseek:deepseek/deepseek-v3.2"
+    "prime:prime-intellect/intellect-3"
 )
 
-NUM_EXAMPLES=200
+# MODELS_STANDARD: These models run only the default setting
+# Used for broader model coverage without full ablation cost
+MODELS_STANDARD=(
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:z-ai/glm-4.5-air"
+    "openrouter:z-ai/glm-4.6"
+)
+
+NUM_EXAMPLES=50
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
-# Comment out modes to skip them
 MODES=("rlm" "rlm_tips" "standard")
+
+# Default settings for MODELS_STANDARD
+DEFAULT_MODE="rlm_tips"
+DEFAULT_CONTENT_TYPE="all"
+DEFAULT_TARGET_LENGTH=500
+DEFAULT_FRAGMENT_LENGTH=20
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+run_eval_deepseek() {
+    local MODEL="$1"
+    local ENV_ARGS="$2"
+    
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+        -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
+        -S '{"extra_body": {"reasoning": {"enabled": true}}}' \
+        -s -a "$ENV_ARGS"
+}
+
+run_eval_prime() {
+    local MODEL="$1"
+    local ENV_ARGS="$2"
+    
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+        -k PRIME_API_KEY -b https://api.pinference.ai/api/v1 \
+        --header 'X-Prime-Team-ID: clyvldofb0000gg1kx39rgzjq' \
+        -s -a "$ENV_ARGS"
+}
+
+run_eval_openrouter() {
+    local MODEL="$1"
+    local ENV_ARGS="$2"
+    
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+        -k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1 \
+        -s -a "$ENV_ARGS"
+}
+
+run_eval_openai() {
+    local MODEL="$1"
+    local ENV_ARGS="$2"
+    
+    uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" \
+        -s -a "$ENV_ARGS"
+}
+
+run_model() {
+    local MODEL_SPEC="$1"
+    local ENV_ARGS="$2"
+    
+    if [[ "$MODEL_SPEC" == deepseek:* ]]; then
+        local MODEL="${MODEL_SPEC#deepseek:}"
+        run_eval_deepseek "$MODEL" "$ENV_ARGS"
+    elif [[ "$MODEL_SPEC" == prime:* ]]; then
+        local MODEL="${MODEL_SPEC#prime:}"
+        run_eval_prime "$MODEL" "$ENV_ARGS"
+    elif [[ "$MODEL_SPEC" == openrouter:* ]]; then
+        local MODEL="${MODEL_SPEC#openrouter:}"
+        run_eval_openrouter "$MODEL" "$ENV_ARGS"
+    else
+        run_eval_openai "$MODEL_SPEC" "$ENV_ARGS"
+    fi
+}
+
+# =============================================================================
+# MAIN SCRIPT
+# =============================================================================
 
 uv run vf-install verbatim-copy
 
 echo "=== Verbatim Copy Ablations ==="
-echo "Models: ${MODELS[*]}"
+echo "MODELS_FULL (all ablations): ${MODELS_FULL[*]}"
+echo "MODELS_STANDARD (default setting only): ${MODELS_STANDARD[*]}"
 echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
-echo "Modes: ${MODES[*]}"
+echo "Modes for MODELS_FULL: ${MODES[*]}"
+echo "Default for MODELS_STANDARD: mode=$DEFAULT_MODE, content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
 echo ""
 
-for MODEL_SPEC in "${MODELS[@]}"; do
-    # Parse provider prefix and set API flags
-    if [[ "$MODEL_SPEC" == openrouter:* ]]; then
-        MODEL="${MODEL_SPEC#openrouter:}"  # Strip "openrouter:" prefix
-        API_FLAGS="-k OPENROUTER_API_KEY -b https://openrouter.ai/api/v1"
-    else
-        MODEL="$MODEL_SPEC"
-        API_FLAGS=""
-    fi
+# -----------------------------------------------------------------------------
+# PART 1: Full ablations with MODELS_FULL
+# -----------------------------------------------------------------------------
+echo "############################################################"
+echo "### PART 1: Full ablations with MODELS_FULL"
+echo "############################################################"
+echo ""
 
+for MODEL_SPEC in "${MODELS_FULL[@]}"; do
     echo "########################################"
-    echo "### Model: $MODEL"
+    echo "### Model: $MODEL_SPEC (full ablation)"
     echo "########################################"
     echo ""
 
-for mode in "${MODES[@]}"; do
-    # Convert mode to use_rlm and include_env_tips
-    case $mode in
-        "standard")
-            USE_RLM="false"
-            INCLUDE_ENV_TIPS="false"
-            ;;
-        "rlm")
-            USE_RLM="true"
-            INCLUDE_ENV_TIPS="false"
-            ;;
-        "rlm_tips")
-            USE_RLM="true"
-            INCLUDE_ENV_TIPS="true"
-            ;;
-    esac
+    for mode in "${MODES[@]}"; do
+        case $mode in
+            "standard")
+                USE_RLM="false"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm_tips")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="true"
+                ;;
+        esac
 
-    echo "========================================"
-    echo "=== Mode: $mode (use_rlm=$USE_RLM, include_env_tips=$INCLUDE_ENV_TIPS) ==="
-    echo "========================================"
-    echo ""
+        echo "========================================"
+        echo "=== Mode: $mode (use_rlm=$USE_RLM, include_env_tips=$INCLUDE_ENV_TIPS) ==="
+        echo "========================================"
+        echo ""
 
-    # Ablation 1: Content type effect
-    # Fixed: target_length=500, mean_fragment_length=20
-    echo "=== Ablation 1: Content Type ($mode) ==="
-    for content_type in words json csv codes mixed all; do
-        echo "Running: mode=$mode, content_type=$content_type"
-        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
-            -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$content_type\", \"target_length\": 500, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
+        # Ablation 1: Content type effect
+        # Fixed: target_length=500, mean_fragment_length=20
+        echo "=== Ablation 1: Content Type ($mode) ==="
+        for content_type in words json csv codes mixed all; do
+            echo "Running: mode=$mode, content_type=$content_type"
+            run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$content_type\", \"target_length\": 500, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+        done
+
+        # Ablation 2: Length scaling
+        # Fixed: content_type="all", mean_fragment_length=20
+        echo ""
+        echo "=== Ablation 2: Target Length ($mode) ==="
+        for length in 250 500 750 1000; do
+            echo "Running: mode=$mode, target_length=$length"
+            run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": $length, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+        done
+
+        # Ablation 3: Fragmentation intensity
+        # Fixed: content_type="all", target_length=500
+        echo ""
+        echo "=== Ablation 3: Fragment Length ($mode) ==="
+        for frag_length in null 10 25 50 100 150; do
+            echo "Running: mode=$mode, mean_fragment_length=$frag_length"
+            run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": 500, \"mean_fragment_length\": $frag_length, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+        done
+
+        echo ""
     done
-
-    # Ablation 2: Length scaling
-    # Fixed: content_type="all", mean_fragment_length=20
-    echo ""
-    echo "=== Ablation 2: Target Length ($mode) ==="
-    for length in 250 500 750 1000; do
-        echo "Running: mode=$mode, target_length=$length"
-        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
-            -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": $length, \"mean_fragment_length\": 20, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
-    done
-
-    # Ablation 3: Fragmentation intensity
-    # Fixed: content_type="all", target_length=500
-    echo ""
-    echo "=== Ablation 3: Fragment Length ($mode) ==="
-    # Note: "null" in JSON for None
-    for frag_length in null 10 25 50 100 150; do
-        echo "Running: mode=$mode, mean_fragment_length=$frag_length"
-        uv run vf-eval verbatim-copy -n $NUM_EXAMPLES -r $ROLLOUTS -m $MODEL $API_FLAGS -s \
-            -a "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"all\", \"target_length\": 500, \"mean_fragment_length\": $frag_length, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS}"
-    done
-
-    echo ""
 done
 
-done  # End of MODELS loop
+# -----------------------------------------------------------------------------
+# PART 2: Default setting only with MODELS_STANDARD
+# -----------------------------------------------------------------------------
+echo "############################################################"
+echo "### PART 2: Default setting with MODELS_STANDARD"
+echo "############################################################"
+echo ""
+
+# Set default mode flags (rlm_tips)
+USE_RLM="true"
+INCLUDE_ENV_TIPS="true"
+
+for MODEL_SPEC in "${MODELS_STANDARD[@]}"; do
+    echo "########################################"
+    echo "### Model: $MODEL_SPEC (default setting only)"
+    echo "########################################"
+    echo ""
+
+    echo "Running: model=$MODEL_SPEC, mode=$DEFAULT_MODE, content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
+    run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$DEFAULT_CONTENT_TYPE\", \"target_length\": $DEFAULT_TARGET_LENGTH, \"mean_fragment_length\": $DEFAULT_FRAGMENT_LENGTH, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+    echo ""
+done
 
 echo "=== All ablations complete ==="
 echo "Results saved to: environments/verbatim_copy/outputs/evals/"

@@ -113,8 +113,8 @@ def load_environment(
     dataset_name: str = "PrimeIntellect/INTELLECT-3-RL",
     dataset_subset: str = "math",
     dataset_split: str = "train",
-    dataset_shuffle: bool = False,
-    dataset_seed: int = 42,
+    shuffle: bool = False,
+    seed: int = 42,
     question_key: str = "question",
     answer_key: str = "answer",
     info_key: str = "info",
@@ -146,8 +146,8 @@ def load_environment(
         dataset_name: HuggingFace dataset to load.
         dataset_subset: Dataset subset/configuration to load.
         dataset_split: Split to load ("train", "test", etc.).
-        dataset_shuffle: Whether to shuffle the dataset.
-        dataset_seed: Seed for shuffling.
+        shuffle: Whether to shuffle the dataset.
+        seed: Random seed for shuffling.
         question_key: Key in dataset for the question/problem.
         answer_key: Key in dataset for the expected answer.
         info_key: Key in dataset for additional info.
@@ -197,8 +197,8 @@ def load_environment(
             lambda x: min_avg_reward <= x[difficulty_key] <= max_avg_reward,
             **filter_kwargs,
         )
-    if dataset_shuffle:
-        dataset = dataset.shuffle(seed=dataset_seed)
+    if shuffle:
+        dataset = dataset.shuffle(seed=seed)
 
     if use_rlm:
         # RLM mode: use RLMEnv with REPL access

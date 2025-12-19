@@ -246,7 +246,8 @@ def load_environment(
     content_type: ContentType | Literal["all"] = "all",
     target_length: int | None = None,
     mean_fragment_length: int | None = None,
-    seed: int | None = None,
+    shuffle: bool = False,
+    seed: int = 42,
     use_rlm: bool = True,
     include_env_tips: bool = False,
     max_iterations: int = 30,
@@ -271,7 +272,8 @@ def load_environment(
                               fragments of approximately this size and concatenated.
                               This creates tokenization-challenging sequences.
                               If None, no fragmentation is applied.
-        seed: Random seed for reproducibility. If None, uses system randomness.
+        shuffle: Whether to shuffle the dataset.
+        seed: Random seed for data generation and shuffling.
         use_rlm: If True, use RLMEnv with REPL access.
                  If False, use SingleTurnEnv for single-shot generation.
         include_env_tips: If True and use_rlm=True, include environment-specific
@@ -328,6 +330,9 @@ def load_environment(
         dataset_records.append(record)
 
     dataset = Dataset.from_list(dataset_records)
+
+    if shuffle:
+        dataset = dataset.shuffle(seed=seed)
 
     # Create reward functions
     exact_match = _create_exact_match_reward(use_rlm)

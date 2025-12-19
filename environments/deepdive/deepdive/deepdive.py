@@ -77,7 +77,8 @@ def load_environment(
     dataset_name: str = DEFAULT_DATASET_NAME,
     dataset_split: str = DEFAULT_DATASET_SPLIT,
     dataset_test_size: float = 0.1,
-    dataset_seed: int = 2025,
+    shuffle: bool = False,
+    seed: int = 42,
     redundancy_penalty_weight: float = 0.0,
     debug: bool = False,
     finish_with_tool: bool = False,
@@ -109,9 +110,13 @@ def load_environment(
         return out
 
     raw_split = raw_split.map(to_record)
-    split = raw_split.train_test_split(test_size=dataset_test_size, seed=dataset_seed)
+    split = raw_split.train_test_split(test_size=dataset_test_size, seed=seed)
     train_dataset = split["train"]
     eval_dataset = split["test"]
+
+    if shuffle:
+        train_dataset = train_dataset.shuffle(seed=seed)
+        eval_dataset = eval_dataset.shuffle(seed=seed)
 
     # === External credentials ===
     serper_api_key = os.getenv(serper_api_key_var)
