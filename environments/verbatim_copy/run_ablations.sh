@@ -26,7 +26,7 @@ set -e
 # MODELS_FULL: These models run ALL ablations
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
-    "deepseek:deepseek/deepseek-v3.2"
+    # "deepseek:deepseek/deepseek-v3.2"
     "prime:prime-intellect/intellect-3"
 )
 

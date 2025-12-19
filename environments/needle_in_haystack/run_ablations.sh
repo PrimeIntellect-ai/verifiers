@@ -22,7 +22,7 @@ set -e
 # MODELS_FULL: These models run ALL ablations
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
-    "deepseek:deepseek/deepseek-v3.2"
+    # "deepseek:deepseek/deepseek-v3.2"
     "prime:prime-intellect/intellect-3"
 )
 
@@ -34,7 +34,7 @@ MODELS_STANDARD=(
     "openrouter:z-ai/glm-4.6"
 )
 
-NUM_EXAMPLES=100
+NUM_EXAMPLES=50
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"

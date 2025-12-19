@@ -6,10 +6,6 @@
 # - standard: Multi-turn tool-use with sandboxed Python
 # - rlm: RLM with REPL access (no tips)
 # - rlm_tips: RLM with environment-specific tips
-#
-# Model groups:
-# - MODELS_FULL: Run all mode ablations (deepseek, intellect-3)
-# - MODELS_STANDARD: Run only default mode=rlm_tips (broader model coverage)
 
 set -e
 
@@ -17,29 +13,19 @@ set -e
 # MODEL CONFIGURATIONS
 # =============================================================================
 
-# MODELS_FULL: These models run ALL ablations (all modes)
-# Used for comprehensive testing with our core models
-MODELS_FULL=(
-    "deepseek:deepseek/deepseek-v3.2"
+MODELS=(
+    # "deepseek:deepseek/deepseek-v3.2"
     "prime:prime-intellect/intellect-3"
-)
-
-# MODELS_STANDARD: These models run only the default setting (mode=rlm_tips)
-# Used for broader model coverage without full ablation cost
-MODELS_STANDARD=(
     "openrouter:xiaomi/mimo-v2-flash:free"
     "openrouter:z-ai/glm-4.5-air"
     "openrouter:z-ai/glm-4.6"
 )
 
-NUM_EXAMPLES=100
+NUM_EXAMPLES=50
 ROLLOUTS=1
 
 # Mode configurations: "standard", "rlm", "rlm_tips"
 MODES=("rlm" "rlm_tips" "standard")
-
-# Default mode for MODELS_STANDARD
-DEFAULT_MODE="rlm_tips"
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -112,25 +98,15 @@ run_model() {
 uv run vf-install math-python
 
 echo "=== Math Python Ablations ==="
-echo "MODELS_FULL (all modes): ${MODELS_FULL[*]}"
-echo "MODELS_STANDARD (default mode only): ${MODELS_STANDARD[*]}"
+echo "Models: ${MODELS[*]}"
 echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
-echo "Modes for MODELS_FULL: ${MODES[*]}"
-echo "Default mode for MODELS_STANDARD: $DEFAULT_MODE"
+echo "Modes: ${MODES[*]}"
 echo ""
 
-# -----------------------------------------------------------------------------
-# PART 1: Full ablations with MODELS_FULL
-# -----------------------------------------------------------------------------
-echo "############################################################"
-echo "### PART 1: Full ablations with MODELS_FULL"
-echo "############################################################"
-echo ""
-
-for MODEL_SPEC in "${MODELS_FULL[@]}"; do
+for MODEL_SPEC in "${MODELS[@]}"; do
     echo "########################################"
-    echo "### Model: $MODEL_SPEC (full ablation)"
+    echo "### Model: $MODEL_SPEC"
     echo "########################################"
     echo ""
 
@@ -159,29 +135,6 @@ for MODEL_SPEC in "${MODELS_FULL[@]}"; do
         run_model "$MODEL_SPEC" "$USE_RLM" "$INCLUDE_ENV_TIPS"
         echo ""
     done
-done
-
-# -----------------------------------------------------------------------------
-# PART 2: Default setting only with MODELS_STANDARD
-# -----------------------------------------------------------------------------
-echo "############################################################"
-echo "### PART 2: Default setting (mode=$DEFAULT_MODE) with MODELS_STANDARD"
-echo "############################################################"
-echo ""
-
-# Set default mode flags
-USE_RLM="true"
-INCLUDE_ENV_TIPS="true"
-
-for MODEL_SPEC in "${MODELS_STANDARD[@]}"; do
-    echo "########################################"
-    echo "### Model: $MODEL_SPEC (default setting only)"
-    echo "########################################"
-    echo ""
-
-    echo "Running: model=$MODEL_SPEC, mode=$DEFAULT_MODE"
-    run_model "$MODEL_SPEC" "$USE_RLM" "$INCLUDE_ENV_TIPS"
-    echo ""
 done
 
 echo "=== All ablations complete ==="
