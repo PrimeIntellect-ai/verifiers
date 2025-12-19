@@ -25,6 +25,7 @@ import json
 import logging
 import textwrap
 import time
+from time import perf_counter
 import uuid
 from typing import Any, Callable
 
@@ -98,6 +99,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
+    SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
 
     def ensure_fifo(path: str) -> None:
         if os.path.exists(path):
@@ -123,17 +125,20 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
         """Make a single sub-LLM call via interception server.
         
-        Returns a dict with 'content' and 'metadata' keys.
+        Returns a dict with 'content' and 'metadata' keys (including 'elapsed_seconds').
         """
-        import uuid as _uuid
+        from time import perf_counter
+        import uuid
+        start_time = perf_counter()
+        
         if not INTERCEPTION_URL:
             return {{
                 "content": "Error: Sub-LLM interception URL not configured",
-                "metadata": {{"error": True}},
+                "metadata": {{"error": True, "elapsed_seconds": 0.0}},
             }}
         
         try:
-            request_id = _uuid.uuid4().hex[:8]
+            request_id = uuid.uuid4().hex[:8]
             payload = {{
                 "model": SUB_MODEL or "default",
                 "messages": [{{"role": "user", "content": prompt}}],
@@ -154,20 +159,24 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             data = resp.json()
             content = data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
             metadata = data.get("_rlm_metadata", {{}})
+            elapsed = perf_counter() - start_time
+            metadata["elapsed_seconds"] = elapsed
             return {{"content": content, "metadata": metadata}}
         except Exception as e:
+            elapsed = perf_counter() - start_time
             return {{
                 "content": f"Error in sub-LLM call: {{e}}",
-                "metadata": {{"error": True}},
+                "metadata": {{"error": True, "elapsed_seconds": elapsed}},
             }}
 
     def llm_batch(prompts: list, **kwargs) -> list:
         """
         Make multiple sub-LLM calls in parallel.
         
-        Prints a summary of each call's metadata, then returns the list of responses.
+        Prints a summary of each call's metadata (including timing), then returns the list of responses.
         
         Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
+        Sandbox timeout is available via SANDBOX_TIMEOUT env var.
         
         Args:
             prompts: List of prompts for the sub-LLMs
@@ -176,24 +185,28 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         Returns:
             List of response contents in the same order as the input prompts
         """
+        from time import perf_counter
         import uuid
+        batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
         with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
             futures = [executor.submit(_single_llm_call, p, batch_id, **kwargs) for p in prompts]
             results = [f.result() for f in futures]
+        batch_elapsed = perf_counter() - batch_start
         
-        # Print metadata summary
-        print(f"llm_batch: {{len(results)}} call(s)")
+        # Print metadata summary with timing
+        print(f"llm_batch: {{len(results)}} call(s) in {{batch_elapsed:.2f}}s")
         for i, r in enumerate(results):
             meta = r.get("metadata", {{}})
+            elapsed = meta.get("elapsed_seconds", 0.0)
             if meta.get("error"):
-                print(f"  [{{i}}]: error")
+                print(f"  [{{i}}]: error ({{elapsed:.2f}}s)")
             else:
                 tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
                 tool_calls = meta.get("tool_call_count", 0)
                 max_turns = meta.get("max_turns_reached", False)
                 status = "⚠ max turns" if max_turns else "✓"
-                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls {{status}}")
+                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls, {{elapsed:.2f}}s {{status}}")
         
         # Return just the content
         return [r.get("content", "") for r in results]
@@ -945,7 +958,7 @@ class RLMEnv(SandboxEnv):
     ):
         """Execute command with retry logic for transient sandbox errors."""
         effective_timeout = timeout or self.timeout_per_command_seconds
-        s = time.time()
+        start = perf_counter()
         logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
         try:
             result = await self.with_retry(self.sandbox_client.execute_command)(
@@ -958,7 +971,7 @@ class RLMEnv(SandboxEnv):
             raise vf.SandboxError(cause=e)
         except Exception as e:
             raise vf.SandboxError(cause=e)
-        elapsed = time.time() - s
+        elapsed = perf_counter() - start
         logger.debug(f"Command completed in {elapsed:.1f}s")
         return result
 
@@ -1017,6 +1030,7 @@ export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
 export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
+export RLM_SANDBOX_TIMEOUT="{self.code_execution_timeout}"
 
 # Sync filesystem and verify worker script exists
 sync 2>/dev/null || true
@@ -1245,6 +1259,21 @@ PY
                 sandbox_id, command, timeout=self.code_execution_timeout
             )
         except vf.SandboxError as e:
+            # Check if this is a timeout error - return graceful message to LLM
+            if hasattr(e, "cause") and isinstance(e.cause, CommandTimeoutError):
+                logger.warning(
+                    f"Code execution timed out after {self.code_execution_timeout}s"
+                )
+                return {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": "",
+                    "result": (
+                        f"Execution timed out after {self.code_execution_timeout} seconds."
+                    ),
+                    "answer": {"ready": False, "content": ""},
+                }
+            # Re-raise other sandbox errors (actual infrastructure issues)
             error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
             logger.error(
                 f"Sandbox infrastructure error during code execution: {error_msg}"
@@ -1345,8 +1374,22 @@ PY
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
 
+        # Time the full tool call execution
+        execution_start = perf_counter()
         result = await self._execute_code(sandbox_id, code)
+        execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
+
+        # Track timing in state for metrics
+        state.setdefault("tool_call_timings", []).append(
+            {
+                "turn": state.get("turn", 0),
+                "execution_seconds": execution_time,
+            }
+        )
+
+        # Append execution time to output
+        output += f"\n[Execution time: {execution_time:.2f}s]"
 
         # Check if answer is ready
         answer = result.get("answer", {})
