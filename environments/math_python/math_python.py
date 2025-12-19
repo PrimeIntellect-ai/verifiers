@@ -181,6 +181,11 @@ def load_environment(
     full_instruction = instruction_prompt
     if use_rlm and include_env_tips:
         full_instruction = instruction_prompt + _ENV_TIPS
+    if not use_rlm:  # The RLM automatically sees the installed packages in the prompt
+        pip_install_prompt = f"In addition to the Python Standard Library, you have access to: {pip_install_packages}."
+        full_instruction = full_instruction + (
+            "\n\n" + pip_install_prompt if pip_install_prompt else ""
+        )
 
     dataset = load_dataset(dataset_name, dataset_subset, split=dataset_split).map(
         lambda x: {
@@ -285,6 +290,7 @@ def load_environment(
             max_output_length=max_output_length,
             dataset=dataset,
             rubric=rubric,
+            pip_install_packages=pip_install_packages,
             **kwargs,
         )
     else:
