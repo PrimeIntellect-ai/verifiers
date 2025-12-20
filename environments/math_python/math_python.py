@@ -192,13 +192,13 @@ def load_environment(
         min_avg_reward: Minimum difficulty threshold (if difficulty_key set).
         max_avg_reward: Maximum difficulty threshold (if difficulty_key set).
         max_turns: Maximum turns for PythonEnv (standard mode only).
-        max_startup_wait_seconds: Sandbox startup timeout (standard mode only).
-        pip_install_packages: Packages to install in sandbox (standard mode only).
-        sandbox_cpu_cores: CPU cores for sandbox (standard mode only).
-        sandbox_memory_gb: Memory for sandbox (standard mode only).
-        sandbox_disk_size_gb: Disk size for sandbox (standard mode only).
-        sandbox_gpu_count: GPUs for sandbox (standard mode only).
-        sandbox_timeout_minutes: Sandbox timeout (standard mode only).
+        max_startup_wait_seconds: Sandbox startup timeout.
+        pip_install_packages: Packages to install in sandbox.
+        sandbox_cpu_cores: CPU cores for sandbox.
+        sandbox_memory_gb: Memory for sandbox.
+        sandbox_disk_size_gb: Disk size for sandbox.
+        sandbox_gpu_count: GPUs for sandbox.
+        sandbox_timeout_minutes: Sandbox timeout.
         sandbox_timeout_per_command_seconds: Per-command timeout (standard mode only).
         instruction_prompt: Instruction prompt prepended to questions.
         use_rlm: If True, use RLMEnv with REPL access.
@@ -349,9 +349,16 @@ def load_environment(
         return RLMEnv(
             max_iterations=max_iterations,
             max_output_length=max_output_length,
+            max_startup_wait_seconds=max_startup_wait_seconds,
             dataset=dataset,
             rubric=rubric,
             pip_install_packages=pip_install_packages,
+            # Sandbox resource parameters
+            cpu_cores=sandbox_cpu_cores,
+            memory_gb=sandbox_memory_gb,
+            disk_size_gb=sandbox_disk_size_gb,
+            gpu_count=sandbox_gpu_count,
+            timeout_minutes=sandbox_timeout_minutes,
             **kwargs,
         )
     else:
