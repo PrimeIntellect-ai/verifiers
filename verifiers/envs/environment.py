@@ -715,6 +715,8 @@ class Environment(ABC):
         group_states = await asyncio.gather(*rollout_tasks)
         if self.score_rollouts:
             await self.rubric.score_group(group_states, score_sem=score_sem)
+        else:
+            await self.rubric.dummy_score_group(group_states)
         return list(group_states)
 
     def _prepare_rollout_results(
