@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from functools import wraps
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 import httpx
@@ -17,6 +18,7 @@ from verifiers.envs.stateful_tool_env import StatefulToolEnv
 from verifiers.rubrics.judge_rubric import JudgeRubric
 from verifiers.types import Messages, MessageType, ModelResponse, SamplingArgs, State
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.async_utils import maybe_await
 
 from .config import (
     DEFAULT_DATASET_NAME,
@@ -28,6 +30,22 @@ from .config import (
 from .formatting import format_serper_results, truncate_text
 from .open_one import open_one
 from .rate_limit import with_rate_limit_retry
+
+
+async def with_timeout(func: Callable, timeout_seconds: float) -> Any:
+    @wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await asyncio.wait_for(
+                maybe_await(func(*args, **kwargs)), timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            raise vf.TimeoutError(
+                f"Function {func.__name__} timed out after {timeout_seconds} seconds"
+            )
+
+    return wrapper
+
 
 # Environment-specific tips for RLM mode (used for SFT data generation)
 # These tips are wrapped in <env_tips> tags so they can be removed during training
@@ -314,57 +332,57 @@ def load_environment(
     judge_rubric.add_reward_func(prompt_tokens, weight=0.0)
     judge_rubric.add_reward_func(completion_tokens, weight=0.0)
 
+    # === Shared tool definitions (used by both RLM and StatefulToolEnv modes) ===
+    async def search(query: str, num_results: int = 10) -> str:
+        """Search Google, getting up to 10 results and search metadata.
+        Returns formatted search results including titles, snippets, and URLs."""
+        t0 = perf_counter()
+        query = query.strip()
+        if not query:
+            raise ValueError("Search query must be a non-empty string.")
+        payload = {"q": query}
+        headers = {
+            "X-API-KEY": serper_api_key,
+            "Content-Type": "application/json",
+        }
+
+        timeout = aiohttp.ClientTimeout(total=serper_timeout)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                SERPER_API_URL, headers=headers, json=payload
+            ) as response:
+                content = await response.text()
+                if response.status >= 400:
+                    raise ValueError(
+                        f"Serper API error {response.status}: {content.strip()}"
+                    )
+
+        data = json.loads(content)
+        limit = max(1, min(int(num_results), max_search_results))
+        formatted = format_serper_results(data, limit, query)
+        result = truncate_text(formatted, int(max_response_chars))
+        if debug:
+            print(
+                f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}"
+            )
+        return result
+
+    async def open(urls: list[str]) -> str:
+        """Get the content of webpages given a list of URLs.
+        Returns the text content of each webpage."""
+        t0 = perf_counter()
+        results = await asyncio.gather(*[open_one(url, debug) for url in urls])
+        results_str = "\n\n".join(
+            [f"# Content from {urls[i]}\n{r}" for i, r in enumerate(results)]
+        )
+        if debug:
+            print(
+                f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
+            )
+        return results_str
+
     # === RLM Mode ===
     if use_rlm:
-        # Create stateless tools for sub-LLMs (they don't share state between calls)
-        async def search(query: str, num_results: int = 10) -> str:
-            """Search Google, getting up to 10 results and search metadata.
-            Returns formatted search results including titles, snippets, and URLs."""
-            t0 = perf_counter()
-            query = query.strip()
-            if not query:
-                raise ValueError("Search query must be a non-empty string.")
-            payload = {"q": query}
-            headers = {
-                "X-API-KEY": serper_api_key,
-                "Content-Type": "application/json",
-            }
-
-            timeout = aiohttp.ClientTimeout(total=serper_timeout)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    SERPER_API_URL, headers=headers, json=payload
-                ) as response:
-                    content = await response.text()
-                    if response.status >= 400:
-                        raise ValueError(
-                            f"Serper API error {response.status}: {content.strip()}"
-                        )
-
-            data = json.loads(content)
-            limit = max(1, min(int(num_results), max_search_results))
-            formatted = format_serper_results(data, limit, query)
-            result = truncate_text(formatted, int(max_response_chars))
-            if debug:
-                print(
-                    f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}"
-                )
-            return result
-
-        async def open(urls: list[str]) -> str:
-            """Get the content of webpages given a list of URLs.
-            Returns the text content of each webpage."""
-            t0 = perf_counter()
-            results = await asyncio.gather(*[open_one(url, debug) for url in urls])
-            results_str = "\n\n".join(
-                [f"# Content from {urls[i]}\n{r}" for i, r in enumerate(results)]
-            )
-            if debug:
-                print(
-                    f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
-                )
-            return results_str
-
         # Create RLM-based environment
         class DeepDiveRLMEnv(RLMEnv):
             """
@@ -439,54 +457,7 @@ def load_environment(
         return env
 
     # === Standard StatefulToolEnv Mode ===
-    async def search(state: Any, query: str, num_results: int = 10) -> str:
-        """Search Google, getting up to 10 results and search metadata"""
-        t0 = perf_counter()
-        query = query.strip()
-        if not query:
-            raise ValueError("Search query must be a non-empty string.")
-        payload = {"q": query}
-        headers = {
-            "X-API-KEY": serper_api_key,
-            "Content-Type": "application/json",
-        }
-
-        timeout = aiohttp.ClientTimeout(total=serper_timeout)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                SERPER_API_URL, headers=headers, json=payload
-            ) as response:
-                content = await response.text()
-                if response.status >= 400:
-                    raise ValueError(
-                        f"Serper API error {response.status}: {content.strip()}"
-                    )
-
-        data = json.loads(content)
-        state["last_search_result"] = data
-
-        limit = max(1, min(int(num_results), max_search_results))
-        formatted = format_serper_results(data, limit, query)
-        result = truncate_text(formatted, int(max_response_chars))
-        if debug:
-            print(
-                f"Search {query} in {perf_counter() - t0:.2f}s; result length: {len(result)}"
-            )
-        return result
-
-    async def open(state: Any, urls: list[str]) -> str:
-        """Get the content of webpages given a list of URLs"""
-        t0 = perf_counter()
-        results = await asyncio.gather(*[open_one(url, debug) for url in urls])
-        results_str = "\n\n".join(
-            [f"# Open Result {i}\n{r}" for i, r in enumerate(results)]
-        )
-        if debug:
-            print(
-                f"Opened {len(urls)} URLs in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
-            )
-        return results_str
-
+    # The finish tool needs state to signal completion
     async def finish(state: Any, final_answer: str) -> str:
         """Provide the final answer to the task. Stops execution."""
         state["[[deepdive/DONE]]"] = True
@@ -496,8 +467,10 @@ def load_environment(
     # === Create environment class ===
     class DeepDiveEnv(StatefulToolEnv):
         """
-        Minimal extension to ensure 'state' is injected into every tool call,
-        consistent with verifiers' stateful tool contract.
+        DeepDive environment using StatefulToolEnv for tool-based web search.
+
+        Only injects state into tools that have "state" in their skipped_args,
+        allowing stateless tools (search, open) to coexist with stateful ones (finish).
         """
 
         def update_tool_args(
@@ -508,8 +481,8 @@ def load_environment(
             state: State,
             **kwargs,
         ) -> dict:
-            # tool_args should be a dict, so this is the default behavior
-            if isinstance(tool_args, dict):
+            # Only inject state for tools that have "state" in their skipped_args
+            if "state" in self.skipped_args.get(tool_name, []):
                 tool_args["state"] = state
             return tool_args
 
@@ -525,8 +498,10 @@ def load_environment(
         parser=maybe_think_parser,
         rubric=judge_rubric,
     )
-    env.add_tool(tool=search, args_to_skip=["state"])
-    env.add_tool(tool=open, args_to_skip=["state"])
+    # search and open are stateless - no args_to_skip needed
+    env.add_tool(tool=search)
+    env.add_tool(tool=open)
     if finish_with_tool:
+        # finish needs state to signal completion
         env.add_tool(tool=finish, args_to_skip=["state"])
     return env
