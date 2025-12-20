@@ -38,7 +38,11 @@ def load_environment(
         if not trajectory:
             return 0.0
         prompt = trajectory[-1].get("prompt", "")
-        content = prompt[-1].get("content", "") if isinstance(prompt, list) else prompt
+        content = (
+            prompt[-1].get("content", "")
+            if isinstance(prompt, list) and prompt
+            else prompt
+        )
         return 1.0 if "Congratulations!" in str(content) else 0.0
 
     rubric = EpisodicSumRubric(weight=1.0)

@@ -74,17 +74,21 @@ class GymEnv(vf.MultiTurnEnv):
 
     def __init__(
         self,
+        # gym-specific
         env_cls: type[StepResetEnv],
         env_kwargs: dict[str, Any] | None = None,
         action_parser: Callable[[str], Any] | None = None,
         obs_to_text: Callable[[Any], str] | None = None,
         num_train_episodes: int = 1000,
         num_eval_episodes: int = 20,
-        rubric: Rubric | None = None,
         max_episode_steps: int | None = None,
-        message_type: MessageType = "chat",
         seed: int = 0,
-        **kwargs,
+        # global
+        system_prompt: str | None = None,
+        few_shot: list[dict[str, Any]] | None = None,
+        parser: vf.Parser | None = None,
+        rubric: Rubric | None = None,
+        message_type: MessageType = "chat",
     ):
         self.env_cls = env_cls
         self.env_kwargs = dict(env_kwargs or {})
@@ -103,7 +107,9 @@ class GymEnv(vf.MultiTurnEnv):
             rubric=rubric or EpisodicSumRubric(),
             message_type=message_type,
             max_turns=max_episode_steps or 1000,
-            **kwargs,
+            system_prompt=system_prompt,
+            few_shot=few_shot,
+            parser=parser,
         )
 
     def gym_to_hf(self) -> tuple[Dataset, Dataset | None]:
@@ -185,4 +191,6 @@ class GymEnv(vf.MultiTurnEnv):
 
     @vf.cleanup
     async def cleanup_env(self, state: State) -> None:
-        state.pop("gym_env", None)
+        env = state.pop("gym_env", None)
+        if env is not None and hasattr(env, "close"):
+            env.close()
