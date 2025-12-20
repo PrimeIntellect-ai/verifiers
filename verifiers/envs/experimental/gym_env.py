@@ -93,6 +93,7 @@ class GymEnv(vf.MultiTurnEnv):
         self.num_train_episodes = num_train_episodes
         self.num_eval_episodes = num_eval_episodes
         self.seed = seed
+        self.message_type = message_type
 
         dataset, eval_dataset = self.gym_to_hf()
 
@@ -114,7 +115,10 @@ class GymEnv(vf.MultiTurnEnv):
         for i in range(total):
             obs, _ = normalize_reset(env.reset(seed=self.seed + i))
             question = self.obs_to_text(obs)
-            row = {"question": question, "answer": str(self.seed + i)}
+            if self.message_type == "completion":
+                row = {"prompt": question, "answer": str(self.seed + i)}
+            else:
+                row = {"question": question, "answer": str(self.seed + i)}
             if i < self.num_train_episodes:
                 train_rows.append(row)
             else:
