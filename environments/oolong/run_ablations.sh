@@ -42,7 +42,7 @@ CONCURRENCY=50
 MODES=("rlm" "rlm_tips" "standard")
 
 # Subset configurations: "synth", "synth_with_labels", "real"
-SUBSETS=("synth" "synth_with_labels" "real")
+SUBSETS=("synth" "real")
 
 # Default settings for MODELS_STANDARD
 DEFAULT_MODE="rlm_tips"
