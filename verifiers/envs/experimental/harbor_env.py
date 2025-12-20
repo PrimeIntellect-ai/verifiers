@@ -110,7 +110,10 @@ class HarborEnv(vf.CliAgentEnv):
     ) -> None:
         """Upload Harbor task assets after sandbox creation."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
-        task_dir = Path(task_info.get("task_dir", ""))
+        task_dir_str = task_info.get("task_dir", "")
+        if not task_dir_str:
+            raise ValueError("task_dir not set in task info")
+        task_dir = Path(task_dir_str)
         config = task_info.get("config", {})
 
         if not task_dir.exists():
@@ -200,7 +203,11 @@ class HarborEnv(vf.CliAgentEnv):
             logger.error("No sandbox_id in state")
             return 0.0
 
-        task_dir = Path(state.get("harbor_task_dir", ""))
+        task_dir_str = state.get("harbor_task_dir", "")
+        if not task_dir_str:
+            logger.error("harbor_task_dir not set in state")
+            return 0.0
+        task_dir = Path(task_dir_str)
         if not task_dir.exists():
             logger.error(f"Task directory not found: {task_dir}")
             return 0.0
