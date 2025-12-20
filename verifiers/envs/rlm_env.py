@@ -234,6 +234,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             break
         
         code = request.get("code", "")
+        seq = request.get("seq", 0)  # Sequence number for request/response matching
         execution_count += 1
         
         result = {{
@@ -242,6 +243,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             "stderr": "",
             "result": None,
             "execution_count": execution_count,
+            "seq": seq,  # Echo back sequence number for framework to verify
             "answer": namespace.get("answer", {{"ready": False, "content": ""}}),
         }}
         
@@ -491,6 +493,9 @@ class RLMEnv(SandboxEnv):
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
+        # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
+        # This ensures server responds before sandbox worker's HTTP request times out
+        self.sub_llm_api_timeout = max(10, int(self.code_execution_timeout * 0.8))
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -671,15 +676,61 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
-    async def _run_sub_llm_with_tools(
+    async def _run_sub_llm(
         self, client: Any, model: str, messages: list[dict]
     ) -> SubLLMResult:
         """
-        Run a sub-LLM call with tool-calling loop.
+        Run a sub-LLM call, with optional tool-calling loop.
+
+        If no sub_tools are configured, performs a single LLM call.
+        Otherwise, runs a multi-turn tool-calling loop.
 
         Returns:
-            SubLLMResult with full turn data for each LLM call in the loop.
+            SubLLMResult with full turn data for each LLM call.
         """
+        # Fast path: no tools configured - single LLM call
+        if not self.sub_tools:
+            try:
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        logprobs=self._sub_llm_supports_logprobs or None,
+                    ),
+                    timeout=self.sub_llm_api_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
+                )
+                return SubLLMResult(
+                    final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+                    turns=[],
+                    total_prompt_tokens=0,
+                    total_completion_tokens=0,
+                    tool_call_count=0,
+                    num_turns=0,
+                    max_turns_reached=True,
+                )
+
+            prompt_tokens, completion_tokens = self._extract_tokens(response)
+            return SubLLMResult(
+                final_content=response.choices[0].message.content or "",
+                turns=[
+                    SubLLMTurn(
+                        prompt_messages=[dict(m) for m in messages],
+                        response=response,
+                        tool_call_count=0,
+                    )
+                ],
+                total_prompt_tokens=prompt_tokens,
+                total_completion_tokens=completion_tokens,
+                tool_call_count=0,
+                num_turns=1,
+                max_turns_reached=False,
+            )
+
+        # Tool-calling loop path
         current_messages = list(messages)
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -693,12 +744,30 @@ class RLMEnv(SandboxEnv):
             prompt_snapshot = [dict(m) for m in current_messages]
 
             # Make LLM call with tools and logprobs (if supported)
-            response = await client.chat.completions.create(
-                model=model,
-                messages=current_messages,
-                tools=self.sub_oai_tools if self.sub_oai_tools else None,
-                logprobs=self._sub_llm_supports_logprobs or None,
-            )
+            # Wrap with timeout to prevent indefinite blocking
+            try:
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=model,
+                        messages=current_messages,
+                        tools=self.sub_oai_tools if self.sub_oai_tools else None,
+                        logprobs=self._sub_llm_supports_logprobs or None,
+                    ),
+                    timeout=self.sub_llm_api_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
+                )
+                return SubLLMResult(
+                    final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+                    turns=turns,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    tool_call_count=tool_call_count,
+                    num_turns=num_turns,
+                    max_turns_reached=True,
+                )
 
             prompt_tokens, completion_tokens = self._extract_tokens(response)
             total_prompt_tokens += prompt_tokens
@@ -755,11 +824,28 @@ class RLMEnv(SandboxEnv):
 
         prompt_snapshot = [dict(m) for m in current_messages]
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=current_messages,
-            logprobs=self._sub_llm_supports_logprobs or None,
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=current_messages,
+                    logprobs=self._sub_llm_supports_logprobs or None,
+                ),
+                timeout=self.sub_llm_api_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Sub-LLM final API call timed out after {self.sub_llm_api_timeout}s"
+            )
+            return SubLLMResult(
+                final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+                turns=turns,
+                total_prompt_tokens=total_prompt_tokens,
+                total_completion_tokens=total_completion_tokens,
+                tool_call_count=tool_call_count,
+                num_turns=num_turns,
+                max_turns_reached=True,
+            )
 
         turns.append(
             SubLLMTurn(
@@ -844,38 +930,15 @@ class RLMEnv(SandboxEnv):
         ]
 
         try:
-            # Use tool-calling loop if sub_tools are configured
-            if self.sub_tools:
-                result = await self._run_sub_llm_with_tools(
-                    client, sub_model, messages_with_system
-                )
-                final_content = result["final_content"]
-                prompt_tokens = result["total_prompt_tokens"]
-                completion_tokens = result["total_completion_tokens"]
-                tool_call_count = result["tool_call_count"]
-                num_turns = result["num_turns"]
-                max_turns_reached = result["max_turns_reached"]
-                turns = result["turns"]
-            else:
-                # Simple path - single turn, no tools, with logprobs (if supported)
-                response = await client.chat.completions.create(
-                    model=sub_model,
-                    messages=messages_with_system,
-                    logprobs=self._sub_llm_supports_logprobs or None,
-                )
-                # Extract tokens
-                prompt_tokens, completion_tokens = self._extract_tokens(response)
-                tool_call_count = 0
-                num_turns = 1
-                max_turns_reached = False
-                final_content = response.choices[0].message.content or ""
-                turns = [
-                    SubLLMTurn(
-                        prompt_messages=[dict(m) for m in messages_with_system],
-                        response=response,
-                        tool_call_count=0,
-                    )
-                ]
+            # Run sub-LLM call (handles both with-tools and no-tools cases)
+            result = await self._run_sub_llm(client, sub_model, messages_with_system)
+            final_content = result["final_content"]
+            prompt_tokens = result["total_prompt_tokens"]
+            completion_tokens = result["total_completion_tokens"]
+            tool_call_count = result["tool_call_count"]
+            num_turns = result["num_turns"]
+            max_turns_reached = result["max_turns_reached"]
+            turns = result["turns"]
 
             # Extract boxed answer for response to sandbox
             boxed_content = extract_boxed_answer(final_content)
@@ -1177,6 +1240,9 @@ fi
         # Initialize context warning flag (feature enabled if max_seq_len is set)
         state["context_warning_sent"] = False
 
+        # Initialize FIFO sequence counter for detecting stale responses
+        state["_exec_seq"] = 0
+
         return state
 
     def _build_context_dict(self, context_data: Any) -> dict[str, Any]:
@@ -1232,9 +1298,15 @@ fi
     # Code Execution
     # =========================================================================
 
-    async def _execute_code(self, sandbox_id: str, code: str) -> dict[str, Any]:
+    async def _execute_code(
+        self, sandbox_id: str, code: str, state: State
+    ) -> dict[str, Any]:
         """Execute code in sandbox worker and return result."""
-        payload = {"code": code}
+        # Increment and track sequence number for this execution
+        seq = state.get("_exec_seq", 0) + 1
+        state["_exec_seq"] = seq
+
+        payload = {"code": code, "seq": seq}
         payload_json = json.dumps(payload)
         payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
 
@@ -1290,7 +1362,7 @@ PY
             }
 
         try:
-            return json.loads(result.stdout)
+            parsed_result = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             return {
                 "status": "error",
@@ -1299,6 +1371,27 @@ PY
                 "result": f"Failed to parse worker response: {e}",
                 "answer": {"ready": False, "content": ""},
             }
+
+        # Check sequence number to detect stale responses (FIFO desync)
+        response_seq = parsed_result.get("seq", -1)
+        if response_seq != seq:
+            logger.warning(
+                f"FIFO sequence mismatch: expected seq={seq}, got seq={response_seq}. "
+                "This indicates a desync - likely from a previous timeout."
+            )
+            return {
+                "status": "error",
+                "stdout": "",
+                "stderr": "",
+                "result": (
+                    f"Communication desync detected: received stale response "
+                    f"(expected seq={seq}, got seq={response_seq}). "
+                    "This may happen after a timeout. Please retry your command."
+                ),
+                "answer": {"ready": False, "content": ""},
+            }
+
+        return parsed_result
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
@@ -1376,7 +1469,7 @@ PY
 
         # Time the full tool call execution
         execution_start = perf_counter()
-        result = await self._execute_code(sandbox_id, code)
+        result = await self._execute_code(sandbox_id, code, state)
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 

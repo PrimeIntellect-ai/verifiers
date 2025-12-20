@@ -885,7 +885,7 @@ class TestCallSubTool:
 
 
 class TestRunSubLLMWithTools:
-    """Tests for _run_sub_llm_with_tools method."""
+    """Tests for _run_sub_llm method."""
 
     @pytest.mark.asyncio
     async def test_completes_without_tool_calls(self, rlm_env_with_sub_tools):
@@ -902,7 +902,7 @@ class TestRunSubLLMWithTools:
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
-        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        result = await rlm_env_with_sub_tools._run_sub_llm(
             mock_client, "gpt-4", messages
         )
 
@@ -961,9 +961,7 @@ class TestRunSubLLMWithTools:
         )
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
-        await rlm_env_with_sub_tools._run_sub_llm_with_tools(
-            mock_client, "gpt-4", messages
-        )
+        await rlm_env_with_sub_tools._run_sub_llm(mock_client, "gpt-4", messages)
 
         assert mock_client.chat.completions.create.call_count == 2
 
@@ -1019,9 +1017,7 @@ class TestRunSubLLMWithTools:
         mock_client.chat.completions.create = AsyncMock(side_effect=responses)
 
         messages = [{"role": "user", "content": "Test"}]
-        await rlm_env_with_sub_tools._run_sub_llm_with_tools(
-            mock_client, "gpt-4", messages
-        )
+        await rlm_env_with_sub_tools._run_sub_llm(mock_client, "gpt-4", messages)
 
         # Should be max_turns + 1 (final call without tools)
         assert (
@@ -1263,7 +1259,7 @@ class TestSubLLMMetricsWithTools:
         )
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
-        result = await rlm_env_with_sub_tools._run_sub_llm_with_tools(
+        result = await rlm_env_with_sub_tools._run_sub_llm(
             mock_client, "gpt-4", messages
         )
 
