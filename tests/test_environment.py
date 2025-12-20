@@ -1,12 +1,13 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from datasets import Dataset
 from openai.types.chat.chat_completion import Choice
 
+import verifiers as vf
 from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import (
     GenerateMetadata,
@@ -465,3 +466,85 @@ class TestEnvironmentBase:
         # Scoring always happens now, so rewards will be set by score_group
         # If score_group doesn't set rewards, they'll be None/0
         assert results["metadata"]["avg_reward"] >= 0.0
+
+
+class TestRenderStopErrorHandling:
+    """Test cases for _render_stop error handling paths."""
+
+    @pytest.mark.asyncio
+    async def test_render_stop_with_vf_error(self, mock_openai_client, sample_dataset):
+        """Test that _render_stop logs correctly for vf.Error with cause."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        cause = ValueError("underlying cause")
+        error = vf.ToolCallError(cause=cause)
+
+        state = await env.init_state(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+        state["error"] = error
+
+        async def has_error(state):
+            return state.get("error") is not None
+
+        has_error.__name__ = "has_error"
+
+        with patch.object(env.logger, "error") as mock_logger_error:
+            result = await env._render_stop(state, has_error)
+
+            assert result is True
+            assert state["stop_condition"] == "has_error"
+            mock_logger_error.assert_called_once()
+            call_args = mock_logger_error.call_args[0][0]
+            assert "ToolCallError" in call_args
+            assert "caused by" in call_args
+
+    @pytest.mark.asyncio
+    async def test_render_stop_with_regular_exception(
+        self, mock_openai_client, sample_dataset
+    ):
+        """Test that _render_stop logs correctly for regular exceptions without cause."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        error = RuntimeError("something went wrong")
+
+        state = await env.init_state(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+        state["error"] = error
+
+        async def has_error(state):
+            return state.get("error") is not None
+
+        has_error.__name__ = "has_error"
+
+        with patch.object(env.logger, "error") as mock_logger_error:
+            result = await env._render_stop(state, has_error)
+
+            assert result is True
+            assert state["stop_condition"] == "has_error"
+            mock_logger_error.assert_called_once()
+            call_args = mock_logger_error.call_args[0][0]
+            assert "RuntimeError" in call_args
+            assert "caused by" not in call_args
+            assert "something went wrong" in call_args
