@@ -118,17 +118,21 @@ class GymEnv(vf.MultiTurnEnv):
         total = self.num_train_episodes + self.num_eval_episodes
         env = self.env_cls(**self.env_kwargs)
 
-        for i in range(total):
-            obs, _ = normalize_reset(env.reset(seed=self.seed + i))
-            question = self.obs_to_text(obs)
-            if self.message_type == "completion":
-                row = {"prompt": question, "answer": str(self.seed + i)}
-            else:
-                row = {"question": question, "answer": str(self.seed + i)}
-            if i < self.num_train_episodes:
-                train_rows.append(row)
-            else:
-                eval_rows.append(row)
+        try:
+            for i in range(total):
+                obs, _ = normalize_reset(env.reset(seed=self.seed + i))
+                question = self.obs_to_text(obs)
+                if self.message_type == "completion":
+                    row = {"prompt": question, "answer": str(self.seed + i)}
+                else:
+                    row = {"question": question, "answer": str(self.seed + i)}
+                if i < self.num_train_episodes:
+                    train_rows.append(row)
+                else:
+                    eval_rows.append(row)
+        finally:
+            if hasattr(env, "close"):
+                env.close()
 
         dataset = Dataset.from_list(train_rows)
         eval_dataset = Dataset.from_list(eval_rows) if eval_rows else None
