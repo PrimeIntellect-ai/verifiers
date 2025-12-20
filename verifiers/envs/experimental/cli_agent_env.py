@@ -551,7 +551,8 @@ touch /tmp/vf_complete
 
     @vf.teardown
     async def teardown_tunnel(self):
-        """Stop all cloudflared tunnel processes"""
+        """Stop cloudflared tunnels and HTTP interception server"""
+        # Stop cloudflared tunnels
         async with self.tunnel_lock:
             for tunnel in self.tunnels:
                 process = tunnel.get("process")
@@ -566,6 +567,15 @@ touch /tmp/vf_complete
                         except Exception:
                             pass
             self.tunnels.clear()
+
+        # Stop HTTP interception server
+        async with self.server_lock:
+            if self.server_runner is not None:
+                await self.server_runner.cleanup()
+                self.server_runner = None
+                self.server_site = None
+                self.interception_server = None
+                logger.debug("Stopped HTTP interception server")
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
