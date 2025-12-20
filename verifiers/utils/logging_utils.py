@@ -100,7 +100,7 @@ def print_prompt_completions_sample(
 
         return out
 
-    def _format_error(error: Error) -> Text:
+    def _format_error(error: BaseException) -> Text:
         out = Text()
         out.append("error: ", style="bold red")
         while True:
