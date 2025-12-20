@@ -87,6 +87,7 @@ def load_environment(
     # Determine HuggingFace dataset name and context column based on subset
     if subset in ("synth", "synth_with_labels"):
         hf_dataset_name = "oolongbench/oolong-synth"
+        hf_config_name = None
         context_column = (
             "context_window_text"
             if subset == "synth"
@@ -94,10 +95,11 @@ def load_environment(
         )
     else:  # "real"
         hf_dataset_name = "oolongbench/oolong-real"
+        hf_config_name = "dnd"
         context_column = "context_window_text"
 
     # Load the dataset from HuggingFace
-    raw_dataset = load_dataset(hf_dataset_name, split=split)
+    raw_dataset = load_dataset(hf_dataset_name, hf_config_name, split=split)
 
     # Transform dataset into the required format
     def transform_example(example, idx):
