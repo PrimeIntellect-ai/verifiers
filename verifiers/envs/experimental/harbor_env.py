@@ -217,8 +217,8 @@ class HarborEnv(vf.CliAgentEnv):
 
             reward_result = await sandbox_client.execute_command(
                 sandbox_id,
-                "[ -s /logs/verifier/reward.txt ] && cat /logs/verifier/reward.txt || "
-                "[ -s /logs/verifier/reward.json ] && cat /logs/verifier/reward.json || echo ''",
+                "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
+                "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
                 working_dir=None,
             )
             stdout_val = getattr(reward_result, "stdout", "")

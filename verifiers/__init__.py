@@ -89,6 +89,8 @@ __all__ = [
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
+    "CliAgentEnv",
+    "HarborEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -150,7 +152,9 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
+    from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
