@@ -41,6 +41,7 @@ dependencies = [
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
     "prime-sandboxes>=0.2.5",
+    "prime-tunnel>=0.1.0",
     "wget>=3.2",
 ]
 
