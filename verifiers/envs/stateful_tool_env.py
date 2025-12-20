@@ -122,9 +122,8 @@ class StatefulToolEnv(vf.ToolEnv):
                     )
                 tool_args: dict = parsed_args
             except Exception as e:
-                err = vf.ToolParseError(cause=e)
-                if self._should_stop_for_error(err):
-                    raise err
+                if self._should_stop_for_error(e):
+                    raise vf.ToolParseError(e)
                 tool_messages.append(
                     cast(
                         vf.Message,
@@ -146,9 +145,8 @@ class StatefulToolEnv(vf.ToolEnv):
                 )
                 tool_messages.append(tool_message)
             except Exception as e:
-                err = vf.ToolCallError(cause=e)
-                if self._should_stop_for_error(err):
-                    raise err
+                if self._should_stop_for_error(e):
+                    raise vf.ToolCallError(e)
                 tool_messages.append(
                     cast(
                         vf.Message,

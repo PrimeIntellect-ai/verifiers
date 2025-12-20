@@ -1,6 +1,7 @@
 """Tests for the ToolEnv class."""
 
 import json
+from json import JSONDecodeError
 
 import pytest
 from openai.types.chat.chat_completion_user_message_param import (
@@ -102,7 +103,7 @@ class TestToolEnv:
         class TestToolEnv(vf.ToolEnv):
             def __init__(self, **kwargs):
                 super().__init__(
-                    tools=[square_tool], stop_errors=[vf.ToolParseError], **kwargs
+                    tools=[square_tool], stop_errors=[JSONDecodeError], **kwargs
                 )
 
         env = TestToolEnv(

@@ -125,3 +125,18 @@ async def parse_response_messages(
             response_text = response.choices[0].text or ""
         completion_messages = str(response_text)
     return completion_messages
+
+
+async def parse_is_truncated(
+    response: ModelResponse, message_type: MessageType
+) -> bool:
+    if message_type == "chat":
+        assert isinstance(response, ChatCompletion)
+        assert len(response.choices) == 1, "Response should always have one choice"
+        return response.choices[0].finish_reason == "length"
+    elif message_type == "completion":
+        assert isinstance(response, Completion)
+        assert len(response.choices) == 1, "Response should always have one choice"
+        return response.choices[0].finish_reason == "length"
+    else:
+        return False
