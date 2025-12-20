@@ -520,3 +520,78 @@ class TestMultiTurnEnv:
         for step in state["trajectory"]:
             assert hasattr(step["response"], "choices")
             assert len(step["response"].choices) > 0
+
+    @pytest.mark.asyncio
+    async def test_add_model_response_with_extras(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that extras are stored in trajectory steps via add_model_response."""
+
+        class ExtrasMultiTurnEnv(MultiTurnEnv):
+            @stop
+            async def done_condition(self, state: State) -> bool:
+                return len(state["trajectory"]) >= 1
+
+            async def env_response(self, messages, state, **kwargs) -> Messages:
+                return [{"role": "user", "content": "Continue"}]
+
+            async def rollout(self, input, client, model, sampling_args=None):
+                state = await self.init_state(input, client, model, sampling_args)
+                state = await self.setup_state(state)
+                prompt_messages = await self.get_prompt_messages(state)
+                response = await self.get_model_response(state, prompt_messages)
+
+                await self.add_model_response(
+                    state, prompt_messages, response, extras={"foo": "bar"}
+                )
+
+                state["is_completed"] = True
+                state["completion"] = state["trajectory"][-1]["completion"]
+                return state
+
+        env = ExtrasMultiTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        mock_openai_client.add_chat_response(
+            messages=[{"role": "user", "content": "What is 2+2?"}],
+            response="Test response",
+        )
+
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "What is 2+2?"}],
+                answer="4",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        assert state["trajectory"][0]["extras"] == {"foo": "bar"}
+
+    @pytest.mark.asyncio
+    async def test_add_model_response_extras_defaults_to_empty_dict(
+        self, mock_multiturn_env
+    ):
+        """Test that extras defaults to empty dict when not provided."""
+        mock_multiturn_env.client.add_chat_response(
+            messages=[{"role": "user", "content": "Test default"}],
+            response="Response DONE",
+        )
+
+        state = await mock_multiturn_env.rollout(
+            input=RolloutInput(
+                prompt=[{"role": "user", "content": "Test default"}],
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_multiturn_env.client,
+            model="test-model",
+        )
+
+        assert state["trajectory"][0]["extras"] == {}
