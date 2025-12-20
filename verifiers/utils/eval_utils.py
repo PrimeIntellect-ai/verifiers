@@ -107,13 +107,12 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [e for e in errors if e is not None]
-
-    if errors:
-        has_errors = [e is not None for e in errors]
+    has_errors = [e is not None for e in errors]
+    if any(has_errors):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
+        errors = [e for e in errors if e is not None]
         error_chains = [ErrorChain(e) for e in errors]
         counter = Counter(error_chains)
         for error_chain, count in counter.items():
