@@ -7,13 +7,13 @@ Creates focused plots comparing modes across models:
 - RLM metrics comparison
 - Timing comparison
 - Standard mode tool usage
-- Optional: timing_vs_accuracy (cost-benefit analysis)
+- Optional: timing_vs_reward (cost-benefit analysis)
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
-    python plot_results.py --image accuracy
+    python plot_results.py --image reward
     python plot_results.py --image rlm_metrics
-    python plot_results.py --image timing_vs_accuracy
+    python plot_results.py --image timing_vs_reward
 """
 
 import argparse
@@ -60,7 +60,7 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
-def plot_accuracy_by_model(ax: plt.Axes, df: pd.DataFrame):
+def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Mode comparison across models (grouped bar chart)."""
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -71,40 +71,50 @@ def plot_accuracy_by_model(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         accuracies = []
-        errors = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 accuracies.append(model_data["correct_answer_mean"].values[0])
-                errors.append(model_data["correct_answer_std"].values[0])
+                counts.append(int(model_data["correct_answer_count"].values[0]))
             else:
                 accuracies.append(0)
-                errors.append(0)
+                counts.append(0)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             accuracies,
             width,
-            yerr=errors,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
             edgecolor="black",
             linewidth=0.5,
-            capsize=3,
         )
+
+        # Add sample count above each bar
+        for bar, count in zip(bars, counts):
+            if count > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f"n={count}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Accuracy (Correct Answer)")
     ax.set_title("Mode Comparison by Model")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
@@ -340,7 +350,7 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper right", fontsize=9)
 
 
-def plot_timing_vs_accuracy(ax: plt.Axes, df: pd.DataFrame):
+def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Accuracy vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -383,7 +393,7 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     sns.set_style("whitegrid")
 
     # Main plots
-    plot_accuracy_by_model(axes[0, 0], df)
+    plot_reward_by_model(axes[0, 0], df)
     plot_timing(axes[0, 1], df)
     plot_rlm_metrics(axes[1, 0], df)
     plot_standard_tool_usage(axes[1, 1], df)
@@ -405,13 +415,13 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
 
 # Mapping of plot names to (function, figsize, title)
 PLOT_REGISTRY = {
-    "accuracy": (plot_accuracy_by_model, (10, 7), "Mode Comparison by Model"),
+    "reward": (plot_reward_by_model, (10, 7), "Mode Comparison by Model"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "rlm_metrics": (plot_rlm_metrics, (12, 7), "RLM Usage Metrics"),
     "tool_usage": (plot_standard_tool_usage, (10, 7), "Standard Mode Tool Usage"),
     "tokens": (plot_token_usage, (10, 7), "Token Usage"),
     # Additional timing plots
-    "timing_vs_accuracy": (plot_timing_vs_accuracy, (10, 7), "Timing vs Accuracy"),
+    "timing_vs_reward": (plot_timing_vs_reward, (10, 7), "Timing vs Reward"),
 }
 
 
@@ -458,17 +468,17 @@ Examples:
     # Filter to a specific model
     python plot_results.py --model gpt-4.1-mini
     
-    # Show individual accuracy plot
-    python plot_results.py --image accuracy
+    # Show individual reward plot
+    python plot_results.py --image reward
     
     # Show RLM metrics comparison
     python plot_results.py --image rlm_metrics
     
     # Save plot to file
-    python plot_results.py --image accuracy -o accuracy_plot.png
+    python plot_results.py --image reward -o accuracy_plot.png
     
-    # Timing vs accuracy analysis
-    python plot_results.py --image timing_vs_accuracy
+    # Timing vs reward analysis
+    python plot_results.py --image timing_vs_reward
 """,
     )
     parser.add_argument(
@@ -489,12 +499,12 @@ Examples:
         "--image",
         choices=[
             "main",
-            "accuracy",
+            "reward",
             "timing",
             "rlm_metrics",
             "tool_usage",
             "tokens",
-            "timing_vs_accuracy",
+            "timing_vs_reward",
         ],
         default="main",
         help="Which plot to generate: 'main' for 2x2 grid, or individual plot name",

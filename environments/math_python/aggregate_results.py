@@ -196,11 +196,10 @@ def print_summary_table(summary: pd.DataFrame):
         mode = row.get("mode", "standard")
 
         acc_mean = row.get("correct_answer_mean", 0)
-        acc_std = row.get("correct_answer_std", 0)
         count = int(row.get("correct_answer_count", 0))
         time_mean = row.get("total_ms_mean", 0)
 
-        acc_str = f"{acc_mean:.3f}±{acc_std:.3f}"
+        acc_str = f"{acc_mean:.3f}"
         time_str = f"{time_mean:.0f}" if pd.notna(time_mean) else "N/A"
 
         print(f"{model:<25} {mode:<12} {acc_str:>15} {count:>10} {time_str:>12}")
