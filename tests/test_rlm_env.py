@@ -173,61 +173,6 @@ class TestFormatExecutionOutput:
         assert output == "(no output)"
 
 
-class TestBuildContextDict:
-    """Tests for _build_context_dict method."""
-
-    def test_build_context_with_string(self, rlm_env):
-        """Build context dict with string data."""
-        context = rlm_env._build_context_dict("hello world")
-        assert context["input_data"] == "hello world"
-        assert context["input_data_metadata"]["type"] == "<class 'str'>"
-        assert context["input_data_metadata"]["size"] == 11
-
-    def test_build_context_with_list(self, rlm_env):
-        """Build context dict with list data."""
-        context = rlm_env._build_context_dict([1, 2, 3, 4, 5])
-        assert context["input_data"] == [1, 2, 3, 4, 5]
-        assert context["input_data_metadata"]["type"] == "<class 'list'>"
-        assert context["input_data_metadata"]["size"] == 5
-
-    def test_build_context_with_dict(self, rlm_env):
-        """Build context dict with dict data."""
-        data = {"a": 1, "b": 2}
-        context = rlm_env._build_context_dict(data)
-        assert context["input_data"] == data
-        assert context["input_data_metadata"]["type"] == "<class 'dict'>"
-        assert context["input_data_metadata"]["size"] == 2
-
-    def test_build_context_with_none(self, rlm_env):
-        """Build context dict with None (no context)."""
-        context = rlm_env._build_context_dict(None)
-        assert context["input_data"] is None
-        assert context["input_data_metadata"]["type"] == "<class 'NoneType'>"
-        assert context["input_data_metadata"]["size"] == 0
-
-
-class TestBuildContextMetadata:
-    """Tests for _build_context_metadata method."""
-
-    def test_metadata_for_string(self, rlm_env):
-        """Metadata includes correct type and size for string."""
-        metadata = rlm_env._build_context_metadata("test string")
-        assert metadata["type"] == "<class 'str'>"
-        assert metadata["size"] == 11
-
-    def test_metadata_for_list(self, rlm_env):
-        """Metadata includes correct type and size for list."""
-        metadata = rlm_env._build_context_metadata([1, 2, 3])
-        assert metadata["type"] == "<class 'list'>"
-        assert metadata["size"] == 3
-
-    def test_metadata_for_object_without_len(self, rlm_env):
-        """Metadata handles objects without __len__."""
-        metadata = rlm_env._build_context_metadata(42)
-        assert metadata["type"] == "<class 'int'>"
-        assert metadata["size"] == "unknown"
-
-
 class TestGenerateSubToolsDocumentation:
     """Tests for _generate_sub_tools_documentation method."""
 
@@ -582,51 +527,6 @@ class TestContextLimitConfiguration:
 
             # Cleanup
             env.active_sandboxes.clear()
-
-
-class TestGetPromptTokens:
-    """Tests for _get_prompt_tokens helper method."""
-
-    def test_returns_zero_for_empty_trajectory(self, rlm_env):
-        """Returns 0 when trajectory is empty."""
-        state = {"trajectory": []}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 0
-
-    def test_returns_zero_for_missing_trajectory(self, rlm_env):
-        """Returns 0 when trajectory is missing."""
-        state = {}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 0
-
-    def test_returns_zero_for_missing_response(self, rlm_env):
-        """Returns 0 when response is missing from trajectory."""
-        state = {"trajectory": [{"response": None}]}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 0
-
-    def test_returns_zero_for_missing_usage(self, rlm_env):
-        """Returns 0 when response has no usage attribute."""
-        mock_response = MagicMock(spec=[])  # No usage attribute
-        state = {"trajectory": [{"response": mock_response}]}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 0
-
-    def test_returns_prompt_tokens_from_usage(self, rlm_env):
-        """Returns prompt_tokens from response.usage."""
-        mock_response = MagicMock()
-        mock_response.usage = MagicMock(prompt_tokens=5000)
-        state = {"trajectory": [{"response": mock_response}]}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 5000
-
-    def test_returns_zero_for_none_prompt_tokens(self, rlm_env):
-        """Returns 0 when prompt_tokens is None."""
-        mock_response = MagicMock()
-        mock_response.usage = MagicMock(prompt_tokens=None)
-        state = {"trajectory": [{"response": mock_response}]}
-        result = rlm_env._get_prompt_tokens(state)
-        assert result == 0
 
 
 class TestContextLimitWarning:

@@ -349,34 +349,15 @@ _RLM_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) en
 
 You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
-Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls.
+Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
 
 ## Input Data Metadata
 {metadata_summary}
-
-## Available Variables and Functions (inside the REPL)
-
-- `extra_data`: The actual input data you need to process.
-
-- `answer`: A dictionary for your final answer:
-  - `answer["content"]`: Your answer (string) - write and update this throughout execution
-  - `answer["ready"]`: Set to `True` to finish - **this immediately terminates execution**
-
-- `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
-  - Takes a list of prompts, returns a list of focused answers (same order)
-  - Sub-LLMs are instructed to provide concise answers, so responses are typically brief
-  - Useful for semantic understanding, summarization, complex reasoning
-  - Include any context you need directly in the prompt strings
-  - Parallelism is automatically rate-limited
-  - **Prints a metadata summary** showing tokens and tool calls for each sub-LLM call
-    - "⚠ max turns" indicates the sub-LLM hit its tool call limit (answer may be incomplete)
-  - Save results to a variable and inspect specific items to avoid output truncation
 
 ## Workflow
 
 **Step 1: Explore the data**
 ```python
-# Inspect the format of the provided data
 print(type(extra_data))
 print(extra_data[:500] if isinstance(extra_data, str) else extra_data[:3])
 ```
@@ -384,15 +365,12 @@ Wait for output. Now you know the actual format.
 
 **Step 2: Process and build your answer**
 ```python
-# Based on what you've seen, write code to solve the task
 answer["content"] = "your current best answer"
 ```
-You can update `answer["content"]` multiple times as you refine your solution.
 
 **Step 3: Verify and finalize (only after reviewing output)**
 ```python
 print(f"My answer: {answer['content']}")
-# Only after confirming this looks correct:
 answer["ready"] = True
 ```
 
@@ -401,9 +379,6 @@ answer["ready"] = True
 1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
-4. You can think in natural language between tool calls - reasoning and planning are encouraged
-
-The environment executes your code and shows you the output. Use that feedback to iterate toward the correct answer.
 """
 
 
@@ -676,42 +651,54 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
+    async def _call_sub_llm_api(
+        self, client: Any, model: str, messages: list[dict], tools: list | None = None
+    ) -> Any | None:
+        """Make a single sub-LLM API call with timeout. Returns None on timeout."""
+        try:
+            return await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    logprobs=self._sub_llm_supports_logprobs or None,
+                ),
+                timeout=self.sub_llm_api_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
+            )
+            return None
+
+    def _make_timeout_result(
+        self,
+        turns: list[SubLLMTurn],
+        total_prompt_tokens: int,
+        total_completion_tokens: int,
+        tool_call_count: int,
+        num_turns: int,
+    ) -> SubLLMResult:
+        """Create a SubLLMResult for timeout cases."""
+        return SubLLMResult(
+            final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
+            turns=turns,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            tool_call_count=tool_call_count,
+            num_turns=num_turns,
+            max_turns_reached=True,
+        )
+
     async def _run_sub_llm(
         self, client: Any, model: str, messages: list[dict]
     ) -> SubLLMResult:
-        """
-        Run a sub-LLM call, with optional tool-calling loop.
-
-        If no sub_tools are configured, performs a single LLM call.
-        Otherwise, runs a multi-turn tool-calling loop.
-
-        Returns:
-            SubLLMResult with full turn data for each LLM call.
-        """
+        """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
-            try:
-                response = await asyncio.wait_for(
-                    client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        logprobs=self._sub_llm_supports_logprobs or None,
-                    ),
-                    timeout=self.sub_llm_api_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-                )
-                return SubLLMResult(
-                    final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
-                    turns=[],
-                    total_prompt_tokens=0,
-                    total_completion_tokens=0,
-                    tool_call_count=0,
-                    num_turns=0,
-                    max_turns_reached=True,
-                )
+            response = await self._call_sub_llm_api(client, model, messages)
+            if response is None:
+                return self._make_timeout_result([], 0, 0, 0, 0)
 
             prompt_tokens, completion_tokens = self._extract_tokens(response)
             return SubLLMResult(
@@ -737,36 +724,22 @@ class RLMEnv(SandboxEnv):
         tool_call_count = 0
         num_turns = 0
         turns: list[SubLLMTurn] = []
+        tools = self.sub_oai_tools if self.sub_oai_tools else None
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            # Snapshot messages before this call
             prompt_snapshot = [dict(m) for m in current_messages]
 
-            # Make LLM call with tools and logprobs (if supported)
-            # Wrap with timeout to prevent indefinite blocking
-            try:
-                response = await asyncio.wait_for(
-                    client.chat.completions.create(
-                        model=model,
-                        messages=current_messages,
-                        tools=self.sub_oai_tools if self.sub_oai_tools else None,
-                        logprobs=self._sub_llm_supports_logprobs or None,
-                    ),
-                    timeout=self.sub_llm_api_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-                )
-                return SubLLMResult(
-                    final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
-                    turns=turns,
-                    total_prompt_tokens=total_prompt_tokens,
-                    total_completion_tokens=total_completion_tokens,
-                    tool_call_count=tool_call_count,
-                    num_turns=num_turns,
-                    max_turns_reached=True,
+            response = await self._call_sub_llm_api(
+                client, model, current_messages, tools
+            )
+            if response is None:
+                return self._make_timeout_result(
+                    turns,
+                    total_prompt_tokens,
+                    total_completion_tokens,
+                    tool_call_count,
+                    num_turns,
                 )
 
             prompt_tokens, completion_tokens = self._extract_tokens(response)
@@ -787,9 +760,8 @@ class RLMEnv(SandboxEnv):
             )
 
             if not tool_calls:
-                final_content = assistant_message.content or ""
                 return SubLLMResult(
-                    final_content=final_content,
+                    final_content=assistant_message.content or "",
                     turns=turns,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
@@ -806,14 +778,13 @@ class RLMEnv(SandboxEnv):
                     tool_args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
                     tool_args = {}
-
                 tool_result = await self._call_sub_tool(
                     tool_name, tool_args, tool_call.id
                 )
                 current_messages.append(tool_result)
 
         # Max turns reached - add prompt for final answer and make call without tools
-        num_turns += 1  # Count the final forced response as a turn
+        num_turns += 1
         current_messages.append(
             {
                 "role": "user",
@@ -823,49 +794,28 @@ class RLMEnv(SandboxEnv):
         )
 
         prompt_snapshot = [dict(m) for m in current_messages]
-
-        try:
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model,
-                    messages=current_messages,
-                    logprobs=self._sub_llm_supports_logprobs or None,
-                ),
-                timeout=self.sub_llm_api_timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Sub-LLM final API call timed out after {self.sub_llm_api_timeout}s"
-            )
-            return SubLLMResult(
-                final_content=f"Error: Sub-LLM API call timed out after {self.sub_llm_api_timeout}s",
-                turns=turns,
-                total_prompt_tokens=total_prompt_tokens,
-                total_completion_tokens=total_completion_tokens,
-                tool_call_count=tool_call_count,
-                num_turns=num_turns,
-                max_turns_reached=True,
+        response = await self._call_sub_llm_api(client, model, current_messages)
+        if response is None:
+            return self._make_timeout_result(
+                turns,
+                total_prompt_tokens,
+                total_completion_tokens,
+                tool_call_count,
+                num_turns,
             )
 
         turns.append(
             SubLLMTurn(
-                prompt_messages=prompt_snapshot,
-                response=response,
-                tool_call_count=0,
+                prompt_messages=prompt_snapshot, response=response, tool_call_count=0
             )
         )
-
-        # Accumulate tokens from final call
         prompt_tokens, completion_tokens = self._extract_tokens(response)
-        total_prompt_tokens += prompt_tokens
-        total_completion_tokens += completion_tokens
 
-        final_content = response.choices[0].message.content or ""
         return SubLLMResult(
-            final_content=final_content,
+            final_content=response.choices[0].message.content or "",
             turns=turns,
-            total_prompt_tokens=total_prompt_tokens,
-            total_completion_tokens=total_completion_tokens,
+            total_prompt_tokens=total_prompt_tokens + prompt_tokens,
+            total_completion_tokens=total_completion_tokens + completion_tokens,
             tool_call_count=tool_call_count,
             num_turns=num_turns,
             max_turns_reached=True,
@@ -1057,30 +1007,30 @@ class RLMEnv(SandboxEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
 
-    async def _setup_interception(self, state: State, rollout_id: str) -> State:
-        """Start interception server and configure tunnel URL for sub-LLM calls."""
+    async def _setup_interception_and_register(
+        self, state: State, rollout_id: str
+    ) -> State:
+        """Start interception server, configure tunnel, and register rollout."""
         await self._ensure_interception_server()
 
-        tunnel_url: str | None = None
         if self._tunnel_pool:
             tunnel_url = await self._tunnel_pool.get_tunnel_url(
                 len(self.active_rollouts)
             )
             interception_url = f"{tunnel_url}/rollout/{rollout_id}/v1/chat/completions"
         else:
+            tunnel_url = None
             interception_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/chat/completions"
 
         state["interception_url"] = interception_url
         state["tunnel_url"] = tunnel_url
-        return state
 
-    def _register_rollout(self, state: State, rollout_id: str) -> None:
-        """Register rollout in active_rollouts for sub-LLM request routing."""
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
         }
+        return state
 
     async def _start_worker(self, state: State) -> None:
         """Start the Python worker process in the sandbox and wait for ready signal."""
@@ -1194,13 +1144,10 @@ fi
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        # 2. Setup interception and tunnels
-        state = await self._setup_interception(state, rollout_id)
+        # 2. Setup interception, tunnels, and register rollout
+        state = await self._setup_interception_and_register(state, rollout_id)
 
-        # 3. Register rollout for sub-LLM routing
-        self._register_rollout(state, rollout_id)
-
-        # 4. Test logprobs support on first rollout
+        # 3. Test logprobs support on first rollout
         if self._sub_llm_supports_logprobs is None:
             client = state.get("client")
             sub_model = self.sub_model or state.get("model")
@@ -1212,7 +1159,14 @@ fi
         # 5. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
-        context_dict = self._build_context_dict(context_data)
+        metadata = {"type": str(type(context_data))}
+        if context_data is None:
+            metadata["size"] = 0
+        elif hasattr(context_data, "__len__"):
+            metadata["size"] = len(context_data)
+        else:
+            metadata["size"] = "unknown"
+        context_dict = {"input_data": context_data, "input_data_metadata": metadata}
         state["rlm_context"] = context_dict
 
         # 6. Prepare sandbox and start worker (with retry using fresh sandbox)
@@ -1244,25 +1198,6 @@ fi
         state["_exec_seq"] = 0
 
         return state
-
-    def _build_context_dict(self, context_data: Any) -> dict[str, Any]:
-        """Build context dictionary with metadata."""
-        return {
-            "input_data": context_data,
-            "input_data_metadata": self._build_context_metadata(context_data),
-        }
-
-    def _build_context_metadata(self, context_data: Any) -> dict[str, Any]:
-        """Build minimal metadata dictionary for the context."""
-        metadata: dict[str, Any] = {}
-        metadata["type"] = str(type(context_data))
-        if context_data is None:
-            metadata["size"] = 0
-        elif hasattr(context_data, "__len__"):
-            metadata["size"] = len(context_data)
-        else:
-            metadata["size"] = "unknown"
-        return metadata
 
     async def _write_json_to_sandbox(
         self, sandbox_id: str, data: dict, file_path: str, filename: str
@@ -1407,19 +1342,6 @@ PY
         return output
 
     # =========================================================================
-    # Context Limit Management
-    # =========================================================================
-
-    def _get_prompt_tokens(self, state: State) -> int:
-        """Get prompt token count from the latest trajectory response."""
-        if not state.get("trajectory"):
-            return 0
-        response = state["trajectory"][-1].get("response")
-        if response and hasattr(response, "usage") and response.usage:
-            return getattr(response.usage, "prompt_tokens", 0) or 0
-        return 0
-
-    # =========================================================================
     # REPL Tool
     # =========================================================================
 
@@ -1476,7 +1398,11 @@ PY
 
         # Inject context limit warning if approaching limit
         if self.max_seq_len and not state.get("context_warning_sent"):
-            prompt_tokens = self._get_prompt_tokens(state)
+            # Get prompt token count from latest trajectory response
+            trajectory = state.get("trajectory", [])
+            response = trajectory[-1].get("response") if trajectory else None
+            usage = getattr(response, "usage", None) if response else None
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
             warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
 
             if prompt_tokens >= warning_threshold:
@@ -1542,22 +1468,19 @@ PY
         """Read final answer from sandbox if not already set."""
         if "final_answer" in state:
             return
-
+        state["final_answer"] = ""
         sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            state["final_answer"] = ""
-            return
-
-        try:
-            result = await self._execute_command_with_retry(
-                sandbox_id,
-                f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
-            )
-            answer = json.loads(result.stdout.strip())
-            state["final_answer"] = answer.get("content", "")
-        except Exception as e:
-            logger.warning(f"Failed to read RLM answer: {e}")
-            state["final_answer"] = ""
+        if sandbox_id:
+            try:
+                result = await self._execute_command_with_retry(
+                    sandbox_id,
+                    f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
+                )
+                state["final_answer"] = json.loads(result.stdout.strip()).get(
+                    "content", ""
+                )
+            except Exception:
+                pass
 
     @vf.stop
     async def answer_ready(self, state: State) -> bool:
@@ -1580,57 +1503,43 @@ PY
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
         """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
-        # Save main trajectory length BEFORE prepending sub-LLM steps
-        main_trajectory_len = len(state.get("trajectory", []))
+        from collections import Counter
 
+        main_trajectory_len = len(state.get("trajectory", []))
         rollout_id = state.get("rollout_id")
+
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
             sub_steps = context.get("sub_llm_trajectory_steps", [])
 
-            # Compute and store sub-LLM metrics from trajectory data
             if sub_steps:
-                # Extract batch_id and request_id pairs
-                batch_request_pairs = set()
-                unique_batch_ids = set()
-                for s in sub_steps:
-                    extras = s.get("extras", {})
-                    batch_id = extras.get("batch_id")
-                    request_id = extras.get("request_id")
-                    if batch_id:
-                        unique_batch_ids.add(batch_id)
-                        if request_id:
-                            batch_request_pairs.add((batch_id, request_id))
+                # Extract unique (batch_id, request_id) pairs and count per batch
+                pairs = {
+                    (e.get("batch_id"), e.get("request_id"))
+                    for s in sub_steps
+                    if (e := s.get("extras", {})).get("batch_id")
+                }
+                batch_sizes = list(Counter(b for b, _ in pairs).values())
 
-                # Count requests per batch for batch size metrics
-                requests_per_batch: dict[str, set[str]] = {}
-                for batch_id, request_id in batch_request_pairs:
-                    requests_per_batch.setdefault(batch_id, set()).add(request_id)
-                batch_sizes = [len(reqs) for reqs in requests_per_batch.values()]
-
-                # Number of prompts processed (unique HTTP requests)
-                state["sub_llm_call_count"] = len(batch_request_pairs)
-                sub_prompt_tokens, sub_completion_tokens = 0, 0
-                for s in sub_steps:
-                    p, c = self._extract_tokens(s.get("response"))
-                    sub_prompt_tokens += p
-                    sub_completion_tokens += c
-                state["sub_llm_prompt_tokens"] = sub_prompt_tokens
-                state["sub_llm_completion_tokens"] = sub_completion_tokens
+                state["sub_llm_call_count"] = len(pairs)
+                state["sub_llm_prompt_tokens"] = sum(
+                    self._extract_tokens(s.get("response"))[0] for s in sub_steps
+                )
+                state["sub_llm_completion_tokens"] = sum(
+                    self._extract_tokens(s.get("response"))[1] for s in sub_steps
+                )
                 state["sub_llm_total_tool_calls"] = sum(
                     s.get("extras", {}).get("tool_call_count", 0) or 0
                     for s in sub_steps
                 )
                 state["sub_llm_total_turns"] = len(sub_steps)
-                state["sub_llm_batch_count"] = len(unique_batch_ids)
-                state["sub_llm_max_batch_size"] = max(batch_sizes) if batch_sizes else 0
+                state["sub_llm_batch_count"] = len(batch_sizes)
+                state["sub_llm_max_batch_size"] = max(batch_sizes, default=0)
                 state["sub_llm_mean_batch_size"] = (
                     sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
                 )
 
-            # Prepend sub-LLM trajectory steps if enabled
             if self.include_sub_llm_in_trajectory and sub_steps:
-                # Sort by timestamp (completion-order)
                 sub_steps_sorted = sorted(
                     sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
                 )
@@ -1638,24 +1547,22 @@ PY
 
             del self.active_rollouts[rollout_id]
 
-        # Compute main RLM metrics from trajectory (excluding sub-LLM steps)
+        # Compute main RLM metrics (excluding sub-LLM steps)
         state["main_rlm_turns"] = main_trajectory_len
-
-        main_prompt_tokens, main_completion_tokens = 0, 0
-        for step in state.get("trajectory", []):
-            # Skip sub-LLM trajectory steps
-            if step.get("extras", {}).get("is_sub_llm_call"):
-                continue
-            p, c = self._extract_tokens(step.get("response"))
-            main_prompt_tokens += p
-            main_completion_tokens += c
-
-        state["main_rlm_prompt_tokens"] = main_prompt_tokens
-        state["main_rlm_completion_tokens"] = main_completion_tokens
+        main_steps = [
+            s
+            for s in state.get("trajectory", [])
+            if not s.get("extras", {}).get("is_sub_llm_call")
+        ]
+        state["main_rlm_prompt_tokens"] = sum(
+            self._extract_tokens(s.get("response"))[0] for s in main_steps
+        )
+        state["main_rlm_completion_tokens"] = sum(
+            self._extract_tokens(s.get("response"))[1] for s in main_steps
+        )
 
         # Release tunnel
-        tunnel_url = state.get("tunnel_url")
-        if tunnel_url and self._tunnel_pool:
+        if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
 
     async def post_rollout(self, state: State):
