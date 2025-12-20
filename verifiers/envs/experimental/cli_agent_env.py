@@ -1,5 +1,4 @@
 import asyncio
-import contextvars
 import logging
 import platform
 import shlex
@@ -29,11 +28,6 @@ from verifiers.types import (
 
 logger = logging.getLogger(__name__)
 
-# Context variable for passing request_id through async call chain
-_current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "current_request_id", default=None
-)
-
 
 class CliAgentEnv(vf.MultiTurnEnv):
     """
@@ -50,7 +44,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         interception_url: str | None = None,
         max_turns: int = -1,
         timeout_seconds: float = 3600.0,
-        request_timeout: float = 300.0,
         poll_interval: float = 2.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
@@ -75,7 +68,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_round_robin_index = 0
         self.timeout_seconds = timeout_seconds
-        self.request_timeout = request_timeout
         self.docker_image = docker_image
         self.start_command = start_command
         self.cpu_cores = cpu_cores
@@ -258,8 +250,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 f"{self.interception_url.rstrip('/')}/rollout/{rollout_id}/v1"
             )
 
-        env_vars = await self._build_env_vars(state)
-        docker_image = await self._get_docker_image(state)
+        env_vars = await self.build_env_vars(state)
+        docker_image = await self.get_docker_image(state)
 
         sandbox_client = AsyncSandboxClient()
         sandbox_request = CreateSandboxRequest(
@@ -284,7 +276,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         logger.debug(f"Created sandbox {sandbox.id}")
         await sandbox_client.wait_for_creation(sandbox.id)
 
-        await self._post_sandbox_setup(state, sandbox_client)
+        await self.post_sandbox_setup(state, sandbox_client)
 
         request_id_queue: asyncio.Queue = asyncio.Queue()
         state["request_id_queue"] = request_id_queue
@@ -294,15 +286,15 @@ class CliAgentEnv(vf.MultiTurnEnv):
             "request_id_queue": request_id_queue,
         }
 
-        await self._start_agent(state, sandbox_client)
+        await self.start_agent(state, sandbox_client)
 
         return state
 
-    async def _get_docker_image(self, state: State) -> str:
+    async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
 
-    async def _build_env_vars(self, state: State) -> dict[str, str]:
+    async def build_env_vars(self, state: State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
@@ -311,13 +303,13 @@ class CliAgentEnv(vf.MultiTurnEnv):
             env_vars["OPENAI_MODEL"] = model
         return env_vars
 
-    async def _post_sandbox_setup(
+    async def post_sandbox_setup(
         self, state: State, sandbox_client: AsyncSandboxClient
     ) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
-    async def _start_agent(
+    async def start_agent(
         self, state: State, sandbox_client: AsyncSandboxClient
     ) -> None:
         """Start the agent command with automatic completion detection."""
@@ -338,29 +330,39 @@ touch /tmp/vf_complete
             f"> /tmp/agent_stdout.log 2> /tmp/agent_stderr.log &",
         )
 
-    async def _check_agent_completed(self, state: State) -> bool:
-        """Check if agent process has exited by looking for completion marker."""
+        # Start background task that blocks until completion marker appears
+        state["completion_wait_task"] = asyncio.create_task(
+            self.wait_for_completion(state)
+        )
+
+    async def wait_for_completion(self, state: State) -> None:
+        """Block until agent completion marker appears, then set state flag."""
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
-            return False
+            return
 
         try:
             sandbox_client = AsyncSandboxClient()
-            result = await sandbox_client.execute_command(
+            # Block until /tmp/vf_complete exists (check every 0.1s in sandbox)
+            await sandbox_client.execute_command(
                 sandbox_id,
-                "test -f /tmp/vf_complete && echo 'done' || echo 'running'",
+                "while ! test -f /tmp/vf_complete; do sleep 0.1; done",
+                timeout=int(self.timeout_seconds),
             )
-            return result.stdout.strip() == "done"
+            state["agent_completed"] = True
         except Exception as e:
-            logger.debug(f"Error checking agent completion: {e}")
-            return False
+            logger.debug(f"Completion wait ended: {e}")
+            state["agent_completed"] = True
+
+    async def check_agent_completed(self, state: State) -> bool:
+        """Check if agent process has completed."""
+        return state.get("agent_completed", False)
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Wait for agent to make an API request OR agent completion, whichever comes first."""
         request_id_queue = state["request_id_queue"]
-        deadline = time.time() + self.request_timeout
 
-        while time.time() < deadline:
+        while True:
             try:
                 # Short timeout so we can check completion frequently
                 request_id = await asyncio.wait_for(
@@ -368,21 +370,17 @@ touch /tmp/vf_complete
                     timeout=self.poll_interval,
                 )
                 # Got a request, proceed normally
-                _current_request_id.set(request_id)
+                state["current_request_id"] = request_id
                 intercept = self._intercepts[request_id]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
-                # No request yet, check if agent finished
-                if await self._check_agent_completed(state):
+                # No request yet, check if agent finished or timed out
+                if await self.check_agent_completed(state):
                     state["agent_completed"] = True
-                    logger.debug("Agent completed without pending request")
                     return []
-
-        state["agent_completed"] = True
-        state["completion_reason"] = "request_timeout"
-        logger.debug("Agent request timeout reached")
-        return []
+                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                    return []
 
     async def get_model_response(
         self,
@@ -414,7 +412,7 @@ touch /tmp/vf_complete
                 object="chat.completion",
             )
 
-        request_id = _current_request_id.get()
+        request_id = state.get("current_request_id")
         intercept = self._intercepts.get(request_id) if request_id else None
 
         if intercept:
@@ -433,9 +431,24 @@ touch /tmp/vf_complete
 
         if intercept:
             intercept["response_future"].set_result(response)
-            _current_request_id.set(None)
+            state["current_request_id"] = None
 
         return response
+
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: ModelResponse,
+    ):
+        """Add model response and update top-level prompt on first turn."""
+        # Skip adding empty "agent completed" step - keeps trajectory clean
+        if not prompt_messages:
+            return
+        # On first turn, update state["prompt"] to match the agent's actual prompt
+        if len(state["trajectory"]) == 0:
+            state["prompt"] = prompt_messages
+        await super().add_model_response(state, prompt_messages, response)
 
     def _truncate(self, s: str, limit: int = 200) -> str:
         return (s[:limit] + "...") if len(s) > limit else s
@@ -553,6 +566,15 @@ touch /tmp/vf_complete
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
         """Cleanup interception context for rollout"""
+        # Cancel completion wait task if still running
+        task = state.get("completion_wait_task")
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         rollout_id = state.get("rollout_id")
         if rollout_id:
             for request_id in list(self._intercepts.keys()):
@@ -574,7 +596,7 @@ touch /tmp/vf_complete
 
     @vf.stop
     async def agent_completed(self, state: State) -> bool:
-        """Check if agent has completed (set by get_prompt_messages when agent exits)."""
+        """Check if agent has completed."""
         return state.get("agent_completed", False)
 
     @vf.stop

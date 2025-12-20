@@ -68,7 +68,6 @@ echo "Hello, world!" > hello.txt
 | `agent_workdir`   | `str`               | `/app`             | Working directory for agent in sandbox   |
 | `docker_image`    | `str`               | `python:3.11-slim` | Docker image for sandbox                 |
 | `timeout_seconds` | `float`             | `300.0`            | Overall rollout timeout                  |
-| `request_timeout` | `float`             | `60.0`             | Per-request timeout                      |
 | `max_turns`       | `int`               | `-1`               | Max turns (-1 = unlimited)               |
 
 ### Metrics

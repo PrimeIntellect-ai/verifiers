@@ -35,14 +35,14 @@ class HarborEnv(vf.CliAgentEnv):
 
         kwargs["docker_image"] = docker_image
 
-        dataset = self._load_harbor_dataset()
+        dataset = self.load_harbor_dataset()
         rubric = vf.Rubric(funcs=[self.harbor_reward], weights=[1.0])
 
         super().__init__(
             run_command=run_command, dataset=dataset, rubric=rubric, **kwargs
         )
 
-    def _load_harbor_dataset(self) -> Dataset:
+    def load_harbor_dataset(self) -> Dataset:
         """Load Harbor tasks from dataset directory into a Dataset with prompts."""
         if not self.dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {self.dataset_path}")
@@ -90,14 +90,14 @@ class HarborEnv(vf.CliAgentEnv):
         logger.info(f"Loaded {len(tasks)} Harbor tasks from {self.dataset_path}")
         return Dataset.from_list(tasks)
 
-    async def _get_docker_image(self, state: vf.State) -> str:
+    async def get_docker_image(self, state: vf.State) -> str:
         """Get Docker image from task info, falling back to default."""
         task_info: dict[str, Any] = state.get("info") or {}
         return task_info.get("docker_image") or self.docker_image
 
-    async def _build_env_vars(self, state: vf.State) -> dict[str, str]:
+    async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build env vars with Harbor-specific additions."""
-        env_vars = await super()._build_env_vars(state)
+        env_vars = await super().build_env_vars(state)
         env_vars.setdefault("HARBOR_TASK_NAME", state.get("task", ""))
         env_vars.setdefault("HARBOR_TASK_DIR", "/task")
         env_vars.setdefault("HARBOR_INSTRUCTION_PATH", "/task/instruction.md")
@@ -105,7 +105,7 @@ class HarborEnv(vf.CliAgentEnv):
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
         return env_vars
 
-    async def _post_sandbox_setup(
+    async def post_sandbox_setup(
         self, state: vf.State, sandbox_client: AsyncSandboxClient
     ) -> None:
         """Upload Harbor task assets after sandbox creation."""
@@ -116,11 +116,11 @@ class HarborEnv(vf.CliAgentEnv):
         if not task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {task_dir}")
 
-        await self._prepare_harbor_task(sandbox_client, state["sandbox_id"], task_dir)
+        await self.prepare_harbor_task(sandbox_client, state["sandbox_id"], task_dir)
         state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
-    async def _prepare_harbor_task(
+    async def prepare_harbor_task(
         self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
     ) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
@@ -150,7 +150,7 @@ class HarborEnv(vf.CliAgentEnv):
         finally:
             tar_path.unlink(missing_ok=True)
 
-    async def _upload_test_assets(
+    async def upload_test_assets(
         self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
     ) -> None:
         """Upload oracle/tests after agent completes, right before running tests."""
@@ -184,12 +184,12 @@ class HarborEnv(vf.CliAgentEnv):
     async def post_rollout(self, state: vf.State):
         """Run Harbor tests to compute reward before sandbox destruction."""
         await super().post_rollout(state)
-        state["reward"] = await self._compute_reward(state)
+        state["reward"] = await self.compute_reward(state)
 
     async def harbor_reward(self, state: vf.State, **kwargs) -> float:
         return state.get("reward", 0.0)
 
-    async def _compute_reward(self, state: vf.State) -> float:
+    async def compute_reward(self, state: vf.State) -> float:
         """
         Execute Harbor tests (tests/test.sh) inside the sandbox to compute reward.
         Uploads oracle/tests first (they don't exist during agent execution).
@@ -208,7 +208,7 @@ class HarborEnv(vf.CliAgentEnv):
         sandbox_client = AsyncSandboxClient()
         try:
             # Upload test assets now that agent has completed
-            await self._upload_test_assets(sandbox_client, sandbox_id, task_dir)
+            await self.upload_test_assets(sandbox_client, sandbox_id, task_dir)
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
             await sandbox_client.execute_command(

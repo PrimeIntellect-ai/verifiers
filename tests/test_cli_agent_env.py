@@ -95,7 +95,7 @@ class TestCliAgentEnv:
             "interception_base_url": "https://test.trycloudflare.com/v1",
             "model": "gpt-4",
         }
-        env_vars = await env._build_env_vars(state)
+        env_vars = await env.build_env_vars(state)
 
         assert env_vars["OPENAI_BASE_URL"] == "https://test.trycloudflare.com/v1"
         assert env_vars["OPENAI_MODEL"] == "gpt-4"
@@ -111,7 +111,7 @@ class TestCliAgentEnv:
             docker_image="python:3.11-slim",
         )
         state = {}
-        image = await env._get_docker_image(state)
+        image = await env.get_docker_image(state)
         assert image == "python:3.11-slim"
 
     @pytest.mark.asyncio
@@ -248,7 +248,7 @@ class TestHarborEnv:
         state = {
             "info": {"docker_image": "custom:latest"},
         }
-        image = await env._get_docker_image(state)
+        image = await env.get_docker_image(state)
         assert image == "custom:latest"
 
     @pytest.mark.asyncio
@@ -260,7 +260,7 @@ class TestHarborEnv:
             docker_image="fallback:latest",
         )
         state = {"info": {}}
-        image = await env._get_docker_image(state)
+        image = await env.get_docker_image(state)
         assert image == "fallback:latest"
 
     @pytest.mark.asyncio
@@ -275,7 +275,7 @@ class TestHarborEnv:
             "interception_base_url": "https://test.trycloudflare.com/v1",
             "task": "my_task",
         }
-        env_vars = await env._build_env_vars(state)
+        env_vars = await env.build_env_vars(state)
 
         assert env_vars["HARBOR_TASK_NAME"] == "my_task"
         assert env_vars["HARBOR_TASK_DIR"] == "/task"
