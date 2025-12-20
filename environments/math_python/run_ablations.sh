@@ -15,7 +15,7 @@ set -e
 
 MODELS=(
     # "deepseek:deepseek/deepseek-v3.2"
-    "prime:prime-intellect/intellect-3"
+    # "prime:prime-intellect/intellect-3"
     "openrouter:xiaomi/mimo-v2-flash:free"
     "openrouter:z-ai/glm-4.5-air"
     "openrouter:z-ai/glm-4.6"

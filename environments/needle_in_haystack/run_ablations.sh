@@ -23,7 +23,7 @@ set -e
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
     # "deepseek:deepseek/deepseek-v3.2"
-    "prime:prime-intellect/intellect-3"
+    # "prime:prime-intellect/intellect-3"
 )
 
 # MODELS_STANDARD: These models run only the default setting
