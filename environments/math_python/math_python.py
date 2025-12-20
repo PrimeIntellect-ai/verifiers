@@ -248,6 +248,7 @@ def load_environment(
         async def correct_answer_rlm(state: vf.State, answer: str, **_kwargs) -> float:
             """Reward function for RLM mode using state['final_answer']."""
             final_answer = state.get("final_answer", "")
+            final_answer = extract_boxed_answer(final_answer)
             if not final_answer:
                 return 0.0
 
