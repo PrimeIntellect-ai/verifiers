@@ -62,11 +62,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.poll_interval = poll_interval
         self.interception_port = interception_port
         self.interception_url = interception_url
-        self._tunnels: list[
+        self.tunnels: list[
             dict[str, Any]
         ] = []  # List of {url, process, active_rollouts}
-        self._tunnel_lock = asyncio.Lock()
-        self._tunnel_round_robin_index = 0
+        self.tunnel_lock = asyncio.Lock()
+        self.tunnel_round_robin_index = 0
         self.timeout_seconds = timeout_seconds
         self.docker_image = docker_image
         self.start_command = start_command
@@ -78,14 +78,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
-        self._active_rollouts: dict[str, dict[str, Any]] = {}
-        self._intercepts: dict[str, dict[str, Any]] = {}  # request_id -> intercept data
-        self._interception_server: Any = None
-        self._server_lock = asyncio.Lock()
-        self._server_runner: Any = None
-        self._server_site: Any = None
+        self.active_rollouts: dict[str, dict[str, Any]] = {}
+        self.intercepts: dict[str, dict[str, Any]] = {}  # request_id -> intercept data
+        self.interception_server: Any = None
+        self.server_lock = asyncio.Lock()
+        self.server_runner: Any = None
+        self.server_site: Any = None
 
-    def _ensure_cloudflared_installed(self) -> str:
+    def ensure_cloudflared_installed(self) -> str:
         """Install cloudflared if not already installed. Returns path to cloudflared binary."""
         path = shutil.which("cloudflared")
         if path:
@@ -118,7 +118,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             raise RuntimeError("cloudflared installed but not found in PATH")
         return path
 
-    def _extract_tunnel_url_from_line(self, line: str) -> str | None:
+    def extract_tunnel_url_from_line(self, line: str) -> str | None:
         """Extract tunnel URL from a line of cloudflared output."""
         if ".trycloudflare.com" not in line:
             return None
@@ -139,9 +139,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
             return url
         return None
 
-    def _start_cloudflared_tunnel(self) -> tuple[str, subprocess.Popen]:
+    def start_cloudflared_tunnel(self) -> tuple[str, subprocess.Popen]:
         """Start cloudflared tunnel and return (URL, process)."""
-        cloudflared_path = self._ensure_cloudflared_installed()
+        cloudflared_path = self.ensure_cloudflared_installed()
 
         # Start cloudflared tunnel process
         tunnel_process = subprocess.Popen(
@@ -179,7 +179,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 line = tunnel_process.stderr.readline()
                 if line:
                     stderr_lines.append(line)
-                    url = self._extract_tunnel_url_from_line(line)
+                    url = self.extract_tunnel_url_from_line(line)
                     if url:
                         logger.info(f"Cloudflare tunnel started: {url}")
                         return url, tunnel_process
@@ -189,7 +189,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         # Search all collected lines
         all_output = "".join(stderr_lines)
         for line in stderr_lines:
-            url = self._extract_tunnel_url_from_line(line)
+            url = self.extract_tunnel_url_from_line(line)
             if url:
                 logger.info(f"Cloudflare tunnel started: {url}")
                 return url, tunnel_process
@@ -199,18 +199,18 @@ class CliAgentEnv(vf.MultiTurnEnv):
             f"Output: {all_output[:500]}"
         )
 
-    async def _get_tunnel_url(self) -> str:
+    async def get_tunnel_url(self) -> str:
         """Get tunnel URL from pool, creating new tunnels as needed (1 per 50 active rollouts)."""
-        async with self._tunnel_lock:
-            total_active_rollouts = len(self._active_rollouts)
+        async with self.tunnel_lock:
+            total_active_rollouts = len(self.active_rollouts)
 
             # Calculate required tunnels (at least 1 per 50 rollouts, minimum 1)
             required_tunnels = max(1, (total_active_rollouts + 49) // 50)
 
-            while len(self._tunnels) < required_tunnels:
+            while len(self.tunnels) < required_tunnels:
                 try:
-                    url, process = self._start_cloudflared_tunnel()
-                    self._tunnels.append(
+                    url, process = self.start_cloudflared_tunnel()
+                    self.tunnels.append(
                         {
                             "url": url,
                             "process": process,
@@ -218,13 +218,13 @@ class CliAgentEnv(vf.MultiTurnEnv):
                         }
                     )
                     logger.debug(
-                        f"Created tunnel {len(self._tunnels)}/{required_tunnels}: {url}"
+                        f"Created tunnel {len(self.tunnels)}/{required_tunnels}: {url}"
                     )
                 except Exception as e:
                     logger.error(f"Failed to create tunnel: {e}")
                     raise
 
-            tunnel = self._tunnels[self._tunnel_round_robin_index % len(self._tunnels)]
+            tunnel = self.tunnels[self.tunnel_round_robin_index % len(self.tunnels)]
             self._tunnel_round_robin_index += 1
 
             tunnel["active_rollouts"] += 1
@@ -238,12 +238,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
         rollout_id = f"rollout_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        await self._ensure_interception_server()
+        await self.ensure_interception_server()
 
         # Auto-start Cloudflare tunnel if not provided
         tunnel_url: str | None = None
         if self.interception_url is None:
-            tunnel_url = await self._get_tunnel_url()
+            tunnel_url = await self.get_tunnel_url()
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
         else:
             state["interception_base_url"] = (
@@ -282,7 +282,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         state["request_id_queue"] = request_id_queue
         state["tunnel_url"] = tunnel_url if self.interception_url is None else None
         state["agent_completed"] = False
-        self._active_rollouts[rollout_id] = {
+        self.active_rollouts[rollout_id] = {
             "request_id_queue": request_id_queue,
         }
 
@@ -371,7 +371,7 @@ touch /tmp/vf_complete
                 )
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
-                intercept = self._intercepts[request_id]
+                intercept = self.intercepts[request_id]
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
@@ -413,7 +413,7 @@ touch /tmp/vf_complete
             )
 
         request_id = state.get("current_request_id")
-        intercept = self._intercepts.get(request_id) if request_id else None
+        intercept = self.intercepts.get(request_id) if request_id else None
 
         if intercept:
             model = intercept.get("model") or model
@@ -450,14 +450,14 @@ touch /tmp/vf_complete
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
 
-    def _truncate(self, s: str, limit: int = 200) -> str:
+    def truncate(self, s: str, limit: int = 200) -> str:
         return (s[:limit] + "...") if len(s) > limit else s
 
-    def _log_request(self, rollout_id: str, body: dict) -> None:
+    def log_request(self, rollout_id: str, body: dict) -> None:
         logger.debug(f"[{rollout_id}] <- INTERCEPTED REQUEST")
         for msg in body.get("messages", []):
             logger.debug(
-                f"  [{msg.get('role', '?')}] {self._truncate(msg.get('content', ''))}"
+                f"  [{msg.get('role', '?')}] {self.truncate(msg.get('content', ''))}"
             )
         if body.get("tools"):
             logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
@@ -466,17 +466,17 @@ touch /tmp/vf_complete
         logger.debug(f"[{rollout_id}] -> RESPONSE")
         msg = response.get("choices", [{}])[0].get("message", {})
         if msg.get("content"):
-            logger.debug(f"  [assistant] {self._truncate(msg['content'])}")
+            logger.debug(f"  [assistant] {self.truncate(msg['content'])}")
         for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {})
             logger.debug(
-                f"  [tool_call] {func.get('name')}({self._truncate(func.get('arguments', ''), 100)})"
+                f"  [tool_call] {func.get('name')}({self.truncate(func.get('arguments', ''), 100)})"
             )
 
-    async def _ensure_interception_server(self):
+    async def ensure_interception_server(self):
         """Start shared HTTP server if needed"""
-        async with self._server_lock:
-            if self._interception_server is not None:
+        async with self.server_lock:
+            if self.interception_server is not None:
                 return
 
             app = web.Application()  # type: ignore
@@ -501,7 +501,7 @@ touch /tmp/vf_complete
     async def _handle_intercepted_request(self, request: Any) -> Any:
         """HTTP handler: queue request, wait for response, return"""
         rollout_id = request.match_info["rollout_id"]
-        context = self._active_rollouts.get(rollout_id)
+        context = self.active_rollouts.get(rollout_id)
         if not context:
             return web.json_response(  # type: ignore
                 {"error": "Rollout not found"}, status=404
@@ -514,7 +514,7 @@ touch /tmp/vf_complete
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
-        self._log_request(rollout_id, request_body)
+        self.log_request(rollout_id, request_body)
 
         request_id = f"req_{uuid.uuid4().hex[:8]}"
         intercept = {
@@ -526,12 +526,16 @@ touch /tmp/vf_complete
             "response_future": asyncio.Future(),
         }
 
-        self._intercepts[request_id] = intercept
+        self.intercepts[request_id] = intercept
         await context["request_id_queue"].put(request_id)
 
         try:
             response_future = cast(asyncio.Future[Any], intercept["response_future"])
             response = await response_future
+        except asyncio.CancelledError:
+            return web.json_response(  # type: ignore
+                {"error": "Rollout cancelled"}, status=499
+            )
         except Exception as e:
             logger.error(f"Error processing intercepted request: {e}")
             return web.json_response(  # type: ignore
@@ -548,8 +552,8 @@ touch /tmp/vf_complete
     @vf.teardown
     async def teardown_tunnel(self):
         """Stop all cloudflared tunnel processes"""
-        async with self._tunnel_lock:
-            for tunnel in self._tunnels:
+        async with self.tunnel_lock:
+            for tunnel in self.tunnels:
                 process = tunnel.get("process")
                 if process:
                     try:
@@ -561,7 +565,7 @@ touch /tmp/vf_complete
                             process.kill()
                         except Exception:
                             pass
-            self._tunnels.clear()
+            self.tunnels.clear()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -577,17 +581,22 @@ touch /tmp/vf_complete
 
         rollout_id = state.get("rollout_id")
         if rollout_id:
-            for request_id in list(self._intercepts.keys()):
-                if self._intercepts[request_id].get("rollout_id") == rollout_id:
-                    del self._intercepts[request_id]
+            for request_id in list(self.intercepts.keys()):
+                intercept = self.intercepts.get(request_id)
+                if intercept and intercept.get("rollout_id") == rollout_id:
+                    # Cancel pending future to unblock HTTP handler
+                    future = intercept.get("response_future")
+                    if future and not future.done():
+                        future.cancel()
+                    del self.intercepts[request_id]
 
-            if rollout_id in self._active_rollouts:
-                del self._active_rollouts[rollout_id]
+            if rollout_id in self.active_rollouts:
+                del self.active_rollouts[rollout_id]
 
         tunnel_url = state.get("tunnel_url")
         if tunnel_url:
-            async with self._tunnel_lock:
-                for tunnel in self._tunnels:
+            async with self.tunnel_lock:
+                for tunnel in self.tunnels:
                     if tunnel["url"] == tunnel_url:
                         tunnel["active_rollouts"] = max(
                             0, tunnel["active_rollouts"] - 1
