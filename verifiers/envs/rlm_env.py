@@ -1028,7 +1028,7 @@ class RLMEnv(SandboxEnv):
                 sandbox_id, command, timeout=effective_timeout
             )
         except CommandTimeoutError as e:
-            logger.warning(
+            logger.debug(
                 f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
             )
             raise vf.SandboxError(cause=e)
@@ -1331,25 +1331,9 @@ PY
                 sandbox_id, command, timeout=self.code_execution_timeout
             )
         except vf.SandboxError as e:
-            # Check if this is a timeout error - return graceful message to LLM
-            if hasattr(e, "cause") and isinstance(e.cause, CommandTimeoutError):
-                logger.warning(
-                    f"Code execution timed out after {self.code_execution_timeout}s"
-                )
-                return {
-                    "status": "error",
-                    "stdout": "",
-                    "stderr": "",
-                    "result": (
-                        f"Execution timed out after {self.code_execution_timeout} seconds."
-                    ),
-                    "answer": {"ready": False, "content": ""},
-                }
-            # Re-raise other sandbox errors (actual infrastructure issues)
+            # Re-raise sandbox errors (including timeouts) to fail the rollout
             error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
-            logger.error(
-                f"Sandbox infrastructure error during code execution: {error_msg}"
-            )
+            logger.error(f"Sandbox error during code execution: {error_msg}")
             raise
 
         if not result.stdout:
