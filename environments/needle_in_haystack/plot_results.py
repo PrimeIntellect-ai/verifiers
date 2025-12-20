@@ -66,16 +66,11 @@ def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame):
     filtered = df[(df["num_lines"] == 10000) & (df["num_needles"] == 1)]
 
     # Aggregate across models
-    agg_df = (
-        filtered.groupby(["needle_type", "mode"])
-        .agg(
-            {
-                "partial_match_mean": "mean",
-                "partial_match_std": "mean",
-            }
-        )
-        .reset_index()
-    )
+    agg_dict = {"partial_match_mean": "mean"}
+    if "partial_match_count" in filtered.columns:
+        agg_dict["partial_match_count"] = "sum"
+
+    agg_df = filtered.groupby(["needle_type", "mode"]).agg(agg_dict).reset_index()
 
     needle_types = ["word", "numeric"]
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -86,38 +81,52 @@ def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = agg_df[agg_df["mode"] == mode]
         rewards = []
-        errors = []
+        counts = []
         for nt in needle_types:
             nt_data = mode_data[mode_data["needle_type"] == nt]
             if len(nt_data) > 0:
                 rewards.append(nt_data["partial_match_mean"].values[0])
-                errors.append(nt_data["partial_match_std"].values[0])
+                if "partial_match_count" in nt_data.columns:
+                    counts.append(int(nt_data["partial_match_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 rewards.append(0)
-                errors.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             rewards,
             width,
-            yerr=errors,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
             edgecolor="black",
             linewidth=0.5,
-            capsize=3,
         )
+
+        # Add sample size labels above bars
+        for bar, count in zip(bars, counts):
+            if count is not None:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f"n={count}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
 
     ax.set_xlabel("Needle Type")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Mode Comparison by Needle Type\n(lines=10K, needles=1)")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2)  # Increased to make room for labels
     ax.set_xticks(x)
     ax.set_xticklabels([nt.capitalize() for nt in needle_types])
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_mode_vs_context_size(ax: plt.Axes, df: pd.DataFrame):
@@ -160,7 +169,7 @@ def plot_mode_vs_context_size(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Mode Comparison vs Context Size\n(type=word, needles=1)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower left", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_mode_vs_needle_count(ax: plt.Axes, df: pd.DataFrame):
@@ -205,7 +214,7 @@ def plot_mode_vs_needle_count(ax: plt.Axes, df: pd.DataFrame):
     ax.set_ylim(0, 1.1)
     ax.set_xticks([1, 3, 5])
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower left", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
@@ -229,7 +238,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         rlm_df.groupby("mode")
         .agg(
             {
-                "main_rlm_turns_mean": "mean",
+                "turns_mean": "mean",
                 "sub_llm_call_count_mean": "mean",
                 "sub_llm_mean_batch_size_mean": "mean",
             }
@@ -241,7 +250,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
 
     # Metrics to show
     metrics = [
-        ("main_rlm_turns_mean", "RLM Turns"),
+        ("turns_mean", "Turns"),
         ("sub_llm_call_count_mean", "Sub-LLM Calls"),
         ("sub_llm_mean_batch_size_mean", "Avg Batch Size"),
     ]
@@ -278,7 +287,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("RLM Usage Metrics by Mode\n(aggregated across all configs)")
     ax.set_xticks(x)
     ax.set_xticklabels([m[1] for m in metrics])
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
@@ -354,7 +363,7 @@ def plot_partial_vs_exact(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Partial vs Exact Match\n(all configs, by mode)")
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_by_mode(ax: plt.Axes, df: pd.DataFrame):
@@ -447,7 +456,7 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Context Size (K lines)")
     ax.set_ylabel("Time (seconds)")
     ax.set_title("Timing vs Context Size\n(type=word, needles=1)")
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_vs_needles(ax: plt.Axes, df: pd.DataFrame):
@@ -491,7 +500,7 @@ def plot_timing_vs_needles(ax: plt.Axes, df: pd.DataFrame):
     ax.set_ylabel("Time (seconds)")
     ax.set_title("Timing vs Needle Count\n(type=word, lines=10K)")
     ax.set_xticks([1, 3, 5])
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
@@ -526,7 +535,7 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
@@ -550,8 +559,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
         rlm_df.groupby("mode")
         .agg(
             {
-                "main_rlm_prompt_tokens_mean": "mean",
-                "main_rlm_completion_tokens_mean": "mean",
+                "prompt_tokens_mean": "mean",
+                "completion_tokens_mean": "mean",
                 "sub_llm_prompt_tokens_mean": "mean",
                 "sub_llm_completion_tokens_mean": "mean",
             }
@@ -569,10 +578,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for mode in modes:
         mode_data = agg_df[agg_df["mode"] == mode]
         if len(mode_data) > 0:
-            main_prompt = mode_data["main_rlm_prompt_tokens_mean"].values[0] or 0
-            main_completion = (
-                mode_data["main_rlm_completion_tokens_mean"].values[0] or 0
-            )
+            main_prompt = mode_data["prompt_tokens_mean"].values[0] or 0
+            main_completion = mode_data["completion_tokens_mean"].values[0] or 0
             sub_prompt = mode_data["sub_llm_prompt_tokens_mean"].values[0] or 0
             sub_completion = mode_data["sub_llm_completion_tokens_mean"].values[0] or 0
             total_tokens.append(

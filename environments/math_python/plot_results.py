@@ -128,7 +128,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
 
     # Metrics to show
     metrics = [
-        ("main_rlm_turns_mean", "RLM Turns"),
+        ("turns_mean", "Turns"),
         ("sub_llm_call_count_mean", "Sub-LLM Calls"),
         ("sub_llm_mean_batch_size_mean", "Avg Batch Size"),
     ]
@@ -301,15 +301,13 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = rlm_df[rlm_df["mode"] == mode]
 
-        # Total tokens = main RLM + sub-LLM tokens
+        # Total tokens = main model + sub-LLM tokens
         total_tokens = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
-                main_prompt = model_data["main_rlm_prompt_tokens_mean"].values[0] or 0
-                main_completion = (
-                    model_data["main_rlm_completion_tokens_mean"].values[0] or 0
-                )
+                main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
+                main_completion = model_data["completion_tokens_mean"].values[0] or 0
                 sub_prompt = model_data["sub_llm_prompt_tokens_mean"].values[0] or 0
                 sub_completion = (
                     model_data["sub_llm_completion_tokens_mean"].values[0] or 0

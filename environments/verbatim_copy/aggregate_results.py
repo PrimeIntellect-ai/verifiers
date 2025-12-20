@@ -76,19 +76,19 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "generation_ms": r.get("generation_ms"),
             "scoring_ms": r.get("scoring_ms"),
             "total_ms": r.get("total_ms"),
-            # Sub-LLM metrics (RLM mode only, will be 0/NaN for standard)
-            "sub_llm_call_count": r.get("sub_llm_call_count"),
-            "sub_llm_prompt_tokens": r.get("sub_llm_prompt_tokens"),
-            "sub_llm_completion_tokens": r.get("sub_llm_completion_tokens"),
-            "sub_llm_total_tool_calls": r.get("sub_llm_total_tool_calls"),
-            "sub_llm_total_turns": r.get("sub_llm_total_turns"),
-            "sub_llm_batch_count": r.get("sub_llm_batch_count"),
-            "sub_llm_max_batch_size": r.get("sub_llm_max_batch_size"),
-            "sub_llm_mean_batch_size": r.get("sub_llm_mean_batch_size"),
-            # Main RLM metrics (RLM mode only)
-            "main_rlm_turns": r.get("main_rlm_turns"),
-            "main_rlm_prompt_tokens": r.get("main_rlm_prompt_tokens"),
-            "main_rlm_completion_tokens": r.get("main_rlm_completion_tokens"),
+            # Sub-LLM metrics (will be 0 for standard mode)
+            "sub_llm_call_count": r.get("sub_llm_call_count", 0),
+            "sub_llm_prompt_tokens": r.get("sub_llm_prompt_tokens", 0),
+            "sub_llm_completion_tokens": r.get("sub_llm_completion_tokens", 0),
+            "sub_llm_total_tool_calls": r.get("sub_llm_total_tool_calls", 0),
+            "sub_llm_total_turns": r.get("sub_llm_total_turns", 0),
+            "sub_llm_batch_count": r.get("sub_llm_batch_count", 0),
+            "sub_llm_max_batch_size": r.get("sub_llm_max_batch_size", 0),
+            "sub_llm_mean_batch_size": r.get("sub_llm_mean_batch_size", 0),
+            # Main model metrics (available for all modes)
+            "turns": r.get("turns", 0),
+            "prompt_tokens": r.get("prompt_tokens", 0),
+            "completion_tokens": r.get("completion_tokens", 0),
         }
         rows.append(row)
 
@@ -122,10 +122,10 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "sub_llm_batch_count",
         "sub_llm_max_batch_size",
         "sub_llm_mean_batch_size",
-        # Main RLM metrics
-        "main_rlm_turns",
-        "main_rlm_prompt_tokens",
-        "main_rlm_completion_tokens",
+        # Main model metrics (available for all modes)
+        "turns",
+        "prompt_tokens",
+        "completion_tokens",
     ]
 
     # Group and compute stats per content type

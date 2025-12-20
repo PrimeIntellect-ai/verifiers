@@ -70,40 +70,55 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         rewards = []
-        errors = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 rewards.append(model_data["judge_reward_mean"].values[0])
-                errors.append(model_data["judge_reward_std"].values[0])
+                # Get sample count if available
+                if "judge_reward_count" in model_data.columns:
+                    counts.append(int(model_data["judge_reward_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 rewards.append(0)
-                errors.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             rewards,
             width,
-            yerr=errors,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
             edgecolor="black",
             linewidth=0.5,
-            capsize=3,
         )
+
+        # Add sample size labels above bars
+        for bar, count in zip(bars, counts):
+            if count is not None:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f"n={count}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Mode Comparison by Model")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2)  # Increased to make room for labels
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
@@ -127,7 +142,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
 
     # Metrics to show
     metrics = [
-        ("main_rlm_turns_mean", "RLM Turns"),
+        ("turns_mean", "Turns"),
         ("sub_llm_call_count_mean", "Sub-LLM Calls"),
         ("sub_llm_total_tool_calls_mean", "Tool Calls"),
     ]
@@ -175,7 +190,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("RLM Usage Metrics by Mode")
     ax.set_xticks(x)
     ax.set_xticklabels([m[1] for m in metrics])
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing(ax: plt.Axes, df: pd.DataFrame):
@@ -217,7 +232,7 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
@@ -245,15 +260,13 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = rlm_df[rlm_df["mode"] == mode]
 
-        # Total tokens = main RLM + sub-LLM tokens
+        # Total tokens = main model + sub-LLM tokens
         total_tokens = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
-                main_prompt = model_data["main_rlm_prompt_tokens_mean"].values[0] or 0
-                main_completion = (
-                    model_data["main_rlm_completion_tokens_mean"].values[0] or 0
-                )
+                main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
+                main_completion = model_data["completion_tokens_mean"].values[0] or 0
                 sub_prompt = model_data["sub_llm_prompt_tokens_mean"].values[0] or 0
                 sub_completion = (
                     model_data["sub_llm_completion_tokens_mean"].values[0] or 0
@@ -283,7 +296,7 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
@@ -318,7 +331,7 @@ def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Timing vs Reward\n(by mode)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):

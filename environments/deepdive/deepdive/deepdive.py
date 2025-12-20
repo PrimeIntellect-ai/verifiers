@@ -223,67 +223,96 @@ def load_environment(
         redundancy_penalty_func, weight=-redundancy_penalty_weight
     )
 
-    # === Sub-LLM Metrics (RLM mode only) ===
-    # Always add these so they appear in metrics output
-    if use_rlm:
+    # === Metrics (available for all modes) ===
+    # Helper to extract tokens from response
+    def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
+        """Extract prompt and completion tokens from response usage."""
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return 0, 0
+        return (
+            getattr(usage, "prompt_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0,
+        )
 
-        def sub_llm_call_count(state: dict, **kwargs) -> float:
-            """Metric: Number of sub-LLM calls made during rollout."""
-            return float(state.get("sub_llm_call_count", 0))
+    # Sub-LLM metrics (will be 0 for standard mode)
+    def sub_llm_call_count(state: dict, **kwargs) -> float:
+        """Metric: Number of sub-LLM calls made during rollout."""
+        return float(state.get("sub_llm_call_count", 0))
 
-        def sub_llm_prompt_tokens(state: dict, **kwargs) -> float:
-            """Metric: Total prompt tokens consumed by sub-LLM calls."""
-            return float(state.get("sub_llm_prompt_tokens", 0))
+    def sub_llm_prompt_tokens(state: dict, **kwargs) -> float:
+        """Metric: Total prompt tokens consumed by sub-LLM calls."""
+        return float(state.get("sub_llm_prompt_tokens", 0))
 
-        def sub_llm_completion_tokens(state: dict, **kwargs) -> float:
-            """Metric: Total completion tokens from sub-LLM calls."""
-            return float(state.get("sub_llm_completion_tokens", 0))
+    def sub_llm_completion_tokens(state: dict, **kwargs) -> float:
+        """Metric: Total completion tokens from sub-LLM calls."""
+        return float(state.get("sub_llm_completion_tokens", 0))
 
-        def sub_llm_total_tool_calls(state: dict, **kwargs) -> float:
-            """Metric: Total tool calls made by sub-LLMs."""
-            return float(state.get("sub_llm_total_tool_calls", 0))
+    def sub_llm_total_tool_calls(state: dict, **kwargs) -> float:
+        """Metric: Total tool calls made by sub-LLMs."""
+        return float(state.get("sub_llm_total_tool_calls", 0))
 
-        def sub_llm_total_turns(state: dict, **kwargs) -> float:
-            """Metric: Total turns (LLM calls) made by sub-LLMs."""
-            return float(state.get("sub_llm_total_turns", 0))
+    def sub_llm_total_turns(state: dict, **kwargs) -> float:
+        """Metric: Total turns (LLM calls) made by sub-LLMs."""
+        return float(state.get("sub_llm_total_turns", 0))
 
-        def sub_llm_batch_count(state: dict, **kwargs) -> float:
-            """Metric: Number of llm_batch() invocations during rollout."""
-            return float(state.get("sub_llm_batch_count", 0))
+    def sub_llm_batch_count(state: dict, **kwargs) -> float:
+        """Metric: Number of llm_batch() invocations during rollout."""
+        return float(state.get("sub_llm_batch_count", 0))
 
-        def sub_llm_max_batch_size(state: dict, **kwargs) -> float:
-            """Metric: Maximum batch size (peak parallelism) in a single llm_batch() call."""
-            return float(state.get("sub_llm_max_batch_size", 0))
+    def sub_llm_max_batch_size(state: dict, **kwargs) -> float:
+        """Metric: Maximum batch size (peak parallelism) in a single llm_batch() call."""
+        return float(state.get("sub_llm_max_batch_size", 0))
 
-        def sub_llm_mean_batch_size(state: dict, **kwargs) -> float:
-            """Metric: Mean batch size across all llm_batch() invocations."""
-            return float(state.get("sub_llm_mean_batch_size", 0.0))
+    def sub_llm_mean_batch_size(state: dict, **kwargs) -> float:
+        """Metric: Mean batch size across all llm_batch() invocations."""
+        return float(state.get("sub_llm_mean_batch_size", 0.0))
 
-        judge_rubric.add_reward_func(sub_llm_call_count, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_prompt_tokens, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_completion_tokens, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_total_tool_calls, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_total_turns, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_batch_count, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_max_batch_size, weight=0.0)
-        judge_rubric.add_reward_func(sub_llm_mean_batch_size, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_call_count, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_prompt_tokens, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_completion_tokens, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_total_tool_calls, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_total_turns, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_batch_count, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_max_batch_size, weight=0.0)
+    judge_rubric.add_reward_func(sub_llm_mean_batch_size, weight=0.0)
 
-        # === Main RLM Metrics ===
-        def main_rlm_turns(state: dict, **kwargs) -> float:
-            """Metric: Number of REPL iterations by the main RLM."""
-            return float(state.get("main_rlm_turns", 0))
+    # Main model metrics (works for both standard and RLM modes)
+    def turns(state: dict, **kwargs) -> float:
+        """Metric: Number of LLM turns in the rollout."""
+        # RLM mode sets main_rlm_turns
+        if "main_rlm_turns" in state:
+            return float(state["main_rlm_turns"])
+        # Standard mode: count trajectory steps
+        return float(len(state.get("trajectory", [])))
 
-        def main_rlm_prompt_tokens(state: dict, **kwargs) -> float:
-            """Metric: Total prompt tokens consumed by the main RLM."""
-            return float(state.get("main_rlm_prompt_tokens", 0))
+    def prompt_tokens(state: dict, **kwargs) -> float:
+        """Metric: Total prompt tokens consumed by the main model."""
+        # RLM mode sets main_rlm_prompt_tokens
+        if "main_rlm_prompt_tokens" in state:
+            return float(state["main_rlm_prompt_tokens"])
+        # Standard mode: compute from trajectory
+        total = 0
+        for step in state.get("trajectory", []):
+            p, _ = _extract_tokens_from_response(step.get("response"))
+            total += p
+        return float(total)
 
-        def main_rlm_completion_tokens(state: dict, **kwargs) -> float:
-            """Metric: Total completion tokens generated by the main RLM."""
-            return float(state.get("main_rlm_completion_tokens", 0))
+    def completion_tokens(state: dict, **kwargs) -> float:
+        """Metric: Total completion tokens generated by the main model."""
+        # RLM mode sets main_rlm_completion_tokens
+        if "main_rlm_completion_tokens" in state:
+            return float(state["main_rlm_completion_tokens"])
+        # Standard mode: compute from trajectory
+        total = 0
+        for step in state.get("trajectory", []):
+            _, c = _extract_tokens_from_response(step.get("response"))
+            total += c
+        return float(total)
 
-        judge_rubric.add_reward_func(main_rlm_turns, weight=0.0)
-        judge_rubric.add_reward_func(main_rlm_prompt_tokens, weight=0.0)
-        judge_rubric.add_reward_func(main_rlm_completion_tokens, weight=0.0)
+    judge_rubric.add_reward_func(turns, weight=0.0)
+    judge_rubric.add_reward_func(prompt_tokens, weight=0.0)
+    judge_rubric.add_reward_func(completion_tokens, weight=0.0)
 
     # === RLM Mode ===
     if use_rlm:

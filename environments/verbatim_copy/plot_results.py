@@ -509,8 +509,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
         rlm_df.groupby("mode")
         .agg(
             {
-                "main_rlm_prompt_tokens_mean": "mean",
-                "main_rlm_completion_tokens_mean": "mean",
+                "prompt_tokens_mean": "mean",
+                "completion_tokens_mean": "mean",
                 "sub_llm_prompt_tokens_mean": "mean",
                 "sub_llm_completion_tokens_mean": "mean",
             }
@@ -528,10 +528,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for mode in modes:
         mode_data = agg_df[agg_df["mode"] == mode]
         if len(mode_data) > 0:
-            main_prompt = mode_data["main_rlm_prompt_tokens_mean"].values[0] or 0
-            main_completion = (
-                mode_data["main_rlm_completion_tokens_mean"].values[0] or 0
-            )
+            main_prompt = mode_data["prompt_tokens_mean"].values[0] or 0
+            main_completion = mode_data["completion_tokens_mean"].values[0] or 0
             sub_prompt = mode_data["sub_llm_prompt_tokens_mean"].values[0] or 0
             sub_completion = mode_data["sub_llm_completion_tokens_mean"].values[0] or 0
             total_tokens.append(

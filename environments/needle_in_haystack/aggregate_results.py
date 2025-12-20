@@ -63,15 +63,14 @@ def infer_mode(result: dict) -> str:
     """Infer the mode from result data.
 
     The mode is determined by checking RLM-specific metrics:
-    - If main_rlm_turns > 0, it's an RLM mode
+    - If sub_llm_call_count > 0, it's an RLM mode (sub-LLM calls only happen in RLM)
     - If <env_tips> is in the prompt, it's rlm_tips
     """
-    # Check if RLM mode was used (RLM metrics will be present and non-zero)
-    main_rlm_turns = result.get("main_rlm_turns", 0)
+    # Check if RLM mode was used (sub-LLM metrics only present in RLM mode)
     sub_llm_call_count = result.get("sub_llm_call_count", 0)
 
-    # If we have RLM metrics, it's an RLM mode
-    if main_rlm_turns > 0 or sub_llm_call_count > 0:
+    # If we have sub-LLM calls, it's an RLM mode
+    if sub_llm_call_count > 0:
         # Check if env_tips were included by looking at the prompt
         prompt = result.get("prompt", [])
         if prompt and isinstance(prompt, list) and len(prompt) > 0:
@@ -110,19 +109,19 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "generation_ms": r.get("generation_ms"),
             "scoring_ms": r.get("scoring_ms"),
             "total_ms": r.get("total_ms"),
-            # Sub-LLM metrics (RLM mode only, will be 0/NaN for standard)
-            "sub_llm_call_count": r.get("sub_llm_call_count"),
-            "sub_llm_prompt_tokens": r.get("sub_llm_prompt_tokens"),
-            "sub_llm_completion_tokens": r.get("sub_llm_completion_tokens"),
-            "sub_llm_total_tool_calls": r.get("sub_llm_total_tool_calls"),
-            "sub_llm_total_turns": r.get("sub_llm_total_turns"),
-            "sub_llm_batch_count": r.get("sub_llm_batch_count"),
-            "sub_llm_max_batch_size": r.get("sub_llm_max_batch_size"),
-            "sub_llm_mean_batch_size": r.get("sub_llm_mean_batch_size"),
-            # Main RLM metrics (RLM mode only)
-            "main_rlm_turns": r.get("main_rlm_turns"),
-            "main_rlm_prompt_tokens": r.get("main_rlm_prompt_tokens"),
-            "main_rlm_completion_tokens": r.get("main_rlm_completion_tokens"),
+            # Sub-LLM metrics (will be 0 for standard mode)
+            "sub_llm_call_count": r.get("sub_llm_call_count", 0),
+            "sub_llm_prompt_tokens": r.get("sub_llm_prompt_tokens", 0),
+            "sub_llm_completion_tokens": r.get("sub_llm_completion_tokens", 0),
+            "sub_llm_total_tool_calls": r.get("sub_llm_total_tool_calls", 0),
+            "sub_llm_total_turns": r.get("sub_llm_total_turns", 0),
+            "sub_llm_batch_count": r.get("sub_llm_batch_count", 0),
+            "sub_llm_max_batch_size": r.get("sub_llm_max_batch_size", 0),
+            "sub_llm_mean_batch_size": r.get("sub_llm_mean_batch_size", 0),
+            # Main model metrics (available for all modes)
+            "turns": r.get("turns", 0),
+            "prompt_tokens": r.get("prompt_tokens", 0),
+            "completion_tokens": r.get("completion_tokens", 0),
         }
         rows.append(row)
 
@@ -149,10 +148,10 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "sub_llm_batch_count",
         "sub_llm_max_batch_size",
         "sub_llm_mean_batch_size",
-        # Main RLM metrics
-        "main_rlm_turns",
-        "main_rlm_prompt_tokens",
-        "main_rlm_completion_tokens",
+        # Main model metrics (available for all modes)
+        "turns",
+        "prompt_tokens",
+        "completion_tokens",
     ]
 
     # Group and compute stats
@@ -225,6 +224,33 @@ def print_summary_table(summary: pd.DataFrame):
     print("-" * 120)
     print(f"Total configurations: {len(summary)}")
 
+    # Print token usage metrics for all modes
+    print("\n" + "=" * 120)
+    print("TOKEN USAGE METRICS (mean values)")
+    print("=" * 120)
+    print(
+        f"\n{'Model':<18} {'Mode':<10} {'Config':<25} {'Turns':>10} {'Prompt Tok':>14} {'Compl Tok':>12}"
+    )
+    print("-" * 120)
+
+    for _, row in summary.iterrows():
+        model = normalize_model_name(row.get("model", "unknown"))
+        mode = row.get("mode", "standard")
+        needle_type = row.get("needle_type", "word")
+        num_lines = int(row.get("num_lines", 10000))
+        num_needles = int(row.get("num_needles", 1))
+
+        config = f"type={needle_type}, l={num_lines}, n={num_needles}"
+
+        num_turns = row.get("turns_mean", 0)
+        prompt_tok = row.get("prompt_tokens_mean", 0)
+        compl_tok = row.get("completion_tokens_mean", 0)
+
+        print(
+            f"{model:<18} {mode:<10} {config:<25} {num_turns:>10.1f} {prompt_tok:>14.0f} {compl_tok:>12.0f}"
+        )
+    print("-" * 120)
+
     # Print RLM-specific metrics if present
     rlm_rows = summary[summary["mode"].isin(["rlm", "rlm_tips"])]
     if len(rlm_rows) > 0:
@@ -232,7 +258,7 @@ def print_summary_table(summary: pd.DataFrame):
         print("RLM-SPECIFIC METRICS (mean values)")
         print("=" * 120)
         print(
-            f"\n{'Model':<18} {'Mode':<10} {'Config':<25} {'RLM Turns':>10} {'Sub-LLM Calls':>14} {'Batch Size':>12}"
+            f"\n{'Model':<18} {'Mode':<10} {'Config':<25} {'Sub-LLM Calls':>14} {'Batch Size':>12}"
         )
         print("-" * 120)
 
@@ -245,12 +271,11 @@ def print_summary_table(summary: pd.DataFrame):
 
             config = f"type={needle_type}, l={num_lines}, n={num_needles}"
 
-            rlm_turns = row.get("main_rlm_turns_mean", 0)
             sub_llm_calls = row.get("sub_llm_call_count_mean", 0)
             batch_size = row.get("sub_llm_mean_batch_size_mean", 0)
 
             print(
-                f"{model:<18} {mode:<10} {config:<25} {rlm_turns:>10.1f} {sub_llm_calls:>14.1f} {batch_size:>12.1f}"
+                f"{model:<18} {mode:<10} {config:<25} {sub_llm_calls:>14.1f} {batch_size:>12.1f}"
             )
         print("-" * 120)
 

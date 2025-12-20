@@ -73,16 +73,11 @@ def normalize_model_name(model: str) -> str:
 def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Mode comparison across models (grouped bar chart), aggregated across subsets."""
     # Aggregate across subsets for each model/mode combination
-    agg_df = (
-        df.groupby(["model", "mode"])
-        .agg(
-            {
-                "judge_reward_mean": "mean",
-                "judge_reward_std": "mean",  # Average the stds (approximation)
-            }
-        )
-        .reset_index()
-    )
+    agg_dict = {"judge_reward_mean": "mean"}
+    if "judge_reward_count" in df.columns:
+        agg_dict["judge_reward_count"] = "sum"
+
+    agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
 
     models = agg_df["model"].unique()
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -93,55 +88,64 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = agg_df[agg_df["mode"] == mode]
         rewards = []
-        errors = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 rewards.append(model_data["judge_reward_mean"].values[0])
-                errors.append(model_data["judge_reward_std"].values[0])
+                if "judge_reward_count" in model_data.columns:
+                    counts.append(int(model_data["judge_reward_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 rewards.append(0)
-                errors.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             rewards,
             width,
-            yerr=errors,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
             edgecolor="black",
             linewidth=0.5,
-            capsize=3,
         )
+
+        # Add sample size labels above bars
+        for bar, count in zip(bars, counts):
+            if count is not None:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f"n={count}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Mode Comparison by Model\n(aggregated across subsets)")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2)  # Increased to make room for labels
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_reward_by_subset(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Mode comparison across subsets (grouped bar chart), aggregated across models."""
     # Aggregate across models for each subset/mode combination
-    agg_df = (
-        df.groupby(["subset", "mode"])
-        .agg(
-            {
-                "judge_reward_mean": "mean",
-                "judge_reward_std": "mean",
-            }
-        )
-        .reset_index()
-    )
+    agg_dict = {"judge_reward_mean": "mean"}
+    if "judge_reward_count" in df.columns:
+        agg_dict["judge_reward_count"] = "sum"
+
+    agg_df = df.groupby(["subset", "mode"]).agg(agg_dict).reset_index()
 
     subsets = [s for s in SUBSET_ORDER if s in agg_df["subset"].unique()]
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -152,38 +156,52 @@ def plot_reward_by_subset(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = agg_df[agg_df["mode"] == mode]
         rewards = []
-        errors = []
+        counts = []
         for subset in subsets:
             subset_data = mode_data[mode_data["subset"] == subset]
             if len(subset_data) > 0:
                 rewards.append(subset_data["judge_reward_mean"].values[0])
-                errors.append(subset_data["judge_reward_std"].values[0])
+                if "judge_reward_count" in subset_data.columns:
+                    counts.append(int(subset_data["judge_reward_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 rewards.append(0)
-                errors.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             rewards,
             width,
-            yerr=errors,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
             edgecolor="black",
             linewidth=0.5,
-            capsize=3,
         )
+
+        # Add sample size labels above bars
+        for bar, count in zip(bars, counts):
+            if count is not None:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    f"n={count}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
 
     ax.set_xlabel("Subset")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Mode Comparison by Subset\n(aggregated across models)")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2)  # Increased to make room for labels
     ax.set_xticks(x)
     ax.set_xticklabels([SUBSET_LABELS.get(s, s) for s in subsets])
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
@@ -207,7 +225,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         rlm_df.groupby("mode")
         .agg(
             {
-                "main_rlm_turns_mean": "mean",
+                "turns_mean": "mean",
                 "sub_llm_call_count_mean": "mean",
                 "sub_llm_mean_batch_size_mean": "mean",
             }
@@ -219,7 +237,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
 
     # Metrics to show
     metrics = [
-        ("main_rlm_turns_mean", "RLM Turns"),
+        ("turns_mean", "Turns"),
         ("sub_llm_call_count_mean", "Sub-LLM Calls"),
         ("sub_llm_mean_batch_size_mean", "Avg Batch Size"),
     ]
@@ -256,7 +274,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("RLM Usage Metrics by Mode\n(aggregated across models & subsets)")
     ax.set_xticks(x)
     ax.set_xticklabels([m[1] for m in metrics])
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_context_vs_reward(ax: plt.Axes, df: pd.DataFrame):
@@ -321,7 +339,7 @@ def plot_context_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Reward vs Context Length\n(by mode)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
-    ax.legend(loc="lower left", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing(ax: plt.Axes, df: pd.DataFrame):
@@ -374,7 +392,7 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_by_subset(ax: plt.Axes, df: pd.DataFrame):
@@ -425,7 +443,7 @@ def plot_timing_by_subset(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Timing by Subset\n(aggregated across models)")
     ax.set_xticks(x)
     ax.set_xticklabels([SUBSET_LABELS.get(s, s) for s in subsets])
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
@@ -492,7 +510,7 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Time (seconds)")
     ax.set_title("Timing vs Context Length\n(by mode)")
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
@@ -527,7 +545,7 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
@@ -551,8 +569,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
         rlm_df.groupby("mode")
         .agg(
             {
-                "main_rlm_prompt_tokens_mean": "mean",
-                "main_rlm_completion_tokens_mean": "mean",
+                "prompt_tokens_mean": "mean",
+                "completion_tokens_mean": "mean",
                 "sub_llm_prompt_tokens_mean": "mean",
                 "sub_llm_completion_tokens_mean": "mean",
             }
@@ -570,10 +588,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for mode in modes:
         mode_data = agg_df[agg_df["mode"] == mode]
         if len(mode_data) > 0:
-            main_prompt = mode_data["main_rlm_prompt_tokens_mean"].values[0] or 0
-            main_completion = (
-                mode_data["main_rlm_completion_tokens_mean"].values[0] or 0
-            )
+            main_prompt = mode_data["prompt_tokens_mean"].values[0] or 0
+            main_completion = mode_data["completion_tokens_mean"].values[0] or 0
             sub_prompt = mode_data["sub_llm_prompt_tokens_mean"].values[0] or 0
             sub_completion = mode_data["sub_llm_completion_tokens_mean"].values[0] or 0
             total_tokens.append(
