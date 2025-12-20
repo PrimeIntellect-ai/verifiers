@@ -639,7 +639,7 @@ class Environment(ABC):
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
-                self.logger.error(f"Got {err.__class__.__name__}: {err!r}")
+                self.logger.error(f"Aborted rollout due to {err!r}")
                 traceback.print_exception(type(err), err, err.__traceback__)
             return True
         return False
