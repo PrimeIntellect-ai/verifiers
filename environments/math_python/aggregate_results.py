@@ -39,39 +39,31 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
 
         model = metadata.get("model", "unknown")
 
+        # Extract mode flags from env_args
+        env_args = metadata.get("env_args", {})
+        use_rlm = env_args.get("use_rlm", False)
+        include_env_tips = env_args.get("include_env_tips", False)
+
         with open(results_file) as f:
             for line in f:
                 if line.strip():
                     result = json.loads(line)
                     result["_model"] = model
+                    result["_use_rlm"] = use_rlm
+                    result["_include_env_tips"] = include_env_tips
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
     return all_results
 
 
-def infer_mode(result: dict) -> str:
-    """Infer the mode from result data.
+def get_mode(result: dict) -> str:
+    """Get mode from metadata flags."""
+    use_rlm = result.get("_use_rlm", False)
+    include_env_tips = result.get("_include_env_tips", False)
 
-    The mode is determined by checking RLM-specific metrics:
-    - If sub_llm_call_count > 0, it's an RLM mode (sub-LLM calls only happen in RLM)
-    - If <env_tips> is in the prompt, it's rlm_tips
-    """
-    # Check if RLM mode was used (sub-LLM metrics only present in RLM mode)
-    sub_llm_call_count = result.get("sub_llm_call_count", 0)
-
-    # If we have sub-LLM calls, it's an RLM mode
-    if sub_llm_call_count > 0:
-        # Check if env_tips were included by looking at the prompt
-        prompt = result.get("prompt", [])
-        if prompt and isinstance(prompt, list) and len(prompt) > 0:
-            user_content = (
-                prompt[0].get("content", "") if isinstance(prompt[0], dict) else ""
-            )
-            if "<env_tips>" in user_content:
-                return "rlm_tips"
-        return "rlm"
-
+    if use_rlm:
+        return "rlm_tips" if include_env_tips else "rlm"
     return "standard"
 
 
@@ -80,8 +72,8 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
     rows = []
 
     for r in results:
-        # Infer mode from the result
-        mode = infer_mode(r)
+        # Get mode from metadata flags
+        mode = get_mode(r)
 
         row = {
             # Model (from metadata)

@@ -287,7 +287,51 @@ def plot_standard_tool_usage(ax: plt.Axes, df: pd.DataFrame):
 
 
 def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
-    """Plot: Token usage comparison (RLM modes only)."""
+    """Plot: Main model token usage comparison (all modes)."""
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+
+        # Main model tokens only (prompt + completion, no sub-LLM)
+        total_tokens = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
+                main_completion = model_data["completion_tokens_mean"].values[0] or 0
+                total_tokens.append(main_prompt + main_completion)
+            else:
+                total_tokens.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            total_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Main Model Tokens")
+    ax.set_title("Main Model Token Usage by Mode")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
+def plot_sub_llm_tokens(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Sub-LLM token usage comparison (RLM modes only)."""
     # Filter to RLM modes only
     rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
 
@@ -311,20 +355,16 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
     for i, mode in enumerate(modes):
         mode_data = rlm_df[rlm_df["mode"] == mode]
 
-        # Total tokens = main model + sub-LLM tokens
+        # Sub-LLM tokens only
         total_tokens = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
-                main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
-                main_completion = model_data["completion_tokens_mean"].values[0] or 0
                 sub_prompt = model_data["sub_llm_prompt_tokens_mean"].values[0] or 0
                 sub_completion = (
                     model_data["sub_llm_completion_tokens_mean"].values[0] or 0
                 )
-                total_tokens.append(
-                    main_prompt + main_completion + sub_prompt + sub_completion
-                )
+                total_tokens.append(sub_prompt + sub_completion)
             else:
                 total_tokens.append(0)
 
@@ -341,8 +381,8 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
         )
 
     ax.set_xlabel("Model")
-    ax.set_ylabel("Total Tokens")
-    ax.set_title("Token Usage by Mode (RLM only)")
+    ax.set_ylabel("Sub-LLM Tokens")
+    ax.set_title("Sub-LLM Token Usage by Mode (RLM only)")
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
@@ -419,7 +459,8 @@ PLOT_REGISTRY = {
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "rlm_metrics": (plot_rlm_metrics, (12, 7), "RLM Usage Metrics"),
     "tool_usage": (plot_standard_tool_usage, (10, 7), "Standard Mode Tool Usage"),
-    "tokens": (plot_token_usage, (10, 7), "Token Usage"),
+    "tokens": (plot_token_usage, (10, 7), "Main Model Token Usage"),
+    "sub_llm_tokens": (plot_sub_llm_tokens, (10, 7), "Sub-LLM Token Usage (RLM only)"),
     # Additional timing plots
     "timing_vs_reward": (plot_timing_vs_reward, (10, 7), "Timing vs Reward"),
 }
@@ -504,6 +545,7 @@ Examples:
             "rlm_metrics",
             "tool_usage",
             "tokens",
+            "sub_llm_tokens",
             "timing_vs_reward",
         ],
         default="main",

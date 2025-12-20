@@ -39,15 +39,32 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
 
         model = metadata.get("model", "unknown")
 
+        # Extract mode flags from env_args
+        env_args = metadata.get("env_args", {})
+        use_rlm = env_args.get("use_rlm", False)
+        include_env_tips = env_args.get("include_env_tips", False)
+
         with open(results_file) as f:
             for line in f:
                 if line.strip():
                     result = json.loads(line)
                     result["_model"] = model
+                    result["_use_rlm"] = use_rlm
+                    result["_include_env_tips"] = include_env_tips
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
     return all_results
+
+
+def get_mode(result: dict) -> str:
+    """Get mode from metadata flags."""
+    use_rlm = result.get("_use_rlm", False)
+    include_env_tips = result.get("_include_env_tips", False)
+
+    if use_rlm:
+        return "rlm_tips" if include_env_tips else "rlm"
+    return "standard"
 
 
 def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
@@ -59,10 +76,8 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
         row = {
             # Model (from metadata)
             "model": r.get("_model", "unknown"),
-            # Ablation parameters (from info)
-            "mode": info.get(
-                "mode", "standard"
-            ),  # Inference mode: standard, rlm, rlm_tips
+            # Mode (from metadata flags)
+            "mode": get_mode(r),
             "content_type": info.get("content_type"),
             "target_length": info.get("target_length"),
             "mean_fragment_length": info.get("mean_fragment_length"),
