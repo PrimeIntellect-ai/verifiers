@@ -45,7 +45,7 @@ class ErrorChain:
         )
 
     def __contains__(self, error: BaseException) -> bool:
-        return any(isinstance(error, e) for e in self.chain)
+        return any(isinstance(error, type(e)) for e in self.chain)
 
     def __repr__(self) -> str:
         return " -> ".join([type(e).__name__ for e in self.chain])
