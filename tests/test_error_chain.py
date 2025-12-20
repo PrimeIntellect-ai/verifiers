@@ -122,15 +122,15 @@ class TestErrorChain:
         outer.__cause__ = inner
 
         chain = ErrorChain(outer)
-        # ToolCallError is in the chain, in chain
+        # ToolCallError is directly contained, in chain
         assert vf.ToolCallError in chain
         # ToolParseError is a sibling class, not in chain
         assert vf.ToolParseError not in chain
-        # ToolError is a parent class of ToolParseError, not in chain
+        # SandboxError is directly contained, in chain
         assert vf.SandboxError in chain
-        # InfraError is a parent class of SandboxError, in chain
+        # InfraError is parent of SandboxError, in chain
         assert vf.InfraError in chain
-        # Error is parent class of ToolCallError, in chain
+        # Error is parent of all vf errors, in chain
         assert vf.Error in chain
 
     def test_hashable_for_counter(self):
