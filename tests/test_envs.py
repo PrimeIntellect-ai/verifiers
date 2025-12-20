@@ -72,11 +72,16 @@ def test_readme_exists(env_dir: Path):
 
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
-    """Fixture that installs the given environment in a fresh virtual environment. Module-scoped to reuse the same venv for all tests."""
+    """Test environment in a fresh venv with local verifiers installed first."""
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
-    cmd = f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && uv pip install {env_dir.absolute().as_posix()}"
+    repo_root = Path(__file__).parent.parent
+    cmd = (
+        f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
+        f"uv pip install {repo_root.as_posix()} && "
+        f"uv pip install {env_dir.absolute().as_posix()}"
+    )
     process = subprocess.run(
         cmd, shell=True, executable="/bin/bash", capture_output=True, text=True
     )
