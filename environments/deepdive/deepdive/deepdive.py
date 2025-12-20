@@ -458,31 +458,6 @@ def load_environment(
             )
         return results_str
 
-    async def click_one(state: Any, result_index: int) -> str:
-        """Get the content of a webpage from the previous search results"""
-        if "last_search_result" not in state:
-            raise ValueError("No previous search results to open!")
-        if not (0 <= result_index < len(state["last_search_result"]["organic"])):
-            raise ValueError("Result index out of range")
-        prev_results = state["last_search_result"]
-        result = prev_results["organic"][result_index]
-        link = result["link"]
-        return await open_one(link, debug)
-
-    async def click(state: Any, result_indices: list[int]) -> str:
-        """Get the contents of webpages from the previous search results
-        Can open multiple results at once"""
-        t0 = perf_counter()
-        results = await asyncio.gather(*[click_one(state, i) for i in result_indices])
-        results_str = "\n\n".join(
-            [f"# Click Result {i}\n{r}" for i, r in enumerate(results)]
-        )
-        if debug:
-            print(
-                f"Clicked {len(result_indices)} results in {perf_counter() - t0:.2f}s; result length: {len(results_str)}"
-            )
-        return results_str
-
     async def finish(state: Any, final_answer: str) -> str:
         """Provide the final answer to the task. Stops execution."""
         state["[[deepdive/DONE]]"] = True
@@ -523,7 +498,6 @@ def load_environment(
     )
     env.add_tool(tool=search, args_to_skip=["state"])
     env.add_tool(tool=open, args_to_skip=["state"])
-    env.add_tool(tool=click, args_to_skip=["state"])
     if finish_with_tool:
         env.add_tool(tool=finish, args_to_skip=["state"])
     return env
