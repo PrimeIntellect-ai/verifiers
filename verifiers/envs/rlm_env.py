@@ -23,11 +23,17 @@ import asyncio
 import base64
 import json
 import logging
+import sys
 import textwrap
 import time
 from time import perf_counter
 import uuid
 from typing import Any, Callable
+
+if sys.version_info < (3, 12):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 from aiohttp import web
 from prime_sandboxes import CommandTimeoutError
@@ -39,7 +45,7 @@ from verifiers.envs.sandbox_env import (
     SandboxNotReadyError,
 )
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, ModelResponse, State, TrajectoryStep, TypedDict
+from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.response_utils import (
