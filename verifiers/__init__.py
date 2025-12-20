@@ -130,7 +130,7 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
-    "GymEnv": "verifiers.envs.gym_env:GymEnv",
+    "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
 }
 
 
@@ -148,7 +148,7 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
-    from .envs.gym_env import GymEnv  # noqa: F401
+    from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import re
 from typing import Any, Dict, List
 
@@ -8,7 +9,8 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.completion import Completion as OAICompletion
 from openai.types.completion_choice import CompletionChoice
-from verifiers.envs.gym_env import GymEnv, EpisodicSumRubric
+
+from verifiers.envs.experimental.gym_env import EpisodicSumRubric, GymEnv
 
 
 # ----------------- Toy Environment -----------------
@@ -151,6 +153,7 @@ def client():
 
 # ----------------- Tests -----------------
 
+
 def test_mode_1_basic_rollout_and_reward_sum(toy_env_class, eval_dataset, client):
     """Tests Mode 1 (Homogeneous) with default env_kwargs"""
     env = GymEnv(
@@ -176,11 +179,11 @@ def test_mode_1_basic_rollout_and_reward_sum(toy_env_class, eval_dataset, client
     # 4. Observability Step: MultiTurnEnv intentionally generates one final response.
     #    Since done=True, env_response should append the sentinel.
     assert len(steps) == 4
-    
+
     # Check that the final prompt contains the sentinel message
     last_prompt = steps[-1]["prompt"]
     assert "Episode already ended." in str(last_prompt)
-    
+
     # Reward sum check
     assert res["reward"] == [1.0]
     assert st.get("gym_done", False) is True
@@ -211,22 +214,24 @@ def test_invalid_parse_truncates(toy_env_class, eval_dataset, client):
     # 2. Env attempts parse -> Fails -> Returns Error Msg -> Sets Done=True.
     # 3. Observability Step: MultiTurnEnv generates one final response to the Error Msg.
     assert len(steps) == 2
-    
+
     assert st.get("gym_done", False) is True
-    
+
     # The error message is passed as feedback to the final observability turn.
     last_prompt = steps[-1]["prompt"]
     assert "Action Parsing Error" in str(last_prompt)
-    # Note: In the current implementation, 'except Exception' returns early, 
+    # Note: In the current implementation, 'except Exception' returns early,
     # so "Episode already ended." is NOT appended after the error message.
     # We verify that we got the specific error message instead.
 
 
 def test_mode_1_respects_max_episode_steps(eval_dataset, client):
     """The loop should respect max_episode_steps even if env never terminates."""
+
     class NoTermEnv:
         def reset(self, **kwargs):
             return "x=0", {}
+
         def step(self, action: int):
             return "x=1", 0.0, False, False, {}
 
@@ -240,12 +245,12 @@ def test_mode_1_respects_max_episode_steps(eval_dataset, client):
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     steps = st.get("trajectory", [])
-    
+
     # max_turns=3 serves as a hard cutoff.
     assert len(steps) == 3
     assert st.get("gym_done", False) is False
     assert st.get("is_completed", False) is True
-    
+
     # CRITICAL CHECK: Since the env didn't finish itself (gym_done=False),
     # the sentinel message should NOT be present in the last prompt.
     last_prompt = steps[-1]["prompt"]
@@ -271,7 +276,7 @@ def test_mode_1_history_contains_system_fewshot_and_obs(
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     first_prompt = st["prompt"]
-    
+
     roles = [m["role"] for m in first_prompt]
     contents = [m.get("content") for m in first_prompt]
     assert roles[:4] == ["system", "user", "assistant", "user"]
@@ -283,6 +288,7 @@ def test_mode_1_five_tuple_step_normalization(eval_dataset, client):
     class FourTupleEnv:
         def reset(self, **kwargs):
             return "x=0", {}
+
         def step(self, action: int):
             return "x=1", 1.0, True, {"info": "done"}
 
@@ -295,16 +301,16 @@ def test_mode_1_five_tuple_step_normalization(eval_dataset, client):
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
     steps = st.get("trajectory", [])
-    
+
     # Interaction Trace:
     # 1. Action -> Env Step (Done=True).
     # 2. Observability Step.
     assert len(steps) == 2
-    
+
     # Check that the final prompt contains the sentinel message
     last_prompt = steps[-1]["prompt"]
     assert "Episode already ended." in str(last_prompt)
-    
+
     # The info should be attached to the step that generated it (Step 0)
     assert steps[0]["extras"]["gym_info"] == {"info": "done"}
     assert st.get("gym_done", False) is True
@@ -330,7 +336,7 @@ def test_mode_1_homogeneous_with_dataset_init(toy_env_class, client):
     )
     res = env.evaluate_sync(client=client, model="mock")
     st = res["state"][0]
-    
+
     first_obs_msg = st["prompt"][-1]["content"]
     assert first_obs_msg == "x=5"
     assert st["info"]["start"] == 5
@@ -340,6 +346,7 @@ def test_mode_3_custom_subclass_obs_formatter(eval_dataset, client):
     class NumObsEnv:
         def reset(self, **kwargs):
             return 0, {}
+
         def step(self, action: int):
             return 1, 0.0, True, False, {}
 

@@ -8,6 +8,7 @@ dependencies = [
     "verifiers>=0.1.8",
     "gem-llm",
     "gymnasium",
+    "nltk"
 ]
 
 [build-system]
