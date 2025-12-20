@@ -131,6 +131,8 @@ _LAZY_IMPORTS = {
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
+    "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
+    "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
 }
 
 

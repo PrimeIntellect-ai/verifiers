@@ -1,7 +1,7 @@
 import textwrap
 from pathlib import Path
 
-from verifiers.envs.harbor_env import HarborEnv
+import verifiers as vf
 
 _AGENT_SCRIPT = textwrap.dedent(
     """
@@ -50,7 +50,7 @@ python -u /tmp/agent_script.py
 """
 
 
-class DummyHarborEnv(HarborEnv):
+class DummyHarborEnv(vf.HarborEnv):
     def __init__(
         self,
         dataset_path: str | Path = Path(__file__).parent / "tasks",

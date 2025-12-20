@@ -13,12 +13,11 @@ from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
-from verifiers.envs.cli_agent_env import CliAgentEnv
 
 logger = logging.getLogger(__name__)
 
 
-class HarborEnv(CliAgentEnv):
+class HarborEnv(vf.CliAgentEnv):
     """CliAgentEnv subclass that loads Harbor-format tasks."""
 
     def __init__(
