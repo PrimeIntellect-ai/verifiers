@@ -155,11 +155,11 @@ class TestCliAgentEnv:
         )
 
         line = "2024-01-01 INFO: https://abc-xyz.trycloudflare.com is ready"
-        url = env._extract_tunnel_url_from_line(line)
+        url = env.extract_tunnel_url_from_line(line)
         assert url == "https://abc-xyz.trycloudflare.com"
 
         line = "Some other log line without URL"
-        url = env._extract_tunnel_url_from_line(line)
+        url = env.extract_tunnel_url_from_line(line)
         assert url is None
 
     @pytest.mark.asyncio

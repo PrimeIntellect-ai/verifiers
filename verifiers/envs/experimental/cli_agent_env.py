@@ -225,7 +225,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
                     raise
 
             tunnel = self.tunnels[self.tunnel_round_robin_index % len(self.tunnels)]
-            self._tunnel_round_robin_index += 1
+            self.tunnel_round_robin_index += 1
 
             tunnel["active_rollouts"] += 1
 
@@ -462,7 +462,7 @@ touch /tmp/vf_complete
         if body.get("tools"):
             logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
 
-    def _log_response(self, rollout_id: str, response: dict) -> None:
+    def log_response(self, rollout_id: str, response: dict) -> None:
         logger.debug(f"[{rollout_id}] -> RESPONSE")
         msg = response.get("choices", [{}])[0].get("message", {})
         if msg.get("content"):
@@ -482,7 +482,7 @@ touch /tmp/vf_complete
             app = web.Application()  # type: ignore
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
-                self._handle_intercepted_request,
+                self.handle_intercepted_request,
             )
 
             runner = web.AppRunner(app)  # type: ignore
@@ -490,15 +490,15 @@ touch /tmp/vf_complete
             site = web.TCPSite(runner, "0.0.0.0", self.interception_port)  # type: ignore
             await site.start()
 
-            self._interception_server = app
-            self._server_runner = runner
-            self._server_site = site
+            self.interception_server = app
+            self.server_runner = runner
+            self.server_site = site
 
             logger.debug(
                 f"Started interception server on port {self.interception_port}"
             )
 
-    async def _handle_intercepted_request(self, request: Any) -> Any:
+    async def handle_intercepted_request(self, request: Any) -> Any:
         """HTTP handler: queue request, wait for response, return"""
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
@@ -546,7 +546,7 @@ touch /tmp/vf_complete
             response.model_dump() if hasattr(response, "model_dump") else dict(response)
         )
 
-        self._log_response(rollout_id, response_dict)
+        self.log_response(rollout_id, response_dict)
         return web.json_response(response_dict)  # type: ignore
 
     @vf.teardown

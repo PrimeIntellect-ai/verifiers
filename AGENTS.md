@@ -27,6 +27,14 @@ source .venv/bin/activate
   - **SOMETIMES OK**: Untyped args for simple cases (e.g., reward functions) 
   - **NOT OK**: `# type: ignore` without strong justification
 
+### Naming Conventions
+- **Methods**: snake_case
+- **Classes**: PascalCase
+- **Variables**: snake_case
+- **Constants**: UPPER_CASE
+
+Do NOT use `_` prefix for private methods unless explicitly requested. 
+
 ### Error Handling Philosophy  
 - **Fail fast, fail loud** - No defensive programming or silent fallbacks
 - **Minimize branching** - Prefer single code paths; every `if`/`try` needs justification
