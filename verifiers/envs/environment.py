@@ -83,7 +83,7 @@ class Environment(ABC):
         interleaved_rollouts: bool = False,
         **kwargs,
     ):
-        self.logger = logging.getLogger(f"verifiers.envs.{self.__class__.__name__}")
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: Literal["chat", "completion"] = message_type
         self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
         self.system_prompt = system_prompt

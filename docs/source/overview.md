@@ -68,6 +68,21 @@ env = vf.ToolEnv(
 
 Tools may be sync or async. Keep them pure: the environment ends when the assistant responds without tool calls. If you must inject rollout-specific context, upgrade to `StatefulToolEnv` and override `update_tool_args` instead of relying on global state.
 
+### GymEnv: Gymnasium-Compatible Environments
+
+Wraps a Gymnasium-style environment (`reset()`/`step()`) as a `MultiTurnEnv`:
+
+```python
+import verifiers as vf
+
+env = vf.GymEnv(
+    env_cls=MyGymEnv,
+    action_parser=lambda text: text,  # parse model text into an env action
+)
+```
+
+By default, rewards are the sum of per-step rewards returned by the underlying gym env (`sum_step_rewards`).
+
 ### SingleTurnEnv: Simple Evaluation
 
 For straightforward Q&A tasks without interaction:
