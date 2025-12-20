@@ -124,6 +124,17 @@ class GymEnv(vf.MultiTurnEnv):
         eval_dataset = Dataset.from_list(eval_rows) if eval_rows else None
         return dataset, eval_dataset
 
+    def obs_to_text(self, obs: Any) -> str:
+        """Convert observation to text. Override in subclass for custom formatting."""
+        if self.obs_to_text_fn:
+            return self.obs_to_text_fn(obs)
+        return str(obs)
+
+    def wrap_response(self, text: str) -> vf.Messages:
+        if self.message_type == "chat":
+            return cast(vf.Messages, [{"role": "user", "content": text}])
+        return text
+
     async def env_response(
         self, messages: vf.Messages, state: State, **kwargs: Any
     ) -> vf.Messages:
@@ -164,11 +175,6 @@ class GymEnv(vf.MultiTurnEnv):
 
         return self.wrap_response(obs_text)
 
-    def wrap_response(self, text: str) -> vf.Messages:
-        if self.message_type == "chat":
-            return cast(vf.Messages, [{"role": "user", "content": text}])
-        return text
-
     @vf.stop
     async def is_done(self, state: State) -> bool:
         return state.get("gym_done", False)
@@ -176,9 +182,3 @@ class GymEnv(vf.MultiTurnEnv):
     @vf.cleanup
     async def cleanup_env(self, state: State) -> None:
         state.pop("gym_env", None)
-
-    def obs_to_text(self, obs: Any) -> str:
-        """Convert observation to text. Override in subclass for custom formatting."""
-        if self.obs_to_text_fn:
-            return self.obs_to_text_fn(obs)
-        return str(obs)
