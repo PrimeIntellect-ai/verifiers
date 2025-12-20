@@ -1,0 +1,91 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 78 packages in 22ms
+   Building needle-in-haystack @ file:///Users/snimu/work/verifiers/environments/needle_in_haystack
+      Built needle-in-haystack @ file:///Users/snimu/work/verifiers/environments/needle_in_haystack
+Prepared 1 package in 124ms
+Uninstalled 1 package in 0.65ms
+Installed 1 package in 1ms
+ ~ needle-in-haystack==0.1.0 (from file:///Users/snimu/work/verifiers/environments/needle_in_haystack)
+=== Needle in Haystack Ablations ===
+MODELS_FULL (all ablations): 
+MODELS_STANDARD (default setting only): openrouter:xiaomi/mimo-v2-flash:free openrouter:z-ai/glm-4.6
+Examples per config: 50
+Rollouts per example: 1
+Modes for MODELS_FULL: rlm rlm_tips standard
+Default for MODELS_STANDARD: mode=rlm_tips, needle_type=word, num_lines=10000, num_needles=1
+
+############################################################
+### PART 1: Full ablations with MODELS_FULL
+############################################################
+
+############################################################
+### PART 2: Default setting with MODELS_STANDARD
+############################################################
+
+########################################
+### Model: openrouter:xiaomi/mimo-v2-flash:free (default setting only)
+########################################
+
+Running: model=openrouter:xiaomi/mimo-v2-flash:free, mode=rlm_tips, needle_type=word, num_lines=10000, num_needles=1
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+2025-12-20 04:07:43 - verifiers.utils.env_utils - INFO - Loading environment: needle-in-haystack
+2025-12-20 04:07:43 - verifiers.utils.env_utils - INFO - Using provided args: needle_type=word, num_samples=50, num_needles=1, seed=42, use_rlm=True, shuffle=True, num_lines=10000, include_env_tips=True
+2025-12-20 04:07:43 - verifiers.utils.env_utils - INFO - Using default args: needle_position=None, needle_variance=0.0
+2025-12-20 04:07:43 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'needle-in-haystack'
+2025-12-20 04:07:43 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: xiaomi/mimo-v2-flash:free
+2025-12-20 04:07:43 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-20 04:07:43 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-20 04:07:49 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://downloadable-overview-drawing-sponsored.trycloudflare.com
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [00:49<40:30, 49.61s/it]Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [00:50<16:39, 20.82s/it]Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [00:50<09:04, 11.59s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [00:51<05:27,  7.11s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [00:51<03:37,  4.84s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [00:52<02:22,  3.23s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [00:54<02:01,  2.83s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [00:54<01:32,  2.20s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [00:55<01:07,  1.64s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [00:56<00:55,  1.38s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [00:56<00:41,  1.07s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [00:56<00:23,  1.59it/s]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [00:57<00:21,  1.64it/s]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [00:58<02:15,  3.88s/it]
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/.venv/bin/vf-eval", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/scripts/eval.py", line 327, in main
+    asyncio.run(run_evaluation(eval_config))
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/utils/eval_utils.py", line 139, in run_evaluation
+    results = await vf_env.evaluate(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 989, in evaluate
+    return await self.generate(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 869, in generate
+    group_states = await coro
+                   ^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/tasks.py", line 631, in _wait_for_one
+    return f.result()  # May raise f.exception().
+           ^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 713, in run_group
+    group_states = await asyncio.gather(*rollout_tasks)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 684, in run_rollout
+    state = await self.rollout(
+            ^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/multiturn_env.py", line 105, in rollout
+    state = await self.setup_state(state)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 1145, in setup_state
+    self._sub_llm_supports_logprobs = await self._test_logprobs_support(
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 642, in _test_logprobs_support
+    await client.chat.completions.create(
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.RateLimitError: Error code: 429 - {'error': {'message': 'Provider returned error', 'code': 429, 'metadata': {'raw': 'xiaomi/mimo-v2-flash:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations', 'provider_name': 'Xiaomi'}}, 'user_id': 'org_32aHESsFQau1gaCp9RHOqjPafI0'}
+2025-12-20 04:08:44 - verifiers.envs.RLMEnv - INFO - Deleting 35 remaining sandboxes

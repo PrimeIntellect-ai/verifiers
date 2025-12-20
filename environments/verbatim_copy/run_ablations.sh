@@ -27,14 +27,14 @@ set -e
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
     # "prime:prime-intellect/intellect-3"
-    "gpt-5-mini"
+    # "gpt-5-mini"
 )
 
 # MODELS_STANDARD: These models run only the default setting
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
-    # "openrouter:xiaomi/mimo-v2-flash:free"
-    # "openrouter:z-ai/glm-4.6"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:z-ai/glm-4.6"
     # "deepseek:deepseek/deepseek-v3.2"
     # "openrouter:z-ai/glm-4.5-air"
 )

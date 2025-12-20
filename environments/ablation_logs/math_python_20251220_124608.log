@@ -1,0 +1,164 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 75 packages in 135ms
+   Building math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+      Built math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+Prepared 1 package in 114ms
+Uninstalled 2 packages in 1ms
+Installed 2 packages in 3ms
+ ~ math-python==0.1.10 (from file:///Users/snimu/work/verifiers/environments/math_python)
+ - verifiers==0.1.8.post2 (from file:///Users/snimu/work/verifiers)
+ + verifiers==0.1.8.post2 (from git+https://github.com/PrimeIntellect-ai/verifiers.git@453c2093eac29619db1ce19f4110b1c158eada7e)
+=== Math Python Ablations ===
+Models: gpt-5-mini
+Examples per config: 50
+Rollouts per example: 1
+Modes: rlm rlm_tips standard
+
+########################################
+### Model: gpt-5-mini
+########################################
+
+========================================
+=== Mode: rlm (use_rlm=true, include_env_tips=false) ===
+========================================
+
+Running: model=gpt-5-mini, mode=rlm
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Uninstalled 1 package in 3ms
+Installed 1 package in 2ms
+2025-12-20 12:46:11 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-20 12:46:11 - verifiers.utils.env_utils - INFO - Using provided args: use_rlm=True, shuffle=True, include_env_tips=False, seed=42
+2025-12-20 12:46:11 - verifiers.utils.env_utils - INFO - Using default args: sandbox_cpu_cores=1, info_key='info', sandbox_gpu_count=0, difficulty_key=None, answer_key='answer', max_turns=100, map_kwargs={}, sandbox_disk_size_gb=5, question_key='question', pip_install_packages='numpy sympy scipy', max_iterations=30, instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', min_avg_reward=0.0, max_startup_wait_seconds=60, dataset_name='PrimeIntellect/INTELLECT-3-RL', dataset_subset='math', dataset_split='train', max_output_length=8192, max_avg_reward=1.0, sandbox_timeout_minutes=60, filter_kwargs={}, sandbox_timeout_per_command_seconds=60, sandbox_memory_gb=2
+2025-12-20 12:46:12 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-20 12:46:12 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: gpt-5-mini
+2025-12-20 12:46:12 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-20 12:46:12 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-20 12:46:18 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://gps-assess-western-rock.trycloudflare.com
+Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [01:27<1:11:22, 87.39s/it]Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [01:29<29:48, 37.26s/it]  Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [01:35<17:54, 22.86s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [01:35<10:44, 14.02s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [01:38<07:21,  9.80s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [01:38<04:54,  6.70s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [01:38<03:17,  4.58s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [01:39<02:15,  3.22s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [01:40<01:52,  2.73s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [01:42<01:33,  2.33s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [01:42<01:09,  1.79s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [01:44<01:05,  1.72s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [01:46<01:06,  1.79s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [01:48<01:04,  1.79s/it]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [01:49<00:56,  1.62s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [01:51<00:54,  1.61s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [01:51<00:40,  1.21s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [01:51<00:33,  1.05s/it]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [01:55<00:56,  1.81s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [01:55<00:40,  1.34s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [01:56<00:32,  1.10s/it]Processing 50 groups (50 total rollouts):  44%|████▍     | 22/50 [02:02<01:09,  2.47s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [02:02<00:51,  1.90s/it]Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [02:07<01:15,  2.92s/it]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [02:08<00:53,  2.13s/it]Processing 50 groups (50 total rollouts):  52%|█████▏    | 26/50 [02:08<00:41,  1.73s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [02:09<00:34,  1.52s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [02:10<00:29,  1.33s/it]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [02:11<00:23,  1.12s/it]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [02:17<00:51,  2.56s/it]2025-12-20 12:48:36 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by BadRequestError("Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}")
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}
+Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [02:23<01:09,  3.66s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [02:31<01:27,  4.88s/it]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [02:36<01:25,  5.01s/it]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [02:37<01:00,  3.78s/it]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [02:54<01:54,  7.61s/it]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [02:55<01:22,  5.87s/it]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [03:13<02:02,  9.41s/it]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [04:07<04:33, 22.76s/it]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [05:50<08:35, 46.87s/it]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [06:16<06:44, 40.45s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [07:27<07:27, 49.69s/it]2025-12-20 12:54:22 - verifiers.envs.rlm_env - ERROR - Sandbox infrastructure error during code execution: HTTP 409 POST https://sandbox.pinfra.io/prod-box-cmhg7izeg000amrd6hjbf1fe4/kt4uz4itc63k3bgyc8ryowtx/exec: {"error":"sandbox_not_ready","message":"Sandbox is not ready. It may still be starting up or has been terminated. Check sandbox status and retry."}
+2025-12-20 12:54:22 - verifiers.envs.RLMEnv - ERROR - Got ToolCallError, caused by SandboxError(APIError('HTTP 409 POST https://sandbox.pinfra.io/prod-box-cmhg7izeg000amrd6hjbf1fe4/kt4uz4itc63k3bgyc8ryowtx/exec: {"error":"sandbox_not_ready","message":"Sandbox is not ready. It may still be starting up or has been terminated. Check sandbox status and retry."}'))
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/prime_sandboxes/sandbox.py", line 727, in execute_command
+    response.raise_for_status()
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 758, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '409 Conflict' for url 'https://sandbox.pinfra.io/prod-box-cmhg7izeg000amrd6hjbf1fe4/kt4uz4itc63k3bgyc8ryowtx/exec'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/409
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 1027, in _execute_command_with_retry
+    result = await self.with_retry(self.sandbox_client.execute_command)(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/asyncio/__init__.py", line 189, in async_wrapped
+    return await copy(fn, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/asyncio/__init__.py", line 111, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/asyncio/__init__.py", line 153, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/_utils.py", line 99, in inner
+    return call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/__init__.py", line 418, in exc_check
+    raise retry_exc.reraise()
+          ^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/__init__.py", line 185, in reraise
+    raise self.last_attempt.result()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/tenacity/asyncio/__init__.py", line 114, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/sandbox_env.py", line 81, in wrapper
+    return await loop.run_in_executor(self.executor, run_in_thread)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/sandbox_env.py", line 78, in run_in_thread
+    return loop.run_until_complete(method(*args, **kwargs))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/prime_sandboxes/sandbox.py", line 740, in execute_command
+    raise APIError(f"HTTP {status} {method} {u}: {text}") from e
+prime_sandboxes.core.client.APIError: HTTP 409 POST https://sandbox.pinfra.io/prod-box-cmhg7izeg000amrd6hjbf1fe4/kt4uz4itc63k3bgyc8ryowtx/exec: {"error":"sandbox_not_ready","message":"Sandbox is not ready. It may still be starting up or has been terminated. Check sandbox status and retry."}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/stateful_tool_env.py", line 143, in env_response
+    tool_message: vf.Message = await self.call_tool(
+                               ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/tool_env.py", line 66, in call_tool
+    result = await maybe_await(tool_func, **tool_args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/utils/async_utils.py", line 9, in maybe_await
+    return await result
+           ^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 1472, in call_python_repl
+    result = await self._execute_code(sandbox_id, code, state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 1330, in _execute_code
+    result = await self._execute_command_with_retry(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/rlm_env.py", line 1036, in _execute_command_with_retry
+    raise vf.SandboxError(cause=e)
+verifiers.errors.SandboxError
+2025-12-20 12:54:30 - verifiers.envs.rlm_env - WARNING - Failed to read RLM answer: 
+Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [08:17<06:39, 49.96s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [08:34<04:39, 39.95s/it]2025-12-20 12:58:02 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ceft7mdgzamzbkk4j5kdni0v
+2025-12-20 12:58:02 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:58:36 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox k5xducyvsuf3q1lu10id9gnj
+2025-12-20 12:58:36 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:59:05 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ut81exbcqdkalx1cdvyz1tje
+2025-12-20 12:59:05 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:59:25 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox c8j58e8f9423l2bq0l013p8t
+2025-12-20 12:59:25 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:59:41 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox cqw02ohm7sqa7t1nffdli2gx
+2025-12-20 12:59:41 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:00:25 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ug5czlr0z3vmx0k9wg2sp3ba
+2025-12-20 13:00:25 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:02:43 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox m8qidrbpsakjdanfmy5wdsqw
+2025-12-20 13:02:43 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [18:09<20:01, 200.32s/it]2025-12-20 13:08:32 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ceft7mdgzamzbkk4j5kdni0v
+2025-12-20 13:08:32 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:09:45 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ut81exbcqdkalx1cdvyz1tje
+2025-12-20 13:09:45 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:09:49 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox k5xducyvsuf3q1lu10id9gnj
+2025-12-20 13:09:49 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:10:47 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox cqw02ohm7sqa7t1nffdli2gx
+2025-12-20 13:10:47 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:12:36 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ug5czlr0z3vmx0k9wg2sp3ba
+2025-12-20 13:12:36 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:14:09 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox m8qidrbpsakjdanfmy5wdsqw
+2025-12-20 13:14:09 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 13:19:06 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox ceft7mdgzamzbkk4j5kdni0v
+2025-12-20 13:19:06 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s

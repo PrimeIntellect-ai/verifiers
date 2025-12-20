@@ -17,8 +17,8 @@ MODELS=(
     # "deepseek:deepseek/deepseek-v3.2"
     # "prime:prime-intellect/intellect-3"
     # "openrouter:z-ai/glm-4.5-air"
-    # "openrouter:xiaomi/mimo-v2-flash:free"
-    # "openrouter:z-ai/glm-4.6"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:z-ai/glm-4.6"
     "gpt-5-mini"
 )
 

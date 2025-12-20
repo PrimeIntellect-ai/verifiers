@@ -16,7 +16,7 @@ ENVIRONMENTS=(
     "math_python"
     "deepdive"
     "verbatim_copy"
-    "needle_in_haystack"
+    # "needle_in_haystack"
     "oolong"
 )
 

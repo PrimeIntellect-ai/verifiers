@@ -1,0 +1,117 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 75 packages in 937ms
+   Building math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+      Built math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+Prepared 1 package in 158ms
+Uninstalled 2 packages in 1ms
+Installed 2 packages in 3ms
+ ~ math-python==0.1.10 (from file:///Users/snimu/work/verifiers/environments/math_python)
+ - verifiers==0.1.8.post2 (from file:///Users/snimu/work/verifiers)
+ + verifiers==0.1.8.post2 (from git+https://github.com/PrimeIntellect-ai/verifiers.git@453c2093eac29619db1ce19f4110b1c158eada7e)
+=== Math Python Ablations ===
+Models: gpt-5-mini
+Examples per config: 50
+Rollouts per example: 1
+Modes: rlm rlm_tips standard
+
+########################################
+### Model: gpt-5-mini
+########################################
+
+========================================
+=== Mode: rlm (use_rlm=true, include_env_tips=false) ===
+========================================
+
+Running: model=gpt-5-mini, mode=rlm
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Uninstalled 1 package in 2ms
+Installed 1 package in 3ms
+2025-12-20 12:28:04 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-20 12:28:04 - verifiers.utils.env_utils - INFO - Using provided args: shuffle=True, seed=42, use_rlm=True, include_env_tips=False
+2025-12-20 12:28:04 - verifiers.utils.env_utils - INFO - Using default args: max_startup_wait_seconds=60, difficulty_key=None, sandbox_cpu_cores=1, dataset_name='PrimeIntellect/INTELLECT-3-RL', filter_kwargs={}, sandbox_timeout_per_command_seconds=60, answer_key='answer', min_avg_reward=0.0, sandbox_timeout_minutes=60, dataset_split='train', sandbox_memory_gb=2, sandbox_gpu_count=0, max_avg_reward=1.0, question_key='question', sandbox_disk_size_gb=5, max_output_length=8192, instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', max_iterations=30, map_kwargs={}, dataset_subset='math', info_key='info', max_turns=100, pip_install_packages='numpy sympy scipy'
+2025-12-20 12:28:06 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-20 12:28:06 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: gpt-5-mini
+2025-12-20 12:28:06 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-20 12:28:06 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-20 12:28:13 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://player-announces-festivals-exhaust.trycloudflare.com
+Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [01:36<1:18:27, 96.08s/it]Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [01:36<31:49, 39.78s/it]  Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [01:36<17:07, 21.86s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [01:38<10:39, 13.90s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [01:41<07:22,  9.82s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [01:44<05:38,  7.69s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [01:46<04:02,  5.65s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [01:46<02:51,  4.08s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [01:47<02:04,  3.04s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [01:48<01:33,  2.35s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [01:48<01:06,  1.69s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [01:50<00:59,  1.58s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [01:50<00:50,  1.35s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [01:50<00:35,  1.02it/s]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [01:53<00:49,  1.41s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [01:53<00:36,  1.06s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [01:59<01:23,  2.52s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [02:02<01:23,  2.62s/it]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [02:05<01:27,  2.84s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [02:08<01:20,  2.68s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [02:08<00:56,  1.95s/it]Processing 50 groups (50 total rollouts):  44%|████▍     | 22/50 [02:09<00:50,  1.81s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [02:13<01:06,  2.45s/it]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [02:16<00:49,  1.99s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [02:18<00:35,  1.56s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [02:26<01:05,  2.96s/it]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [02:27<00:55,  2.63s/it]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [02:33<01:07,  3.36s/it]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [02:37<01:06,  3.51s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [02:38<00:49,  2.73s/it]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [02:38<00:34,  2.03s/it]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [02:42<00:40,  2.55s/it]2025-12-20 12:30:56 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by BadRequestError("Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}")
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}
+Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [02:50<01:03,  4.24s/it]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [03:07<01:50,  7.86s/it]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [03:08<01:18,  6.02s/it]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [03:08<00:51,  4.26s/it]2025-12-20 12:31:49 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by BadRequestError("Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}")
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}
+Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [03:43<02:26, 13.30s/it]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [04:42<04:30, 27.08s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [06:25<07:28, 49.80s/it]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [07:02<06:07, 45.94s/it]2025-12-20 12:35:34 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by BadRequestError("Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}")
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}
+Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [07:28<04:39, 39.91s/it]2025-12-20 12:36:11 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by BadRequestError("Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}")
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_prompt'}}
+Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [08:05<03:53, 38.89s/it]2025-12-20 12:40:13 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox i31sbeit5o3ynryni8zwvbfj
+2025-12-20 12:40:13 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:40:26 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox vk479g0bfyt87cy4afvz3jbb
+2025-12-20 12:40:26 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:40:26 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox kx860yks63k7omlyp2qhm9kp
+2025-12-20 12:40:26 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:40:35 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox mc70img80wby90dnab4k81xz
+2025-12-20 12:40:35 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s
+2025-12-20 12:42:11 - verifiers.envs.rlm_env - WARNING - Command timed out after 120s in sandbox qyyl2c97z1s6cd78zhp3gorq
+2025-12-20 12:42:11 - verifiers.envs.rlm_env - WARNING - Code execution timed out after 120s

@@ -1,0 +1,88 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 78 packages in 19ms
+   Building oolong @ file:///Users/snimu/work/verifiers/environments/oolong
+      Built oolong @ file:///Users/snimu/work/verifiers/environments/oolong
+Prepared 1 package in 117ms
+Uninstalled 1 package in 0.71ms
+Installed 1 package in 1ms
+ ~ oolong==0.1.0 (from file:///Users/snimu/work/verifiers/environments/oolong)
+=== Oolong Long-Context Ablations ===
+MODELS_FULL (all ablations): 
+MODELS_STANDARD (default setting only): openrouter:xiaomi/mimo-v2-flash:free openrouter:z-ai/glm-4.6
+Examples per config: 50
+Rollouts per example: 1
+Modes for MODELS_FULL: rlm rlm_tips standard
+Subsets for MODELS_FULL: synth synth_with_labels real
+Default for MODELS_STANDARD: mode=rlm_tips, subset=real
+
+############################################################
+### PART 1: Full ablations with MODELS_FULL
+############################################################
+
+############################################################
+### PART 2: Default setting with MODELS_STANDARD
+############################################################
+
+########################################
+### Model: openrouter:xiaomi/mimo-v2-flash:free (default setting only)
+########################################
+
+Running: model=openrouter:xiaomi/mimo-v2-flash:free, mode=rlm_tips, subset=real
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+2025-12-20 04:08:47 - verifiers.utils.env_utils - INFO - Loading environment: oolong
+2025-12-20 04:08:47 - verifiers.utils.env_utils - INFO - Using provided args: use_rlm=True, include_env_tips=True, shuffle=True, subset=real, seed=42
+2025-12-20 04:08:47 - verifiers.utils.env_utils - INFO - Using default args: split='validation', max_iterations=30, max_output_length=8192, judge_model='gpt-5-mini', judge_api_key_var='OPENAI_API_KEY'
+2025-12-20 04:08:51 - verifiers.utils.env_utils - ERROR - Failed to load environment oolong with args {'use_rlm': True, 'include_env_tips': True, 'subset': 'real', 'shuffle': True, 'seed': 42}: Config name is missing.
+Please pick one among the available configs: ['dnd', 'toy_dnd']
+Example of usage:
+	`load_dataset('oolongbench/oolong-real', 'dnd')`
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/utils/env_utils.py", line 69, in load_environment
+    env_instance: Environment = env_load_func(**env_args)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/environments/oolong/oolong.py", line 100, in load_environment
+    raw_dataset = load_dataset(hf_dataset_name, split=split)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/datasets/load.py", line 1397, in load_dataset
+    builder_instance = load_dataset_builder(
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/datasets/load.py", line 1171, in load_dataset_builder
+    builder_instance: DatasetBuilder = builder_cls(
+                                       ^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/datasets/builder.py", line 344, in __init__
+    self.config, self.config_id = self._create_builder_config(
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/datasets/builder.py", line 526, in _create_builder_config
+    raise ValueError(
+ValueError: Config name is missing.
+Please pick one among the available configs: ['dnd', 'toy_dnd']
+Example of usage:
+	`load_dataset('oolongbench/oolong-real', 'dnd')`
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/.venv/bin/vf-eval", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/scripts/eval.py", line 327, in main
+    asyncio.run(run_evaluation(eval_config))
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/utils/eval_utils.py", line 125, in run_evaluation
+    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/utils/env_utils.py", line 88, in load_environment
+    raise RuntimeError(f"Failed to load environment '{env_id}': {str(e)}") from e
+RuntimeError: Failed to load environment 'oolong': Config name is missing.
+Please pick one among the available configs: ['dnd', 'toy_dnd']
+Example of usage:
+	`load_dataset('oolongbench/oolong-real', 'dnd')`
