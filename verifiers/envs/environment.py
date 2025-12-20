@@ -81,6 +81,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
+        score_rollouts: bool = True,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -100,6 +101,7 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
 
         self.set_interleaved_rollouts(interleaved_rollouts)
+        self.set_score_rollouts(score_rollouts)
 
         if self.message_type == "chat":
             if dataset is not None:
@@ -711,7 +713,8 @@ class Environment(ABC):
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
-        await self.rubric.score_group(group_states, score_sem=score_sem)
+        if self.score_rollouts:
+            await self.rubric.score_group(group_states, score_sem=score_sem)
         return list(group_states)
 
     def _prepare_rollout_results(
@@ -1061,6 +1064,10 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    def set_score_rollouts(self, score_rollouts: bool) -> None:
+        """Set the score rollouts flag for this environment."""
+        self.score_rollouts = score_rollouts
 
     make_dataset = make_dataset
 
