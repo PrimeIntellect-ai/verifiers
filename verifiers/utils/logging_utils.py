@@ -10,6 +10,7 @@ from rich.text import Text
 
 from verifiers.errors import Error
 from verifiers.types import Messages
+from verifiers.utils.error_utils import ErrorChain
 
 
 def setup_logging(
@@ -102,13 +103,7 @@ def print_prompt_completions_sample(
 
     def _format_error(error: BaseException) -> Text:
         out = Text()
-        out.append("error: ", style="bold red")
-        while True:
-            out.append(Text(repr(error), style="red"))
-            if error.__cause__ is None:
-                break
-            out.append(Text(", caused by ", style="red"))
-            error = error.__cause__
+        out.append(f"error: {ErrorChain(error)}", style="bold red")
 
         return out
 
