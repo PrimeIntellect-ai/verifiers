@@ -412,9 +412,9 @@ class Environment(ABC):
                             phrase in error_text for phrase in context_length_phrases
                         ):
                             self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError(e)
+                            raise vf.OverlongPromptError from e
                     # in all other case we raise a generic model error
-                    raise vf.ModelError(e)
+                    raise vf.ModelError from e
 
             return wrapper
 
@@ -543,10 +543,12 @@ class Environment(ABC):
 
         # Some providers (e.g. OpenRouter) may return None for response or response.choices
         if response is None:
-            raise vf.EmptyModelResponseError(ValueError("Model returned no response"))
+            raise vf.EmptyModelResponseError from ValueError(
+                "Model returned no response"
+            )
         if response.choices is None:
-            raise vf.EmptyModelResponseError(
-                ValueError("Model returned no response choices")
+            raise vf.EmptyModelResponseError from ValueError(
+                "Model returned no response choices"
             )
         return response
 
@@ -637,7 +639,7 @@ class Environment(ABC):
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
-                cause = getattr(err, "cause", None)
+                cause = getattr(err, "__cause__", None)
                 if cause is not None:
                     self.logger.error(
                         f"Got {err.__class__.__name__}, caused by {cause!r}"

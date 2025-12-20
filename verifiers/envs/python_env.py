@@ -252,7 +252,7 @@ PY
                 f"Waited {time.time() - s:.1f}s for Python worker to be ready"
             )
         except Exception as e:
-            raise PythonWorkerNotReadyError(e)
+            raise PythonWorkerNotReadyError from e
 
     async def _send_worker_request(
         self, sandbox_id: str, sandbox_state, payload: dict[str, Any]
@@ -280,7 +280,7 @@ PY
                 raise RuntimeError("Python worker returned no output")
             response = json.loads(raw_response)
         except Exception as e:
-            raise PythonWorkerRequestError(e)
+            raise PythonWorkerRequestError from e
 
         return response
 

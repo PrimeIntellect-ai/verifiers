@@ -202,7 +202,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
             return f"Error: {timeout_msg}"
         except Exception as e:
-            raise vf.SandboxError(cause=e)
+            raise vf.SandboxError from e
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()

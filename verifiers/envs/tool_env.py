@@ -85,7 +85,7 @@ class ToolEnv(vf.MultiTurnEnv):
                 )
             except Exception as e:
                 if self._should_stop_for_error(e):
-                    raise vf.ToolParseError(e)
+                    raise vf.ToolParseError from e
                 tool_messages.append(
                     cast(
                         vf.Message,
@@ -105,7 +105,7 @@ class ToolEnv(vf.MultiTurnEnv):
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
-                    raise vf.ToolCallError(e)
+                    raise vf.ToolCallError from e
                 tool_messages.append(
                     cast(
                         vf.Message,

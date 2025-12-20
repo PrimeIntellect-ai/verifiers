@@ -65,7 +65,7 @@ async def tokenize_vllm(
             )
         return tokenize_response.tokens
     except Exception as e:
-        raise vf.ModelError(e)
+        raise vf.ModelError from e
 
 
 def prepare_sampling_args_for_token_prompts(
