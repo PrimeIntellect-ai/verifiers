@@ -639,15 +639,8 @@ class Environment(ABC):
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
-                cause = getattr(err, "__cause__", None)
-                if cause is not None:
-                    self.logger.error(
-                        f"Got {err.__class__.__name__}, caused by {cause!r}"
-                    )
-                    traceback.print_exception(type(cause), cause, cause.__traceback__)
-                else:
-                    self.logger.error(f"Got {err.__class__.__name__}: {err}")
-                    traceback.print_exception(type(err), err, err.__traceback__)
+                self.logger.error(f"Got {err.__class__.__name__}: {err!r}")
+                traceback.print_exception(type(err), err, err.__traceback__)
             return True
         return False
 
