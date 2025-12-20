@@ -8,12 +8,19 @@ Creates focused plots comparing modes and subsets:
 - RLM metrics comparison
 - Context length vs reward analysis
 - Optional timing plots: timing_by_subset, timing_vs_context, timing_efficiency
+- Raw data context plots: context_scatter, context_binned, context_rolling
+  (These show per-example reward vs context length)
 
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image reward
     python plot_results.py --image subset
     python plot_results.py --image timing_by_subset
+    
+    # Raw data plots (require running aggregate_results.py --raw-output first):
+    python plot_results.py --image context_scatter
+    python plot_results.py --image context_binned
+    python plot_results.py --image context_rolling
 """
 
 import argparse
@@ -23,6 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy import stats
 
 
 # Mode styling for consistent visualization
@@ -52,6 +60,19 @@ def load_data(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
 
     # Ensure mode and subset columns exist
+    if "mode" not in df.columns:
+        df["mode"] = "standard"
+    if "subset" not in df.columns:
+        df["subset"] = "synth"
+
+    return df
+
+
+def load_raw_data(raw_csv_path: Path) -> pd.DataFrame:
+    """Load raw per-example results CSV."""
+    df = pd.read_csv(raw_csv_path)
+
+    # Ensure required columns exist
     if "mode" not in df.columns:
         df["mode"] = "standard"
     if "subset" not in df.columns:
@@ -337,6 +358,181 @@ def plot_context_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward vs Context Length\n(by mode)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
+def plot_reward_vs_context_scatter(ax: plt.Axes, df: pd.DataFrame):
+    """Plot: Reward vs context length scatter for individual examples (raw data)."""
+    if "context_length" not in df.columns:
+        ax.text(
+            0.5,
+            0.5,
+            "Context length not available\nin raw data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode].dropna(subset=["context_length", "judge_reward"])
+        if len(data) == 0:
+            continue
+
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Convert to thousands of characters
+        context_k = data["context_length"] / 1000
+
+        ax.scatter(
+            context_k,
+            data["judge_reward"],
+            label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+            color=style["color"],
+            marker=style["marker"],
+            s=40,
+            alpha=0.5,
+            edgecolors="none",
+        )
+
+    ax.set_xlabel("Context Length (K chars)")
+    ax.set_ylabel("Judge Reward")
+    ax.set_title("Reward vs Context Length\n(per-example)")
+    ax.set_ylim(-0.05, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
+def plot_reward_vs_context_binned(ax: plt.Axes, df: pd.DataFrame, num_bins: int = 10):
+    """Plot: Reward vs context length with binned means and error bars (raw data)."""
+    if "context_length" not in df.columns:
+        ax.text(
+            0.5,
+            0.5,
+            "Context length not available\nin raw data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    # Get global bin edges based on all data
+    all_context = df["context_length"].dropna()
+    if len(all_context) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No context length data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    bin_edges = np.linspace(all_context.min(), all_context.max(), num_bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2 / 1000  # Convert to K
+
+    for mode in modes:
+        data = df[df["mode"] == mode].dropna(subset=["context_length", "judge_reward"])
+        if len(data) == 0:
+            continue
+
+        style = MODE_STYLES.get(
+            mode, {"color": "gray", "marker": "o", "linestyle": "-"}
+        )
+
+        # Compute binned statistics
+        bin_means, _, _ = stats.binned_statistic(
+            data["context_length"], data["judge_reward"], statistic="mean", bins=bin_edges
+        )
+        bin_stds, _, _ = stats.binned_statistic(
+            data["context_length"], data["judge_reward"], statistic="std", bins=bin_edges
+        )
+        bin_counts, _, _ = stats.binned_statistic(
+            data["context_length"],
+            data["judge_reward"],
+            statistic="count",
+            bins=bin_edges,
+        )
+
+        # Compute standard error
+        bin_sems = bin_stds / np.sqrt(bin_counts)
+        bin_sems = np.nan_to_num(bin_sems, nan=0)
+
+        # Plot with error bars
+        valid = ~np.isnan(bin_means)
+        ax.errorbar(
+            bin_centers[valid],
+            bin_means[valid],
+            yerr=bin_sems[valid],
+            label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+            color=style["color"],
+            marker=style["marker"],
+            linestyle=style["linestyle"],
+            linewidth=2,
+            markersize=8,
+            capsize=3,
+        )
+
+    ax.set_xlabel("Context Length (K chars)")
+    ax.set_ylabel("Judge Reward (mean ± SEM)")
+    ax.set_title(f"Reward vs Context Length\n(binned into {num_bins} ranges)")
+    ax.set_ylim(0, 1.1)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
+def plot_reward_vs_context_rolling(ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1):
+    """Plot: Reward vs context length with rolling mean (raw data)."""
+    if "context_length" not in df.columns:
+        ax.text(
+            0.5,
+            0.5,
+            "Context length not available\nin raw data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for mode in modes:
+        data = df[df["mode"] == mode].dropna(subset=["context_length", "judge_reward"])
+        if len(data) < 5:
+            continue
+
+        style = MODE_STYLES.get(mode, {"color": "gray", "linestyle": "-"})
+
+        # Sort by context length
+        data = data.sort_values("context_length")
+        context_k = data["context_length"].values / 1000
+        rewards = data["judge_reward"].values
+
+        # Compute rolling mean
+        window = max(5, int(len(data) * window_frac))
+        rolling_mean = pd.Series(rewards).rolling(window, center=True, min_periods=3).mean()
+
+        # Plot scatter (faded) and rolling mean
+        ax.scatter(context_k, rewards, color=style["color"], alpha=0.2, s=20, edgecolors="none")
+        ax.plot(
+            context_k,
+            rolling_mean,
+            label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+            color=style["color"],
+            linestyle=style["linestyle"],
+            linewidth=2.5,
+        )
+
+    ax.set_xlabel("Context Length (K chars)")
+    ax.set_ylabel("Judge Reward (rolling mean)")
+    ax.set_title("Reward vs Context Length\n(rolling average)")
     ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
@@ -697,7 +893,26 @@ PLOT_REGISTRY = {
     "timing_by_subset": (plot_timing_by_subset, (10, 7), "Timing by Subset"),
     "timing_vs_context": (plot_timing_vs_context, (10, 7), "Timing vs Context Length"),
     "timing_efficiency": (plot_timing_efficiency, (10, 7), "Timing Efficiency"),
+    # Raw data plots (require --raw-input)
+    "context_scatter": (
+        plot_reward_vs_context_scatter,
+        (10, 7),
+        "Reward vs Context (scatter)",
+    ),
+    "context_binned": (
+        plot_reward_vs_context_binned,
+        (10, 7),
+        "Reward vs Context (binned)",
+    ),
+    "context_rolling": (
+        plot_reward_vs_context_rolling,
+        (10, 7),
+        "Reward vs Context (rolling)",
+    ),
 }
+
+# Plot types that require raw (per-example) data instead of aggregated data
+RAW_DATA_PLOTS = {"context_scatter", "context_binned", "context_rolling"}
 
 
 def create_single_plot(
@@ -749,7 +964,7 @@ Examples:
     # Show subset comparison
     python plot_results.py --image subset
     
-    # Show context length analysis
+    # Show context length analysis (aggregated)
     python plot_results.py --image context
     
     # Save plot to file
@@ -759,6 +974,15 @@ Examples:
     python plot_results.py --image timing_by_subset    # Timing by subset
     python plot_results.py --image timing_vs_context   # Timing vs context length
     python plot_results.py --image timing_efficiency   # Reward vs time tradeoff
+    
+    # Raw data context plots (per-example granularity)
+    # First generate raw data: python aggregate_results.py --raw-output outputs/raw_results.csv
+    python plot_results.py --image context_scatter     # Individual scatter points
+    python plot_results.py --image context_binned      # Binned means with error bars
+    python plot_results.py --image context_rolling     # Rolling average curves
+    
+    # Use custom raw data file
+    python plot_results.py --image context_binned -r my_raw_data.csv
 """,
     )
     parser.add_argument(
@@ -767,6 +991,14 @@ Examples:
         type=Path,
         default=Path(__file__).parent / "outputs" / "aggregate.csv",
         help="Path to aggregate CSV file",
+    )
+    parser.add_argument(
+        "--raw-input",
+        "-r",
+        type=Path,
+        default=None,
+        help="Path to raw results CSV (for context_scatter/binned/rolling plots). "
+        "If not specified, defaults to outputs/raw_results.csv",
     )
     parser.add_argument(
         "--output",
@@ -790,9 +1022,14 @@ Examples:
             "timing_by_subset",
             "timing_vs_context",
             "timing_efficiency",
+            # Raw data plots (require --raw-input)
+            "context_scatter",
+            "context_binned",
+            "context_rolling",
         ],
         default="main",
-        help="Which plot to generate: 'main' for 2x3 grid, or individual plot name",
+        help="Which plot to generate: 'main' for 2x3 grid, or individual plot name. "
+        "context_scatter/binned/rolling require raw data (--raw-input or default path)",
     )
 
     # Model filtering options
@@ -821,12 +1058,31 @@ Examples:
 
     args = parser.parse_args()
 
-    if not args.input.exists():
-        print(f"Error: Input file not found: {args.input}")
-        print("Run aggregate_results.py first to generate the CSV.")
-        return
+    # Check if we need raw data for this plot type
+    needs_raw_data = args.image in RAW_DATA_PLOTS
 
-    df = load_data(args.input)
+    if needs_raw_data:
+        # Use raw data file
+        if args.raw_input is None:
+            args.raw_input = Path(__file__).parent / "outputs" / "raw_results.csv"
+
+        if not args.raw_input.exists():
+            print(f"Error: Raw data file not found: {args.raw_input}")
+            print(
+                "Run: python aggregate_results.py --raw-output outputs/raw_results.csv"
+            )
+            return
+
+        df = load_raw_data(args.raw_input)
+        print(f"Loaded {len(df)} raw results from {args.raw_input}")
+    else:
+        # Use aggregated data
+        if not args.input.exists():
+            print(f"Error: Input file not found: {args.input}")
+            print("Run aggregate_results.py first to generate the CSV.")
+            return
+
+        df = load_data(args.input)
 
     # Handle --list-models
     if args.list_models:
@@ -873,7 +1129,8 @@ Examples:
             return
         print(f"Filtered by subset: {original_count} -> {len(df)} configurations")
 
-    print(f"Loaded {len(df)} configurations from {args.input}")
+    if not needs_raw_data:
+        print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
         create_plots(df, args.output)
