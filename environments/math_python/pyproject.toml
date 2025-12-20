@@ -9,9 +9,6 @@ dependencies = [
     "math-verify>=0.8.0",
 ]
 
-[tool.uv.sources]
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "453c209" }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
