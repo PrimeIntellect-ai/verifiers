@@ -1,12 +1,12 @@
 import asyncio
 import contextvars
 import logging
+import platform
 import shlex
+import shutil
 import subprocess
 import time
 import uuid
-import platform
-import shutil
 from typing import Any, cast
 
 from aiohttp import web
