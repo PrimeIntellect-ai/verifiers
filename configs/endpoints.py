@@ -4,18 +4,23 @@ ENDPOINTS = {
         "url": "http://0.0.0.0:8000/v1",
         "key": "PRIME_API_KEY",
     },
+    "qwen3-4b-t": {
+        "model": "Qwen/Qwen3-4B-Thinking-2507",
+        "url": "http://0.0.0.0:8000/v1",
+        "key": "PRIME_API_KEY",
+    },
     "qwen3-30b-i": {
         "model": "qwen/qwen3-30b-a3b-instruct-2507",
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
     },
-    "qwen3-235b-i": {
-        "model": "qwen/qwen3-235b-a22b-instruct-2507",
+    "qwen3-30b-t": {
+        "model": "qwen/qwen3-30b-a3b-thinking-2507",
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
     },
-    "qwen3-30b-t": {
-        "model": "qwen/qwen3-30b-a3b-thinking-2507",
+    "qwen3-235b-i": {
+        "model": "qwen/qwen3-235b-a22b-instruct-2507",
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
     },

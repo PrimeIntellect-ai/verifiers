@@ -64,6 +64,8 @@ def test_print_results_rollout_indexing(capsys):
         example_id=example_ids,
         reward=rewards,
         metrics={"test_metric": metric_values},
+        is_truncated=[False] * 6,
+        stop_conditions=[None] * 6,
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
 
@@ -102,6 +104,8 @@ def test_print_results_single_rollout(capsys):
         example_id=example_ids,
         reward=rewards,
         metrics={},
+        is_truncated=[False] * 3,
+        stop_conditions=[None] * 3,
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
 
@@ -134,6 +138,8 @@ def test_print_results_three_rollouts(capsys):
         example_id=example_ids,
         reward=rewards,
         metrics={},
+        is_truncated=[False] * 6,
+        stop_conditions=[None] * 6,
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
 

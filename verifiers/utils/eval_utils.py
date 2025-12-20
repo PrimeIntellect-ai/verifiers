@@ -2,6 +2,7 @@ import importlib.util
 import json
 import logging
 import time
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -96,6 +97,19 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             trials = [round(v[i + (j * r)], 3) for j in range(n)]
             out = f"r{i + 1}: {trials}"
             print(out)
+
+    print("Info:")
+    print(
+        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+    )
+    print(
+        f"stop_conditions: {', '.join([f'{k}={v}' for k, v in Counter(results['stop_conditions']).items()])}"
+    )
+    errors = [e for e in errors if e is not None]
+    if errors:
+        print(
+            f"errors: {', '.join([f'{k}: {v / len(errors):.3f}' for k, v in Counter([type(e).__name__ for e in errors]).items()])}"
+        )
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:

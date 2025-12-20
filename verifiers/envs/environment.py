@@ -522,7 +522,7 @@ class Environment(ABC):
 
         if self.interleaved_rollouts and len(state["trajectory"]) > 0:
             prompt_ids = await get_prompt_ids(state, prompt, client)
-            return await get_model_response_with_tokens(
+            response = await get_model_response_with_tokens(
                 client=client,
                 model=model,
                 prompt=prompt,
@@ -532,7 +532,7 @@ class Environment(ABC):
                 message_type=message_type,
             )
         else:
-            return await get_model_response_with_messages(
+            response = await get_model_response_with_messages(
                 client=client,
                 model=model,
                 prompt=prompt,
@@ -540,6 +540,15 @@ class Environment(ABC):
                 sampling_args=sampling_args,
                 message_type=message_type,
             )
+
+        # Some providers (e.g. OpenRouter) may return None for response or response.choices
+        if response is None:
+            raise vf.EmptyModelResponseError(ValueError("Model returned no response"))
+        if response.choices is None:
+            raise vf.EmptyModelResponseError(
+                ValueError("Model returned no response choices")
+            )
+        return response
 
     async def init_state(
         self,
@@ -565,6 +574,7 @@ class Environment(ABC):
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
+        state["is_truncated"] = False
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
             state["oai_tools"] = state["info"]["oai_tools"]
@@ -621,6 +631,9 @@ class Environment(ABC):
     async def _render_stop(self, state: State, condition) -> bool:
         if await condition(state):
             state["is_completed"] = True
+            state["is_truncated"] = state.get("is_truncated", False) or any(
+                step.get("is_truncated", False) for step in state.get("trajectory", [])
+            )
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 self.logger.error(
@@ -724,6 +737,8 @@ class Environment(ABC):
         infos = [state.get("info", {}) for state in all_states]
         example_ids = [state.get("example_id", 0) for state in all_states]
         rewards = [state.get("reward", 0.0) for state in all_states]
+        stop_conditions = [state.get("stop_condition", None) for state in all_states]
+        is_truncated = [state.get("is_truncated", False) for state in all_states]
 
         metrics: dict[str, list[float]] = {}
         for state in all_states:
@@ -767,6 +782,8 @@ class Environment(ABC):
             example_id=example_ids,
             reward=rewards,
             metrics=metrics,
+            stop_conditions=stop_conditions,
+            is_truncated=is_truncated,
             metadata=metadata,
         )
 
