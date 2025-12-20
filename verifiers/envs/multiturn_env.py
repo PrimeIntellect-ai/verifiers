@@ -68,7 +68,10 @@ class MultiTurnEnv(vf.Environment):
         state: State,
         prompt_messages: Messages,
         response: ModelResponse,
+        extras: dict | None = None,
     ):
+        if extras is None:
+            extras = {}
         completion_messages = await parse_response_messages(response, self.message_type)
         response_is_truncated = await parse_is_truncated(response, self.message_type)
         tokens = await parse_response_tokens(
@@ -85,7 +88,7 @@ class MultiTurnEnv(vf.Environment):
             reward=None,
             advantage=None,
             is_truncated=is_truncated,
-            extras={},
+            extras=extras,
         )
         trajectory_step["completion"] = completion_messages
         state["trajectory"].append(trajectory_step)
