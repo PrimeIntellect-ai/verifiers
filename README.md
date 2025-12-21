@@ -32,6 +32,8 @@ Verifiers: Environments for LLM Reinforcement Learning
   </a>
 </p>
 
+> Note: This repository hosts community-contributed, lightly reviewed environment implementations. Environments maintained by the Prime Intellect research team are available at [research-environments](https://github.com/PrimeIntellect-ai/research-environments/tree/main).
+
 ## News & Updates
 
 - [11/19/25] v0.1.8 is released, featuring a major refactor of the rollout system to use trajectory-based tracking for token-in token-out training across turns, as well as support for truncated or branching rollouts.
