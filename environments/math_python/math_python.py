@@ -18,9 +18,15 @@ def load_environment(
     **kwargs,
 ):
     dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
-    system_prompt = (
-        "Use python for all calculations. Give your answer inside \\boxed{}."
+    pip_install_prompt = (
+        f"In addition to the Python standard library, you have access to: {pip_install_packages}."
+        if pip_install_packages.strip()
+        else "You may only use the Python standard library."
     )
+    system_prompt = (
+        "Use Python for all calculations. Give your answer inside \\boxed{}."
+    )
+    system_prompt += "\n\n" + pip_install_prompt
 
     parser = vf.Parser(extract_fn=extract_boxed_answer)
     math_rubric = vf.MathRubric(parser=parser)
