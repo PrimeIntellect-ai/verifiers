@@ -99,6 +99,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "turns": r.get("turns", 0),
             "prompt_tokens": r.get("prompt_tokens", 0),
             "completion_tokens": r.get("completion_tokens", 0),
+            "tool_calls": r.get("total_tool_calls", 0),
         }
         rows.append(row)
 
@@ -128,6 +129,7 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "turns",
         "prompt_tokens",
         "completion_tokens",
+        "tool_calls",
     ]
 
     # Group and compute stats

@@ -332,6 +332,20 @@ def load_environment(
     judge_rubric.add_reward_func(prompt_tokens, weight=0.0)
     judge_rubric.add_reward_func(completion_tokens, weight=0.0)
 
+    # Tool call metrics (works for all modes - counts main model's tool calls)
+    def total_tool_calls(completion: Messages, **kwargs) -> float:
+        """Metric: Total tool calls made by the main model."""
+        total = 0
+        if isinstance(completion, list):
+            for msg in completion:
+                if msg.get("role") == "assistant" and "tool_calls" in msg:
+                    tool_calls = msg.get("tool_calls", [])
+                    if isinstance(tool_calls, list):
+                        total += len(tool_calls)
+        return float(total)
+
+    judge_rubric.add_reward_func(total_tool_calls, weight=0.0)
+
     # === Shared tool definitions (used by both RLM and StatefulToolEnv modes) ===
     async def search(query: str, num_results: int = 10) -> str:
         """Search Google, getting up to 10 results and search metadata.
