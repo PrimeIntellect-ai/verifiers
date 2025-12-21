@@ -19,10 +19,13 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import pandas as pd
 import seaborn as sns
 
+# Set style at module level so it applies to all plots
+sns.set_style("whitegrid")
 
 # Mode styling for consistent visualization
 MODE_STYLES = {
@@ -530,26 +533,27 @@ def create_plots(
     """Create the 2x2 grid of plots."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Set style
-    sns.set_style("whitegrid")
-
     # Main plots (suppress individual legends)
     plot_reward_by_model(axes[0, 0], df, show_legend=False, show_counts=show_counts)
     plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
     plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
     plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
 
-    # Create central legend for modes
+    # Create central legend for modes (using markers for consistency with scatter plots)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
     legend_handles = []
     for mode in modes:
-        style = MODE_STYLES.get(mode, {"color": "gray"})
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
         mode_label = MODE_LABELS.get(mode, mode).replace("\n", " ")
         legend_handles.append(
-            Patch(
-                facecolor=style["color"],
-                edgecolor="black",
-                linewidth=0.5,
+            Line2D(
+                [0],
+                [0],
+                marker=style["marker"],
+                color="w",
+                markerfacecolor=style["color"],
+                markeredgecolor="black",
+                markersize=10,
                 label=mode_label,
             )
         )
@@ -605,7 +609,6 @@ def create_single_plot(
     func, figsize, title = PLOT_REGISTRY[plot_name]
 
     fig, ax = plt.subplots(figsize=figsize)
-    sns.set_style("whitegrid")
 
     # Pass show_counts to functions that support it
     if plot_name in ("reward", "timing", "main_tokens", "tokens"):
