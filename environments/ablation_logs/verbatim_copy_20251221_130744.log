@@ -1,0 +1,262 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 80 packages in 393ms
+   Building verbatim-copy @ file:///Users/snimu/work/verifiers/environments/verbatim_copy
+      Built verbatim-copy @ file:///Users/snimu/work/verifiers/environments/verbatim_copy
+Prepared 1 package in 154ms
+Uninstalled 1 package in 0.58ms
+Installed 1 package in 0.86ms
+ ~ verbatim-copy==0.1.0 (from file:///Users/snimu/work/verifiers/environments/verbatim_copy)
+=== Verbatim Copy Ablations ===
+MODELS_FULL (all ablations): 
+MODELS_STANDARD (default setting only): deepseek:deepseek/deepseek-v3.2
+Examples per config: 50
+Rollouts per example: 1
+Modes for MODELS_FULL: rlm rlm_tips standard
+Default for MODELS_STANDARD: mode=rlm_tips, content_type=all, target_length=500, fragment_length=20
+
+############################################################
+### PART 1: Full ablations with MODELS_FULL
+############################################################
+
+############################################################
+### PART 2: Default setting with MODELS_STANDARD
+############################################################
+
+########################################
+### Model: deepseek:deepseek/deepseek-v3.2 (default setting only)
+########################################
+
+Running: model=deepseek:deepseek/deepseek-v3.2, mode=rlm_tips, content_type=all, target_length=500, fragment_length=20
+2025-12-21 16:06:04 - verifiers.utils.env_utils - INFO - Loading environment: verbatim-copy
+2025-12-21 16:06:04 - verifiers.utils.env_utils - INFO - Using provided args: include_env_tips=True, content_type=all, seed=42, target_length=500, num_samples=50, mean_fragment_length=20, use_rlm=True, shuffle=True
+2025-12-21 16:06:04 - verifiers.utils.env_utils - INFO - Using default args: max_output_length=8192, max_iterations=30
+Flattening the indices:   0%|          | 0/50 [00:00<?, ? examples/s]Flattening the indices: 100%|██████████| 50/50 [00:00<00:00, 16228.06 examples/s]
+Map:   0%|          | 0/50 [00:00<?, ? examples/s]Map: 100%|██████████| 50/50 [00:00<00:00, 31291.44 examples/s]
+2025-12-21 16:06:04 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'verbatim-copy'
+2025-12-21 16:06:04 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: deepseek/deepseek-v3.2
+2025-12-21 16:06:04 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-21 16:06:04 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-21 16:06:10 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://experiment-concept-commissions-wiley.trycloudflare.com
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [01:17<1:03:12, 77.39s/it]Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [01:17<25:33, 31.94s/it]  Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [01:19<14:14, 18.18s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [01:20<08:41, 11.33s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [01:26<07:11,  9.59s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [01:29<05:22,  7.34s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [01:31<03:56,  5.50s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [01:33<03:05,  4.42s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [01:37<02:56,  4.31s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [01:43<03:12,  4.82s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [01:44<02:19,  3.58s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [01:49<02:37,  4.16s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [01:51<02:04,  3.35s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [01:53<01:49,  3.03s/it]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [01:54<01:20,  2.30s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [01:55<01:06,  1.95s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [01:56<00:57,  1.73s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [01:58<00:56,  1.75s/it]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [01:59<00:52,  1.69s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [02:00<00:38,  1.27s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [02:01<00:34,  1.18s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [02:01<00:22,  1.20it/s]Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [02:03<00:23,  1.09it/s]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [02:05<00:30,  1.21s/it]Processing 50 groups (50 total rollouts):  52%|█████▏    | 26/50 [02:05<00:24,  1.03s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [02:07<00:30,  1.31s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [02:07<00:21,  1.03it/s]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [02:08<00:17,  1.19it/s]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [02:08<00:15,  1.33it/s]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [02:11<00:23,  1.25s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [02:11<00:18,  1.00s/it]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [02:12<00:14,  1.16it/s]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [02:13<00:15,  1.05it/s]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [02:13<00:11,  1.35it/s]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [02:14<00:07,  1.65it/s]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [02:15<00:07,  1.55it/s]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [02:17<00:12,  1.17s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [02:19<00:08,  1.06it/s]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [02:20<00:08,  1.07s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [02:21<00:07,  1.02s/it]Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [02:24<00:08,  1.47s/it]Processing 50 groups (50 total rollouts):  90%|█████████ | 45/50 [02:34<00:19,  3.89s/it]Processing 50 groups (50 total rollouts):  92%|█████████▏| 46/50 [02:40<00:17,  4.44s/it]Processing 50 groups (50 total rollouts):  96%|█████████▌| 48/50 [03:13<00:19,  9.70s/it]Processing 50 groups (50 total rollouts):  98%|█████████▊| 49/50 [03:14<00:07,  7.79s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [03:54<00:00, 15.85s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [03:54<00:00,  4.68s/it]
+2025-12-21 16:09:58 - verifiers.utils.eval_utils - INFO - Results saved to environments/verbatim_copy/outputs/evals/verbatim-copy--deepseek--deepseek-v3.2/80b96506
+2025-12-21 16:09:58 - verifiers.utils.eval_utils - INFO - Evaluation completed in 234.05 seconds
+--- Evaluation ---
+Environment: verbatim-copy
+Model: deepseek/deepseek-v3.2
+Provider: https://openrouter.ai/api/v1/
+Examples: 50
+Rollouts per example: 1
+--- Example ---
+╭──────────────────────────────────────────────────────────────────────────────────────────────────── Step 0 ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓ │
+│ ┃ Prompt                                                                                          ┃ Completion                                                                                      ┃ Reward ┃ │
+│ ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩ │
+│ │ user: Copy the text contained within the <text> tags exactly (do not include the tags           │ user: Copy the text contained within the <text> tags exactly (do not include the tags           │   1.00 │ │
+│ │ themselves):                                                                                    │ themselves):                                                                                    │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ <text>84df7                                                                                     │ <text>84df7                                                                                     │        │ │
+│ │ ZJ9S-FVYV-                                                                                      │ ZJ9S-FVYV-                                                                                      │        │ │
+│ │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │        │ │
+│ │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │        │ │
+│ │ 5bd3618d302ad1c23b                                                                              │ 5bd3618d302ad1c23b                                                                              │        │ │
+│ │ DD5X-HFJH-357G                                                                                  │ DD5X-HFJH-357G                                                                                  │        │ │
+│ │ -f1ab-d351-3665-a9J7-STCS                                                                       │ -f1ab-d351-3665-a9J7-STCS                                                                       │        │ │
+│ │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │        │ │
+│ │ KBAY-TQNC-ZW32                                                                                  │ KBAY-TQNC-ZW32                                                                                  │        │ │
+│ │ 733a602b7e-9622-11a89a1E9                                                                       │ 733a602b7e-9622-11a89a1E9                                                                       │        │ │
+│ │ e5452330-c067-fdc5-f098-2E9                                                                     │ e5452330-c067-fdc5-f098-2E9                                                                     │        │ │
+│ │ e5452330-c067-fdc0-86d84c2a094d                                                                 │ e5452330-c067-fdc0-86d84c2a094d                                                                 │        │ │
+│ │ PTSJ48K-6UEK-2SFY                                                                               │ PTSJ48K-6UEK-2SFY                                                                               │        │ │
+│ │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │        │ │
+│ │ MW534-153f9a076JGG                                                                              │ MW534-153f9a076JGG                                                                              │        │ │
+│ │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │        │ │
+│ │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861</text>                                      │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861</text>                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ <env_tips>                                                                                      │ <env_tips>                                                                                      │        │ │
+│ │ Strategy for verbatim copying:                                                                  │ Strategy for verbatim copying:                                                                  │        │ │
+│ │ 1. Write your initial attempt to answer["content"]                                              │ 1. Write your initial attempt to answer["content"]                                              │        │ │
+│ │ 2. Print answer["content"] to see exactly what you wrote                                        │ 2. Print answer["content"] to see exactly what you wrote                                        │        │ │
+│ │ 3. Compare carefully with the original text - look for typos, transpositions, missing           │ 3. Compare carefully with the original text - look for typos, transpositions, missing           │        │ │
+│ │ characters                                                                                      │ characters                                                                                      │        │ │
+│ │ 4. Fix any errors using string operations (slicing, replacement, etc.)                          │ 4. Fix any errors using string operations (slicing, replacement, etc.)                          │        │ │
+│ │ 5. Only set answer["ready"] = True after you have verified correctness                          │ 5. Only set answer["ready"] = True after you have verified correctness                          │        │ │
+│ │ </env_tips>                                                                                     │ </env_tips>                                                                                     │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"print(type(extra_data))\\nprint(repr(extra_data))\"}"                   │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: <class 'NoneType'>                                                                        │        │ │
+│ │                                                                                                 │ None                                                                                            │        │ │
+│ │                                                                                                 │ [Execution time: 0.41s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"import sys\\nprint([k for k in globals().keys() if not                  │        │ │
+│ │                                                                                                 │ k.startswith('_')])\"}"                                                                         │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: ['extra_data', 'answer', 'llm_batch', 'sys']                                              │        │ │
+│ │                                                                                                 │ [Execution time: 0.21s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"print(answer)\"}"                                                       │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: {'ready': False, 'content': ''}                                                           │        │ │
+│ │                                                                                                 │ [Execution time: 0.22s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"answer[\\\"content\\\"] =                                               │        │ │
+│ │                                                                                                 │ \\\"\\\"\\\"84df7\\nZJ9S-FVYV-\\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6… │        │ │
+│ │                                                                                                 │ answer: {answer['content']}\\\")\"}"                                                            │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: My answer: 84df7                                                                          │        │ │
+│ │                                                                                                 │ ZJ9S-FVYV-                                                                                      │        │ │
+│ │                                                                                                 │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │        │ │
+│ │                                                                                                 │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │        │ │
+│ │                                                                                                 │ 5bd3618d302ad1c23b                                                                              │        │ │
+│ │                                                                                                 │ DD5X-HFJH-357G                                                                                  │        │ │
+│ │                                                                                                 │ -f1ab-d351-3665-a9J7-STCS                                                                       │        │ │
+│ │                                                                                                 │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │        │ │
+│ │                                                                                                 │ KBAY-TQNC-ZW32                                                                                  │        │ │
+│ │                                                                                                 │ 733a602b7e-9622-11a89a1E9                                                                       │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc5-f098-2E9                                                                     │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc0-86d84c2a094d                                                                 │        │ │
+│ │                                                                                                 │ PTSJ48K-6UEK-2SFY                                                                               │        │ │
+│ │                                                                                                 │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │        │ │
+│ │                                                                                                 │ MW534-153f9a076JGG                                                                              │        │ │
+│ │                                                                                                 │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │        │ │
+│ │                                                                                                 │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861                                             │        │ │
+│ │                                                                                                 │ [Execution time: 0.21s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"original =                                                              │        │ │
+│ │                                                                                                 │ \\\"\\\"\\\"84df7\\nZJ9S-FVYV-\\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6… │        │ │
+│ │                                                                                                 │ = answer[\\\"content\\\"]\\n\\n# Compare line by line\\norig_lines =                            │        │ │
+│ │                                                                                                 │ original.splitlines()\\nmy_lines = my_answer.splitlines()\\n\\nprint(\\\"Number of lines in     │        │ │
+│ │                                                                                                 │ original:\\\", len(orig_lines))\\nprint(\\\"Number of lines in my answer:\\\",                  │        │ │
+│ │                                                                                                 │ len(my_lines))\\n\\n# Check each line\\nfor i in range(max(len(orig_lines), len(my_lines))):\\n │        │ │
+│ │                                                                                                 │ if i < len(orig_lines) and i < len(my_lines):\\n        if orig_lines[i] != my_lines[i]:\\n     │        │ │
+│ │                                                                                                 │ print(f\\\"Line {i+1} differs:\\\")\\n            print(f\\\"  Original:                        │        │ │
+│ │                                                                                                 │ {repr(orig_lines[i])}\\\")\\n            print(f\\\"  Mine:     {repr(my_lines[i])}\\\")\\n     │        │ │
+│ │                                                                                                 │ elif i >= len(orig_lines):\\n        print(f\\\"Line {i+1}: Missing in original, mine has:      │        │ │
+│ │                                                                                                 │ {repr(my_lines[i])}\\\")\\n    elif i >= len(my_lines):\\n        print(f\\\"Line {i+1}:        │        │ │
+│ │                                                                                                 │ Missing in mine, original has: {repr(orig_lines[i])}\\\")\"}"                                   │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: Number of lines in original: 17                                                           │        │ │
+│ │                                                                                                 │ Number of lines in my answer: 17                                                                │        │ │
+│ │                                                                                                 │ [Execution time: 0.24s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"import difflib\\n\\norig_lines = original.splitlines()\\nmy_lines =     │        │ │
+│ │                                                                                                 │ my_answer.splitlines()\\n\\ndiffer = difflib.Differ()\\ndiff = list(differ.compare(orig_lines,  │        │ │
+│ │                                                                                                 │ my_lines))\\n\\nfor line in diff:\\n    if not line.startswith('  '):  # only show              │        │ │
+│ │                                                                                                 │ differences\\n        print(line)\\n\\n# Also check if they're exactly                          │        │ │
+│ │                                                                                                 │ equal\\nprint(\\\"\\\\nAre they exactly equal?\\\", original == my_answer)\"}"                  │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool:                                                                                           │        │ │
+│ │                                                                                                 │ Are they exactly equal? True                                                                    │        │ │
+│ │                                                                                                 │ [Execution time: 0.26s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"# Check for whitespace differences\\nprint(\\\"Checking whitespace      │        │ │
+│ │                                                                                                 │ differences...\\\")\\nprint(\\\"Original repr:\\\", repr(original))\\nprint(\\\"My answer       │        │ │
+│ │                                                                                                 │ repr:\\\", repr(my_answer))\\nprint()\\nprint(\\\"Length original:\\\",                         │        │ │
+│ │                                                                                                 │ len(original))\\nprint(\\\"Length my answer:\\\", len(my_answer))\\n\\n# Check character by     │        │ │
+│ │                                                                                                 │ character\\nif original != my_answer:\\n    for i in range(min(len(original),                   │        │ │
+│ │                                                                                                 │ len(my_answer))):\\n        if original[i] != my_answer[i]:\\n            print(f\\\"Difference │        │ │
+│ │                                                                                                 │ at position {i}:\\\")\\n            print(f\\\"  Original char {repr(original[i])}              │        │ │
+│ │                                                                                                 │ (ord={ord(original[i])})\\\")\\n            print(f\\\"  My char {repr(my_answer[i])}           │        │ │
+│ │                                                                                                 │ (ord={ord(my_answer[i])})\\\")\\n            break\\nelse:\\n    print(\\\"Perfect              │        │ │
+│ │                                                                                                 │ match!\\\")\"}"                                                                                 │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: Checking whitespace differences...                                                        │        │ │
+│ │                                                                                                 │ Original repr:                                                                                  │        │ │
+│ │                                                                                                 │ '84df7\nZJ9S-FVYV-\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY\n3ea… │        │ │
+│ │                                                                                                 │ My answer repr:                                                                                 │        │ │
+│ │                                                                                                 │ '84df7\nZJ9S-FVYV-\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY\n3ea… │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ Length original: 500                                                                            │        │ │
+│ │                                                                                                 │ Length my answer: 500                                                                           │        │ │
+│ │                                                                                                 │ Perfect match!                                                                                  │        │ │
+│ │                                                                                                 │ [Execution time: 0.26s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant: function_calls>                                                                      │        │ │
+│ │                                                                                                 │ <invoke name="call_python_replparameter name="code" string="true">answer["ready"] = True        │        │ │
+│ │                                                                                                 │ print("Answer is ready!")</parameter>                                                           │        │ │
+│ │                                                                                                 │ </invoke>                                                                                       │        │ │
+│ │                                                                                                 │ </function_calls>                                                                               │        │ │
+│ └─────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────┴────────┘ │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2025-12-21 16:09:58 - verifiers.utils.eval_utils - INFO - Results saved to environments/verbatim_copy/outputs/evals/verbatim-copy--deepseek--deepseek-v3.2/80b96506
+--- All ---
+Rewards:
+reward: avg - 0.680, std - 0.466
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+exact_match: avg - 0.680, std - 0.466
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+char_accuracy: avg - 0.781, std - 0.411
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 1.0, 0.998, 0.054, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.994, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.99, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.03, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+levenshtein_similarity: avg - 0.817, std - 0.383
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 1.0, 0.998, 0.894, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.994, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.99, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.998, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+sub_llm_call_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_prompt_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_completion_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_tool_calls: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_turns: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_batch_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_max_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_mean_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+turns: avg - 4.800, std - 2.400
+r1: [8.0, 3.0, 3.0, 6.0, 4.0, 6.0, 6.0, 4.0, 5.0, 5.0, 3.0, 13.0, 7.0, 6.0, 7.0, 6.0, 3.0, 4.0, 5.0, 3.0, 1.0, 6.0, 3.0, 3.0, 2.0, 6.0, 5.0, 6.0, 2.0, 5.0, 5.0, 6.0, 4.0, 3.0, 6.0, 7.0, 3.0, 4.0, 7.0, 12.0, 1.0, 5.0, 6.0, 1.0, 1.0, 1.0, 6.0, 6.0, 5.0, 5.0]
+prompt_tokens: avg - 10795.220, std - 10108.881
+r1: [18282.0, 3554.0, 4966.0, 9913.0, 7359.0, 11790.0, 12465.0, 5900.0, 9680.0, 9403.0, 3815.0, 56145.0, 20570.0, 12802.0, 22616.0, 15324.0, 4381.0, 6224.0, 10454.0, 4006.0, 1160.0, 13820.0, 4879.0, 3752.0, 2678.0, 11964.0, 8633.0, 17201.0, 2724.0, 9462.0, 9600.0, 10389.0, 6960.0, 4522.0, 10106.0, 14027.0, 5536.0, 6842.0, 18020.0, 49720.0, 1071.0, 13529.0, 14046.0, 1154.0, 1218.0, 1302.0, 14167.0, 12663.0, 8879.0, 10088.0]
+completion_tokens: avg - 1700.560, std - 1018.682
+r1: [2699.0, 720.0, 1730.0, 1794.0, 1340.0, 1718.0, 2691.0, 890.0, 1545.0, 1719.0, 1014.0, 5633.0, 2752.0, 1870.0, 4079.0, 2065.0, 1178.0, 759.0, 1860.0, 816.0, 100.0, 2433.0, 1629.0, 811.0, 602.0, 1763.0, 1395.0, 3044.0, 722.0, 1252.0, 1709.0, 1845.0, 1899.0, 1496.0, 1417.0, 2808.0, 1253.0, 1457.0, 2066.0, 3809.0, 100.0, 1919.0, 2150.0, 167.0, 233.0, 521.0, 2053.0, 1808.0, 1863.0, 1832.0]
+Info:
+is_truncated: avg - 0.000, std - 0.000
+stop_conditions: no_tools_called=27, answer_ready=23
+
+=== All ablations complete ===
+Results saved to: environments/verbatim_copy/outputs/evals/
+Run 'python environments/verbatim_copy/aggregate_results.py' to analyze.

@@ -20,7 +20,7 @@ set -e
 # MODELS_FULL: These models run ALL ablations
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
-    # "prime:prime-intellect/intellect-3"
+    "prime:prime-intellect/intellect-3"
     # "gpt-5-mini"
 )
 
@@ -28,9 +28,9 @@ MODELS_FULL=(
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
     # "openrouter:xiaomi/mimo-v2-flash:free"
-    "openrouter:z-ai/glm-4.6"
+    # "openrouter:z-ai/glm-4.6"
     "deepseek:deepseek/deepseek-v3.2"
-    # "openrouter:z-ai/glm-4.5-air"
+    "openrouter:z-ai/glm-4.5-air"
 )
 
 # Fewer examples since long-context evaluation is slow/costly
