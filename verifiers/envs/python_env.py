@@ -278,7 +278,10 @@ PY
             raw_response = await self.bash(command, sandbox_id, sandbox_state)
             if not raw_response:
                 raise RuntimeError("Python worker returned no output")
-            response = json.loads(raw_response)
+            try:
+                response = json.loads(raw_response)
+            except json.JSONDecodeError:
+                response = {"status": "error", "result": raw_response}
         except Exception as e:
             raise PythonWorkerRequestError from e
 
