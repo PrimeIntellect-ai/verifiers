@@ -43,6 +43,7 @@ dependencies = [
     "prime-sandboxes>=0.2.5",
     "wget>=3.2",
     "seaborn>=0.13.2",
+    "scipy>=1.15.3",
 ]
 
 [dependency-groups]
