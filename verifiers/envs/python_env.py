@@ -226,6 +226,7 @@ PY
         if not python_state["ready"]:
             await self._wait_for_worker_ready(sandbox_state, sandbox_id)
             python_state["ready"] = True
+        self.logger.debug(f"Executing code\n{code}")
         sandbox_response = await self._send_worker_request(
             sandbox_id, sandbox_state, {"code": code}
         )
