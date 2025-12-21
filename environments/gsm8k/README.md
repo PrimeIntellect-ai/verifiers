@@ -1,5 +1,9 @@
 # gsm8k
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/gsm8k">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `gsm8k`
 - **Short description**: Single-turn GSM8K math word problems with boxed numeric answers and CoT.

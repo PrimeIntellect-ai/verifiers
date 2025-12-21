@@ -1,5 +1,9 @@
 # self-reward
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/self_reward">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `self-reward`
 - **Short description**: Single-turn evaluation where a judge model scores responses based on a simple scoring prompt.

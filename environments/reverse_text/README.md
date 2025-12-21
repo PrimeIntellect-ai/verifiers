@@ -1,5 +1,9 @@
 # reverse-text
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/reverse_text">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `reverse-text`
 - **Short description**: Reverse a given text; evaluated by LCS similarity between the parsed answer and ground-truth reversal.

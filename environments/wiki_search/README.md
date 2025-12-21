@@ -1,5 +1,9 @@
 # wiki-search
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/wiki_search">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `wiki-search`
 - **Short description**: Multi-turn tool-use QA over a small Wikipedia corpus using ChromaDB and OpenAI embeddings, with judge-based scoring.

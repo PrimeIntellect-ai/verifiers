@@ -1,5 +1,9 @@
 # math-group
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/gsm8k">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `math-group`
 - **Short description**: Groups GSM8K and MATH single-turn sub-environments into one evaluation with a shared math CoT parser.

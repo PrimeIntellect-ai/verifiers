@@ -1,5 +1,9 @@
 # tool-test
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/tool_test">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `tool-test`
 - **Short description**: Sanity-check tool-calling environment that asks models to invoke a random subset of dummy tools.

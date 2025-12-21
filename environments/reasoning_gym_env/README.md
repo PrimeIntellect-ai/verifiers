@@ -1,5 +1,9 @@
 # reasoning-gym-env
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/reasoning_gym_env">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `reasoning-gym-env`
 - **Short description**: Single-turn evaluation over `reasoning_gym` procedural tasks with XML formatting.

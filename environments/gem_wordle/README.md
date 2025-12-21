@@ -1,5 +1,9 @@
 # gem_wordle
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/gem_wordle">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `gem_wordle`
 - **Short description**: Multi-turn Wordle game environment powered by the GEM framework. Models must guess a 5-letter word using `\boxed{}` format actions.
