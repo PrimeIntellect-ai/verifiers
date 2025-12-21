@@ -19,6 +19,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import pandas as pd
 import seaborn as sns
 
@@ -137,7 +138,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         )
         return
 
-    models = rlm_df["model"].unique()
+    models = list(rlm_df["model"].unique())
     modes = [m for m in ["rlm", "rlm_tips"] if m in rlm_df["mode"].unique()]
 
     # Metrics to show
@@ -147,50 +148,109 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         ("sub_llm_total_tool_calls_mean", "Tool Calls"),
     ]
 
-    x = range(len(metrics))
-    width = 0.35
+    n_models = len(models)
+    n_modes = len(modes)
+    n_metrics = len(metrics)
 
-    # For each model, create a subplot grouping
-    for model_idx, model in enumerate(models):
-        model_data = rlm_df[rlm_df["model"] == model]
+    # Hatching patterns for different models (dense patterns for thin/low bars)
+    HATCHES = ["///", "...", "+++", "***", "\\\\\\", "xxx", "ooo", "|||", "---"]
+    hatches = HATCHES[:n_models]
 
-        for i, mode in enumerate(modes):
-            mode_data = model_data[model_data["mode"] == mode]
-            if len(mode_data) == 0:
-                continue
+    # Bar sizing
+    bar_width = 0.1  # Thinner bars
+    mode_gap = 0.05  # Small gap between mode groups within a metric
+    metric_gap = 0.4  # Larger gap between metrics
 
-            values = [
-                mode_data[m[0]].values[0] if m[0] in mode_data.columns else 0
-                for m in metrics
-            ]
+    # Width of one mode group (all models for one mode)
+    mode_group_width = n_models * bar_width
+    # Width of one metric group (both modes)
+    metric_group_width = n_modes * mode_group_width + mode_gap
 
-            offset = (i - len(modes) / 2 + 0.5) * width + model_idx * (
-                len(modes) * width + 0.3
-            )
+    for metric_idx, (metric_col, metric_label) in enumerate(metrics):
+        # Center position for this metric's group
+        metric_center = metric_idx * (metric_group_width + metric_gap)
+
+        for mode_idx, mode in enumerate(modes):
             style = MODE_STYLES.get(mode, {"color": "gray"})
 
-            label = (
-                f"{normalize_model_name(model)} - {MODE_LABELS.get(mode, mode).replace(chr(10), ' ')}"
-                if model_idx == 0 or i > 0
-                else None
-            )
-            ax.bar(
-                [xi + offset for xi in x],
-                values,
-                width,
-                label=f"{normalize_model_name(model)}\n{mode}",
-                color=style["color"],
-                edgecolor="black",
-                linewidth=0.5,
-                alpha=0.7 + 0.3 * (model_idx / max(1, len(models) - 1)),
-            )
+            for model_idx, model in enumerate(models):
+                model_data = rlm_df[
+                    (rlm_df["model"] == model) & (rlm_df["mode"] == mode)
+                ]
+
+                if len(model_data) == 0:
+                    value = 0
+                else:
+                    value = (
+                        model_data[metric_col].values[0]
+                        if metric_col in model_data.columns
+                        else 0
+                    )
+
+                # Calculate bar position within metric group
+                # mode_idx determines which mode group (left or right)
+                # model_idx determines position within that mode group
+                bar_x = (
+                    metric_center
+                    + mode_idx * (mode_group_width + mode_gap)
+                    + model_idx * bar_width
+                    - (metric_group_width - bar_width) / 2  # Center the group
+                )
+
+                ax.bar(
+                    bar_x,
+                    value,
+                    bar_width,
+                    color=style["color"],
+                    edgecolor="black",
+                    linewidth=0.5,
+                    hatch=hatches[model_idx],
+                )
 
     ax.set_xlabel("Metric")
     ax.set_ylabel("Count")
     ax.set_title("RLM Usage Metrics by Mode")
-    ax.set_xticks(x)
+
+    # Set x-ticks at the center of each metric group
+    tick_positions = [i * (metric_group_width + metric_gap) for i in range(n_metrics)]
+    ax.set_xticks(tick_positions)
     ax.set_xticklabels([m[1] for m in metrics])
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+    # Create custom legend with separate entries for models (pattern) and modes (color)
+    legend_handles = []
+
+    # Mode entries (color, no hatch) - use a neutral gray for the base
+    for mode in modes:
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        mode_label = MODE_LABELS.get(mode, mode).replace("\n", " ")
+        legend_handles.append(
+            Patch(
+                facecolor=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+                label=mode_label,
+            )
+        )
+
+    # Model entries (hatch pattern, neutral color)
+    for model_idx, model in enumerate(models):
+        legend_handles.append(
+            Patch(
+                facecolor="white",
+                edgecolor="black",
+                linewidth=0.5,
+                hatch=hatches[model_idx],
+                label=normalize_model_name(model),
+            )
+        )
+
+    ax.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=max(n_modes, n_models),
+        fontsize=8,
+    )
 
 
 def plot_timing(ax: plt.Axes, df: pd.DataFrame):

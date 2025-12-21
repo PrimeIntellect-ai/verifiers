@@ -16,7 +16,7 @@ Usage:
     python plot_results.py --image reward
     python plot_results.py --image subset
     python plot_results.py --image timing_by_subset
-    
+
     # Raw data plots (require running aggregate_results.py --raw-output first):
     python plot_results.py --image context_scatter
     python plot_results.py --image context_binned
@@ -449,10 +449,16 @@ def plot_reward_vs_context_binned(ax: plt.Axes, df: pd.DataFrame, num_bins: int 
 
         # Compute binned statistics
         bin_means, _, _ = stats.binned_statistic(
-            data["context_length"], data["judge_reward"], statistic="mean", bins=bin_edges
+            data["context_length"],
+            data["judge_reward"],
+            statistic="mean",
+            bins=bin_edges,
         )
         bin_stds, _, _ = stats.binned_statistic(
-            data["context_length"], data["judge_reward"], statistic="std", bins=bin_edges
+            data["context_length"],
+            data["judge_reward"],
+            statistic="std",
+            bins=bin_edges,
         )
         bin_counts, _, _ = stats.binned_statistic(
             data["context_length"],
@@ -488,7 +494,9 @@ def plot_reward_vs_context_binned(ax: plt.Axes, df: pd.DataFrame, num_bins: int 
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_reward_vs_context_rolling(ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1):
+def plot_reward_vs_context_rolling(
+    ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1
+):
     """Plot: Reward vs context length with rolling mean (raw data)."""
     if "context_length" not in df.columns:
         ax.text(
@@ -517,10 +525,14 @@ def plot_reward_vs_context_rolling(ax: plt.Axes, df: pd.DataFrame, window_frac: 
 
         # Compute rolling mean
         window = max(5, int(len(data) * window_frac))
-        rolling_mean = pd.Series(rewards).rolling(window, center=True, min_periods=3).mean()
+        rolling_mean = (
+            pd.Series(rewards).rolling(window, center=True, min_periods=3).mean()
+        )
 
         # Plot scatter (faded) and rolling mean
-        ax.scatter(context_k, rewards, color=style["color"], alpha=0.2, s=20, edgecolors="none")
+        ax.scatter(
+            context_k, rewards, color=style["color"], alpha=0.2, s=20, edgecolors="none"
+        )
         ax.plot(
             context_k,
             rolling_mean,
