@@ -1,0 +1,37 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 75 packages in 509ms
+   Building math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+      Built math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+Prepared 1 package in 122ms
+Uninstalled 2 packages in 1ms
+Installed 2 packages in 3ms
+ ~ math-python==0.1.10 (from file:///Users/snimu/work/verifiers/environments/math_python)
+ - verifiers==0.1.8.post2 (from file:///Users/snimu/work/verifiers)
+ + verifiers==0.1.8.post2 (from git+https://github.com/PrimeIntellect-ai/verifiers.git@453c2093eac29619db1ce19f4110b1c158eada7e)
+=== Math Python Ablations ===
+Models: openrouter:xiaomi/mimo-v2-flash:free openrouter:z-ai/glm-4.6 gpt-5-mini
+Examples per config: 50
+Rollouts per example: 1
+Modes: rlm rlm_tips standard
+
+########################################
+### Model: openrouter:xiaomi/mimo-v2-flash:free
+########################################
+
+========================================
+=== Mode: rlm (use_rlm=true, include_env_tips=false) ===
+========================================
+
+Running: model=openrouter:xiaomi/mimo-v2-flash:free, mode=rlm
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Uninstalled 1 package in 3ms
+Installed 1 package in 2ms
+2025-12-20 22:55:40 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-20 22:55:40 - verifiers.utils.env_utils - INFO - Using provided args: seed=42, shuffle=True, use_rlm=True, include_env_tips=False
+2025-12-20 22:55:40 - verifiers.utils.env_utils - INFO - Using default args: map_kwargs={}, sandbox_memory_gb=2, dataset_subset='math', difficulty_key=None, question_key='question', sandbox_timeout_minutes=60, instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', sandbox_cpu_cores=1, dataset_split='train', sandbox_disk_size_gb=5, dataset_name='PrimeIntellect/INTELLECT-3-RL', max_turns=100, max_avg_reward=1.0, max_iterations=30, max_startup_wait_seconds=60, pip_install_packages='numpy sympy scipy', info_key='info', min_avg_reward=0.0, answer_key='answer', filter_kwargs={}, sandbox_timeout_per_command_seconds=60, sandbox_gpu_count=0, max_output_length=8192
+2025-12-20 22:55:42 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-20 22:55:42 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: xiaomi/mimo-v2-flash:free
+2025-12-20 22:55:42 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-20 22:55:42 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-20 22:55:48 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://commission-poll-donald-endangered.trycloudflare.com

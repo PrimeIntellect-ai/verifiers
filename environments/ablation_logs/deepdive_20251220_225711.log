@@ -1,0 +1,8 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 85 packages in 80ms
+   Building deepdive @ file:///Users/snimu/work/verifiers/environments/deepdive
+      Built deepdive @ file:///Users/snimu/work/verifiers/environments/deepdive
+Prepared 1 package in 113ms
+Uninstalled 1 package in 0.56ms
+Installed 1 package in 0.87ms
+ ~ deepdive==0.1.3 (from file:///Users/snimu/work/verifiers/environments/deepdive)
