@@ -33,9 +33,9 @@ MODE_STYLES = {
 
 MODE_ORDER = ["standard", "rlm", "rlm_tips"]
 MODE_LABELS = {
-    "standard": "Standard\n(direct tools)",
-    "rlm": "RLM\n(no tips)",
-    "rlm_tips": "RLM\n(with tips)",
+    "standard": "LLM",
+    "rlm": "RLM",
+    "rlm_tips": "RLM+tips",
 }
 
 
@@ -60,7 +60,9 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
-def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_reward_by_model(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Mode comparison across models (grouped bar chart)."""
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -76,7 +78,6 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tru
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 rewards.append(model_data["judge_reward_mean"].values[0])
-                # Get sample count if available
                 if "judge_reward_count" in model_data.columns:
                     counts.append(int(model_data["judge_reward_count"].values[0]))
                 else:
@@ -87,6 +88,7 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tru
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
+
         bars = ax.bar(
             [xi + offset for xi in x],
             rewards,
@@ -97,23 +99,24 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tru
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars
-        for bar, count in zip(bars, counts):
-            if count is not None:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.02,
-                    f"n={count}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=7,
-                    color="gray",
-                )
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.02,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Mode Comparison by Model")
-    ax.set_ylim(0, 1.2)  # Increased to make room for labels
+    ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
@@ -254,7 +257,9 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
     )
 
 
-def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_timing(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Timing comparison across modes and models."""
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -265,18 +270,24 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         times = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0 and pd.notna(model_data["total_ms_mean"].values[0]):
                 times.append(
                     model_data["total_ms_mean"].values[0] / 1000
                 )  # Convert to seconds
+                if "total_ms_count" in model_data.columns:
+                    counts.append(int(model_data["total_ms_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 times.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             times,
             width,
@@ -285,6 +296,20 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.5,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Time (seconds)")
@@ -297,7 +322,9 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_token_usage(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Token usage comparison across all modes."""
     if len(df) == 0:
         ax.text(
@@ -321,6 +348,7 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
 
         # Total tokens = main model + sub-LLM tokens (sub-LLM will be 0 for standard)
         total_tokens = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
@@ -338,12 +366,17 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
                 total_tokens.append(
                     main_prompt + main_completion + sub_prompt + sub_completion
                 )
+                if "prompt_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["prompt_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 total_tokens.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             total_tokens,
             width,
@@ -352,6 +385,20 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + bar.get_height() * 0.02,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Total Tokens")
@@ -364,7 +411,9 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_main_model_tokens(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_main_model_tokens(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Main model token usage comparison (excludes sub-LLM tokens for fair comparison)."""
     if len(df) == 0:
         ax.text(
@@ -388,18 +437,24 @@ def plot_main_model_tokens(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = T
 
         # Main model tokens only (fair comparison across modes)
         total_tokens = []
+        counts = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 prompt = model_data["prompt_tokens_mean"].values[0] or 0
                 completion = model_data["completion_tokens_mean"].values[0] or 0
                 total_tokens.append(prompt + completion)
+                if "prompt_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["prompt_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
             else:
                 total_tokens.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             total_tokens,
             width,
@@ -408,6 +463,20 @@ def plot_main_model_tokens(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = T
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + bar.get_height() * 0.02,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Tokens (Main Model Only)")
@@ -455,7 +524,9 @@ def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def create_plots(df: pd.DataFrame, output_path: Path | None = None):
+def create_plots(
+    df: pd.DataFrame, output_path: Path | None = None, show_counts: bool = False
+):
     """Create the 2x2 grid of plots."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
@@ -463,10 +534,10 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     sns.set_style("whitegrid")
 
     # Main plots (suppress individual legends)
-    plot_reward_by_model(axes[0, 0], df, show_legend=False)
-    plot_timing(axes[0, 1], df, show_legend=False)
-    plot_main_model_tokens(axes[1, 0], df, show_legend=False)
-    plot_token_usage(axes[1, 1], df, show_legend=False)
+    plot_reward_by_model(axes[0, 0], df, show_legend=False, show_counts=show_counts)
+    plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
+    plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
+    plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
 
     # Create central legend for modes
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -492,7 +563,7 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     )
 
     plt.suptitle(
-        "DeepDive Ablation Results: Mode Comparison",
+        "DeepDive",
         fontsize=14,
         fontweight="bold",
         y=1.02,
@@ -523,6 +594,7 @@ def create_single_plot(
     plot_name: str,
     df: pd.DataFrame,
     output_path: Path | None = None,
+    show_counts: bool = False,
 ):
     """Create a single standalone plot."""
     if plot_name not in PLOT_REGISTRY:
@@ -535,9 +607,13 @@ def create_single_plot(
     fig, ax = plt.subplots(figsize=figsize)
     sns.set_style("whitegrid")
 
-    func(ax, df)
+    # Pass show_counts to functions that support it
+    if plot_name in ("reward", "timing", "main_tokens", "tokens"):
+        func(ax, df, show_counts=show_counts)
+    else:
+        func(ax, df)
 
-    plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    plt.suptitle(f"DeepDive: {title}", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
 
     if output_path:
@@ -617,6 +693,12 @@ Examples:
         action="store_true",
         help="List available models in the data and exit",
     )
+    parser.add_argument(
+        "--show-counts",
+        "-c",
+        action="store_true",
+        help="Show sample counts (n=X) above bars in bar chart plots",
+    )
 
     args = parser.parse_args()
 
@@ -666,9 +748,9 @@ Examples:
     print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
-        create_plots(df, args.output)
+        create_plots(df, args.output, show_counts=args.show_counts)
     else:
-        create_single_plot(args.image, df, args.output)
+        create_single_plot(args.image, df, args.output, show_counts=args.show_counts)
 
 
 if __name__ == "__main__":
