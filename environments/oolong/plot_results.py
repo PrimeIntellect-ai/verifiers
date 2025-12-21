@@ -159,7 +159,7 @@ def plot_reward_by_model(
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
-    ax.set_title("Mode Comparison by Model")
+    ax.set_title("Reward")
     ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -846,26 +846,6 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
                 linewidth=0.5,
             )
 
-            # Add linear fit if enough points
-            if len(valid_data) >= 3:
-                x_vals = context_k.values
-                y_vals = times.values
-                mask = ~(np.isnan(x_vals) | np.isnan(y_vals))
-                if mask.sum() >= 2:
-                    x_clean = x_vals[mask]
-                    y_clean = y_vals[mask]
-                    slope, intercept = np.polyfit(x_clean, y_clean, 1)
-                    x_line = np.linspace(x_clean.min(), x_clean.max(), 100)
-                    y_line = slope * x_line + intercept
-                    ax.plot(
-                        x_line,
-                        y_line,
-                        color=style["color"],
-                        linestyle="--",
-                        alpha=0.5,
-                        linewidth=1.5,
-                    )
-
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Time (seconds)")
     ax.set_title("Timing vs Context Length")
@@ -1187,7 +1167,7 @@ def create_plots(
 
 # Mapping of plot names to (function, figsize, title)
 PLOT_REGISTRY = {
-    "reward": (plot_reward_by_model, (10, 7), "Mode Comparison by Model"),
+    "reward": (plot_reward_by_model, (10, 7), "Reward"),
     "subset": (plot_reward_by_subset, (10, 7), "Reward by Subset"),
     "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
     "rlm_metrics": (plot_rlm_metrics, (10, 7), "RLM Usage Metrics"),

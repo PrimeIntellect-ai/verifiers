@@ -118,7 +118,7 @@ def plot_reward_by_model(
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
-    ax.set_title("Mode Comparison by Model")
+    ax.set_title("Reward")
     ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -585,7 +585,7 @@ def create_plots(
 
 # Mapping of plot names to (function, figsize, title)
 PLOT_REGISTRY = {
-    "reward": (plot_reward_by_model, (10, 7), "Mode Comparison by Model"),
+    "reward": (plot_reward_by_model, (10, 7), "Reward"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage (incl. Sub-LLM)"),
