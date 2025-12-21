@@ -33,7 +33,7 @@ prime-rl
 
 # outputs
 wandb/
-/outputs/
+outputs/
 reports/
 logs/
 .chroma_db/
