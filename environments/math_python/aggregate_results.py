@@ -105,6 +105,7 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "turns": r.get("turns", 0),
             "prompt_tokens": r.get("prompt_tokens", 0),
             "completion_tokens": r.get("completion_tokens", 0),
+            "total_tool_calls": r.get("total_tool_calls", 0),
         }
         rows.append(row)
 
@@ -138,6 +139,7 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "turns",
         "prompt_tokens",
         "completion_tokens",
+        "total_tool_calls",
     ]
 
     # Group and compute stats
@@ -223,7 +225,7 @@ def print_summary_table(summary: pd.DataFrame):
     print("TOKEN USAGE METRICS (mean values)")
     print("=" * 100)
     print(
-        f"\n{'Model':<25} {'Mode':<12} {'Turns':>10} {'Prompt Tok':>14} {'Compl Tok':>12}"
+        f"\n{'Model':<25} {'Mode':<12} {'Turns':>10} {'Prompt Tok':>14} {'Compl Tok':>12} {'Tool Calls':>12}"
     )
     print("-" * 100)
 
@@ -233,9 +235,10 @@ def print_summary_table(summary: pd.DataFrame):
         num_turns = row.get("turns_mean", 0)
         prompt_tok = row.get("prompt_tokens_mean", 0)
         compl_tok = row.get("completion_tokens_mean", 0)
+        tool_calls = row.get("total_tool_calls_mean", 0)
 
         print(
-            f"{model:<25} {mode:<12} {num_turns:>10.1f} {prompt_tok:>14.0f} {compl_tok:>12.0f}"
+            f"{model:<25} {mode:<12} {num_turns:>10.1f} {prompt_tok:>14.0f} {compl_tok:>12.0f} {tool_calls:>12.1f}"
         )
     print("-" * 100)
 

@@ -90,9 +90,25 @@ class MathRubric(vf.Rubric):
                 total += c
             return float(total)
 
+        async def total_tool_calls(completion: vf.Messages, **_kwargs) -> float:
+            """Metric: Total tool calls made by the main model."""
+            total = 0
+            if isinstance(completion, list):
+                for msg in completion:
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("role") == "assistant"
+                        and "tool_calls" in msg
+                    ):
+                        tool_calls = msg.get("tool_calls", [])
+                        if isinstance(tool_calls, list):
+                            total += len(tool_calls)
+            return float(total)
+
         self.add_reward_func(turns, weight=0.0)
         self.add_reward_func(prompt_tokens, weight=0.0)
         self.add_reward_func(completion_tokens, weight=0.0)
+        self.add_reward_func(total_tool_calls, weight=0.0)
 
     async def correct_answer(
         self, parser: vf.Parser, completion: vf.Messages, answer: str, **kwargs
@@ -328,6 +344,21 @@ def load_environment(
                 total += c
             return float(total)
 
+        def total_tool_calls(completion: vf.Messages, **_kwargs) -> float:
+            """Metric: Total tool calls made by the main model."""
+            total = 0
+            if isinstance(completion, list):
+                for msg in completion:
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("role") == "assistant"
+                        and "tool_calls" in msg
+                    ):
+                        tool_calls = msg.get("tool_calls", [])
+                        if isinstance(tool_calls, list):
+                            total += len(tool_calls)
+            return float(total)
+
         reward_funcs = [
             correct_answer_rlm,
             sub_llm_call_count,
@@ -341,8 +372,9 @@ def load_environment(
             turns,
             prompt_tokens,
             completion_tokens,
+            total_tool_calls,
         ]
-        weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 
