@@ -157,14 +157,6 @@ PY
         """
     )
 
-    _CHECK_WORKER_ALIVE_SCRIPT = textwrap.dedent(
-        """
-        bash -lc '
-        [ -f "{worker_pid_file}" ] && [ -d "/proc/$(cat {worker_pid_file})" ]
-        '
-        """
-    )
-
     def __init__(
         self,
         pip_install_packages: str = "numpy sympy scipy",
@@ -240,8 +232,6 @@ PY
         if not python_state["ready"]:
             await self._wait_for_worker_ready(sandbox_state, sandbox_id)
             python_state["ready"] = True
-        else:
-            await self._check_worker_alive(sandbox_id, sandbox_state)
         self.logger.debug(f"Executing code\n{code}")
         sandbox_response = await self._send_worker_request(
             sandbox_id, sandbox_state, {"code": code}
@@ -277,32 +267,19 @@ PY
         except Exception as e:
             raise PythonWorkerNotReadyError from e
 
-    async def _check_worker_alive(
-        self, sandbox_id: str, sandbox_state: SandboxState
-    ) -> None:
-        check_worker_alive_script = self._CHECK_WORKER_ALIVE_SCRIPT.format(
-            worker_pid_file=self._WORKER_PID_FILE
-        )
-        try:
-            result = await self.sandbox_client.execute_command(
-                sandbox_id, check_worker_alive_script, timeout=5
-            )
-            if result.exit_code != 0:
-                raise RuntimeError(
-                    f"Python worker in sandbox {sandbox_id} is not running"
-                )
-        except Exception as e:
-            raise PythonWorkerDeadError from e
-        self.logger.debug(f"Python worker in sandbox {sandbox_id} is alive")
-
     async def _send_worker_request(
-        self, sandbox_id: str, sandbox_state, payload: dict[str, Any]
+        self,
+        sandbox_id: str,
+        sandbox_state,
+        payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
             payload_json = json.dumps(payload)
             payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+            alive_check = f'[ -f "{self._WORKER_PID_FILE}" ] && [ -d "/proc/$(cat {self._WORKER_PID_FILE})" ] || {{ echo "WORKER_DEAD"; exit 0; }}'
             command = textwrap.dedent(
                 f"""
+                {alive_check}
                 python - <<'PY'
     import base64
     import json
@@ -317,6 +294,8 @@ PY
                 """
             )
             raw_response = await self.bash(command, sandbox_id, sandbox_state)
+            if raw_response and raw_response.strip() == "WORKER_DEAD":
+                raise PythonWorkerDeadError
             if not raw_response:
                 raise RuntimeError("Python worker returned no output")
             try:
