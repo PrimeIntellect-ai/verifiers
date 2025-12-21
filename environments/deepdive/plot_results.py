@@ -60,7 +60,7 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
-def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
+def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     """Plot: Mode comparison across models (grouped bar chart)."""
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -119,7 +119,8 @@ def plot_reward_by_model(ax: plt.Axes, df: pd.DataFrame):
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
@@ -253,7 +254,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
     )
 
 
-def plot_timing(ax: plt.Axes, df: pd.DataFrame):
+def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     """Plot: Timing comparison across modes and models."""
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -292,45 +293,48 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
-    """Plot: Token usage comparison (RLM modes only)."""
-    # Filter to RLM modes only
-    rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
-
-    if len(rlm_df) == 0:
+def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+    """Plot: Token usage comparison across all modes."""
+    if len(df) == 0:
         ax.text(
             0.5,
             0.5,
-            "No RLM data available",
+            "No data available",
             ha="center",
             va="center",
             transform=ax.transAxes,
         )
         return
 
-    models = rlm_df["model"].unique()
-    modes = [m for m in ["rlm", "rlm_tips"] if m in rlm_df["mode"].unique()]
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
     x = range(len(models))
-    width = 0.35
+    width = 0.25
 
     for i, mode in enumerate(modes):
-        mode_data = rlm_df[rlm_df["mode"] == mode]
+        mode_data = df[df["mode"] == mode]
 
-        # Total tokens = main model + sub-LLM tokens
+        # Total tokens = main model + sub-LLM tokens (sub-LLM will be 0 for standard)
         total_tokens = []
         for model in models:
             model_data = mode_data[mode_data["model"] == model]
             if len(model_data) > 0:
                 main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
                 main_completion = model_data["completion_tokens_mean"].values[0] or 0
-                sub_prompt = model_data["sub_llm_prompt_tokens_mean"].values[0] or 0
-                sub_completion = (
-                    model_data["sub_llm_completion_tokens_mean"].values[0] or 0
-                )
+                # Handle missing/NaN sub-LLM columns for standard mode
+                sub_prompt = 0
+                sub_completion = 0
+                if "sub_llm_prompt_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_prompt_tokens_mean"].values[0]
+                    sub_prompt = 0 if pd.isna(val) else val
+                if "sub_llm_completion_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_completion_tokens_mean"].values[0]
+                    sub_completion = 0 if pd.isna(val) else val
                 total_tokens.append(
                     main_prompt + main_completion + sub_prompt + sub_completion
                 )
@@ -351,12 +355,69 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
 
     ax.set_xlabel("Model")
     ax.set_ylabel("Total Tokens")
-    ax.set_title("Token Usage by Mode (RLM only)")
+    ax.set_title("Total Token Usage")
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
+def plot_main_model_tokens(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+    """Plot: Main model token usage comparison (excludes sub-LLM tokens for fair comparison)."""
+    if len(df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+
+        # Main model tokens only (fair comparison across modes)
+        total_tokens = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                prompt = model_data["prompt_tokens_mean"].values[0] or 0
+                completion = model_data["completion_tokens_mean"].values[0] or 0
+                total_tokens.append(prompt + completion)
+            else:
+                total_tokens.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            total_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Tokens (Main Model Only)")
+    ax.set_title("Main Model Token Usage")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
@@ -401,11 +462,34 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     # Set style
     sns.set_style("whitegrid")
 
-    # Main plots
-    plot_reward_by_model(axes[0, 0], df)
-    plot_timing(axes[0, 1], df)
-    plot_rlm_metrics(axes[1, 0], df)
-    plot_token_usage(axes[1, 1], df)
+    # Main plots (suppress individual legends)
+    plot_reward_by_model(axes[0, 0], df, show_legend=False)
+    plot_timing(axes[0, 1], df, show_legend=False)
+    plot_main_model_tokens(axes[1, 0], df, show_legend=False)
+    plot_token_usage(axes[1, 1], df, show_legend=False)
+
+    # Create central legend for modes
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+    legend_handles = []
+    for mode in modes:
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        mode_label = MODE_LABELS.get(mode, mode).replace("\n", " ")
+        legend_handles.append(
+            Patch(
+                facecolor=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+                label=mode_label,
+            )
+        )
+
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.02),
+        ncol=len(modes),
+        fontsize=10,
+    )
 
     plt.suptitle(
         "DeepDive Ablation Results: Mode Comparison",
@@ -414,6 +498,8 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
         y=1.02,
     )
     plt.tight_layout()
+    # Make room for the central legend at the bottom
+    plt.subplots_adjust(bottom=0.08)
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -426,9 +512,9 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
 PLOT_REGISTRY = {
     "reward": (plot_reward_by_model, (10, 7), "Mode Comparison by Model"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
+    "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
+    "tokens": (plot_token_usage, (10, 7), "Total Token Usage (incl. Sub-LLM)"),
     "rlm_metrics": (plot_rlm_metrics, (12, 7), "RLM Usage Metrics"),
-    "tokens": (plot_token_usage, (10, 7), "Token Usage"),
-    # Additional timing plots
     "timing_vs_reward": (plot_timing_vs_reward, (10, 7), "Timing vs Reward"),
 }
 
@@ -509,8 +595,9 @@ Examples:
             "main",
             "reward",
             "timing",
-            "rlm_metrics",
+            "main_tokens",
             "tokens",
+            "rlm_metrics",
             "timing_vs_reward",
         ],
         default="main",
