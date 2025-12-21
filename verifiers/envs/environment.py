@@ -1058,6 +1058,12 @@ class Environment(ABC):
             else:
                 setattr(self, key, value)
 
+    def add_rubric(self, rubric: Rubric) -> None:
+        if self.rubric is None:
+            self.rubric = rubric
+        else:
+            self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
+
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the maximum sequence length for this environment."""
         self.max_seq_len = max_seq_len
