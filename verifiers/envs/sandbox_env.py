@@ -89,6 +89,22 @@ class ThreadedAsyncSandboxClient:
 
 class SandboxState(TypedDict):
     ready: bool
+    ready_wait_time: float
+    command_execution_times: list[float]
+
+
+class SandboxMonitorRubric(vf.MonitorRubric):
+    def __init__(self):
+        super().__init__(
+            state_keys=[
+                ("sandbox_state.ready_wait_time", "sandbox_ready_wait_time"),
+                (
+                    "sandbox_state.command_execution_times",
+                    "sandbox_command_execution_time",
+                    lambda x: sum(x) / len(x) if len(x) > 0 else 0.0,
+                ),
+            ]
+        )
 
 
 class SandboxCreationError(vf.SandboxError): ...
@@ -127,6 +143,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             stop_errors=stop_errors if stop_errors is not None else [vf.SandboxError],
             **kwargs,
         )
+        self.add_rubric(SandboxMonitorRubric())
         self.timeout_per_command_seconds = timeout_per_command_seconds
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
@@ -173,7 +190,9 @@ class SandboxEnv(vf.StatefulToolEnv):
             sandbox_state["ready"] = True
         except Exception as e:
             raise SandboxNotReadyError(e)
-        self.logger.debug(f"Waited {time.time() - s:.1f}s for sandbox to be ready")
+        ready_wait_time = time.time() - s
+        sandbox_state["ready_wait_time"] = ready_wait_time
+        self.logger.debug(f"Waited {ready_wait_time:.1f}s for sandbox to be ready")
 
     async def bash(
         self,
@@ -197,13 +216,16 @@ class SandboxEnv(vf.StatefulToolEnv):
                 timeout=self.timeout_per_command_seconds,
             )
         except CommandTimeoutError:
-            e = time.time()
             timeout_msg = f"Command timed out after {self.timeout_per_command_seconds}s"
             self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
+            sandbox_state["command_execution_times"].append(
+                self.timeout_per_command_seconds
+            )
             return f"Error: {timeout_msg}"
         except Exception as e:
             raise vf.SandboxError from e
-        e = time.time()
+        command_execution_time = time.time() - s
+        sandbox_state["command_execution_times"].append(command_execution_time)
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()
         combined = stdout
@@ -213,7 +235,9 @@ class SandboxEnv(vf.StatefulToolEnv):
             else:
                 combined = f"stderr:\n{stderr}"
         output = combined or "(no output)"
-        self.logger.debug(f"Executed command in {e - s:.1f}s. Got output: {output}")
+        self.logger.debug(
+            f"Executed command in {command_execution_time:.1f}s. Got output: {output}"
+        )
         return output
 
     async def post_rollout(self, state: vf.State):
@@ -252,7 +276,11 @@ class SandboxEnv(vf.StatefulToolEnv):
         self.active_sandboxes.add(sandbox.id)
         self.logger.debug(f"Created sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
-        state["sandbox_state"] = {"ready": False}
+        state["sandbox_state"] = {
+            "ready": False,
+            "ready_wait_time": None,
+            "command_execution_times": [],
+        }
         return await super().setup_state(state, **kwargs)
 
     def update_tool_args(
