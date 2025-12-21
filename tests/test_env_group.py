@@ -47,7 +47,7 @@ class TestEnvGroupRubric:
 
         assert rubric.env_map == env_map
         # Should have all unique reward function names
-        assert set(rubric.all_reward_names) == {"func1", "func2", "func3"}
+        assert set(rubric.all_reward_names) == {"num_turns", "func1", "func2", "func3"}
 
     @pytest.mark.asyncio
     async def test_env_group_rubric_score_rollout(self, mock_openai_client):
