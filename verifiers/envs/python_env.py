@@ -26,10 +26,14 @@ class PythonWorkerNotReadyError(vf.SandboxError): ...
 class PythonWorkerRequestError(vf.SandboxError): ...
 
 
+class PythonWorkerDeadError(vf.SandboxError): ...
+
+
 class PythonEnv(SandboxEnv):
     """Sandbox-backed environment exposing a persistent Python REPL."""
 
     _WORKER_PATH = "/tmp/python_worker.py"
+    _WORKER_PID_FILE = "/tmp/python_worker.pid"
     _COMMAND_FIFO = "/tmp/python_env_cmd"
     _RESPONSE_FIFO = "/tmp/python_env_res"
     _READY_FLAG = "/tmp/python_env_ready"
@@ -133,12 +137,13 @@ Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
 PY
 
         python -u "$worker_path" &
+        echo $! > "{worker_pid_file}"
         tail -f /dev/null
         '
         """
     )
 
-    _READY_WAIT_SCRIPT = textwrap.dedent(
+    _CHECK_WORKER_READY_SCRIPT = textwrap.dedent(
         """
         bash -lc '
         
@@ -148,6 +153,14 @@ PY
           fi
           sleep 0.05
         done
+        '
+        """
+    )
+
+    _CHECK_WORKER_ALIVE_SCRIPT = textwrap.dedent(
+        """
+        bash -lc '
+        [ -f "{worker_pid_file}" ] && [ -d "/proc/$(cat {worker_pid_file})" ]
         '
         """
     )
@@ -168,6 +181,7 @@ PY
             response_fifo=self._RESPONSE_FIFO,
             ready_flag=self._READY_FLAG,
             worker_path=self._WORKER_PATH,
+            worker_pid_file=self._WORKER_PID_FILE,
             worker_b64=base64.b64encode(
                 self._WORKER_SCRIPT.format(
                     command_fifo=self._COMMAND_FIFO,
@@ -226,6 +240,8 @@ PY
         if not python_state["ready"]:
             await self._wait_for_worker_ready(sandbox_state, sandbox_id)
             python_state["ready"] = True
+        else:
+            await self._check_worker_alive(sandbox_id, sandbox_state)
         self.logger.debug(f"Executing code\n{code}")
         sandbox_response = await self._send_worker_request(
             sandbox_id, sandbox_state, {"code": code}
@@ -242,10 +258,16 @@ PY
         s = time.time()
         try:
             await self._wait_for_sandbox_ready(sandbox_state, sandbox_id)
-            wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
-            self.logger.debug(f"Setting up Python worker in sandbox {sandbox_id}")
+            check_worker_ready_script = self._CHECK_WORKER_READY_SCRIPT.format(
+                ready_flag=self._READY_FLAG
+            )
+            self.logger.debug(
+                f"Waiting for Python worker to be ready in sandbox {sandbox_id}"
+            )
             result = await self.sandbox_client.execute_command(
-                sandbox_id, wait_script, timeout=self.max_startup_wait_seconds
+                sandbox_id,
+                check_worker_ready_script,
+                timeout=self.max_startup_wait_seconds,
             )
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr)
@@ -254,6 +276,24 @@ PY
             )
         except Exception as e:
             raise PythonWorkerNotReadyError from e
+
+    async def _check_worker_alive(
+        self, sandbox_id: str, sandbox_state: SandboxState
+    ) -> None:
+        check_worker_alive_script = self._CHECK_WORKER_ALIVE_SCRIPT.format(
+            worker_pid_file=self._WORKER_PID_FILE
+        )
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id, check_worker_alive_script, timeout=5
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(
+                    f"Python worker in sandbox {sandbox_id} is not running"
+                )
+        except Exception as e:
+            raise PythonWorkerDeadError from e
+        self.logger.debug(f"Python worker in sandbox {sandbox_id} is alive")
 
     async def _send_worker_request(
         self, sandbox_id: str, sandbox_state, payload: dict[str, Any]
