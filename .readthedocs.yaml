@@ -4,18 +4,11 @@
 # Required
 version: 2
 
-# Set the OS, Python version, and other tools you might need
+# Redirect to new docs at docs.primeintellect.ai/verifiers
 build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
-
-sphinx:
-   configuration: docs/source/conf.py
-
-python:
-  install:
-    - method: pip
-      path: .
-      extra_requirements:
-      - docs
+  commands:
+    - mkdir -p $READTHEDOCS_OUTPUT/html
+    - cp docs/rtd-redirect/index.html $READTHEDOCS_OUTPUT/html/index.html
