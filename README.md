@@ -27,8 +27,8 @@ Verifiers: Environments for LLM Reinforcement Learning
   <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml">
     <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml/badge.svg" alt="Test" />
   </a>
-  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml">
-    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml/badge.svg" alt="Envs" />
+  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-envs.yml">
+    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-envs.yml/badge.svg" alt="Envs" />
   </a>
 </p>
 
