@@ -53,11 +53,6 @@ class MathRubric(Rubric):
                 if response == "":
                     self.logger.warning("Parsed response is empty")
                     return 0.0
-                if len(response) > 500:
-                    self.logger.warning(
-                        f"Parsed response is too long ({len(response)} chars)"
-                    )
-                    return 0.0
 
                 parsed_answer = await self.run_in_executor(
                     lambda: parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore
