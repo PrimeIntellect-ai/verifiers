@@ -8,9 +8,10 @@ import verifiers as vf
 
 try:
     import nltk  # type: ignore
-except ImportError:
-    print("nltk is not installed. Please install it with `uv pip install nltk`.")
-    exit(1)
+except ImportError as e:
+    raise ImportError(
+        "TextArenaEnv requires nltk. Install with: uv add 'verifiers[ta]'"
+    ) from e
 
 
 # monkey-patch nltk.download to always be quiet before importing textarena
@@ -21,11 +22,10 @@ nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore
 
 try:
     import textarena as ta  # type: ignore
-except ImportError:
-    print(
-        "textarena is not installed. Please install it with `uv pip install textarena`."
-    )
-    exit(1)
+except ImportError as e:
+    raise ImportError(
+        "TextArenaEnv requires textarena. Install with: uv add 'verifiers[ta]'"
+    ) from e
 
 
 class TextArenaEnv(vf.MultiTurnEnv):

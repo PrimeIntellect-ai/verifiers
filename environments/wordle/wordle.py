@@ -1,5 +1,4 @@
 import verifiers as vf
-from verifiers.envs.textarena_env import TextArenaEnv
 
 ### prompt
 
@@ -55,7 +54,7 @@ def load_environment(
     rubric.add_reward_func(count_turns_reward_func)
     rubric.add_reward_func(parser.get_format_reward_func(), weight=0.2)
 
-    vf_env = TextArenaEnv(
+    vf_env = vf.TextArenaEnv(
         game="Wordle-v0",
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
