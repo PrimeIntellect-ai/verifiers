@@ -4,8 +4,8 @@
     {
       "group": "Verifiers",
       "pages": [
-        "source/index",
         "source/overview",
+        "source/concepts",
         "source/environments",
         "source/components",
         "source/training",

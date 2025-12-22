@@ -481,7 +481,8 @@ class TestRenderStopErrorHandling:
         )
 
         cause = ValueError("underlying cause")
-        error = vf.ToolCallError(cause=cause)
+        error = vf.ToolCallError()
+        error.__cause__ = cause
 
         state = await env.init_state(
             input=RolloutInput(
@@ -507,7 +508,6 @@ class TestRenderStopErrorHandling:
             mock_logger_error.assert_called_once()
             call_args = mock_logger_error.call_args[0][0]
             assert "ToolCallError" in call_args
-            assert "caused by" in call_args
 
     @pytest.mark.asyncio
     async def test_render_stop_with_regular_exception(

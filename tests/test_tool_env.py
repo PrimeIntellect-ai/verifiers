@@ -169,9 +169,7 @@ class TestToolEnv:
 
         class ErrorToolEnv(vf.ToolEnv):
             def __init__(self, **kwargs):
-                super().__init__(
-                    tools=[faulty_tool], stop_errors=[vf.ToolCallError], **kwargs
-                )
+                super().__init__(tools=[faulty_tool], stop_errors=[Exception], **kwargs)
 
         env = ErrorToolEnv(
             client=mock_openai_client,

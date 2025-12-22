@@ -155,7 +155,7 @@ class SandboxEnv(vf.StatefulToolEnv):
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
+            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
             reraise=True,
         ).wraps
         self.add_tool(
@@ -202,7 +202,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             self.logger.warning(f"{timeout_msg} in sandbox {sandbox_id}")
             return f"Error: {timeout_msg}"
         except Exception as e:
-            raise vf.SandboxError(cause=e)
+            raise vf.SandboxError from e
         e = time.time()
         stdout = results.stdout.strip()
         stderr = (results.stderr or "").strip()

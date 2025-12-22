@@ -82,11 +82,6 @@ envs = [
     "nltk",
     "textarena",
 ]
-docs = [
-    "sphinx",
-    "myst-parser",
-    "furo"
-]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

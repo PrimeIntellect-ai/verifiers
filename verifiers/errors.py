@@ -1,12 +1,6 @@
 class Error(Exception):
     """Base class for all errors."""
 
-    def __init__(self, cause: Exception):
-        self.cause = cause
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self.cause!r})"
-
 
 class ModelError(Error):
     """Used to catch errors while interacting with the model."""

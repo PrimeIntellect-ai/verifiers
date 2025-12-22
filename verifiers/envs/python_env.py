@@ -26,10 +26,14 @@ class PythonWorkerNotReadyError(vf.SandboxError): ...
 class PythonWorkerRequestError(vf.SandboxError): ...
 
 
+class PythonWorkerDeadError(vf.SandboxError): ...
+
+
 class PythonEnv(SandboxEnv):
     """Sandbox-backed environment exposing a persistent Python REPL."""
 
     _WORKER_PATH = "/tmp/python_worker.py"
+    _WORKER_PID_FILE = "/tmp/python_worker.pid"
     _COMMAND_FIFO = "/tmp/python_env_cmd"
     _RESPONSE_FIFO = "/tmp/python_env_res"
     _READY_FLAG = "/tmp/python_env_ready"
@@ -133,12 +137,13 @@ Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
 PY
 
         python -u "$worker_path" &
+        echo $! > "{worker_pid_file}"
         tail -f /dev/null
         '
         """
     )
 
-    _READY_WAIT_SCRIPT = textwrap.dedent(
+    _CHECK_WORKER_READY_SCRIPT = textwrap.dedent(
         """
         bash -lc '
         
@@ -168,6 +173,7 @@ PY
             response_fifo=self._RESPONSE_FIFO,
             ready_flag=self._READY_FLAG,
             worker_path=self._WORKER_PATH,
+            worker_pid_file=self._WORKER_PID_FILE,
             worker_b64=base64.b64encode(
                 self._WORKER_SCRIPT.format(
                     command_fifo=self._COMMAND_FIFO,
@@ -226,6 +232,7 @@ PY
         if not python_state["ready"]:
             await self._wait_for_worker_ready(sandbox_state, sandbox_id)
             python_state["ready"] = True
+        self.logger.debug(f"Executing code\n{code}")
         sandbox_response = await self._send_worker_request(
             sandbox_id, sandbox_state, {"code": code}
         )
@@ -241,10 +248,16 @@ PY
         s = time.time()
         try:
             await self._wait_for_sandbox_ready(sandbox_state, sandbox_id)
-            wait_script = self._READY_WAIT_SCRIPT.format(ready_flag=self._READY_FLAG)
-            self.logger.debug(f"Setting up Python worker in sandbox {sandbox_id}")
+            check_worker_ready_script = self._CHECK_WORKER_READY_SCRIPT.format(
+                ready_flag=self._READY_FLAG
+            )
+            self.logger.debug(
+                f"Waiting for Python worker to be ready in sandbox {sandbox_id}"
+            )
             result = await self.sandbox_client.execute_command(
-                sandbox_id, wait_script, timeout=self.max_startup_wait_seconds
+                sandbox_id,
+                check_worker_ready_script,
+                timeout=self.max_startup_wait_seconds,
             )
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr)
@@ -252,16 +265,21 @@ PY
                 f"Waited {time.time() - s:.1f}s for Python worker to be ready"
             )
         except Exception as e:
-            raise PythonWorkerNotReadyError(e)
+            raise PythonWorkerNotReadyError from e
 
     async def _send_worker_request(
-        self, sandbox_id: str, sandbox_state, payload: dict[str, Any]
+        self,
+        sandbox_id: str,
+        sandbox_state,
+        payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
             payload_json = json.dumps(payload)
             payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+            alive_check = f'[ -f "{self._WORKER_PID_FILE}" ] && [ -d "/proc/$(cat {self._WORKER_PID_FILE})" ] || {{ echo "WORKER_DEAD"; exit 0; }}'
             command = textwrap.dedent(
                 f"""
+                {alive_check}
                 python - <<'PY'
     import base64
     import json
@@ -276,11 +294,16 @@ PY
                 """
             )
             raw_response = await self.bash(command, sandbox_id, sandbox_state)
+            if raw_response and raw_response.strip() == "WORKER_DEAD":
+                raise PythonWorkerDeadError
             if not raw_response:
                 raise RuntimeError("Python worker returned no output")
-            response = json.loads(raw_response)
+            try:
+                response = json.loads(raw_response)
+            except json.JSONDecodeError:
+                response = {"status": "error", "result": raw_response}
         except Exception as e:
-            raise PythonWorkerRequestError(e)
+            raise PythonWorkerRequestError from e
 
         return response
 

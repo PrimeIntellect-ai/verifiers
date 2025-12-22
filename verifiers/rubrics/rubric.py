@@ -244,6 +244,14 @@ class Rubric:
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
 
+    async def dummy_score_group(self, states: list[State]):
+        """
+        Score a group of rollouts together with dummy rewards.
+        """
+        for state in states:
+            state["reward"] = 0.0
+            state["metrics"] = {}
+
     async def score_group(self, states: list[State], score_sem: AsyncContextManager):
         """
         Score a group of rollouts together.

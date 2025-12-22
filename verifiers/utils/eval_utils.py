@@ -14,6 +14,7 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.client_utils import setup_client
+from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
@@ -102,14 +103,20 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print(
         f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
     )
+    counter = Counter(results["stop_conditions"])
     print(
-        f"stop_conditions: {', '.join([f'{k}={v}' for k, v in Counter(results['stop_conditions']).items()])}"
+        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [e for e in errors if e is not None]
-    if errors:
+    has_errors = [e is not None for e in errors]
+    if any(has_errors):
         print(
-            f"errors: {', '.join([f'{k}: {v / len(errors):.3f}' for k, v in Counter([type(e).__name__ for e in errors]).items()])}"
+            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
+        errors = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in errors]
+        counter = Counter(error_chains)
+        for error_chain, count in counter.items():
+            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:

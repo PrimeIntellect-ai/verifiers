@@ -354,7 +354,8 @@ def square_tool(x: int) -> int:
 
 
 def faulty_tool() -> None:
-    raise ToolCallError(cause=ValueError("failure"))
+    cause = ValueError("failure")
+    raise ToolCallError from cause
 
 
 class BasicToolEnv(ToolEnv):

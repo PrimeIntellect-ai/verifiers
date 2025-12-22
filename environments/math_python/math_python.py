@@ -15,12 +15,19 @@ def load_environment(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
+    sandbox_client_max_workers: int = 10,
     **kwargs,
 ):
     dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
-    system_prompt = (
-        "Use python for all calculations. Give your answer inside \\boxed{}."
+    pip_install_prompt = (
+        f"In addition to the Python standard library, you have access to: {pip_install_packages}."
+        if pip_install_packages.strip()
+        else "You may only use the Python standard library."
     )
+    system_prompt = (
+        "Use Python for all calculations. Give your answer inside \\boxed{}."
+    )
+    system_prompt += "\n\n" + pip_install_prompt
 
     parser = vf.Parser(extract_fn=extract_boxed_answer)
     math_rubric = vf.MathRubric(parser=parser)
@@ -40,6 +47,7 @@ def load_environment(
         gpu_count=sandbox_gpu_count,
         timeout_minutes=sandbox_timeout_minutes,
         timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
+        sandbox_client_max_workers=sandbox_client_max_workers,
         **kwargs,
     )
     assert vf_env.tools is not None
