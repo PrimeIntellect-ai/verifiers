@@ -687,9 +687,10 @@ Examples:
     parser.add_argument(
         "--model",
         "-M",
+        nargs="*",
         type=str,
         default=None,
-        help="Filter results to a specific model (supports substring matching)",
+        help="Filter results to specific models (supports substring matching, multiple models allowed)",
     )
     parser.add_argument(
         "--list-models",
@@ -731,15 +732,23 @@ Examples:
             print("Warning: No model column found in data, --model filter ignored.")
         else:
             original_count = len(df)
-            # Try exact match first, then substring
-            if args.model in df["model"].unique():
-                df = df[df["model"] == args.model]
-            else:
-                mask = df["model"].str.contains(args.model, case=False, na=False)
-                df = df[mask]
+            # Build combined mask for all model patterns
+            combined_mask = None
+            for model_pattern in args.model:
+                # Try exact match first, then substring
+                if model_pattern in df["model"].unique():
+                    mask = df["model"] == model_pattern
+                else:
+                    mask = df["model"].str.contains(model_pattern, case=False, na=False)
+                combined_mask = (
+                    mask if combined_mask is None else (combined_mask | mask)
+                )
+
+            if combined_mask is not None:
+                df = df[combined_mask]
 
             if len(df) == 0:
-                print(f"Error: No results found for model '{args.model}'")
+                print(f"Error: No results found for models '{args.model}'")
                 print("Use --list-models to see available models.")
                 return
 

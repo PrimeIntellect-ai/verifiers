@@ -538,8 +538,8 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
-    """Plot: Token usage comparison (RLM modes only)."""
+def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+    """Plot: Token usage comparison (RLM modes only), split by model."""
     # Filter to RLM modes only
     rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
 
@@ -554,55 +554,56 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame):
         )
         return
 
-    # Aggregate across all configs for each mode
-    agg_df = (
-        rlm_df.groupby("mode")
-        .agg(
-            {
-                "prompt_tokens_mean": "mean",
-                "completion_tokens_mean": "mean",
-                "sub_llm_prompt_tokens_mean": "mean",
-                "sub_llm_completion_tokens_mean": "mean",
-            }
+    models = rlm_df["model"].unique()
+    modes = [m for m in ["rlm", "rlm_tips"] if m in rlm_df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.35
+
+    for i, mode in enumerate(modes):
+        mode_data = rlm_df[rlm_df["mode"] == mode]
+
+        total_tokens = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_prompt = model_data["prompt_tokens_mean"].values[0] or 0
+                main_completion = model_data["completion_tokens_mean"].values[0] or 0
+                sub_prompt = 0
+                sub_completion = 0
+                if "sub_llm_prompt_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_prompt_tokens_mean"].values[0]
+                    sub_prompt = 0 if pd.isna(val) else val
+                if "sub_llm_completion_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_completion_tokens_mean"].values[0]
+                    sub_completion = 0 if pd.isna(val) else val
+                total_tokens.append(
+                    main_prompt + main_completion + sub_prompt + sub_completion
+                )
+            else:
+                total_tokens.append(0)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        ax.bar(
+            [xi + offset for xi in x],
+            total_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
         )
-        .reset_index()
-    )
 
-    modes = [m for m in ["rlm", "rlm_tips"] if m in agg_df["mode"].unique()]
-
-    x = range(len(modes))
-    width = 0.6
-
-    total_tokens = []
-    colors = []
-    for mode in modes:
-        mode_data = agg_df[agg_df["mode"] == mode]
-        if len(mode_data) > 0:
-            main_prompt = mode_data["prompt_tokens_mean"].values[0] or 0
-            main_completion = mode_data["completion_tokens_mean"].values[0] or 0
-            sub_prompt = mode_data["sub_llm_prompt_tokens_mean"].values[0] or 0
-            sub_completion = mode_data["sub_llm_completion_tokens_mean"].values[0] or 0
-            total_tokens.append(
-                main_prompt + main_completion + sub_prompt + sub_completion
-            )
-        else:
-            total_tokens.append(0)
-        colors.append(MODE_STYLES.get(mode, {"color": "gray"})["color"])
-
-    ax.bar(
-        x,
-        total_tokens,
-        width,
-        color=colors,
-        edgecolor="black",
-        linewidth=0.5,
-    )
-
-    ax.set_xlabel("Mode")
+    ax.set_xlabel("Model")
     ax.set_ylabel("Total Tokens")
-    ax.set_title("Token Usage by Mode (RLM only)\n(aggregated across all configs)")
+    ax.set_title("Token Usage (RLM only)")
     ax.set_xticks(x)
-    ax.set_xticklabels([MODE_LABELS.get(m, m).replace("\n", " ") for m in modes])
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=9)
 
 
 def create_plots(df: pd.DataFrame, output_path: Path | None = None):
@@ -755,9 +756,10 @@ Examples:
     parser.add_argument(
         "--model",
         "-M",
+        nargs="*",
         type=str,
         default=None,
-        help="Filter results to a specific model (supports substring matching)",
+        help="Filter results to specific models (supports substring matching, multiple models allowed)",
     )
     parser.add_argument(
         "--list-models",
@@ -793,15 +795,23 @@ Examples:
             print("Warning: No model column found in data, --model filter ignored.")
         else:
             original_count = len(df)
-            # Try exact match first, then substring
-            if args.model in df["model"].unique():
-                df = df[df["model"] == args.model]
-            else:
-                mask = df["model"].str.contains(args.model, case=False, na=False)
-                df = df[mask]
+            # Build combined mask for all model patterns
+            combined_mask = None
+            for model_pattern in args.model:
+                # Try exact match first, then substring
+                if model_pattern in df["model"].unique():
+                    mask = df["model"] == model_pattern
+                else:
+                    mask = df["model"].str.contains(model_pattern, case=False, na=False)
+                combined_mask = (
+                    mask if combined_mask is None else (combined_mask | mask)
+                )
+
+            if combined_mask is not None:
+                df = df[combined_mask]
 
             if len(df) == 0:
-                print(f"Error: No results found for model '{args.model}'")
+                print(f"Error: No results found for models '{args.model}'")
                 print("Use --list-models to see available models.")
                 return
 
