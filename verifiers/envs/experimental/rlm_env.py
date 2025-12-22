@@ -28,7 +28,7 @@ import textwrap
 import time
 from time import perf_counter
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -575,7 +575,9 @@ class RLMEnv(SandboxEnv):
             func_def = oai_tool["function"]
             name = func_def["name"]
             desc = func_def.get("description", "No description")
-            params = func_def.get("parameters", {}).get("properties", {})
+            params = cast(
+                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
+            )
 
             lines.append(f"### `{name}`")
             lines.append(f"{desc}\n")
@@ -874,6 +876,8 @@ class RLMEnv(SandboxEnv):
 
         if not client:
             return web.json_response({"error": "Client not available"}, status=500)
+        if not sub_model:
+            return web.json_response({"error": "Model not available"}, status=500)
 
         messages = request_body.get("messages", [])
         batch_id = request_body.get("_batch_id", "")
@@ -923,7 +927,7 @@ class RLMEnv(SandboxEnv):
                     )
 
                     trajectory_step = TrajectoryStep(
-                        prompt=turn["prompt_messages"],
+                        prompt=cast(Messages, turn["prompt_messages"]),
                         completion=completion_messages,
                         response=turn["response"],
                         tokens=tokens,
