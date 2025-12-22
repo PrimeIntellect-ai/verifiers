@@ -1,13 +1,13 @@
 [project]
 name = "mcp-env"
-description = "MCP Environment"
+description = "MCP Environment Example"
 tags = ["train", "eval"]
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.14.1",
     "python-dotenv>=1.1.1",
-    "verifiers>=0.1.4",
+    "verifiers>=0.1.8.post2",
+    "mcp>=1.0.0",
 ]
 
 [build-system]

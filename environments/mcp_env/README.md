@@ -3,8 +3,10 @@
 ### Overview
 
 - **Environment ID**: `mcp-env`
-- **Short description**: MCP Environment
+- **Short description**: Example environment using `vf.MCPEnv` for MCP server integration
 - **Tags**: MCP, Tools
+
+This environment demonstrates how to use the first-class `MCPEnv` from `verifiers.envs.experimental`.
 
 ### Datasets
 

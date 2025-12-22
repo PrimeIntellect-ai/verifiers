@@ -91,6 +91,7 @@ __all__ = [
     "GymEnv",
     "CliAgentEnv",
     "HarborEnv",
+    "MCPEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -135,6 +136,7 @@ _LAZY_IMPORTS = {
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
     "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
     "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
+    "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
 }
 
 
@@ -155,6 +157,7 @@ if TYPE_CHECKING:
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
+    from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
