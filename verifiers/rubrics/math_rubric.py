@@ -25,8 +25,6 @@ class MathRubric(Rubric):
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer)
         self.timeout_seconds = timeout_seconds
-
-        # Thread pool executor for running sync math verify functions
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="math-rubric",
@@ -53,6 +51,12 @@ class MathRubric(Rubric):
                     or ""
                 )
                 if response == "":
+                    self.logger.warning("Parsed response is empty")
+                    return 0.0
+                if len(response) > 500:
+                    self.logger.warning(
+                        f"Parsed response is too long ({len(response)} chars)"
+                    )
                     return 0.0
 
                 parsed_answer = await self.run_in_executor(
