@@ -991,9 +991,9 @@ class RLMEnv(SandboxEnv):
             logger.debug(
                 f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
             )
-            raise vf.SandboxError(cause=e)
+            raise vf.SandboxError() from e
         except Exception as e:
-            raise vf.SandboxError(cause=e)
+            raise vf.SandboxError() from e
         elapsed = perf_counter() - start
         logger.debug(f"Command completed in {elapsed:.1f}s")
         return result
@@ -1188,7 +1188,7 @@ fi
                 break  # Success
             except vf.SandboxError as e:
                 if (
-                    "worker failed to start" in str(e.cause)
+                    "worker failed to start" in str(e.__cause__)
                     and attempt < max_sandbox_retries - 1
                 ):
                     logger.warning(
