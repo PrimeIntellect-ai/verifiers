@@ -1,39 +1,35 @@
 import os
 
 from datasets import Dataset
-from dotenv import load_dotenv
 
 import verifiers as vf
 from verifiers.envs.experimental.mcp_env import MCPEnv
 
-load_dotenv()
-
-EXA_FETCH_TOOLS = [
-    {
-        "name": "exa",
-        "command": "npx",
-        "args": [
-            "-y",
-            "exa-mcp-server",
-        ],
-        "env": {
-            "EXA_API_KEY": os.getenv("EXA_API_KEY"),
-        },
-        "description": "Exa MCP server",
-    },
-    {
-        "name": "fetch",
-        "command": "uvx",
-        "args": ["mcp-server-fetch"],
-        "description": "Fetch MCP server",
-    },
-]
-
 
 def load_environment(
-    mcp_servers: list = EXA_FETCH_TOOLS, dataset=None, **kwargs
+    mcp_servers: list | None = None, dataset=None, **kwargs
 ) -> vf.Environment:
     """Load an MCPEnv environment with fetch server for testing."""
+    if mcp_servers is None:
+        exa_api_key = os.environ.get("EXA_API_KEY")
+        if not exa_api_key:
+            raise RuntimeError("EXA_API_KEY environment variable is required")
+        mcp_servers = [
+            {
+                "name": "exa",
+                "command": "npx",
+                "args": ["-y", "exa-mcp-server"],
+                "env": {"EXA_API_KEY": exa_api_key},
+                "description": "Exa MCP server",
+            },
+            {
+                "name": "fetch",
+                "command": "uvx",
+                "args": ["mcp-server-fetch"],
+                "description": "Fetch MCP server",
+            },
+        ]
+
     dataset = dataset or Dataset.from_dict(
         {
             "question": [
