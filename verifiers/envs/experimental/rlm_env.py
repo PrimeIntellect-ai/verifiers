@@ -425,9 +425,12 @@ class RLMEnv(SandboxEnv):
                    When False, sub-LLM calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
-        code_execution_timeout: Timeout in seconds for code execution (default: 600).
+        code_execution_timeout: Timeout in seconds for code execution (default: 120).
                    This is longer than the default command timeout to allow for
                    llm_batch calls which can take several minutes.
+        abort_on_code_timeout: If True, abort the rollout when code execution times out.
+                   If False (default), return an error message to the model so it can
+                   try a more efficient approach.
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -456,6 +459,7 @@ class RLMEnv(SandboxEnv):
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
         code_execution_timeout: int = 120,
+        abort_on_code_timeout: bool = False,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -474,6 +478,7 @@ class RLMEnv(SandboxEnv):
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
+        self.abort_on_code_timeout = abort_on_code_timeout
         # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
         # This ensures server responds before sandbox worker's HTTP request times out
         self.sub_llm_api_timeout = max(10, int(self.code_execution_timeout * 0.8))
@@ -1048,6 +1053,9 @@ class RLMEnv(SandboxEnv):
         interception_url = state["interception_url"]
 
         sub_llm_timeout = max(10, int(self.code_execution_timeout * 0.9))
+        # Calculate max wait iterations for worker script (written AFTER pip install completes)
+        # This can take 30-60+ seconds for heavy packages like numpy, sympy, scipy
+        script_wait_iterations = max(1, int(self.max_startup_wait_seconds / 0.1))
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
@@ -1055,9 +1063,10 @@ export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
 export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
 export RLM_SANDBOX_TIMEOUT="{self.code_execution_timeout}"
 
-# Sync filesystem and verify worker script exists
+# Wait for worker script to exist (written AFTER pip install completes in start_command)
+# This can take 30-60+ seconds for heavy packages like numpy, sympy, scipy
 sync 2>/dev/null || true
-for i in $(seq 1 50); do
+for i in $(seq 1 {script_wait_iterations}); do
     if [ -f "{self._WORKER_PATH}" ]; then
         break
     fi
@@ -1065,35 +1074,21 @@ for i in $(seq 1 50); do
 done
 
 if [ ! -f "{self._WORKER_PATH}" ]; then
-    echo "Worker script not found at {self._WORKER_PATH}" >&2
+    echo "Worker script not found - pip install may have failed or timed out" >&2
     exit 1
 fi
 
 # Small delay to ensure filesystem is fully synced before reading script
-sleep 0.5
+sleep 0.2
 
-# Retry starting the worker up to 3 times
-# Use touch to pre-create log file, bash -c for reliable backgrounding,
-# and check for content (-s) rather than just existence (-f)
-for attempt in 1 2 3; do
-    rm -f /tmp/rlm_worker.log
-    touch /tmp/rlm_worker.log
-    bash -c "nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &"
-    sleep 0.5
-    if [ -s /tmp/rlm_worker.log ]; then
-        break
-    fi
-    echo "Worker start attempt $attempt failed (log empty), retrying..." >&2
-    sleep 0.5
-done
-
-if [ ! -s /tmp/rlm_worker.log ]; then
-    echo "Failed to start worker after 3 attempts (log still empty)" >&2
-    cat /tmp/rlm_worker.log 2>&1 || echo "Could not read log"
-    exit 1
-fi
+# Start the worker
+nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
 """
-        await self._execute_command_with_retry(sandbox_id, start_worker_cmd)
+        # Timeout needs to account for pip install wait + worker startup
+        start_worker_timeout = self.max_startup_wait_seconds + 30
+        await self._execute_command_with_retry(
+            sandbox_id, start_worker_cmd, timeout=start_worker_timeout
+        )
         await self._wait_for_worker_ready(sandbox_id)
 
     async def _prepare_sandbox_and_start_worker(
@@ -1149,7 +1144,7 @@ fi
         state = await super().setup_state(state, **kwargs)
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
-            raise vf.SandboxError(Exception("Sandbox ID not set"))
+            raise vf.SandboxError() from Exception("Sandbox ID not set")
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -1223,7 +1218,11 @@ fi
         wait_script = _make_ready_wait_script(
             self._READY_FLAG, self.max_startup_wait_seconds
         )
-        result = await self._execute_command_with_retry(sandbox_id, wait_script)
+        # Use max_startup_wait_seconds as timeout (+ buffer for script overhead)
+        timeout = self.max_startup_wait_seconds + 10
+        result = await self._execute_command_with_retry(
+            sandbox_id, wait_script, timeout=timeout
+        )
         if "failed to start" in result.stdout or "failed to start" in (
             result.stderr or ""
         ):
@@ -1235,8 +1234,8 @@ fi
             logger.error(
                 f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
             )
-            raise vf.SandboxError(
-                Exception(f"RLM worker failed to start: {debug_result.stdout[:500]}")
+            raise vf.SandboxError() from Exception(
+                f"RLM worker failed to start: {debug_result.stdout[:500]}"
             )
 
     # =========================================================================
@@ -1272,14 +1271,31 @@ PY
         )
 
         try:
-            result = await self._execute_command_with_retry(
+            # No retry for code execution - if code times out or fails, return error to model
+            result = await self.sandbox_client.execute_command(
                 sandbox_id, command, timeout=self.code_execution_timeout
             )
-        except vf.SandboxError as e:
-            # Re-raise sandbox errors (including timeouts) to fail the rollout
-            error_msg = str(e.__cause__) if e.__cause__ else str(e)
-            logger.error(f"Sandbox error during code execution: {error_msg}")
-            raise
+        except CommandTimeoutError as e:
+            logger.warning(
+                f"Code execution timed out after {self.code_execution_timeout}s"
+            )
+            if self.abort_on_code_timeout:
+                # Abort rollout immediately on timeout
+                raise vf.SandboxError() from e
+            # Return error to model so it can try more efficient code
+            return {
+                "status": "error",
+                "stdout": "",
+                "stderr": "",
+                "result": f"Code execution timed out after {self.code_execution_timeout} seconds. "
+                "Your code may be too slow - consider a more efficient algorithm or "
+                "breaking the computation into smaller steps.",
+                "answer": {"ready": False, "content": ""},
+            }
+        except Exception as e:
+            # Other errors - abort the rollout
+            logger.error(f"Sandbox error during code execution: {e}")
+            raise vf.SandboxError() from e
 
         if not result.stdout:
             return {
