@@ -84,4 +84,5 @@ class MathRubric(Rubric):
 
     def __del__(self):
         """Shutdown the thread pool executor when the object is garbage collected."""
-        self.executor.shutdown(wait=False)
+        if hasattr(self, "executor"):
+            self.executor.shutdown(wait=False)
