@@ -35,7 +35,7 @@ class MathRubric(Rubric):
         logging.getLogger("math_verify.grader").setLevel(logging.ERROR)
 
     async def run_in_executor(self, func: Callable, *args) -> Any:
-        """Run a sync function in the math verify thread pool."""
+        """Run a sync function in the thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, func, *args)
 
