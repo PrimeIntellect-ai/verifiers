@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
-from .utils.decorators import (  # noqa # isort: skip
+from .decorators import (  # noqa # isort: skip
     cleanup,
     stop,
     teardown,

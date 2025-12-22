@@ -1169,7 +1169,7 @@ fi
         # 5. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
-        metadata = {"type": str(type(context_data))}
+        metadata: dict[str, str | int] = {"type": str(type(context_data))}
         if context_data is None:
             metadata["size"] = 0
         elif hasattr(context_data, "__len__"):
