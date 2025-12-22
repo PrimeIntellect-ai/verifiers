@@ -107,7 +107,7 @@ class TestMathRubric:
         # very large input triggers timeout, takes ~2s to parse and verify
         completion = "1" * int(1e6)
 
-        rubric = vf.MathRubric(timeout_seconds=timeout_seconds)
+        rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
 
         state = vf.State(
             input=vf.RolloutInput(
