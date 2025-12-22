@@ -81,3 +81,7 @@ class MathRubric(Rubric):
                 f"Math verification timed out after {self.timeout_seconds:.1f}s"
             )
             return 0.0
+
+    def __del__(self):
+        """Shutdown the thread pool executor when the object is garbage collected."""
+        self.executor.shutdown(wait=False)
