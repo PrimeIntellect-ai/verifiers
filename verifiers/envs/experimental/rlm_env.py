@@ -1465,7 +1465,7 @@ PY
                     "role": "system",
                     "content": messages[0]["content"] + packages_docs + sub_tools_docs,
                 }
-            return messages
+            return cast(Messages, messages)
         else:
             # Subsequent turns: use parent implementation
             return await super().get_prompt_messages(state)
