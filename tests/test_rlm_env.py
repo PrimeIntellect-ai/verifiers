@@ -203,7 +203,7 @@ class TestExtractTunnelUrlFromLine:
 
     def test_extract_valid_url(self):
         """Extract valid trycloudflare.com URL."""
-        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
 
         line = (
             "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
@@ -213,7 +213,7 @@ class TestExtractTunnelUrlFromLine:
 
     def test_return_none_for_no_url(self):
         """Return None for lines without tunnel URL."""
-        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
 
         line = "Starting cloudflared tunnel..."
         url = extract_tunnel_url_from_line(line)
@@ -221,7 +221,7 @@ class TestExtractTunnelUrlFromLine:
 
     def test_handle_trailing_characters(self):
         """Handle URLs with trailing characters."""
-        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
 
         line = "https://test-tunnel.trycloudflare.com/path?query=1 some text"
         url = extract_tunnel_url_from_line(line)
@@ -231,7 +231,7 @@ class TestExtractTunnelUrlFromLine:
 
     def test_no_https_prefix(self):
         """Return None when line has domain but no https://."""
-        from verifiers.utils.tunnel import extract_tunnel_url_from_line
+        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
 
         line = "something.trycloudflare.com without https"
         url = extract_tunnel_url_from_line(line)
