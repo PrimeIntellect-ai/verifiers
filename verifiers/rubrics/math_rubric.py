@@ -64,6 +64,8 @@ class MathRubric(Rubric):
                     lambda: verify(parsed_answer, parsed_response, timeout_seconds=None)
                 )
                 return 1.0 if result else 0.0
+            except asyncio.CancelledError:
+                raise
             except BaseException as e:
                 self.logger.warning(
                     f"Math verification failed with {type(e).__name__}: {e!r}"
