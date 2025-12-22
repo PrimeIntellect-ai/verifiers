@@ -6,13 +6,8 @@ import pytest
 import tomllib
 
 SKIPPED_ENVS = [
-    # Requires fix for resource setup
-    # uv run pytest tests/test_envs.py -vv -k mcp_env
-    #
-    # npm ERR! Cannot read property 'split' of undefined
-    # npm ERR! A complete log of this run can be found in:
-    # npm ERR!     /home/ubuntu/.npm/_logs/2025-12-12T11_25_18_731Z-debug-0.log
-    "mcp_env",
+    # Requires EXA_API_KEY environment variable
+    "mcp_search_env",
     # Requires fix for completion dataset setup
     # uv run pytest tests/test_envs.py -vv -k continuation_quality
     #
