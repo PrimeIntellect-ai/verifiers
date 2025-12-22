@@ -20,8 +20,8 @@ build/
 _build/
 docs/build/
 *.egg-info/
-*/__pycache__/
-*/*/__pycache__/
+__pycache__/
+
 .pytest_cache/
 .ruff_cache/
 *.pyo
