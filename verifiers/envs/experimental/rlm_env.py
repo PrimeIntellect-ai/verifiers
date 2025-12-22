@@ -1277,7 +1277,7 @@ PY
             )
         except vf.SandboxError as e:
             # Re-raise sandbox errors (including timeouts) to fail the rollout
-            error_msg = str(e.cause) if hasattr(e, "cause") else str(e)
+            error_msg = str(e.__cause__) if e.__cause__ else str(e)
             logger.error(f"Sandbox error during code execution: {error_msg}")
             raise
 
