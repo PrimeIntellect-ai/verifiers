@@ -12,7 +12,6 @@ else:
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv, SandboxState
-from verifiers.utils.decorators import cleanup
 
 
 class PythonWorkerState(TypedDict):
@@ -238,7 +237,7 @@ PY
         )
         return self._format_response(python_state, sandbox_response)
 
-    @cleanup
+    @vf.cleanup
     async def cleanup_python_state(self, state: vf.State):
         state.pop("python_state", None)
 
