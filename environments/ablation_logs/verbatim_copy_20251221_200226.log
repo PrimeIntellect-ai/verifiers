@@ -1,0 +1,241 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 80 packages in 485ms
+   Building verbatim-copy @ file:///Users/snimu/work/verifiers/environments/verbatim_copy
+      Built verbatim-copy @ file:///Users/snimu/work/verifiers/environments/verbatim_copy
+Prepared 1 package in 164ms
+Uninstalled 1 package in 0.45ms
+Installed 1 package in 1ms
+ ~ verbatim-copy==0.1.0 (from file:///Users/snimu/work/verifiers/environments/verbatim_copy)
+=== Verbatim Copy Ablations ===
+MODELS_FULL (all ablations): 
+MODELS_STANDARD (default setting only): deepseek:deepseek/deepseek-v3.2
+Examples per config: 50
+Rollouts per example: 1
+Modes for MODELS_FULL: rlm rlm_tips standard
+Default for MODELS_STANDARD: mode=rlm_tips, content_type=all, target_length=500, fragment_length=20
+
+############################################################
+### PART 1: Full ablations with MODELS_FULL
+############################################################
+
+############################################################
+### PART 2: Default setting with MODELS_STANDARD
+############################################################
+
+########################################
+### Model: deepseek:deepseek/deepseek-v3.2 (default setting only)
+########################################
+
+Running: model=deepseek:deepseek/deepseek-v3.2, mode=rlm_tips, content_type=all, target_length=500, fragment_length=20
+2025-12-22 02:34:26 - verifiers.utils.env_utils - INFO - Loading environment: verbatim-copy
+2025-12-22 02:34:26 - verifiers.utils.env_utils - INFO - Using provided args: mean_fragment_length=20, use_rlm=True, seed=42, target_length=500, num_samples=50, content_type=all, shuffle=True, include_env_tips=True
+2025-12-22 02:34:26 - verifiers.utils.env_utils - INFO - Using default args: max_iterations=30, max_output_length=8192
+Flattening the indices:   0%|          | 0/50 [00:00<?, ? examples/s]Flattening the indices: 100%|██████████| 50/50 [00:00<00:00, 16612.42 examples/s]
+Map:   0%|          | 0/50 [00:00<?, ? examples/s]Map: 100%|██████████| 50/50 [00:00<00:00, 31073.52 examples/s]
+2025-12-22 02:34:26 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'verbatim-copy'
+2025-12-22 02:34:26 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: deepseek/deepseek-v3.2
+2025-12-22 02:34:26 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-22 02:34:26 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-22 02:34:32 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://bus-resistance-one-chubby.trycloudflare.com
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [00:44<36:11, 44.32s/it]Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [00:45<09:17, 11.85s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [00:47<06:27,  8.42s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [00:47<04:18,  5.75s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [00:54<04:33,  6.21s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [01:05<05:23,  7.53s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [01:06<03:50,  5.49s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [01:07<02:52,  4.22s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [01:08<02:08,  3.22s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [01:09<01:44,  2.69s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [01:10<01:17,  2.04s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [01:12<01:17,  2.10s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [01:13<00:59,  1.64s/it]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [01:13<00:43,  1.25s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [01:14<00:34,  1.01s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [01:14<00:26,  1.26it/s]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [01:15<00:31,  1.01it/s]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [01:17<00:41,  1.33s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [01:18<00:32,  1.07s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [01:19<00:35,  1.23s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [01:20<00:18,  1.45it/s]Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [01:20<00:14,  1.75it/s]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [01:20<00:08,  2.73it/s]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [01:21<00:08,  2.63it/s]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [01:21<00:07,  2.71it/s]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [01:21<00:06,  2.99it/s]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [01:22<00:09,  2.07it/s]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [01:23<00:07,  2.27it/s]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [01:24<00:11,  1.54it/s]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [01:24<00:09,  1.65it/s]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [01:25<00:09,  1.59it/s]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [01:27<00:13,  1.05it/s]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [01:27<00:09,  1.42it/s]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [01:27<00:04,  2.44it/s]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [01:30<00:09,  1.02it/s]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [01:30<00:08,  1.12it/s]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [01:33<00:10,  1.31s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [01:36<00:12,  1.80s/it]Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [01:38<00:11,  1.86s/it]Processing 50 groups (50 total rollouts):  90%|█████████ | 45/50 [01:39<00:07,  1.58s/it]Processing 50 groups (50 total rollouts):  92%|█████████▏| 46/50 [01:39<00:04,  1.15s/it]Processing 50 groups (50 total rollouts):  94%|█████████▍| 47/50 [01:40<00:03,  1.09s/it]Processing 50 groups (50 total rollouts):  96%|█████████▌| 48/50 [01:40<00:01,  1.20it/s]Processing 50 groups (50 total rollouts):  98%|█████████▊| 49/50 [01:42<00:01,  1.22s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [02:02<00:00,  6.72s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [02:02<00:00,  2.45s/it]
+2025-12-22 02:36:29 - verifiers.utils.eval_utils - INFO - Results saved to environments/verbatim_copy/outputs/evals/verbatim-copy--deepseek--deepseek-v3.2/0daa7a46
+2025-12-22 02:36:29 - verifiers.utils.eval_utils - INFO - Evaluation completed in 122.28 seconds
+--- Evaluation ---
+Environment: verbatim-copy
+Model: deepseek/deepseek-v3.2
+Provider: https://openrouter.ai/api/v1/
+Examples: 50
+Rollouts per example: 1
+--- Example ---
+╭──────────────────────────────────────────────────────────────────────────────────────────────────── Step 0 ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓ │
+│ ┃ Prompt                                                                                          ┃ Completion                                                                                      ┃ Reward ┃ │
+│ ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩ │
+│ │ user: Copy the text contained within the <text> tags exactly (do not include the tags           │ user: Copy the text contained within the <text> tags exactly (do not include the tags           │   1.00 │ │
+│ │ themselves):                                                                                    │ themselves):                                                                                    │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ <text>84df7                                                                                     │ <text>84df7                                                                                     │        │ │
+│ │ ZJ9S-FVYV-                                                                                      │ ZJ9S-FVYV-                                                                                      │        │ │
+│ │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │        │ │
+│ │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │        │ │
+│ │ 5bd3618d302ad1c23b                                                                              │ 5bd3618d302ad1c23b                                                                              │        │ │
+│ │ DD5X-HFJH-357G                                                                                  │ DD5X-HFJH-357G                                                                                  │        │ │
+│ │ -f1ab-d351-3665-a9J7-STCS                                                                       │ -f1ab-d351-3665-a9J7-STCS                                                                       │        │ │
+│ │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │        │ │
+│ │ KBAY-TQNC-ZW32                                                                                  │ KBAY-TQNC-ZW32                                                                                  │        │ │
+│ │ 733a602b7e-9622-11a89a1E9                                                                       │ 733a602b7e-9622-11a89a1E9                                                                       │        │ │
+│ │ e5452330-c067-fdc5-f098-2E9                                                                     │ e5452330-c067-fdc5-f098-2E9                                                                     │        │ │
+│ │ e5452330-c067-fdc0-86d84c2a094d                                                                 │ e5452330-c067-fdc0-86d84c2a094d                                                                 │        │ │
+│ │ PTSJ48K-6UEK-2SFY                                                                               │ PTSJ48K-6UEK-2SFY                                                                               │        │ │
+│ │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │        │ │
+│ │ MW534-153f9a076JGG                                                                              │ MW534-153f9a076JGG                                                                              │        │ │
+│ │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │        │ │
+│ │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861</text>                                      │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861</text>                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ <env_tips>                                                                                      │ <env_tips>                                                                                      │        │ │
+│ │ Strategy for verbatim copying:                                                                  │ Strategy for verbatim copying:                                                                  │        │ │
+│ │ 1. Write your initial attempt to answer["content"]                                              │ 1. Write your initial attempt to answer["content"]                                              │        │ │
+│ │ 2. Print answer["content"] to see exactly what you wrote                                        │ 2. Print answer["content"] to see exactly what you wrote                                        │        │ │
+│ │ 3. Compare carefully with the original text - look for typos, transpositions, missing           │ 3. Compare carefully with the original text - look for typos, transpositions, missing           │        │ │
+│ │ characters                                                                                      │ characters                                                                                      │        │ │
+│ │ 4. Fix any errors using string operations (slicing, replacement, etc.)                          │ 4. Fix any errors using string operations (slicing, replacement, etc.)                          │        │ │
+│ │ 5. Only set answer["ready"] = True after you have verified correctness                          │ 5. Only set answer["ready"] = True after you have verified correctness                          │        │ │
+│ │ </env_tips>                                                                                     │ </env_tips>                                                                                     │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"print(type(extra_data))\\nprint(extra_data[:500] if                     │        │ │
+│ │                                                                                                 │ isinstance(extra_data, str) else extra_data[:3])\\nprint(\\\"---\\\")\\nprint(extra_data)\"}"   │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: <class 'NoneType'>                                                                        │        │ │
+│ │                                                                                                 │ Traceback (most recent call last):                                                              │        │ │
+│ │                                                                                                 │   File "/tmp/rlm_worker.py", line 184, in <module>                                              │        │ │
+│ │                                                                                                 │     exec(compile(exec_module, "<cell>", "exec"), namespace, namespace)                          │        │ │
+│ │                                                                                                 │   File "<cell>", line 2, in <module>                                                            │        │ │
+│ │                                                                                                 │ TypeError: 'NoneType' object is not subscriptable                                               │        │ │
+│ │                                                                                                 │ [Execution time: 1.24s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"answer[\\\"content\\\"] =                                               │        │ │
+│ │                                                                                                 │ \\\"\\\"\\\"84df7\\nZJ9S-FVYV-\\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6… │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: (no output)                                                                               │        │ │
+│ │                                                                                                 │ [Execution time: 0.20s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"print(answer[\\\"content\\\"])\"}"                                      │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: 84df7                                                                                     │        │ │
+│ │                                                                                                 │ ZJ9S-FVYV-                                                                                      │        │ │
+│ │                                                                                                 │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │        │ │
+│ │                                                                                                 │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │        │ │
+│ │                                                                                                 │ 5bd3618d302ad1c23b                                                                              │        │ │
+│ │                                                                                                 │ DD5X-HFJH-357G                                                                                  │        │ │
+│ │                                                                                                 │ -f1ab-d351-3665-a9J7-STCS                                                                       │        │ │
+│ │                                                                                                 │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │        │ │
+│ │                                                                                                 │ KBAY-TQNC-ZW32                                                                                  │        │ │
+│ │                                                                                                 │ 733a602b7e-9622-11a89a1E9                                                                       │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc5-f098-2E9                                                                     │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc0-86d84c2a094d                                                                 │        │ │
+│ │                                                                                                 │ PTSJ48K-6UEK-2SFY                                                                               │        │ │
+│ │                                                                                                 │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │        │ │
+│ │                                                                                                 │ MW534-153f9a076JGG                                                                              │        │ │
+│ │                                                                                                 │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │        │ │
+│ │                                                                                                 │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861                                             │        │ │
+│ │                                                                                                 │ [Execution time: 0.40s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"original =                                                              │        │ │
+│ │                                                                                                 │ \\\"\\\"\\\"84df7\\nZJ9S-FVYV-\\nfeed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6… │        │ │
+│ │                                                                                                 │ = answer[\\\"content\\\"]\\n\\nprint(\\\"Length original:\\\",                                  │        │ │
+│ │                                                                                                 │ len(original))\\nprint(\\\"Length my_answer:\\\", len(my_answer))\\nprint(\\\"Are they          │        │ │
+│ │                                                                                                 │ equal?\\\", original == my_answer)\\nif original != my_answer:\\n                               │        │ │
+│ │                                                                                                 │ print(\\\"Differences:\\\")\\n    for i in range(min(len(original), len(my_answer))):\\n        │        │ │
+│ │                                                                                                 │ if original[i] != my_answer[i]:\\n            print(f\\\"Position {i}: original '{original[i]}' │        │ │
+│ │                                                                                                 │ vs my '{my_answer[i]}'\\\")\\n            # Show some context\\n            start = max(0,      │        │ │
+│ │                                                                                                 │ i-10)\\n            end = min(len(original), i+10)\\n            print(f\\\"  Original context: │        │ │
+│ │                                                                                                 │ ...{original[start:end]}...\\\")\\n            print(f\\\"  My context:                         │        │ │
+│ │                                                                                                 │ ...{my_answer[start:end]}...\\\")\\n            break\"}"                                       │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: Length original: 500                                                                      │        │ │
+│ │                                                                                                 │ Length my_answer: 500                                                                           │        │ │
+│ │                                                                                                 │ Are they equal? True                                                                            │        │ │
+│ │                                                                                                 │ [Execution time: 0.47s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ [tool call]                                                                                     │        │ │
+│ │                                                                                                 │ {                                                                                               │        │ │
+│ │                                                                                                 │   "name": "call_python_repl",                                                                   │        │ │
+│ │                                                                                                 │   "args": "{\"code\": \"answer[\\\"ready\\\"] = True\"}"                                        │        │ │
+│ │                                                                                                 │ }                                                                                               │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ tool: (no output)                                                                               │        │ │
+│ │                                                                                                 │ [Execution time: 0.39s]                                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant: I have copied the text contained within the `<text>` tags exactly as requested. The  │        │ │
+│ │                                                                                                 │ text has been verified to be an exact match with no typos, transpositions, or missing           │        │ │
+│ │                                                                                                 │ characters.                                                                                     │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ Here is the copied text:                                                                        │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ ```                                                                                             │        │ │
+│ │                                                                                                 │ 84df7                                                                                           │        │ │
+│ │                                                                                                 │ ZJ9S-FVYV-                                                                                      │        │ │
+│ │                                                                                                 │ feed648f-c9df4-f2c5-2b86-c1b3-32a536edc-44c5-36e2-0f639c2bK-6UEK-2SFY                           │        │ │
+│ │                                                                                                 │ 3ead73b-694f-ae60-T6J7-STCS                                                                     │        │ │
+│ │                                                                                                 │ 5bd3618d302ad1c23b                                                                              │        │ │
+│ │                                                                                                 │ DD5X-HFJH-357G                                                                                  │        │ │
+│ │                                                                                                 │ -f1ab-d351-3665-a9J7-STCS                                                                       │        │ │
+│ │                                                                                                 │ 5bd3615c-e728-672d-f4c5-4ad0e                                                                   │        │ │
+│ │                                                                                                 │ KBAY-TQNC-ZW32                                                                                  │        │ │
+│ │                                                                                                 │ 733a602b7e-9622-11a89a1E9                                                                       │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc5-f098-2E9                                                                     │        │ │
+│ │                                                                                                 │ e5452330-c067-fdc0-86d84c2a094d                                                                 │        │ │
+│ │                                                                                                 │ PTSJ48K-6UEK-2SFY                                                                               │        │ │
+│ │                                                                                                 │ 3ead7c27-401e80e-3a88-57a3-8cd0fb36-9b21-97908087b1f7                                           │        │ │
+│ │                                                                                                 │ MW534-153f9a076JGG                                                                              │        │ │
+│ │                                                                                                 │ 0201e80e-3a8-fb36-9b21-979080887e-9622-11a89a13f395                                             │        │ │
+│ │                                                                                                 │ 9DPR-feed648f-c9df-8ad8-2df3-983BAY-TQNC-ZW328-4861                                             │        │ │
+│ │                                                                                                 │ ```                                                                                             │        │ │
+│ └─────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────┴────────┘ │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2025-12-22 02:36:29 - verifiers.utils.eval_utils - INFO - Results saved to environments/verbatim_copy/outputs/evals/verbatim-copy--deepseek--deepseek-v3.2/0daa7a46
+--- All ---
+Rewards:
+reward: avg - 0.780, std - 0.414
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+exact_match: avg - 0.780, std - 0.414
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+char_accuracy: avg - 0.860, std - 0.345
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.994, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.99, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.03, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+levenshtein_similarity: avg - 0.880, std - 0.325
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.994, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.99, 1.0, 1.0, 1.0, 1.0, 0.998, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.998, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+sub_llm_call_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_prompt_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_completion_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_tool_calls: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_turns: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_batch_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_max_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_mean_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+turns: avg - 5.520, std - 2.090
+r1: [6.0, 5.0, 7.0, 5.0, 6.0, 8.0, 8.0, 8.0, 1.0, 6.0, 5.0, 5.0, 6.0, 6.0, 7.0, 6.0, 5.0, 1.0, 7.0, 5.0, 8.0, 6.0, 4.0, 5.0, 7.0, 1.0, 1.0, 5.0, 5.0, 7.0, 5.0, 6.0, 5.0, 6.0, 4.0, 6.0, 8.0, 2.0, 1.0, 12.0, 5.0, 5.0, 6.0, 7.0, 6.0, 5.0, 6.0, 5.0, 8.0, 6.0]
+prompt_tokens: avg - 12328.440, std - 8027.302
+r1: [12816.0, 8250.0, 18704.0, 8132.0, 12513.0, 15079.0, 22978.0, 21190.0, 1154.0, 13237.0, 8053.0, 8934.0, 13711.0, 11859.0, 15108.0, 15530.0, 9676.0, 1075.0, 16966.0, 8718.0, 14303.0, 13683.0, 7536.0, 8789.0, 16679.0, 1069.0, 1075.0, 11340.0, 10495.0, 15171.0, 7339.0, 9635.0, 10207.0, 12108.0, 5789.0, 12137.0, 19986.0, 2431.0, 1233.0, 53740.0, 8204.0, 11162.0, 15456.0, 16294.0, 13048.0, 10640.0, 14880.0, 11005.0, 24474.0, 12831.0]
+completion_tokens: avg - 1734.780, std - 762.558
+r1: [2260.0, 1568.0, 1924.0, 1228.0, 1767.0, 1519.0, 2729.0, 2589.0, 86.0, 1765.0, 1568.0, 1642.0, 2232.0, 1979.0, 1951.0, 2130.0, 1600.0, 101.0, 1915.0, 1552.0, 1596.0, 1896.0, 1277.0, 1887.0, 2282.0, 208.0, 118.0, 1800.0, 1771.0, 2778.0, 1025.0, 1356.0, 1198.0, 1569.0, 1091.0, 1932.0, 2440.0, 497.0, 136.0, 3665.0, 1910.0, 2111.0, 2187.0, 2686.0, 1584.0, 1917.0, 2257.0, 2726.0, 3059.0, 1675.0]
+Info:
+is_truncated: avg - 0.000, std - 0.000
+stop_conditions: answer_ready=40, no_tools_called=10
+
+=== All ablations complete ===
+Results saved to: environments/verbatim_copy/outputs/evals/
+Run 'python environments/verbatim_copy/aggregate_results.py' to analyze.

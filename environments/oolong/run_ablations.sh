@@ -29,7 +29,7 @@ MODELS_FULL=(
 MODELS_STANDARD=(
     # "openrouter:xiaomi/mimo-v2-flash:free"
     # "openrouter:z-ai/glm-4.6"
-    "deepseek:deepseek/deepseek-v3.2"
+    # "deepseek:deepseek/deepseek-v3.2"
     "openrouter:z-ai/glm-4.5-air"
 )
 
