@@ -26,8 +26,8 @@ import logging
 import sys
 import textwrap
 import time
-from time import perf_counter
 import uuid
+from time import perf_counter
 from typing import Any, Callable, cast
 
 if sys.version_info < (3, 12):
@@ -54,7 +54,7 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.tunnel import TunnelPool
+from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
 
