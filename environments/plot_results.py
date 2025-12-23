@@ -222,8 +222,30 @@ def get_reward_column(df: pd.DataFrame) -> str:
 # =============================================================================
 
 
+def get_count_for_env_data(env_data: pd.DataFrame) -> int | None:
+    """Get the sample count from environment-specific data.
+
+    Different environments have different count column names, so we check
+    for non-zero values in known count columns.
+    """
+    count_columns = [
+        "judge_reward_count",
+        "reward_count",
+        "correct_answer_count",
+        "accuracy_count",
+        "partial_match_count",
+        "exact_match_count",
+    ]
+    for col in count_columns:
+        if col in env_data.columns:
+            val = env_data[col].sum()
+            if not pd.isna(val) and val > 0:
+                return int(val)
+    return None
+
+
 def plot_reward_by_environment(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
 ):
     """Plot: Reward comparison across environments, grouped by mode."""
     reward_col = get_reward_column(df)
@@ -237,16 +259,19 @@ def plot_reward_by_environment(
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         rewards = []
+        counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
             if len(env_data) > 0:
                 rewards.append(env_data[reward_col].mean())
+                counts.append(get_count_for_env_data(env_data))
             else:
                 rewards.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             x + offset,
             rewards,
             width,
@@ -256,10 +281,24 @@ def plot_reward_by_environment(
             linewidth=0.5,
         )
 
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.02,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
     ax.set_xlabel("Environment")
     ax.set_ylabel("Reward (Accuracy)")
     ax.set_title("Reward by Environment")
-    ax.set_ylim(0, 1.1)
+    ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
@@ -267,7 +306,9 @@ def plot_reward_by_environment(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
 
-def plot_rlm_lift(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_rlm_lift(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: RLM lift (Δ reward) over standard baseline per environment."""
     reward_col = get_reward_column(df)
 
@@ -288,22 +329,30 @@ def plot_rlm_lift(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     x = np.arange(len(environments))
     width = 0.35
 
-    # Get standard baseline per environment
+    # Get standard baseline per environment (None if missing)
     standard_rewards = {}
     for env in environments:
         std_data = df[(df["environment"] == env) & (df["mode"] == "standard")]
-        standard_rewards[env] = std_data[reward_col].mean() if len(std_data) > 0 else 0
+        if len(std_data) > 0:
+            standard_rewards[env] = std_data[reward_col].mean()
+        else:
+            standard_rewards[env] = None  # Mark as missing
 
     for i, mode in enumerate(rlm_modes):
         mode_data = df[df["mode"] == mode]
         lifts = []
+        counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
-            if len(env_data) > 0:
-                lift = env_data[reward_col].mean() - standard_rewards.get(env, 0)
+            baseline = standard_rewards.get(env)
+            # Only show lift if both RLM data AND standard baseline exist
+            if len(env_data) > 0 and baseline is not None:
+                lift = env_data[reward_col].mean() - baseline
                 lifts.append(lift)
+                counts.append(get_count_for_env_data(env_data))
             else:
-                lifts.append(0)
+                lifts.append(0)  # No bar (will be at 0)
+                counts.append(None)
 
         offset = (i - len(rlm_modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
@@ -317,10 +366,33 @@ def plot_rlm_lift(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             linewidth=0.5,
         )
 
-        # Color bars by positive/negative
-        for bar, lift in zip(bars, lifts):
-            if lift < 0:
+        # Color bars by positive/negative, hide bars where baseline is missing
+        for j, (bar, lift) in enumerate(zip(bars, lifts)):
+            env = environments[j]
+            if standard_rewards.get(env) is None:
+                bar.set_alpha(0)  # Hide bar entirely
+            elif lift < 0:
                 bar.set_alpha(0.6)
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for j, (bar, count) in enumerate(zip(bars, counts)):
+                env = environments[j]
+                if count is not None and standard_rewards.get(env) is not None:
+                    y_pos = (
+                        bar.get_height() + 0.01
+                        if bar.get_height() >= 0
+                        else bar.get_height() - 0.02
+                    )
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        y_pos,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom" if bar.get_height() >= 0 else "top",
+                        fontsize=6,
+                        rotation=90,
+                    )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Δ Reward (RLM - Standard)")
@@ -332,7 +404,9 @@ def plot_rlm_lift(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=9)
 
 
-def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_token_usage(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Total token usage by environment and mode."""
     environments = df["environment"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -343,6 +417,7 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         tokens = []
+        counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
             if len(env_data) > 0:
@@ -371,12 +446,14 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
                     + sub_prompt
                     + sub_completion
                 )
+                counts.append(get_count_for_env_data(env_data))
             else:
                 tokens.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             x + offset,
             tokens,
             width,
@@ -385,6 +462,20 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 100,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Total Tokens")
@@ -395,7 +486,9 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
 
-def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_token_efficiency(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Token efficiency relative to standard baseline (normalized per environment).
 
     Uses only main model tokens to show the context compression benefit of RLM.
@@ -406,8 +499,9 @@ def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
     environments = df["environment"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
-    # Calculate raw efficiency for each (env, mode)
+    # Calculate raw efficiency and counts for each (env, mode)
     efficiency_map = {}
+    count_map = {}
     for env in environments:
         for mode in modes:
             env_mode_data = df[(df["environment"] == env) & (df["mode"] == mode)]
@@ -428,12 +522,16 @@ def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
                     efficiency_map[(env, mode)] = reward / total_tokens
                 else:
                     efficiency_map[(env, mode)] = 0
+                count_val = get_count_for_env_data(env_mode_data)
+                if count_val is not None:
+                    count_map[(env, mode)] = count_val
 
     x = np.arange(len(environments))
     width = 0.25
 
     for i, mode in enumerate(modes):
         normalized_efficiencies = []
+        counts = []
         for env in environments:
             raw_eff = efficiency_map.get((env, mode), 0)
             baseline_eff = efficiency_map.get((env, "standard"), 0)
@@ -442,10 +540,11 @@ def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
                 normalized_efficiencies.append(raw_eff / baseline_eff)
             else:
                 normalized_efficiencies.append(0)
+            counts.append(count_map.get((env, mode)))
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             x + offset,
             normalized_efficiencies,
             width,
@@ -454,6 +553,20 @@ def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None and bar.get_height() > 0:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.1,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Reward per Token (Relative to LLM)")
@@ -465,7 +578,9 @@ def plot_token_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
 
-def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_timing(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Timing comparison by environment and mode."""
     environments = df["environment"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -494,6 +609,7 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
         times = []
+        counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
             if len(env_data) > 0:
@@ -502,12 +618,14 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
                 if "ms" in timing_col:
                     time_val = time_val / 1000
                 times.append(time_val)
+                counts.append(get_count_for_env_data(env_data))
             else:
                 times.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             x + offset,
             times,
             width,
@@ -516,6 +634,20 @@ def plot_timing(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 5,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Time (seconds)")
@@ -590,7 +722,7 @@ def plot_reward_vs_tokens_scatter(
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
 
     if show_legend:
-        # Create two-part legend: modes (colors) + environments (shapes)
+        # Create two-part legend: modes (colors) in left column, environments (shapes) in right columns
         # Mode legend handles (colored circles)
         mode_handles = [
             plt.scatter(
@@ -606,6 +738,7 @@ def plot_reward_vs_tokens_scatter(
             for m in modes
         ]
         # Environment legend handles (gray shapes)
+        env_list = list(environments)
         env_handles = [
             plt.scatter(
                 [],
@@ -617,21 +750,36 @@ def plot_reward_vs_tokens_scatter(
                 linewidth=0.5,
                 label=get_env_label(env).replace("\n", " "),
             )
-            for env in environments
+            for env in env_list
         ]
-        # Combine both legends
-        all_handles = mode_handles + env_handles
+
+        # Interleave: mode, env, env pattern for 3-column layout
+        # Row 1: mode0, env0, env3
+        # Row 2: mode1, env1, env4
+        # Row 3: mode2, env2, (empty)
+        interleaved_handles = []
+        n_envs = len(env_handles)
+        for i in range(3):  # 3 rows
+            if i < len(mode_handles):
+                interleaved_handles.append(mode_handles[i])
+            if i < n_envs:
+                interleaved_handles.append(env_handles[i])
+            if i + 3 < n_envs:
+                interleaved_handles.append(env_handles[i + 3])
+
         ax.legend(
-            handles=all_handles,
+            handles=interleaved_handles,
             loc="upper center",
             bbox_to_anchor=(0.5, -0.12),
-            ncol=4,
+            ncol=3,
             fontsize=8,
-            columnspacing=1.0,
+            columnspacing=1.5,
         )
 
 
-def plot_rlm_overhead(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_rlm_overhead(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+):
     """Plot: Sub-LLM call count by environment (RLM modes only)."""
     # Filter to RLM modes only
     rlm_df = df[df["mode"].isin(["rlm", "rlm_tips"])]
@@ -669,17 +817,20 @@ def plot_rlm_overhead(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
     for i, mode in enumerate(modes):
         mode_data = rlm_df[rlm_df["mode"] == mode]
         values = []
+        counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
             if len(env_data) > 0 and metric_col in env_data.columns:
                 val = env_data[metric_col].values[0]
                 values.append(0 if pd.isna(val) else val)
+                counts.append(get_count_for_env_data(env_data))
             else:
                 values.append(0)
+                counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             x + offset,
             values,
             width,
@@ -688,6 +839,20 @@ def plot_rlm_overhead(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add sample size labels above bars if requested
+        if show_counts:
+            for bar, count in zip(bars, counts):
+                if count is not None:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.5,
+                        f"n={count}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Sub-LLM Calls")
@@ -739,19 +904,26 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
 # =============================================================================
 
 
-def create_main_plots(df: pd.DataFrame, output_path: Path | None, model_info: str = ""):
+def create_main_plots(
+    df: pd.DataFrame,
+    output_path: Path | None,
+    model_info: str = "",
+    show_counts: bool = False,
+):
     """Create the main 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
     # Top row
-    plot_reward_by_environment(axes[0, 0], df, show_legend=False)
-    plot_rlm_lift(axes[0, 1], df, show_legend=False)
-    plot_token_efficiency(axes[0, 2], df, show_legend=False)
+    plot_reward_by_environment(
+        axes[0, 0], df, show_legend=False, show_counts=show_counts
+    )
+    plot_rlm_lift(axes[0, 1], df, show_legend=False, show_counts=show_counts)
+    plot_token_efficiency(axes[0, 2], df, show_legend=False, show_counts=show_counts)
 
     # Bottom row
-    plot_timing(axes[1, 0], df, show_legend=False)
+    plot_timing(axes[1, 0], df, show_legend=False, show_counts=show_counts)
     plot_reward_vs_tokens_scatter(axes[1, 1], df, show_legend=False)
-    plot_rlm_overhead(axes[1, 2], df, show_legend=False)
+    plot_rlm_overhead(axes[1, 2], df, show_legend=False, show_counts=show_counts)
 
     # Create central legend with modes (colors) and environments (shapes)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -811,7 +983,11 @@ def create_main_plots(df: pd.DataFrame, output_path: Path | None, model_info: st
 
 
 def create_single_plot(
-    plot_name: str, df: pd.DataFrame, output_path: Path | None, model_info: str = ""
+    plot_name: str,
+    df: pd.DataFrame,
+    output_path: Path | None,
+    model_info: str = "",
+    show_counts: bool = False,
 ):
     """Create a single plot by name."""
     plot_registry = {
@@ -834,7 +1010,11 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    plot_func(ax, df)
+    # Pass show_counts to functions that support it
+    if plot_name in ("reward", "lift", "tokens", "efficiency", "timing", "overhead"):
+        plot_func(ax, df, show_counts=show_counts)
+    else:
+        plot_func(ax, df)
 
     if model_info:
         ax.set_title(ax.get_title() + f"\n({model_info})", fontsize=11)
@@ -947,6 +1127,14 @@ Examples:
         help="Don't aggregate across models (show per-model data)",
     )
 
+    # Display options
+    parser.add_argument(
+        "--show-counts",
+        "-c",
+        action="store_true",
+        help="Show sample counts (n=X) above bars in bar chart plots",
+    )
+
     args = parser.parse_args()
 
     # List environments
@@ -1006,9 +1194,11 @@ Examples:
 
     # Generate plots
     if args.image == "main":
-        create_main_plots(df, args.output, model_info)
+        create_main_plots(df, args.output, model_info, show_counts=args.show_counts)
     else:
-        create_single_plot(args.image, df, args.output, model_info)
+        create_single_plot(
+            args.image, df, args.output, model_info, show_counts=args.show_counts
+        )
 
 
 if __name__ == "__main__":
