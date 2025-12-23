@@ -93,6 +93,11 @@ Notes:
 | `instruction_prompt` | str | `"Use python for all calculations. Give your answer inside \\boxed{}."` | Instruction prompt |
 | `map_kwargs` | dict | `{}` | Keyword arguments for the `map` method |
 | `filter_kwargs` | dict | `{}` | Keyword arguments for the `filter` method |
+| `use_rlm` | bool | `False` | If True, use RLMEnv with REPL access. If False, use PythonEnv with tool calls. |
+| `include_env_tips` | bool | `False` | If True and use_rlm=True, include environment-specific tips in the prompt. |
+| `env_tip_type` | Literal["math", "sub-LLMs"] | `"math"` | Type of tips: "math" for Python/sympy tips, "sub-LLMs" for llm_batch() reasoning tips. |
+| `max_iterations` | int | `30` | Maximum REPL iterations (RLM mode only). |
+| `max_output_length` | int | `8192` | Maximum code execution output length (RLM mode only). |
 
 ### Metrics
 

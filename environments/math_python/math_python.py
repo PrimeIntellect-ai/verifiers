@@ -14,7 +14,7 @@ Supports three modes:
 
 import asyncio
 import logging
-from typing import Callable
+from typing import Callable, Literal
 
 import verifiers as vf
 from datasets import load_dataset
@@ -24,10 +24,16 @@ from verifiers.utils.data_utils import extract_boxed_answer
 
 logger = logging.getLogger("verifiers.math_python")
 
-_ENV_TIPS = """
+_ENV_TIPS_MATH = """
 
 <env_tips>
 Use Python for calculations. The `sympy` library is available for symbolic math.
+</env_tips>"""
+
+_ENV_TIPS_SUB_LLMS = """
+
+<env_tips>
+Use `llm_batch()` for reasoning steps: breaking down the problem, validating intermediate results, and checking your logic. Use Python for numerical calculations.
 </env_tips>"""
 
 DEFAULT_INSTRUCTION_PROMPT = "Solve the following math problem. Explain your reasoning and put the final answer in \\boxed{}. Use Python for all calculations."
@@ -187,6 +193,7 @@ def load_environment(
     instruction_prompt: str = DEFAULT_INSTRUCTION_PROMPT,
     use_rlm: bool = False,
     include_env_tips: bool = False,
+    env_tip_type: Literal["math", "sub-LLMs"] = "math",
     max_iterations: int = 30,
     max_output_length: int = 8192,
     map_kwargs: dict = {},
@@ -222,6 +229,9 @@ def load_environment(
                  If False, use PythonEnv with sandboxed tool calls.
         include_env_tips: If True and use_rlm=True, include environment-specific
                           tips in the prompt. Ignored if use_rlm=False.
+        env_tip_type: Type of tips to include when include_env_tips=True.
+                      "math": Tips for using Python/sympy for calculations.
+                      "sub-LLMs": Tips for using llm_batch() for reasoning steps.
         max_iterations: Maximum REPL iterations (RLM mode only).
         max_output_length: Maximum code execution output length (RLM mode only).
         map_kwargs: Additional kwargs for dataset.map().
@@ -234,7 +244,10 @@ def load_environment(
     # Build the instruction prompt, optionally with env tips
     full_instruction = instruction_prompt
     if use_rlm and include_env_tips:
-        full_instruction = instruction_prompt + _ENV_TIPS
+        if env_tip_type == "math":
+            full_instruction = instruction_prompt + _ENV_TIPS_MATH
+        elif env_tip_type == "sub-LLMs":
+            full_instruction = instruction_prompt + _ENV_TIPS_SUB_LLMS
     if not use_rlm:  # The RLM automatically sees the installed packages in the prompt
         pip_install_prompt = f"In addition to the Python Standard Library, you have access to: {pip_install_packages}."
         full_instruction = full_instruction + (
