@@ -664,15 +664,43 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
+    def _normalize_message_content(self, messages: list[dict]) -> list[dict]:
+        """Normalize message content fields to formats the API accepts.
+
+        The API expects content to be: string, array of objects, or None.
+        Handles several malformed cases:
+        1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
+        2. Content is a content part object (has 'type' key) - wrap in array
+        """
+        normalized = []
+        for msg in messages:
+            msg_copy = dict(msg)
+            content = msg_copy.get("content")
+
+            if content is not None and isinstance(content, dict):
+                # Check if content is a nested message dict (has 'role' and 'content' keys)
+                # This happens when model passes message dicts to llm_batch instead of strings
+                if "role" in content and "content" in content:
+                    msg_copy["content"] = content["content"]
+                elif "type" in content:
+                    # Content part object (e.g. {"type": "text", "text": "..."}) - wrap in array
+                    msg_copy["content"] = [content]
+                else:
+                    # Unknown dict structure - try wrapping in array as fallback
+                    msg_copy["content"] = [content]
+            normalized.append(msg_copy)
+        return normalized
+
     async def _call_sub_llm_api(
         self, client: Any, model: str, messages: list[dict], tools: list | None = None
     ) -> Any | None:
         """Make a single sub-LLM API call with timeout. Returns None on timeout."""
+        normalized_messages = self._normalize_message_content(messages)
         try:
             return await asyncio.wait_for(
                 client.chat.completions.create(
                     model=model,
-                    messages=messages,
+                    messages=normalized_messages,
                     tools=tools,
                     logprobs=self._sub_llm_supports_logprobs or None,
                 ),
