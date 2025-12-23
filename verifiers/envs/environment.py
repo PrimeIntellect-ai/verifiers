@@ -6,7 +6,6 @@ import json
 import logging
 import signal
 import time
-import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -642,7 +641,6 @@ class Environment(ABC):
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
                 self.logger.error(f"Aborted rollout due to {err!r}")
-                traceback.print_exception(type(err), err, err.__traceback__)
             return True
         return False
 
