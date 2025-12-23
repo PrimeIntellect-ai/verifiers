@@ -43,6 +43,7 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
     concat_messages,
@@ -640,7 +641,8 @@ class Environment(ABC):
             state["stop_condition"] = condition.__name__
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
-                self.logger.error(f"Aborted rollout due to {err!r}")
+                err_chain = ErrorChain(err)
+                self.logger.error(f"Aborted rollout due to {err_chain}")
             return True
         return False
 
