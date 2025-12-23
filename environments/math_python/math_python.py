@@ -25,6 +25,7 @@ from verifiers.utils.data_utils import extract_boxed_answer
 logger = logging.getLogger("verifiers.math_python")
 
 _ENV_TIPS = """
+
 <env_tips>
 Use Python for calculations. The `sympy` library is available for symbolic math.
 </env_tips>"""

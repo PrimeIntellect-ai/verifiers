@@ -33,8 +33,10 @@ from verifiers.utils.data_utils import extract_boxed_answer
 # Environment-specific tips for RLM mode (used for SFT data generation)
 # These tips are wrapped in <env_tips> tags so they can be removed during training
 _ENV_TIPS = """
+
 <env_tips>
 Strategy for long-context information retrieval:
+
 1. Split the context into chunks (e.g., by paragraphs or fixed character windows with some overlap)
 2. Write a prompt describing what to look for, then append it to each chunk to create a list of prompts
 3. Call llm_batch() once with all prompts to scan chunks in parallel

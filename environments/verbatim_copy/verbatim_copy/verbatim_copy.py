@@ -45,6 +45,7 @@ _ENV_TIPS = """
 
 <env_tips>
 Strategy for verbatim copying:
+
 1. Write your initial attempt to answer["content"]
 2. Print answer["content"] to see exactly what you wrote
 3. Compare carefully with the original text - look for typos, transpositions, missing characters
