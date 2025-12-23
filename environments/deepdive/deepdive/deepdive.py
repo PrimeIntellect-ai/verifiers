@@ -121,6 +121,7 @@ def load_environment(
             "task": "deepdive",
             "info": {"raw_question": q},
             "prompt": [{"role": "user", "content": prompt_content}],
+            "answer": (d["answer"] or "").rstrip(),
         }
         for k in METADATA_KEYS:
             if k in d:
@@ -179,7 +180,10 @@ def load_environment(
             response = state.get("[[deepdive/FINAL_ANSWER]]", completion[-1]["content"])
         # Note: judge() doesn't accept **kwargs, so we don't pass them
         judge_response = await judge_rubric.judge(
-            state["info"]["raw_question"], completion, response, state
+            prompt=state["info"]["raw_question"],
+            completion=response,
+            answer=answer,
+            state=state,
         )
         if "yes" in judge_response.lower():
             result = 1.0
