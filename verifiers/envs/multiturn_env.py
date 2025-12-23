@@ -4,6 +4,7 @@ from abc import abstractmethod
 from openai import AsyncOpenAI
 
 import verifiers as vf
+from verifiers.rubrics.monitor_rubric import MonitorRubric
 from verifiers.types import (
     Messages,
     ModelResponse,
@@ -22,10 +23,16 @@ from verifiers.utils.response_utils import (
 logger = logging.getLogger(__name__)
 
 
+class MultiTurnMonitorRubric(MonitorRubric):
+    def __init__(self):
+        super().__init__(state_keys=[("trajectory", "num_turns", len)])
+
+
 class MultiTurnEnv(vf.Environment):
     def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
+        self.add_rubric(MultiTurnMonitorRubric())
 
     async def setup_state(self, state: State) -> State:
         return state

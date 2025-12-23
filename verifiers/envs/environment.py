@@ -269,6 +269,12 @@ class Environment(ABC):
             dataset = dataset.map(add_task, **map_kwargs)
         return dataset
 
+    def add_rubric(self, rubric: Rubric) -> None:
+        if self.rubric is None:
+            self.rubric = rubric
+        else:
+            self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
+
     def format_dataset(
         self,
         dataset: Dataset,

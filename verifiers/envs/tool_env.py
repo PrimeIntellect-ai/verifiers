@@ -4,6 +4,7 @@ from typing import Callable, cast
 from openai.types.chat import ChatCompletionAssistantMessageParam
 
 import verifiers as vf
+from verifiers.rubrics.tool_rubric import ToolRubric
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
@@ -27,6 +28,7 @@ class ToolEnv(vf.MultiTurnEnv):
             for tool in self.tools
         }
         super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
+        self.add_rubric(ToolRubric(tools=self.tools))
 
     def _should_stop_for_error(self, err: Exception) -> bool:
         """Check if error is in stop_errors."""
