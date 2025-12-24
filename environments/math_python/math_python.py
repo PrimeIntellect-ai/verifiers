@@ -184,6 +184,7 @@ def load_environment(
     max_turns: int = 100,
     max_startup_wait_seconds: int = 60,
     pip_install_packages: str = "numpy sympy scipy",
+    code_execution_timeout_seconds: int = 120,
     sandbox_cpu_cores: int = 1,
     sandbox_memory_gb: int = 2,
     sandbox_disk_size_gb: int = 5,
@@ -405,6 +406,7 @@ def load_environment(
             disk_size_gb=sandbox_disk_size_gb,
             gpu_count=sandbox_gpu_count,
             timeout_minutes=sandbox_timeout_minutes,
+            code_execution_timeout_seconds=code_execution_timeout_seconds,
             **kwargs,
         )
     else:
