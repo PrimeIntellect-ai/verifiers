@@ -60,7 +60,13 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
-def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
+def plot_mode_by_needle_type(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    absolute: bool = False,
+    show_counts: bool = True,
+    show_values: bool = False,
+):
     """Plot: Mode comparison across needle types (grouped bar chart)."""
     # Filter to baseline config: num_lines=10000, num_needles=1
     filtered = df[(df["num_lines"] == 10000) & (df["num_needles"] == 1)]
@@ -106,24 +112,31 @@ def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame, absolute: bool = Fa
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars
-        for bar, count in zip(bars, counts):
-            if count is not None:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.02,
-                    f"n={count}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=7,
-                    color="gray",
-                )
+        # Add annotations above bars
+        if show_values or show_counts:
+            for bar, reward, count in zip(bars, rewards, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{reward:.2f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.02,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=7,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Needle Type")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Mode Comparison by Needle Type\n(lines=10K, needles=1)")
     if absolute:
-        ax.set_ylim(0, 1.2)  # Increased to make room for labels
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([nt.capitalize() for nt in needle_types])
@@ -611,7 +624,11 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
 
 
 def create_plots(
-    df: pd.DataFrame, output_path: Path | None = None, absolute: bool = False
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    absolute: bool = False,
+    show_counts: bool = True,
+    show_values: bool = False,
 ):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
@@ -620,7 +637,13 @@ def create_plots(
     sns.set_style("whitegrid")
 
     # Top row
-    plot_mode_by_needle_type(axes[0, 0], df, absolute=absolute)
+    plot_mode_by_needle_type(
+        axes[0, 0],
+        df,
+        absolute=absolute,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
     plot_mode_vs_context_size(axes[0, 1], df, absolute=absolute)
     plot_mode_vs_needle_count(axes[0, 2], df, absolute=absolute)
 
@@ -670,6 +693,8 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     absolute: bool = False,
+    show_counts: bool = True,
+    show_values: bool = False,
 ):
     """Create a single standalone plot."""
     if plot_name not in PLOT_REGISTRY:
@@ -682,13 +707,16 @@ def create_single_plot(
     fig, ax = plt.subplots(figsize=figsize)
     sns.set_style("whitegrid")
 
-    # Pass absolute to functions that support it
-    if plot_name in (
-        "needle_type",
-        "context_size",
-        "needle_count",
-        "timing_efficiency",
-    ):
+    # Pass appropriate arguments to functions that support them
+    if plot_name == "needle_type":
+        func(
+            ax,
+            df,
+            absolute=absolute,
+            show_counts=show_counts,
+            show_values=show_values,
+        )
+    elif plot_name in ("context_size", "needle_count", "timing_efficiency"):
         func(ax, df, absolute=absolute)
     else:
         func(ax, df)
@@ -749,6 +777,7 @@ Examples:
     )
     parser.add_argument(
         "--image",
+        "-I",
         choices=[
             "main",
             "needle_type",
@@ -781,6 +810,24 @@ Examples:
         "--list-models",
         action="store_true",
         help="List available models in the data and exit",
+    )
+    parser.add_argument(
+        "--show-counts",
+        "-c",
+        action="store_true",
+        default=True,
+        help="Show sample counts (n=X) above bars in bar chart plots (default: True)",
+    )
+    parser.add_argument(
+        "--no-counts",
+        action="store_true",
+        help="Disable showing sample counts above bars",
+    )
+    parser.add_argument(
+        "--show-values",
+        "-v",
+        action="store_true",
+        help="Show bar values above bars in bar chart plots",
     )
     parser.add_argument(
         "--absolute",
@@ -844,10 +891,26 @@ Examples:
 
     print(f"Loaded {len(df)} configurations from {args.input}")
 
+    # Determine show_counts - default True unless --no-counts is set
+    show_counts = not args.no_counts
+
     if args.image == "main":
-        create_plots(df, args.output, absolute=args.absolute)
+        create_plots(
+            df,
+            args.output,
+            absolute=args.absolute,
+            show_counts=show_counts,
+            show_values=args.show_values,
+        )
     else:
-        create_single_plot(args.image, df, args.output, absolute=args.absolute)
+        create_single_plot(
+            args.image,
+            df,
+            args.output,
+            absolute=args.absolute,
+            show_counts=show_counts,
+            show_values=args.show_values,
+        )
 
 
 if __name__ == "__main__":

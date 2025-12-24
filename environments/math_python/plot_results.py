@@ -127,6 +127,7 @@ def plot_reward_by_model(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Mode comparison across models (grouped bar chart)."""
@@ -164,14 +165,19 @@ def plot_reward_by_model(
             linewidth=0.5,
         )
 
-        # Add sample count above each bar if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None and count > 0:
+        # Add annotations above each bar if requested
+        if show_values or show_counts:
+            for bar, accuracy, count in zip(bars, accuracies, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{accuracy:.2f}")
+                if show_counts and count is not None and count > 0:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -182,7 +188,8 @@ def plot_reward_by_model(
     ax.set_ylabel("Accuracy (Correct Answer)")
     ax.set_title("Reward")
     if absolute:
-        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -321,7 +328,11 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
 
 
 def plot_timing(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing comparison across modes and models."""
     models = df["model"].unique()
@@ -360,14 +371,19 @@ def plot_timing(
             linewidth=0.5,
         )
 
-        # Add sample count above each bar if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above each bar if requested
+        if show_values or show_counts:
+            for bar, time_val, count in zip(bars, times, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{time_val:.1f}s")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -386,7 +402,11 @@ def plot_timing(
 
 
 def plot_standard_tool_usage(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Tool usage metrics for standard mode."""
     # Filter to standard mode only
@@ -452,16 +472,22 @@ def plot_standard_tool_usage(
                 color=MODE_STYLES["standard"]["color"],
             )
 
-            if show_counts and count is not None:
-                ax.text(
-                    bar_x,
-                    value + 0.1,
-                    f"n={count}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=6,
-                    color="gray",
-                )
+            if show_values or show_counts:
+                annotations = []
+                if show_values:
+                    annotations.append(f"{value:.1f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar_x,
+                        value + 0.1,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Metric")
     ax.set_ylabel("Count")
@@ -495,7 +521,11 @@ def plot_standard_tool_usage(
 
 
 def plot_token_usage(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Total token usage comparison (main model + sub-LLM for all modes)."""
     if len(df) == 0:
@@ -558,14 +588,19 @@ def plot_token_usage(
             linewidth=0.5,
         )
 
-        # Add sample count above each bar if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above each bar if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -584,7 +619,11 @@ def plot_token_usage(
 
 
 def plot_main_model_tokens(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Main model token usage comparison (excludes sub-LLM tokens for fair comparison)."""
     if len(df) == 0:
@@ -636,14 +675,19 @@ def plot_main_model_tokens(
             linewidth=0.5,
         )
 
-        # Add sample count above each bar if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above each bar if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -662,7 +706,11 @@ def plot_main_model_tokens(
 
 
 def plot_sub_llm_tokens(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Sub-LLM token usage comparison (RLM modes only)."""
     # Filter to RLM modes only
@@ -721,14 +769,19 @@ def plot_sub_llm_tokens(
             linewidth=0.5,
         )
 
-        # Add sample count above each bar if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above each bar if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -827,6 +880,7 @@ def _plot_ablation_reward(
     subllm_color_map: dict[str, str],
     labels: list[str],
     show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Subplot: Reward/accuracy comparison."""
     x = range(len(all_modes))
@@ -859,13 +913,18 @@ def _plot_ablation_reward(
         linewidth=0.5,
     )
 
-    if show_counts:
-        for bar, count in zip(bars, counts):
-            if count is not None and count > 0:
+    if show_values or show_counts:
+        for bar, acc, count in zip(bars, accuracies, counts):
+            annotations = []
+            if show_values:
+                annotations.append(f"{acc:.2f}")
+            if show_counts and count is not None and count > 0:
+                annotations.append(f"n={count}")
+            if annotations:
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.02,
-                    f"n={count}",
+                    "\n".join(annotations),
                     ha="center",
                     va="bottom",
                     fontsize=7,
@@ -877,6 +936,7 @@ def _plot_ablation_reward(
     ax.set_title("Reward")
     max_acc = max(accuracies) if accuracies else 1.0
     headroom = 0.15 if show_counts else 0.1
+    headroom += 0.05 if show_values else 0
     ax.set_ylim(0, max_acc * (1 + headroom))
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
@@ -891,6 +951,7 @@ def _plot_ablation_tokens_stacked(
     subllm_color_map: dict[str, str],
     labels: list[str],
     show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Subplot: Token usage with stacked bars (main model + sub-LLM)."""
     x = range(len(all_modes))
@@ -957,15 +1018,20 @@ def _plot_ablation_tokens_stacked(
         alpha=0.6,
     )
 
-    # Add sample count above each stacked bar if requested
-    if show_counts:
+    # Add annotations above each stacked bar if requested
+    if show_values or show_counts:
         for i, (main, sub, count) in enumerate(zip(main_tokens, sub_tokens, counts)):
-            if count is not None and count > 0:
-                total_height = main + sub
+            total_height = main + sub
+            annotations = []
+            if show_values:
+                annotations.append(f"{int(total_height):,}")
+            if show_counts and count is not None and count > 0:
+                annotations.append(f"n={count}")
+            if annotations:
                 ax.text(
                     i,
                     total_height + total_height * 0.02,
-                    f"n={count}",
+                    "\n".join(annotations),
                     ha="center",
                     va="bottom",
                     fontsize=7,
@@ -1006,6 +1072,7 @@ def _plot_ablation_timing(
     subllm_color_map: dict[str, str],
     labels: list[str],
     show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Subplot: Timing comparison."""
     x = range(len(all_modes))
@@ -1040,14 +1107,19 @@ def _plot_ablation_timing(
         linewidth=0.5,
     )
 
-    # Add sample count above each bar if requested
-    if show_counts:
-        for bar, count in zip(bars, counts):
-            if count is not None and count > 0:
+    # Add annotations above each bar if requested
+    if show_values or show_counts:
+        for bar, time_val, count in zip(bars, times, counts):
+            annotations = []
+            if show_values:
+                annotations.append(f"{time_val:.1f}s")
+            if show_counts and count is not None and count > 0:
+                annotations.append(f"n={count}")
+            if annotations:
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + bar.get_height() * 0.02,
-                    f"n={count}",
+                    "\n".join(annotations),
                     ha="center",
                     va="bottom",
                     fontsize=7,
@@ -1065,6 +1137,7 @@ def create_ablation_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Create the 1x3 ablation comparison plot.
 
@@ -1111,11 +1184,15 @@ def create_ablation_plots(
     fig, axes = plt.subplots(1, 3, figsize=(16, 6))
 
     # Plot each subplot
-    _plot_ablation_reward(axes[0], df, all_modes, subllm_color_map, labels, show_counts)
-    _plot_ablation_tokens_stacked(
-        axes[1], df, all_modes, subllm_color_map, labels, show_counts
+    _plot_ablation_reward(
+        axes[0], df, all_modes, subllm_color_map, labels, show_counts, show_values
     )
-    _plot_ablation_timing(axes[2], df, all_modes, subllm_color_map, labels, show_counts)
+    _plot_ablation_tokens_stacked(
+        axes[1], df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
+    _plot_ablation_timing(
+        axes[2], df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
 
     # Create central legend for mode colors
     legend_handles = []
@@ -1162,7 +1239,11 @@ def create_ablation_plots(
 
 
 def plot_ablation(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Legacy single-axis ablation plot (now redirects to create_ablation_plots).
 
@@ -1184,13 +1265,16 @@ def plot_ablation(
         return
 
     model_display, all_modes, subllm_color_map, labels = _get_ablation_common_data(df)
-    _plot_ablation_reward(ax, df, all_modes, subllm_color_map, labels, show_counts)
+    _plot_ablation_reward(
+        ax, df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
 
 
 def create_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create the 2x2 grid of plots."""
@@ -1198,11 +1282,34 @@ def create_plots(
 
     # Main plots (suppress individual legends)
     plot_reward_by_model(
-        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
-    plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
-    plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
-    plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
+    plot_timing(
+        axes[0, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_main_model_tokens(
+        axes[1, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_token_usage(
+        axes[1, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
 
     # Create central legend for modes (using markers for consistency with scatter plots)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1267,12 +1374,13 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create a single standalone plot."""
     # Handle ablation plot specially (it's a 1x3 grid, not single axis)
     if plot_name == "ablation":
-        create_ablation_plots(df, output_path, show_counts)
+        create_ablation_plots(df, output_path, show_counts, show_values)
         return
 
     if plot_name not in PLOT_REGISTRY:
@@ -1284,9 +1392,15 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Pass show_counts and absolute to functions that support them
+    # Pass show_counts, show_values and absolute to functions that support them
     if plot_name == "reward":
-        func(ax, df, show_counts=show_counts, absolute=absolute)
+        func(
+            ax,
+            df,
+            show_counts=show_counts,
+            show_values=show_values,
+            absolute=absolute,
+        )
     elif plot_name == "timing_vs_reward":
         func(ax, df, absolute=absolute)
     elif plot_name in (
@@ -1296,7 +1410,7 @@ def create_single_plot(
         "tool_usage",
         "sub_llm_tokens",
     ):
-        func(ax, df, show_counts=show_counts)
+        func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         func(ax, df)
 
@@ -1360,6 +1474,7 @@ Examples:
     )
     parser.add_argument(
         "--image",
+        "-I",
         choices=[
             "main",
             "reward",
@@ -1395,6 +1510,12 @@ Examples:
         "-c",
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
+    )
+    parser.add_argument(
+        "--show-values",
+        "-v",
+        action="store_true",
+        help="Show bar values above bars in bar chart plots",
     )
     parser.add_argument(
         "--absolute",
@@ -1473,7 +1594,11 @@ Examples:
 
     if args.image == "main":
         create_plots(
-            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
+            absolute=args.absolute,
         )
     else:
         create_single_plot(
@@ -1481,6 +1606,7 @@ Examples:
             df,
             args.output,
             show_counts=args.show_counts,
+            show_values=args.show_values,
             absolute=args.absolute,
         )
 

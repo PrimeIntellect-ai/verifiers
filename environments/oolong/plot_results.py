@@ -103,15 +103,27 @@ def plot_reward_by_model(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Mode comparison across models (grouped bar chart), aggregated across subsets."""
-    # Aggregate across subsets for each model/mode combination
-    agg_dict = {"judge_reward_mean": "mean"}
-    if "judge_reward_count" in df.columns:
-        agg_dict["judge_reward_count"] = "sum"
-
-    agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
+    # Handle both raw data (judge_reward) and aggregated data (judge_reward_mean)
+    if "judge_reward" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            df.groupby(["model", "mode"])
+            .agg(
+                judge_reward_mean=("judge_reward", "mean"),
+                judge_reward_count=("judge_reward", "count"),
+            )
+            .reset_index()
+        )
+    else:
+        # Already aggregated data
+        agg_dict = {"judge_reward_mean": "mean"}
+        if "judge_reward_count" in df.columns:
+            agg_dict["judge_reward_count"] = "sum"
+        agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
 
     models = agg_df["model"].unique()
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -147,14 +159,19 @@ def plot_reward_by_model(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, reward, count in zip(bars, rewards, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{reward:.2f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -165,7 +182,8 @@ def plot_reward_by_model(
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward")
     if absolute:
-        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
@@ -181,15 +199,27 @@ def plot_reward_by_subset(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Mode comparison across subsets (grouped bar chart), aggregated across models."""
-    # Aggregate across models for each subset/mode combination
-    agg_dict = {"judge_reward_mean": "mean"}
-    if "judge_reward_count" in df.columns:
-        agg_dict["judge_reward_count"] = "sum"
-
-    agg_df = df.groupby(["subset", "mode"]).agg(agg_dict).reset_index()
+    # Handle both raw data (judge_reward) and aggregated data (judge_reward_mean)
+    if "judge_reward" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            df.groupby(["subset", "mode"])
+            .agg(
+                judge_reward_mean=("judge_reward", "mean"),
+                judge_reward_count=("judge_reward", "count"),
+            )
+            .reset_index()
+        )
+    else:
+        # Already aggregated data
+        agg_dict = {"judge_reward_mean": "mean"}
+        if "judge_reward_count" in df.columns:
+            agg_dict["judge_reward_count"] = "sum"
+        agg_df = df.groupby(["subset", "mode"]).agg(agg_dict).reset_index()
 
     subsets = [s for s in SUBSET_ORDER if s in agg_df["subset"].unique()]
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -225,14 +255,19 @@ def plot_reward_by_subset(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, reward, count in zip(bars, rewards, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{reward:.2f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -243,7 +278,8 @@ def plot_reward_by_subset(
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward by Subset")
     if absolute:
-        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
     ax.set_xticks(x)
     ax.set_xticklabels([SUBSET_LABELS.get(s, s) for s in subsets])
     if absolute:
@@ -268,18 +304,31 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         )
         return
 
-    # Aggregate across models and subsets
-    agg_df = (
-        rlm_df.groupby("mode")
-        .agg(
-            {
-                "turns_mean": "mean",
-                "sub_llm_call_count_mean": "mean",
-                "sub_llm_mean_batch_size_mean": "mean",
-            }
+    # Handle raw data vs aggregated data
+    if "turns" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            rlm_df.groupby("mode")
+            .agg(
+                turns_mean=("turns", "mean"),
+                sub_llm_call_count_mean=("sub_llm_call_count", "mean"),
+                sub_llm_mean_batch_size_mean=("sub_llm_mean_batch_size", "mean"),
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    else:
+        # Already aggregated data
+        agg_df = (
+            rlm_df.groupby("mode")
+            .agg(
+                {
+                    "turns_mean": "mean",
+                    "sub_llm_call_count_mean": "mean",
+                    "sub_llm_mean_batch_size_mean": "mean",
+                }
+            )
+            .reset_index()
+        )
 
     modes = [m for m in ["rlm", "rlm_tips"] if m in agg_df["mode"].unique()]
 
@@ -340,6 +389,19 @@ def plot_rlm_metrics_by_model(ax: plt.Axes, df: pd.DataFrame):
             transform=ax.transAxes,
         )
         return
+
+    # Handle raw data vs aggregated data
+    if "turns" in df.columns:
+        # Raw data - aggregate on the fly
+        rlm_df = (
+            rlm_df.groupby(["model", "mode"])
+            .agg(
+                turns_mean=("turns", "mean"),
+                sub_llm_call_count_mean=("sub_llm_call_count", "mean"),
+                sub_llm_mean_batch_size_mean=("sub_llm_mean_batch_size", "mean"),
+            )
+            .reset_index()
+        )
 
     models = list(rlm_df["model"].unique())
     modes = [m for m in ["rlm", "rlm_tips"] if m in rlm_df["mode"].unique()]
@@ -450,12 +512,18 @@ def plot_context_vs_reward(
     ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
 ):
     """Plot: Context length vs reward scatter, colored by mode."""
-    # Need raw data for this plot - check if context_length_mean exists
-    if "context_length_mean" not in df.columns:
+    # Determine column names based on data type (raw vs aggregated)
+    if "context_length" in df.columns:
+        context_col = "context_length"
+        reward_col = "judge_reward"
+    elif "context_length_mean" in df.columns:
+        context_col = "context_length_mean"
+        reward_col = "judge_reward_mean"
+    else:
         ax.text(
             0.5,
             0.5,
-            "Context length data not available\nin aggregated results",
+            "Context length data not available",
             ha="center",
             va="center",
             transform=ax.transAxes,
@@ -469,11 +537,11 @@ def plot_context_vs_reward(
         style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
 
         # Convert context length to thousands for readability
-        context_k = data["context_length_mean"] / 1000
+        context_k = data[context_col] / 1000
 
         ax.scatter(
             context_k,
-            data["judge_reward_mean"],
+            data[reward_col],
             label=MODE_LABELS.get(mode, mode).replace("\n", " "),
             color=style["color"],
             marker=style["marker"],
@@ -612,6 +680,99 @@ def plot_reward_vs_context_binned(
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
+def plot_reward_vs_context_binned_by_subset(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    num_bins: int = 10,
+    absolute: bool = False,
+):
+    """Plot: Reward vs context length binned, faceted by subset."""
+    if "context_length" not in df.columns:
+        print("Context length not available in raw data")
+        return
+
+    subsets = [s for s in SUBSET_ORDER if s in df["subset"].unique()]
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    if len(subsets) == 0:
+        print("No subsets found")
+        return
+
+    # Create subplot grid
+    fig, axes = plt.subplots(
+        1, len(subsets), figsize=(6 * len(subsets), 5), sharey=True
+    )
+    if len(subsets) == 1:
+        axes = [axes]
+
+    # Get global bin edges based on all data
+    all_context = df["context_length"].dropna()
+    if len(all_context) == 0:
+        print("No context length data available")
+        plt.close()
+        return
+
+    bin_edges = np.linspace(all_context.min(), all_context.max(), num_bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2 / 1000  # Convert to K
+
+    for ax, subset in zip(axes, subsets):
+        subset_df = df[df["subset"] == subset]
+
+        for mode in modes:
+            data = subset_df[subset_df["mode"] == mode].dropna(
+                subset=["context_length", "judge_reward"]
+            )
+            if len(data) == 0:
+                continue
+
+            style = MODE_STYLES.get(
+                mode, {"color": "gray", "marker": "o", "linestyle": "-"}
+            )
+
+            # Compute binned means
+            bin_means, _, _ = stats.binned_statistic(
+                data["context_length"],
+                data["judge_reward"],
+                statistic="mean",
+                bins=bin_edges,
+            )
+
+            valid = ~np.isnan(bin_means)
+            ax.plot(
+                bin_centers[valid],
+                bin_means[valid],
+                label=MODE_LABELS.get(mode, mode).replace("\n", " "),
+                color=style["color"],
+                marker=style["marker"],
+                linestyle=style["linestyle"],
+                linewidth=2,
+                markersize=8,
+            )
+
+        ax.set_xlabel("Context Length (K chars)")
+        ax.set_title(SUBSET_LABELS.get(subset, subset))
+        if absolute:
+            ax.set_ylim(0, 1.1)
+            ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+
+    axes[0].set_ylabel("Judge Reward (mean)")
+    axes[-1].legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=9)
+
+    plt.suptitle(
+        f"Oolong: Reward vs Context Length by Subset (binned into {num_bins} ranges)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Plot saved to: {output_path}")
+
+    plt.show()
+    plt.close()
+
+
 def plot_reward_vs_context_rolling(
     ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1, absolute: bool = False
 ):
@@ -670,15 +831,30 @@ def plot_reward_vs_context_rolling(
 
 
 def plot_timing(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing comparison across modes and models."""
-    # Aggregate across subsets
-    agg_dict = {"total_ms_mean": "mean"}
-    if "total_ms_count" in df.columns:
-        agg_dict["total_ms_count"] = "sum"
-
-    agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
+    # Handle both raw data (total_ms) and aggregated data (total_ms_mean)
+    if "total_ms" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            df.groupby(["model", "mode"])
+            .agg(
+                total_ms_mean=("total_ms", "mean"),
+                total_ms_count=("total_ms", "count"),
+            )
+            .reset_index()
+        )
+    else:
+        # Already aggregated data
+        agg_dict = {"total_ms_mean": "mean"}
+        if "total_ms_count" in df.columns:
+            agg_dict["total_ms_count"] = "sum"
+        agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
 
     models = agg_df["model"].unique()
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -714,14 +890,19 @@ def plot_timing(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, time_val, count in zip(bars, times, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{time_val:.1f}s")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -740,15 +921,30 @@ def plot_timing(
 
 
 def plot_timing_by_subset(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing comparison across subsets (grouped bar chart)."""
-    # Aggregate across models for each subset/mode combination
-    agg_dict = {"total_ms_mean": "mean"}
-    if "total_ms_count" in df.columns:
-        agg_dict["total_ms_count"] = "sum"
-
-    agg_df = df.groupby(["subset", "mode"]).agg(agg_dict).reset_index()
+    # Handle both raw data (total_ms) and aggregated data (total_ms_mean)
+    if "total_ms" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            df.groupby(["subset", "mode"])
+            .agg(
+                total_ms_mean=("total_ms", "mean"),
+                total_ms_count=("total_ms", "count"),
+            )
+            .reset_index()
+        )
+    else:
+        # Already aggregated data
+        agg_dict = {"total_ms_mean": "mean"}
+        if "total_ms_count" in df.columns:
+            agg_dict["total_ms_count"] = "sum"
+        agg_df = df.groupby(["subset", "mode"]).agg(agg_dict).reset_index()
 
     subsets = [s for s in SUBSET_ORDER if s in agg_df["subset"].unique()]
     modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
@@ -786,14 +982,19 @@ def plot_timing_by_subset(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, time_val, count in zip(bars, times, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{time_val:.1f}s")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -811,12 +1012,18 @@ def plot_timing_by_subset(
 
 def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Timing vs context length scatter, colored by mode."""
-    # Need context_length_mean for this plot
-    if "context_length_mean" not in df.columns:
+    # Determine column names based on data type (raw vs aggregated)
+    if "context_length" in df.columns:
+        context_col = "context_length"
+        time_col = "total_ms"
+    elif "context_length_mean" in df.columns:
+        context_col = "context_length_mean"
+        time_col = "total_ms_mean"
+    else:
         ax.text(
             0.5,
             0.5,
-            "Context length data not available\nin aggregated results",
+            "Context length data not available",
             ha="center",
             va="center",
             transform=ax.transAxes,
@@ -830,13 +1037,13 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
         style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
 
         # Filter out rows with missing data
-        valid_data = data.dropna(subset=["context_length_mean", "total_ms_mean"])
+        valid_data = data.dropna(subset=[context_col, time_col])
 
         if len(valid_data) > 0:
             # Convert context length to thousands
-            context_k = valid_data["context_length_mean"] / 1000
+            context_k = valid_data[context_col] / 1000
             # Convert timing to seconds
-            times = valid_data["total_ms_mean"] / 1000
+            times = valid_data[time_col] / 1000
 
             ax.scatter(
                 context_k,
@@ -858,6 +1065,14 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
 
 def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Reward vs timing scatter (cost-benefit analysis)."""
+    # Determine column names based on data type (raw vs aggregated)
+    if "total_ms" in df.columns:
+        time_col = "total_ms"
+        reward_col = "judge_reward"
+    else:
+        time_col = "total_ms_mean"
+        reward_col = "judge_reward_mean"
+
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
     for mode in modes:
@@ -865,15 +1080,15 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, absolute: bool = Fals
         style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
 
         # Filter out rows with missing data
-        valid_data = data.dropna(subset=["total_ms_mean", "judge_reward_mean"])
+        valid_data = data.dropna(subset=[time_col, reward_col])
 
         if len(valid_data) > 0:
             # Convert to seconds
-            times = valid_data["total_ms_mean"] / 1000
+            times = valid_data[time_col] / 1000
 
             ax.scatter(
                 times,
-                valid_data["judge_reward_mean"],
+                valid_data[reward_col],
                 label=MODE_LABELS.get(mode, mode).replace("\n", " "),
                 color=style["color"],
                 marker=style["marker"],
@@ -893,7 +1108,11 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, absolute: bool = Fals
 
 
 def plot_token_usage(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Total token usage comparison across all modes, split by model."""
     if len(df) == 0:
@@ -906,6 +1125,23 @@ def plot_token_usage(
             transform=ax.transAxes,
         )
         return
+
+    # Handle raw data vs aggregated data
+    if "prompt_tokens" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_cols = {
+            "prompt_tokens_mean": ("prompt_tokens", "mean"),
+            "completion_tokens_mean": ("completion_tokens", "mean"),
+            "prompt_tokens_count": ("prompt_tokens", "count"),
+        }
+        if "sub_llm_prompt_tokens" in df.columns:
+            agg_cols["sub_llm_prompt_tokens_mean"] = ("sub_llm_prompt_tokens", "mean")
+        if "sub_llm_completion_tokens" in df.columns:
+            agg_cols["sub_llm_completion_tokens_mean"] = (
+                "sub_llm_completion_tokens",
+                "mean",
+            )
+        df = df.groupby(["model", "mode"]).agg(**agg_cols).reset_index()
 
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -956,14 +1192,19 @@ def plot_token_usage(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -982,7 +1223,11 @@ def plot_token_usage(
 
 
 def plot_main_model_tokens(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Main model token usage comparison (excludes sub-LLM tokens), split by model."""
     if len(df) == 0:
@@ -995,6 +1240,19 @@ def plot_main_model_tokens(
             transform=ax.transAxes,
         )
         return
+
+    # Handle raw data vs aggregated data
+    if "prompt_tokens" in df.columns:
+        # Raw data - aggregate on the fly
+        df = (
+            df.groupby(["model", "mode"])
+            .agg(
+                prompt_tokens_mean=("prompt_tokens", "mean"),
+                completion_tokens_mean=("completion_tokens", "mean"),
+                prompt_tokens_count=("prompt_tokens", "count"),
+            )
+            .reset_index()
+        )
 
     models = df["model"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1034,14 +1292,19 @@ def plot_main_model_tokens(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -1061,9 +1324,12 @@ def plot_main_model_tokens(
 
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Heatmap of reward by mode × subset."""
+    # Determine column name based on data type (raw vs aggregated)
+    reward_col = "judge_reward" if "judge_reward" in df.columns else "judge_reward_mean"
+
     # Create pivot table: mode × subset
     pivot = df.pivot_table(
-        values="judge_reward_mean",
+        values=reward_col,
         index="mode",
         columns="subset",
         aggfunc="mean",
@@ -1100,6 +1366,7 @@ def create_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create the 2x3 grid of plots."""
@@ -1108,17 +1375,45 @@ def create_plots(
     # Main plots (suppress individual legends)
     # Left column: same as deepdive
     plot_reward_by_model(
-        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
-    plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
-    plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
-    plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
+    plot_timing(
+        axes[0, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_main_model_tokens(
+        axes[1, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_token_usage(
+        axes[1, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
 
     # Right column: oolong-specific
     plot_reward_by_subset(
-        axes[0, 2], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 2],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
-    plot_context_vs_reward(axes[1, 2], df, show_legend=False, absolute=absolute)
+    plot_reward_vs_context_binned(axes[1, 2], df, absolute=absolute)
 
     # Create central legend for modes (using markers to match scatter plots)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1202,7 +1497,15 @@ PLOT_REGISTRY = {
 }
 
 # Plot types that require raw (per-example) data instead of aggregated data
-RAW_DATA_PLOTS = {"context_scatter", "context_binned", "context_rolling"}
+RAW_DATA_PLOTS = {
+    "context_scatter",
+    "context_binned",
+    "context_binned_by_subset",
+    "context_rolling",
+}
+
+# Plot types that manage their own figure (not single-axis plots)
+MULTI_AXIS_PLOTS = {"context_binned_by_subset"}
 
 
 def create_single_plot(
@@ -1210,6 +1513,7 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create a single standalone plot."""
@@ -1222,12 +1526,18 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Plots that support both show_counts and absolute
+    # Plots that support show_counts, show_values, and absolute
     if plot_name in ("reward", "subset"):
-        func(ax, df, show_counts=show_counts, absolute=absolute)
-    # Plots that support only show_counts
+        func(
+            ax,
+            df,
+            show_counts=show_counts,
+            show_values=show_values,
+            absolute=absolute,
+        )
+    # Plots that support show_counts and show_values
     elif plot_name in ("timing", "timing_by_subset", "main_tokens", "tokens"):
-        func(ax, df, show_counts=show_counts)
+        func(ax, df, show_counts=show_counts, show_values=show_values)
     # Plots that support only absolute
     elif plot_name in (
         "context",
@@ -1240,7 +1550,6 @@ def create_single_plot(
     else:
         func(ax, df)
 
-    plt.suptitle(f"Oolong: {title}", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
 
     if output_path:
@@ -1284,15 +1593,23 @@ Examples:
     
     # Raw data context plots (per-example granularity)
     # First generate raw data: python aggregate_results.py --raw-output outputs/raw_results.csv
-    python plot_results.py --image context_scatter     # Individual scatter points
-    python plot_results.py --image context_binned      # Binned means
-    python plot_results.py --image context_rolling     # Rolling average curves
+    python plot_results.py --image context_scatter            # Individual scatter points
+    python plot_results.py --image context_binned             # Binned means
+    python plot_results.py --image context_binned_by_subset   # Binned means, faceted by subset
+    python plot_results.py --image context_rolling            # Rolling average curves
     
     # Use custom raw data file
     python plot_results.py --image context_binned -r my_raw_data.csv
     
     # Show sample counts on bars
     python plot_results.py --show-counts
+    
+    # Show bar values (e.g., 0.85, 12.3s, 1,234)
+    python plot_results.py --show-values
+    python plot_results.py -v --image reward
+    
+    # Show both values and counts
+    python plot_results.py -v -c
     
     # Use fixed 0-1 y-axis for reward plots
     python plot_results.py --absolute
@@ -1303,8 +1620,8 @@ Examples:
         "--input",
         "-i",
         type=Path,
-        default=Path(__file__).parent / "outputs" / "aggregate.csv",
-        help="Path to aggregate CSV file",
+        default=Path(__file__).parent / "outputs" / "raw_results.csv",
+        help="Path to raw results CSV file (use raw_results.csv for context plots)",
     )
     parser.add_argument(
         "--raw-input",
@@ -1323,6 +1640,7 @@ Examples:
     )
     parser.add_argument(
         "--image",
+        "-I",
         choices=[
             "main",
             "reward",
@@ -1341,6 +1659,7 @@ Examples:
             # Raw data plots (require --raw-input)
             "context_scatter",
             "context_binned",
+            "context_binned_by_subset",
             "context_rolling",
         ],
         default="main",
@@ -1378,6 +1697,12 @@ Examples:
         "-c",
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
+    )
+    parser.add_argument(
+        "--show-values",
+        "-v",
+        action="store_true",
+        help="Show bar values above bars in bar chart plots",
     )
     parser.add_argument(
         "--absolute",
@@ -1472,14 +1797,25 @@ Examples:
 
     if args.image == "main":
         create_plots(
-            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
+            absolute=args.absolute,
         )
+    elif args.image in MULTI_AXIS_PLOTS:
+        # These plots manage their own figure
+        if args.image == "context_binned_by_subset":
+            plot_reward_vs_context_binned_by_subset(
+                df, args.output, absolute=args.absolute
+            )
     else:
         create_single_plot(
             args.image,
             df,
             args.output,
             show_counts=args.show_counts,
+            show_values=args.show_values,
             absolute=args.absolute,
         )
 

@@ -249,6 +249,7 @@ def plot_reward_by_environment(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Reward comparison across environments, grouped by mode."""
@@ -285,14 +286,19 @@ def plot_reward_by_environment(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, reward, count in zip(bars, rewards, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{reward:.2f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -303,7 +309,8 @@ def plot_reward_by_environment(
     ax.set_ylabel("Reward (Accuracy)")
     ax.set_title("Reward by Environment")
     if absolute:
-        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
@@ -312,7 +319,11 @@ def plot_reward_by_environment(
 
 
 def plot_rlm_lift(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: RLM lift (Δ reward) over standard baseline per environment."""
     reward_col = get_reward_column(df)
@@ -379,25 +390,31 @@ def plot_rlm_lift(
             elif lift < 0:
                 bar.set_alpha(0.6)
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for j, (bar, count) in enumerate(zip(bars, counts)):
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for j, (bar, lift, count) in enumerate(zip(bars, lifts, counts)):
                 env = environments[j]
-                if count is not None and standard_rewards.get(env) is not None:
-                    y_pos = (
-                        bar.get_height() + 0.01
-                        if bar.get_height() >= 0
-                        else bar.get_height() - 0.02
-                    )
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        y_pos,
-                        f"n={count}",
-                        ha="center",
-                        va="bottom" if bar.get_height() >= 0 else "top",
-                        fontsize=6,
-                        rotation=90,
-                    )
+                if standard_rewards.get(env) is not None:
+                    annotations = []
+                    if show_values:
+                        annotations.append(f"{lift:+.2f}")
+                    if show_counts and count is not None:
+                        annotations.append(f"n={count}")
+                    if annotations:
+                        y_pos = (
+                            bar.get_height() + 0.01
+                            if bar.get_height() >= 0
+                            else bar.get_height() - 0.02
+                        )
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            y_pos,
+                            "\n".join(annotations),
+                            ha="center",
+                            va="bottom" if bar.get_height() >= 0 else "top",
+                            fontsize=6,
+                            rotation=90,
+                        )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Δ Reward (RLM - Standard)")
@@ -410,7 +427,11 @@ def plot_rlm_lift(
 
 
 def plot_token_usage(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Total token usage by environment and mode."""
     environments = df["environment"].unique()
@@ -468,14 +489,19 @@ def plot_token_usage(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, token_count, count in zip(bars, tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(token_count):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 100,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -496,6 +522,7 @@ def plot_token_efficiency(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Token efficiency relative to standard baseline (normalized per environment).
@@ -563,19 +590,25 @@ def plot_token_efficiency(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None and bar.get_height() > 0:
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 0.1,
-                        f"n={count}",
-                        ha="center",
-                        va="bottom",
-                        fontsize=6,
-                        rotation=90,
-                    )
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, eff, count in zip(bars, normalized_efficiencies, counts):
+                if bar.get_height() > 0:
+                    annotations = []
+                    if show_values:
+                        annotations.append(f"{eff:.2f}")
+                    if show_counts and count is not None:
+                        annotations.append(f"n={count}")
+                    if annotations:
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 0.1,
+                            "\n".join(annotations),
+                            ha="center",
+                            va="bottom",
+                            fontsize=6,
+                            rotation=90,
+                        )
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Reward per Token (Relative to LLM)")
@@ -589,7 +622,11 @@ def plot_token_efficiency(
 
 
 def plot_timing(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing comparison by environment and mode."""
     environments = df["environment"].unique()
@@ -645,14 +682,19 @@ def plot_timing(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, time_val, count in zip(bars, times, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{time_val:.1f}s")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 5,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -789,7 +831,11 @@ def plot_reward_vs_tokens_scatter(
 
 
 def plot_rlm_overhead(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Sub-LLM call count by environment (RLM modes only)."""
     # Filter to RLM modes only
@@ -851,14 +897,19 @@ def plot_rlm_overhead(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, val, count in zip(bars, values, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{val:.1f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -920,6 +971,7 @@ def create_main_plots(
     output_path: Path | None,
     model_info: str = "",
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create the main 2x3 grid of plots."""
@@ -927,17 +979,45 @@ def create_main_plots(
 
     # Top row
     plot_reward_by_environment(
-        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
-    plot_rlm_lift(axes[0, 1], df, show_legend=False, show_counts=show_counts)
+    plot_rlm_lift(
+        axes[0, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
     plot_token_efficiency(
-        axes[0, 2], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 2],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
 
     # Bottom row
-    plot_timing(axes[1, 0], df, show_legend=False, show_counts=show_counts)
+    plot_timing(
+        axes[1, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
     plot_reward_vs_tokens_scatter(axes[1, 1], df, show_legend=False, absolute=absolute)
-    plot_rlm_overhead(axes[1, 2], df, show_legend=False, show_counts=show_counts)
+    plot_rlm_overhead(
+        axes[1, 2],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
 
     # Create central legend with modes (colors) and environments (shapes)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1002,6 +1082,7 @@ def create_single_plot(
     output_path: Path | None,
     model_info: str = "",
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create a single plot by name."""
@@ -1025,13 +1106,19 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Pass show_counts and absolute to functions that support them
+    # Pass show_counts, show_values and absolute to functions that support them
     if plot_name in ("reward", "efficiency"):
-        plot_func(ax, df, show_counts=show_counts, absolute=absolute)
+        plot_func(
+            ax,
+            df,
+            show_counts=show_counts,
+            show_values=show_values,
+            absolute=absolute,
+        )
     elif plot_name == "scatter":
         plot_func(ax, df, absolute=absolute)
     elif plot_name in ("lift", "tokens", "timing", "overhead"):
-        plot_func(ax, df, show_counts=show_counts)
+        plot_func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         plot_func(ax, df)
 
@@ -1154,6 +1241,12 @@ Examples:
         help="Show sample counts (n=X) above bars in bar chart plots",
     )
     parser.add_argument(
+        "--show-values",
+        "-v",
+        action="store_true",
+        help="Show bar values above bars in bar chart plots",
+    )
+    parser.add_argument(
         "--absolute",
         "-a",
         action="store_true",
@@ -1224,6 +1317,7 @@ Examples:
             args.output,
             model_info,
             show_counts=args.show_counts,
+            show_values=args.show_values,
             absolute=args.absolute,
         )
     else:
@@ -1233,6 +1327,7 @@ Examples:
             args.output,
             model_info,
             show_counts=args.show_counts,
+            show_values=args.show_values,
             absolute=args.absolute,
         )
 

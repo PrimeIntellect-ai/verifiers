@@ -274,8 +274,8 @@ def main():
     parser.add_argument(
         "--raw-output",
         type=Path,
-        default=None,
-        help="Output CSV with all individual results (optional)",
+        default=Path(__file__).parent / "outputs" / "raw_results.csv",
+        help="Output CSV with all individual results",
     )
     args = parser.parse_args()
 
@@ -287,8 +287,9 @@ def main():
     # Convert to DataFrame
     df = results_to_dataframe(results)
 
-    # Save raw results if requested
+    # Save raw results
     if args.raw_output:
+        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(args.raw_output, index=False)
         print(f"Raw results saved to: {args.raw_output}")
 

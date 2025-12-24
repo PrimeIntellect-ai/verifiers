@@ -75,6 +75,7 @@ def plot_reward_by_mode(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Mode comparison across all configs (grouped bar chart)."""
@@ -115,14 +116,19 @@ def plot_reward_by_mode(
         linewidth=0.5,
     )
 
-    # Add sample size labels above bars if requested
-    if show_counts:
-        for bar, count in zip(bars, counts):
-            if count is not None:
+    # Add annotations above bars if requested
+    if show_values or show_counts:
+        for bar, reward, count in zip(bars, rewards, counts):
+            annotations = []
+            if show_values:
+                annotations.append(f"{reward:.2f}")
+            if show_counts and count is not None:
+                annotations.append(f"n={count}")
+            if annotations:
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.02,
-                    f"n={count}",
+                    "\n".join(annotations),
                     ha="center",
                     va="bottom",
                     fontsize=6,
@@ -133,14 +139,19 @@ def plot_reward_by_mode(
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward")
     if absolute:
-        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([MODE_LABELS.get(m, m) for m in modes])
 
 
 def plot_main_model_tokens(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Main model token usage comparison (excludes sub-LLM tokens), split by model."""
     if len(df) == 0:
@@ -192,14 +203,19 @@ def plot_main_model_tokens(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -218,7 +234,11 @@ def plot_main_model_tokens(
 
 
 def plot_timing_by_mode(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing comparison across modes (bar chart)."""
     # Aggregate across all configs for each mode
@@ -258,14 +278,19 @@ def plot_timing_by_mode(
         linewidth=0.5,
     )
 
-    # Add sample size labels above bars if requested
-    if show_counts:
-        for bar, count in zip(bars, counts):
-            if count is not None:
+    # Add annotations above bars if requested
+    if show_values or show_counts:
+        for bar, time_val, count in zip(bars, times, counts):
+            annotations = []
+            if show_values:
+                annotations.append(f"{time_val:.1f}s")
+            if show_counts and count is not None:
+                annotations.append(f"n={count}")
+            if annotations:
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.5,
-                    f"n={count}",
+                    "\n".join(annotations),
                     ha="center",
                     va="bottom",
                     fontsize=6,
@@ -284,6 +309,7 @@ def plot_mode_comparison_by_content(
     df: pd.DataFrame,
     show_legend: bool = True,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Plot: Mode comparison across content types (grouped bar chart)."""
@@ -297,6 +323,7 @@ def plot_mode_comparison_by_content(
     width = 0.25
 
     all_bars = []
+    all_rewards = []
     all_counts = []
 
     for i, mode in enumerate(modes):
@@ -327,17 +354,23 @@ def plot_mode_comparison_by_content(
             linewidth=0.5,
         )
         all_bars.append(bars)
+        all_rewards.append(rewards)
         all_counts.append(counts)
 
-    # Add sample size labels above bars if requested (rotated to avoid overlap)
-    if show_counts:
-        for bars, counts in zip(all_bars, all_counts):
-            for bar, count in zip(bars, counts):
-                if count is not None:
+    # Add annotations above bars if requested (rotated to avoid overlap)
+    if show_values or show_counts:
+        for bars, rewards, counts in zip(all_bars, all_rewards, all_counts):
+            for bar, reward, count in zip(bars, rewards, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{reward:.2f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=5,
@@ -349,7 +382,8 @@ def plot_mode_comparison_by_content(
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward by Content Type\n(total length=500, fragment length=20)")
     if absolute:
-        ax.set_ylim(0, 1.3 if show_counts else 1.1)
+        extra = 0.1 + (0.1 if show_counts else 0) + (0.1 if show_values else 0)
+        ax.set_ylim(0, 1.0 + extra)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(content_types)
@@ -678,7 +712,11 @@ def plot_distribution(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
 
 
 def plot_token_usage(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Total token usage comparison across all modes, split by model."""
     if len(df) == 0:
@@ -741,14 +779,19 @@ def plot_token_usage(
             linewidth=0.5,
         )
 
-        # Add sample size labels above bars if requested
-        if show_counts:
-            for bar, count in zip(bars, counts):
-                if count is not None:
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, tokens, count in zip(bars, total_tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(tokens):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + bar.get_height() * 0.02,
-                        f"n={count}",
+                        "\n".join(annotations),
                         ha="center",
                         va="bottom",
                         fontsize=6,
@@ -800,7 +843,11 @@ def plot_timing_by_length(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
 
 
 def plot_timing_by_content(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
 ):
     """Plot: Timing by content type across modes (grouped bar chart)."""
     # Filter to target_length=500, mean_fragment_length=20
@@ -824,7 +871,7 @@ def plot_timing_by_content(
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
-        ax.bar(
+        bars = ax.bar(
             [xi + offset for xi in x],
             times,
             width,
@@ -833,6 +880,20 @@ def plot_timing_by_content(
             edgecolor="black",
             linewidth=0.5,
         )
+
+        # Add annotations above bars if requested
+        if show_values:
+            for bar, time_val in zip(bars, times):
+                if time_val > 0:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.5,
+                        f"{time_val:.1f}s",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
 
     ax.set_xlabel("Content Type")
     ax.set_ylabel("Time (seconds)")
@@ -886,6 +947,7 @@ def create_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
 ):
     """Create the 2x3 grid of plots."""
@@ -893,14 +955,36 @@ def create_plots(
 
     # Top row: Standard metrics (like other environments)
     plot_reward_by_mode(
-        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[0, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
-    plot_main_model_tokens(axes[0, 1], df, show_legend=False, show_counts=show_counts)
-    plot_timing_by_mode(axes[0, 2], df, show_legend=False, show_counts=show_counts)
+    plot_main_model_tokens(
+        axes[0, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_timing_by_mode(
+        axes[0, 2],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
 
     # Bottom row: Verbatim-copy specific
     plot_mode_comparison_by_content(
-        axes[1, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+        axes[1, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+        absolute=absolute,
     )
     plot_scaling_behavior(axes[1, 1], df, show_legend=False, absolute=absolute)
     plot_char_vs_exact(axes[1, 2], df, show_legend=False, linear_fit=True)
@@ -978,6 +1062,7 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    show_values: bool = False,
     absolute: bool = False,
     **kwargs,
 ):
@@ -988,6 +1073,7 @@ def create_single_plot(
         df: DataFrame with aggregated results
         output_path: Optional path to save the plot
         show_counts: Whether to show sample counts
+        show_values: Whether to show bar values
         absolute: Use fixed 0-1 y-axis range for reward plots
         **kwargs: Additional arguments passed to the plot function (e.g., linear_fit)
     """
@@ -1004,7 +1090,13 @@ def create_single_plot(
     if plot_name == "scatter":
         func(ax, df, **kwargs)
     elif plot_name in ("reward", "content"):
-        func(ax, df, show_counts=show_counts, absolute=absolute)
+        func(
+            ax,
+            df,
+            show_counts=show_counts,
+            show_values=show_values,
+            absolute=absolute,
+        )
     elif plot_name in ("scaling", "length", "fragmentation"):
         func(ax, df, absolute=absolute)
     elif plot_name in ("distribution", "timing_efficiency"):
@@ -1015,7 +1107,7 @@ def create_single_plot(
         "timing",
         "timing_by_content",
     ):
-        func(ax, df, show_counts=show_counts)
+        func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         func(ax, df)
 
@@ -1086,6 +1178,7 @@ Examples:
     )
     parser.add_argument(
         "--image",
+        "-I",
         choices=[
             "main",
             "reward",
@@ -1141,6 +1234,12 @@ Examples:
         "-c",
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
+    )
+    parser.add_argument(
+        "--show-values",
+        "-v",
+        action="store_true",
+        help="Show bar values above bars in bar chart plots",
     )
     parser.add_argument(
         "--absolute",
@@ -1208,7 +1307,11 @@ Examples:
 
     if args.image == "main":
         create_plots(
-            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
+            absolute=args.absolute,
         )
     else:
         # Build kwargs for plot-specific options
@@ -1222,6 +1325,7 @@ Examples:
             df,
             args.output,
             show_counts=args.show_counts,
+            show_values=args.show_values,
             absolute=args.absolute,
             **kwargs,
         )
