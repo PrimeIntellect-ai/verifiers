@@ -9,9 +9,8 @@
 # - Three needle counts: 1, 3, 5
 #
 # Model groups:
-# - MODELS_FULL: Run all ablations (deepseek, intellect-3)
-# - MODELS_STANDARD: Run only default setting (broader model coverage)
-#   Default: mode=rlm_tips, needle_type=word, num_lines=10000, num_needles=1
+# - MODELS_FULL: Run all ablations (all modes × all ablation dimensions)
+# - MODELS_STANDARD: Run all modes but only default ablation settings (broader model coverage)
 
 set -e
 
@@ -26,7 +25,7 @@ MODELS_FULL=(
     "gpt-5-mini"
 )
 
-# MODELS_STANDARD: These models run only the default setting
+# MODELS_STANDARD: These models run all modes but only default ablation settings
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
     # "openrouter:xiaomi/mimo-v2-flash:free"
@@ -42,8 +41,7 @@ CONCURRENCY=50
 # Mode configurations: "standard", "rlm", "rlm_tips"
 MODES=("rlm" "rlm_tips" "standard")
 
-# Default settings for MODELS_STANDARD
-DEFAULT_MODE="rlm_tips"
+# Default ablation settings for MODELS_STANDARD
 DEFAULT_NEEDLE_TYPE="word"
 DEFAULT_NUM_LINES=10000
 DEFAULT_NUM_NEEDLES=1
@@ -124,11 +122,11 @@ uv run vf-install needle-in-haystack
 
 echo "=== Needle in Haystack Ablations ==="
 echo "MODELS_FULL (all ablations): ${MODELS_FULL[*]}"
-echo "MODELS_STANDARD (default setting only): ${MODELS_STANDARD[*]}"
+echo "MODELS_STANDARD (all modes, default ablation settings): ${MODELS_STANDARD[*]}"
 echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
 echo "Modes for MODELS_FULL: ${MODES[*]}"
-echo "Default for MODELS_STANDARD: mode=$DEFAULT_MODE, needle_type=$DEFAULT_NEEDLE_TYPE, num_lines=$DEFAULT_NUM_LINES, num_needles=$DEFAULT_NUM_NEEDLES"
+echo "Default ablation settings for MODELS_STANDARD: needle_type=$DEFAULT_NEEDLE_TYPE, num_lines=$DEFAULT_NUM_LINES, num_needles=$DEFAULT_NUM_NEEDLES"
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -197,26 +195,39 @@ for MODEL_SPEC in "${MODELS_FULL[@]}"; do
 done
 
 # -----------------------------------------------------------------------------
-# PART 2: Default setting only with MODELS_STANDARD
+# PART 2: All modes with MODELS_STANDARD (but only default ablation settings)
 # -----------------------------------------------------------------------------
 echo "############################################################"
-echo "### PART 2: Default setting with MODELS_STANDARD"
+echo "### PART 2: All modes with MODELS_STANDARD (default ablation settings)"
 echo "############################################################"
 echo ""
 
-# Set default mode flags (rlm_tips)
-USE_RLM="true"
-INCLUDE_ENV_TIPS="true"
-
 for MODEL_SPEC in "${MODELS_STANDARD[@]}"; do
     echo "########################################"
-    echo "### Model: $MODEL_SPEC (default setting only)"
+    echo "### Model: $MODEL_SPEC (all modes, default ablation settings)"
     echo "########################################"
     echo ""
 
-    echo "Running: model=$MODEL_SPEC, mode=$DEFAULT_MODE, needle_type=$DEFAULT_NEEDLE_TYPE, num_lines=$DEFAULT_NUM_LINES, num_needles=$DEFAULT_NUM_NEEDLES"
-    run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"needle_type\": \"$DEFAULT_NEEDLE_TYPE\", \"num_lines\": $DEFAULT_NUM_LINES, \"num_needles\": $DEFAULT_NUM_NEEDLES, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
-    echo ""
+    for mode in "${MODES[@]}"; do
+        case $mode in
+            "standard")
+                USE_RLM="false"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm_tips")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="true"
+                ;;
+        esac
+
+        echo "Running: model=$MODEL_SPEC, mode=$mode, needle_type=$DEFAULT_NEEDLE_TYPE, num_lines=$DEFAULT_NUM_LINES, num_needles=$DEFAULT_NUM_NEEDLES"
+        run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"needle_type\": \"$DEFAULT_NEEDLE_TYPE\", \"num_lines\": $DEFAULT_NUM_LINES, \"num_needles\": $DEFAULT_NUM_NEEDLES, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+        echo ""
+    done
 done
 
 echo "=== All ablations complete ==="

@@ -13,9 +13,8 @@
 # - mean_fragment_length: null, 10, 25, 50, 100, 150
 #
 # Model groups:
-# - MODELS_FULL: Run all ablations (deepseek, intellect-3)
-# - MODELS_STANDARD: Run only default setting (broader model coverage)
-#   Default: mode=rlm_tips, content_type=all, target_length=500, mean_fragment_length=20
+# - MODELS_FULL: Run all ablations (all modes × all ablation dimensions)
+# - MODELS_STANDARD: Run all modes but only default ablation settings (broader model coverage)
 
 set -e
 
@@ -30,13 +29,13 @@ MODELS_FULL=(
     # "gpt-5-mini"
 )
 
-# MODELS_STANDARD: These models run only the default setting
+# MODELS_STANDARD: These models run all modes but only default ablation settings
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
-    # "openrouter:xiaomi/mimo-v2-flash:free"
-    # "openrouter:z-ai/glm-4.6"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:z-ai/glm-4.6"
     "deepseek:deepseek/deepseek-v3.2"
-    # "openrouter:z-ai/glm-4.5-air"
+    "openrouter:z-ai/glm-4.5-air"
 )
 
 NUM_EXAMPLES=50
@@ -46,8 +45,7 @@ CONCURRENCY=50
 # Mode configurations: "standard", "rlm", "rlm_tips"
 MODES=("rlm" "rlm_tips" "standard")
 
-# Default settings for MODELS_STANDARD
-DEFAULT_MODE="rlm_tips"
+# Default ablation settings for MODELS_STANDARD
 DEFAULT_CONTENT_TYPE="all"
 DEFAULT_TARGET_LENGTH=500
 DEFAULT_FRAGMENT_LENGTH=20
@@ -128,11 +126,11 @@ uv run vf-install verbatim-copy
 
 echo "=== Verbatim Copy Ablations ==="
 echo "MODELS_FULL (all ablations): ${MODELS_FULL[*]}"
-echo "MODELS_STANDARD (default setting only): ${MODELS_STANDARD[*]}"
+echo "MODELS_STANDARD (all modes, default ablation settings): ${MODELS_STANDARD[*]}"
 echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
 echo "Modes for MODELS_FULL: ${MODES[*]}"
-echo "Default for MODELS_STANDARD: mode=$DEFAULT_MODE, content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
+echo "Default ablation settings for MODELS_STANDARD: content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -201,26 +199,39 @@ for MODEL_SPEC in "${MODELS_FULL[@]}"; do
 done
 
 # -----------------------------------------------------------------------------
-# PART 2: Default setting only with MODELS_STANDARD
+# PART 2: All modes with MODELS_STANDARD (but only default ablation settings)
 # -----------------------------------------------------------------------------
 echo "############################################################"
-echo "### PART 2: Default setting with MODELS_STANDARD"
+echo "### PART 2: All modes with MODELS_STANDARD (default ablation settings)"
 echo "############################################################"
 echo ""
 
-# Set default mode flags (rlm_tips)
-USE_RLM="true"
-INCLUDE_ENV_TIPS="true"
-
 for MODEL_SPEC in "${MODELS_STANDARD[@]}"; do
     echo "########################################"
-    echo "### Model: $MODEL_SPEC (default setting only)"
+    echo "### Model: $MODEL_SPEC (all modes, default ablation settings)"
     echo "########################################"
     echo ""
 
-    echo "Running: model=$MODEL_SPEC, mode=$DEFAULT_MODE, content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
-    run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$DEFAULT_CONTENT_TYPE\", \"target_length\": $DEFAULT_TARGET_LENGTH, \"mean_fragment_length\": $DEFAULT_FRAGMENT_LENGTH, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
-    echo ""
+    for mode in "${MODES[@]}"; do
+        case $mode in
+            "standard")
+                USE_RLM="false"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm_tips")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="true"
+                ;;
+        esac
+
+        echo "Running: model=$MODEL_SPEC, mode=$mode, content_type=$DEFAULT_CONTENT_TYPE, target_length=$DEFAULT_TARGET_LENGTH, fragment_length=$DEFAULT_FRAGMENT_LENGTH"
+        run_model "$MODEL_SPEC" "{\"num_samples\": $NUM_EXAMPLES, \"content_type\": \"$DEFAULT_CONTENT_TYPE\", \"target_length\": $DEFAULT_TARGET_LENGTH, \"mean_fragment_length\": $DEFAULT_FRAGMENT_LENGTH, \"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"shuffle\": true, \"seed\": 42}"
+        echo ""
+    done
 done
 
 echo "=== All ablations complete ==="

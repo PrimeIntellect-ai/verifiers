@@ -7,9 +7,8 @@
 # - Three subsets: synth, synth_with_labels, real
 #
 # Model groups:
-# - MODELS_FULL: Run all ablations (deepseek, intellect-3)
-# - MODELS_STANDARD: Run only default setting (broader model coverage)
-#   Default: mode=rlm_tips, subset=real
+# - MODELS_FULL: Run all ablations (all modes × all subsets)
+# - MODELS_STANDARD: Run all modes but only real subset (broader model coverage)
 
 set -e
 
@@ -20,16 +19,16 @@ set -e
 # MODELS_FULL: These models run ALL ablations
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
-    "prime:prime-intellect/intellect-3"
+    # "prime:prime-intellect/intellect-3"
     # "gpt-5-mini"
 )
 
-# MODELS_STANDARD: These models run only the default setting
+# MODELS_STANDARD: These models run all modes but only the real subset
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
-    # "openrouter:xiaomi/mimo-v2-flash:free"
-    # "openrouter:z-ai/glm-4.6"
-    # "deepseek:deepseek/deepseek-v3.2"
+    "openrouter:xiaomi/mimo-v2-flash:free"
+    "openrouter:z-ai/glm-4.6"
+    "deepseek:deepseek/deepseek-v3.2"
     "openrouter:z-ai/glm-4.5-air"
 )
 
@@ -44,8 +43,7 @@ MODES=("rlm" "rlm_tips" "standard")
 # Subset configurations: "synth", "synth_with_labels", "real"
 SUBSETS=("synth" "synth_with_labels" "real")
 
-# Default settings for MODELS_STANDARD
-DEFAULT_MODE="rlm_tips"
+# Default subset for MODELS_STANDARD
 DEFAULT_SUBSET="real"
 
 # =============================================================================
@@ -124,12 +122,12 @@ uv run vf-install oolong
 
 echo "=== Oolong Long-Context Ablations ==="
 echo "MODELS_FULL (all ablations): ${MODELS_FULL[*]}"
-echo "MODELS_STANDARD (default setting only): ${MODELS_STANDARD[*]}"
+echo "MODELS_STANDARD (all modes, real subset): ${MODELS_STANDARD[*]}"
 echo "Examples per config: $NUM_EXAMPLES"
 echo "Rollouts per example: $ROLLOUTS"
 echo "Modes for MODELS_FULL: ${MODES[*]}"
 echo "Subsets for MODELS_FULL: ${SUBSETS[*]}"
-echo "Default for MODELS_STANDARD: mode=$DEFAULT_MODE, subset=$DEFAULT_SUBSET"
+echo "Default subset for MODELS_STANDARD: $DEFAULT_SUBSET"
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -176,26 +174,39 @@ for MODEL_SPEC in "${MODELS_FULL[@]}"; do
 done
 
 # -----------------------------------------------------------------------------
-# PART 2: Default setting only with MODELS_STANDARD
+# PART 2: All modes with MODELS_STANDARD (but only real subset)
 # -----------------------------------------------------------------------------
 echo "############################################################"
-echo "### PART 2: Default setting with MODELS_STANDARD"
+echo "### PART 2: All modes with MODELS_STANDARD (subset=$DEFAULT_SUBSET only)"
 echo "############################################################"
 echo ""
 
-# Set default mode flags (rlm_tips)
-USE_RLM="true"
-INCLUDE_ENV_TIPS="true"
-
 for MODEL_SPEC in "${MODELS_STANDARD[@]}"; do
     echo "########################################"
-    echo "### Model: $MODEL_SPEC (default setting only)"
+    echo "### Model: $MODEL_SPEC (all modes, subset=$DEFAULT_SUBSET)"
     echo "########################################"
     echo ""
 
-    echo "Running: model=$MODEL_SPEC, mode=$DEFAULT_MODE, subset=$DEFAULT_SUBSET"
-    run_model "$MODEL_SPEC" "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"subset\": \"$DEFAULT_SUBSET\", \"shuffle\": true, \"seed\": 42}"
-    echo ""
+    for mode in "${MODES[@]}"; do
+        case $mode in
+            "standard")
+                USE_RLM="false"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="false"
+                ;;
+            "rlm_tips")
+                USE_RLM="true"
+                INCLUDE_ENV_TIPS="true"
+                ;;
+        esac
+
+        echo "Running: model=$MODEL_SPEC, mode=$mode, subset=$DEFAULT_SUBSET"
+        run_model "$MODEL_SPEC" "{\"use_rlm\": $USE_RLM, \"include_env_tips\": $INCLUDE_ENV_TIPS, \"subset\": \"$DEFAULT_SUBSET\", \"shuffle\": true, \"seed\": 42}"
+        echo ""
+    done
 done
 
 echo "=== All ablations complete ==="
