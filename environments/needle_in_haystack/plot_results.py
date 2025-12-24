@@ -60,7 +60,7 @@ def normalize_model_name(model: str) -> str:
     return model
 
 
-def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame):
+def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Mode comparison across needle types (grouped bar chart)."""
     # Filter to baseline config: num_lines=10000, num_needles=1
     filtered = df[(df["num_lines"] == 10000) & (df["num_needles"] == 1)]
@@ -122,14 +122,15 @@ def plot_mode_by_needle_type(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Needle Type")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Mode Comparison by Needle Type\n(lines=10K, needles=1)")
-    ax.set_ylim(0, 1.2)  # Increased to make room for labels
+    if absolute:
+        ax.set_ylim(0, 1.2)  # Increased to make room for labels
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([nt.capitalize() for nt in needle_types])
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_mode_vs_context_size(ax: plt.Axes, df: pd.DataFrame):
+def plot_mode_vs_context_size(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Mode comparison across context sizes (line plot)."""
     # Filter to baseline config: needle_type="word", num_needles=1
     filtered = df[(df["needle_type"] == "word") & (df["num_needles"] == 1)]
@@ -167,12 +168,13 @@ def plot_mode_vs_context_size(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Context Size (K lines)")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Mode Comparison vs Context Size\n(type=word, needles=1)")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_mode_vs_needle_count(ax: plt.Axes, df: pd.DataFrame):
+def plot_mode_vs_needle_count(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Mode comparison across needle counts (line plot)."""
     # Filter to baseline config: needle_type="word", num_lines=10000
     filtered = df[(df["needle_type"] == "word") & (df["num_lines"] == 10000)]
@@ -211,9 +213,10 @@ def plot_mode_vs_needle_count(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Number of Needles")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Mode Comparison vs Needle Count\n(type=word, lines=10K)")
-    ax.set_ylim(0, 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks([1, 3, 5])
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -503,7 +506,7 @@ def plot_timing_vs_needles(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
+def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Reward vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -533,8 +536,9 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Partial Match Reward")
     ax.set_title("Timing Efficiency: Reward vs Time\n(all configs, by mode)")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -606,7 +610,9 @@ def plot_token_usage(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=9)
 
 
-def create_plots(df: pd.DataFrame, output_path: Path | None = None):
+def create_plots(
+    df: pd.DataFrame, output_path: Path | None = None, absolute: bool = False
+):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
@@ -614,9 +620,9 @@ def create_plots(df: pd.DataFrame, output_path: Path | None = None):
     sns.set_style("whitegrid")
 
     # Top row
-    plot_mode_by_needle_type(axes[0, 0], df)
-    plot_mode_vs_context_size(axes[0, 1], df)
-    plot_mode_vs_needle_count(axes[0, 2], df)
+    plot_mode_by_needle_type(axes[0, 0], df, absolute=absolute)
+    plot_mode_vs_context_size(axes[0, 1], df, absolute=absolute)
+    plot_mode_vs_needle_count(axes[0, 2], df, absolute=absolute)
 
     # Bottom row
     plot_heatmap(axes[1, 0], df)
@@ -663,6 +669,7 @@ def create_single_plot(
     plot_name: str,
     df: pd.DataFrame,
     output_path: Path | None = None,
+    absolute: bool = False,
 ):
     """Create a single standalone plot."""
     if plot_name not in PLOT_REGISTRY:
@@ -675,7 +682,16 @@ def create_single_plot(
     fig, ax = plt.subplots(figsize=figsize)
     sns.set_style("whitegrid")
 
-    func(ax, df)
+    # Pass absolute to functions that support it
+    if plot_name in (
+        "needle_type",
+        "context_size",
+        "needle_count",
+        "timing_efficiency",
+    ):
+        func(ax, df, absolute=absolute)
+    else:
+        func(ax, df)
 
     plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
@@ -766,6 +782,12 @@ Examples:
         action="store_true",
         help="List available models in the data and exit",
     )
+    parser.add_argument(
+        "--absolute",
+        "-a",
+        action="store_true",
+        help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
+    )
 
     args = parser.parse_args()
 
@@ -823,9 +845,9 @@ Examples:
     print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
-        create_plots(df, args.output)
+        create_plots(df, args.output, absolute=args.absolute)
     else:
-        create_single_plot(args.image, df, args.output)
+        create_single_plot(args.image, df, args.output, absolute=args.absolute)
 
 
 if __name__ == "__main__":

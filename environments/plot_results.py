@@ -245,7 +245,11 @@ def get_count_for_env_data(env_data: pd.DataFrame) -> int | None:
 
 
 def plot_reward_by_environment(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Reward comparison across environments, grouped by mode."""
     reward_col = get_reward_column(df)
@@ -298,10 +302,11 @@ def plot_reward_by_environment(
     ax.set_xlabel("Environment")
     ax.set_ylabel("Reward (Accuracy)")
     ax.set_title("Reward by Environment")
-    ax.set_ylim(0, 1.2 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
@@ -487,7 +492,11 @@ def plot_token_usage(
 
 
 def plot_token_efficiency(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Token efficiency relative to standard baseline (normalized per environment).
 
@@ -573,7 +582,8 @@ def plot_token_efficiency(
     ax.set_title("Main Model Token Efficiency")
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
@@ -659,7 +669,7 @@ def plot_timing(
 
 
 def plot_reward_vs_tokens_scatter(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
 ):
     """Plot: Reward vs main model tokens scatter.
 
@@ -718,8 +728,9 @@ def plot_reward_vs_tokens_scatter(
     ax.set_xlabel("Main Model Tokens (K)")
     ax.set_ylabel("Reward")
     ax.set_title("Reward vs Tokens")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
 
     if show_legend:
         # Create two-part legend: modes (colors) in left column, environments (shapes) in right columns
@@ -909,20 +920,23 @@ def create_main_plots(
     output_path: Path | None,
     model_info: str = "",
     show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create the main 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
     # Top row
     plot_reward_by_environment(
-        axes[0, 0], df, show_legend=False, show_counts=show_counts
+        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
     )
     plot_rlm_lift(axes[0, 1], df, show_legend=False, show_counts=show_counts)
-    plot_token_efficiency(axes[0, 2], df, show_legend=False, show_counts=show_counts)
+    plot_token_efficiency(
+        axes[0, 2], df, show_legend=False, show_counts=show_counts, absolute=absolute
+    )
 
     # Bottom row
     plot_timing(axes[1, 0], df, show_legend=False, show_counts=show_counts)
-    plot_reward_vs_tokens_scatter(axes[1, 1], df, show_legend=False)
+    plot_reward_vs_tokens_scatter(axes[1, 1], df, show_legend=False, absolute=absolute)
     plot_rlm_overhead(axes[1, 2], df, show_legend=False, show_counts=show_counts)
 
     # Create central legend with modes (colors) and environments (shapes)
@@ -988,6 +1002,7 @@ def create_single_plot(
     output_path: Path | None,
     model_info: str = "",
     show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create a single plot by name."""
     plot_registry = {
@@ -1010,8 +1025,12 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Pass show_counts to functions that support it
-    if plot_name in ("reward", "lift", "tokens", "efficiency", "timing", "overhead"):
+    # Pass show_counts and absolute to functions that support them
+    if plot_name in ("reward", "efficiency"):
+        plot_func(ax, df, show_counts=show_counts, absolute=absolute)
+    elif plot_name == "scatter":
+        plot_func(ax, df, absolute=absolute)
+    elif plot_name in ("lift", "tokens", "timing", "overhead"):
         plot_func(ax, df, show_counts=show_counts)
     else:
         plot_func(ax, df)
@@ -1134,6 +1153,12 @@ Examples:
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
     )
+    parser.add_argument(
+        "--absolute",
+        "-a",
+        action="store_true",
+        help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
+    )
 
     args = parser.parse_args()
 
@@ -1194,10 +1219,21 @@ Examples:
 
     # Generate plots
     if args.image == "main":
-        create_main_plots(df, args.output, model_info, show_counts=args.show_counts)
+        create_main_plots(
+            df,
+            args.output,
+            model_info,
+            show_counts=args.show_counts,
+            absolute=args.absolute,
+        )
     else:
         create_single_plot(
-            args.image, df, args.output, model_info, show_counts=args.show_counts
+            args.image,
+            df,
+            args.output,
+            model_info,
+            show_counts=args.show_counts,
+            absolute=args.absolute,
         )
 
 

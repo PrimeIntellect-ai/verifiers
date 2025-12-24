@@ -99,7 +99,11 @@ def normalize_model_name(model: str) -> str:
 
 
 def plot_reward_by_model(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Mode comparison across models (grouped bar chart), aggregated across subsets."""
     # Aggregate across subsets for each model/mode combination
@@ -160,18 +164,24 @@ def plot_reward_by_model(
     ax.set_xlabel("Model")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward")
-    ax.set_ylim(0, 1.2 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_reward_by_subset(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Mode comparison across subsets (grouped bar chart), aggregated across models."""
     # Aggregate across models for each subset/mode combination
@@ -232,10 +242,12 @@ def plot_reward_by_subset(
     ax.set_xlabel("Subset")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward by Subset")
-    ax.set_ylim(0, 1.2 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.2 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels([SUBSET_LABELS.get(s, s) for s in subsets])
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
@@ -434,7 +446,9 @@ def plot_rlm_metrics_by_model(ax: plt.Axes, df: pd.DataFrame):
     )
 
 
-def plot_context_vs_reward(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_context_vs_reward(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
+):
     """Plot: Context length vs reward scatter, colored by mode."""
     # Need raw data for this plot - check if context_length_mean exists
     if "context_length_mean" not in df.columns:
@@ -472,13 +486,16 @@ def plot_context_vs_reward(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = T
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Reward vs Context Length")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_reward_vs_context_scatter(ax: plt.Axes, df: pd.DataFrame):
+def plot_reward_vs_context_scatter(
+    ax: plt.Axes, df: pd.DataFrame, absolute: bool = False
+):
     """Plot: Reward vs context length scatter for individual examples (raw data)."""
     if "context_length" not in df.columns:
         ax.text(
@@ -517,13 +534,16 @@ def plot_reward_vs_context_scatter(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Judge Reward")
     ax.set_title("Reward vs Context Length (per-example)")
-    ax.set_ylim(-0.05, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(-0.05, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_reward_vs_context_binned(ax: plt.Axes, df: pd.DataFrame, num_bins: int = 10):
-    """Plot: Reward vs context length with binned means and error bars (raw data)."""
+def plot_reward_vs_context_binned(
+    ax: plt.Axes, df: pd.DataFrame, num_bins: int = 10, absolute: bool = False
+):
+    """Plot: Reward vs context length with binned means (raw data)."""
     if "context_length" not in df.columns:
         ax.text(
             0.5,
@@ -562,55 +582,38 @@ def plot_reward_vs_context_binned(ax: plt.Axes, df: pd.DataFrame, num_bins: int 
             mode, {"color": "gray", "marker": "o", "linestyle": "-"}
         )
 
-        # Compute binned statistics
+        # Compute binned means
         bin_means, _, _ = stats.binned_statistic(
             data["context_length"],
             data["judge_reward"],
             statistic="mean",
             bins=bin_edges,
         )
-        bin_stds, _, _ = stats.binned_statistic(
-            data["context_length"],
-            data["judge_reward"],
-            statistic="std",
-            bins=bin_edges,
-        )
-        bin_counts, _, _ = stats.binned_statistic(
-            data["context_length"],
-            data["judge_reward"],
-            statistic="count",
-            bins=bin_edges,
-        )
 
-        # Compute standard error
-        bin_sems = bin_stds / np.sqrt(bin_counts)
-        bin_sems = np.nan_to_num(bin_sems, nan=0)
-
-        # Plot with error bars
+        # Plot binned means
         valid = ~np.isnan(bin_means)
-        ax.errorbar(
+        ax.plot(
             bin_centers[valid],
             bin_means[valid],
-            yerr=bin_sems[valid],
             label=MODE_LABELS.get(mode, mode).replace("\n", " "),
             color=style["color"],
             marker=style["marker"],
             linestyle=style["linestyle"],
             linewidth=2,
             markersize=8,
-            capsize=3,
         )
 
     ax.set_xlabel("Context Length (K chars)")
-    ax.set_ylabel("Judge Reward (mean ± SEM)")
+    ax.set_ylabel("Judge Reward (mean)")
     ax.set_title(f"Reward vs Context Length (binned into {num_bins} ranges)")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_reward_vs_context_rolling(
-    ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1
+    ax: plt.Axes, df: pd.DataFrame, window_frac: float = 0.1, absolute: bool = False
 ):
     """Plot: Reward vs context length with rolling mean (raw data)."""
     if "context_length" not in df.columns:
@@ -660,8 +663,9 @@ def plot_reward_vs_context_rolling(
     ax.set_xlabel("Context Length (K chars)")
     ax.set_ylabel("Judge Reward (rolling mean)")
     ax.set_title("Reward vs Context Length (rolling average)")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -852,7 +856,7 @@ def plot_timing_vs_context(ax: plt.Axes, df: pd.DataFrame):
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
+def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Reward vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -882,8 +886,9 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Judge Reward (Accuracy)")
     ax.set_title("Timing Efficiency: Reward vs Time")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -1092,21 +1097,28 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
 
 
 def create_plots(
-    df: pd.DataFrame, output_path: Path | None = None, show_counts: bool = False
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
     # Main plots (suppress individual legends)
     # Left column: same as deepdive
-    plot_reward_by_model(axes[0, 0], df, show_legend=False, show_counts=show_counts)
+    plot_reward_by_model(
+        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+    )
     plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
     plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
     plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
 
     # Right column: oolong-specific
-    plot_reward_by_subset(axes[0, 2], df, show_legend=False, show_counts=show_counts)
-    plot_context_vs_reward(axes[1, 2], df, show_legend=False)
+    plot_reward_by_subset(
+        axes[0, 2], df, show_legend=False, show_counts=show_counts, absolute=absolute
+    )
+    plot_context_vs_reward(axes[1, 2], df, show_legend=False, absolute=absolute)
 
     # Create central legend for modes (using markers to match scatter plots)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1198,6 +1210,7 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create a single standalone plot."""
     if plot_name not in PLOT_REGISTRY:
@@ -1209,16 +1222,21 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Pass show_counts to functions that support it
-    if plot_name in (
-        "reward",
-        "subset",
-        "timing",
-        "timing_by_subset",
-        "main_tokens",
-        "tokens",
-    ):
+    # Plots that support both show_counts and absolute
+    if plot_name in ("reward", "subset"):
+        func(ax, df, show_counts=show_counts, absolute=absolute)
+    # Plots that support only show_counts
+    elif plot_name in ("timing", "timing_by_subset", "main_tokens", "tokens"):
         func(ax, df, show_counts=show_counts)
+    # Plots that support only absolute
+    elif plot_name in (
+        "context",
+        "context_scatter",
+        "context_binned",
+        "context_rolling",
+        "timing_efficiency",
+    ):
+        func(ax, df, absolute=absolute)
     else:
         func(ax, df)
 
@@ -1267,7 +1285,7 @@ Examples:
     # Raw data context plots (per-example granularity)
     # First generate raw data: python aggregate_results.py --raw-output outputs/raw_results.csv
     python plot_results.py --image context_scatter     # Individual scatter points
-    python plot_results.py --image context_binned      # Binned means with error bars
+    python plot_results.py --image context_binned      # Binned means
     python plot_results.py --image context_rolling     # Rolling average curves
     
     # Use custom raw data file
@@ -1275,6 +1293,10 @@ Examples:
     
     # Show sample counts on bars
     python plot_results.py --show-counts
+    
+    # Use fixed 0-1 y-axis for reward plots
+    python plot_results.py --absolute
+    python plot_results.py --image reward -a
 """,
     )
     parser.add_argument(
@@ -1356,6 +1378,12 @@ Examples:
         "-c",
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
+    )
+    parser.add_argument(
+        "--absolute",
+        "-a",
+        action="store_true",
+        help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
     )
 
     args = parser.parse_args()
@@ -1443,9 +1471,17 @@ Examples:
         print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
-        create_plots(df, args.output, show_counts=args.show_counts)
+        create_plots(
+            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+        )
     else:
-        create_single_plot(args.image, df, args.output, show_counts=args.show_counts)
+        create_single_plot(
+            args.image,
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            absolute=args.absolute,
+        )
 
 
 if __name__ == "__main__":

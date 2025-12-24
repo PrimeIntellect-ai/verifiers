@@ -123,7 +123,11 @@ def normalize_model_name(model: str) -> str:
 
 
 def plot_reward_by_model(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Mode comparison across models (grouped bar chart)."""
     models = df["model"].unique()
@@ -177,12 +181,13 @@ def plot_reward_by_model(
     ax.set_xlabel("Model")
     ax.set_ylabel("Accuracy (Correct Answer)")
     ax.set_title("Reward")
-    ax.set_ylim(0, 1.2 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
     )
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
@@ -741,7 +746,7 @@ def plot_sub_llm_tokens(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
+def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Accuracy vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -771,8 +776,9 @@ def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Accuracy (Correct Answer)")
     ax.set_title("Timing vs Accuracy\n(by mode)")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -1182,13 +1188,18 @@ def plot_ablation(
 
 
 def create_plots(
-    df: pd.DataFrame, output_path: Path | None = None, show_counts: bool = False
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create the 2x2 grid of plots."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     # Main plots (suppress individual legends)
-    plot_reward_by_model(axes[0, 0], df, show_legend=False, show_counts=show_counts)
+    plot_reward_by_model(
+        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+    )
     plot_timing(axes[0, 1], df, show_legend=False, show_counts=show_counts)
     plot_main_model_tokens(axes[1, 0], df, show_legend=False, show_counts=show_counts)
     plot_token_usage(axes[1, 1], df, show_legend=False, show_counts=show_counts)
@@ -1256,6 +1267,7 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create a single standalone plot."""
     # Handle ablation plot specially (it's a 1x3 grid, not single axis)
@@ -1272,9 +1284,12 @@ def create_single_plot(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Pass show_counts to functions that support it
-    if plot_name in (
-        "reward",
+    # Pass show_counts and absolute to functions that support them
+    if plot_name == "reward":
+        func(ax, df, show_counts=show_counts, absolute=absolute)
+    elif plot_name == "timing_vs_reward":
+        func(ax, df, absolute=absolute)
+    elif plot_name in (
         "timing",
         "main_tokens",
         "tokens",
@@ -1381,6 +1396,12 @@ Examples:
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
     )
+    parser.add_argument(
+        "--absolute",
+        "-a",
+        action="store_true",
+        help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
+    )
 
     args = parser.parse_args()
 
@@ -1451,9 +1472,17 @@ Examples:
             print()
 
     if args.image == "main":
-        create_plots(df, args.output, show_counts=args.show_counts)
+        create_plots(
+            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+        )
     else:
-        create_single_plot(args.image, df, args.output, show_counts=args.show_counts)
+        create_single_plot(
+            args.image,
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            absolute=args.absolute,
+        )
 
 
 if __name__ == "__main__":
