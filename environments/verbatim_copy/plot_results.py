@@ -71,7 +71,11 @@ def normalize_model_name(model: str) -> str:
 
 
 def plot_reward_by_mode(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Mode comparison across all configs (grouped bar chart)."""
     # Aggregate across all configs for each mode
@@ -128,10 +132,11 @@ def plot_reward_by_mode(
     ax.set_xlabel("Mode")
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward")
-    ax.set_ylim(0, 1.2 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.2 if show_counts else 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([MODE_LABELS.get(m, m) for m in modes])
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
 
 
 def plot_main_model_tokens(
@@ -275,7 +280,11 @@ def plot_timing_by_mode(
 
 
 def plot_mode_comparison_by_content(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, show_counts: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Plot: Mode comparison across content types (grouped bar chart)."""
     # Filter to target_length=500, mean_fragment_length=20
@@ -339,15 +348,18 @@ def plot_mode_comparison_by_content(
     ax.set_xlabel("Content Type")
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward by Content Type\n(total length=500, fragment length=20)")
-    ax.set_ylim(0, 1.3 if show_counts else 1.1)
+    if absolute:
+        ax.set_ylim(0, 1.3 if show_counts else 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(content_types)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_scaling_behavior(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_scaling_behavior(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
+):
     """Plot: Combined scaling plot with twin x-axes for length and fragmentation.
 
     Bottom x-axis: Target Length (solid lines)
@@ -378,8 +390,9 @@ def plot_scaling_behavior(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
 
     ax.set_xlabel("Target Length (solid lines)")
     ax.set_ylabel("Reward")
-    ax.set_ylim(0.6, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    if absolute:
+        ax.set_ylim(0.6, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
 
     # Secondary axis (top): Fragment Length - dotted lines
     ax2 = ax.twiny()
@@ -416,7 +429,7 @@ def plot_scaling_behavior(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
 
 
 def plot_mode_comparison_by_length(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
 ):
     """Plot: Mode comparison across target lengths (line plot)."""
     # Filter to mean_fragment_length=20, content_type="all"
@@ -444,14 +457,14 @@ def plot_mode_comparison_by_length(
     ax.set_xlabel("Target Length (chars)")
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward vs Total Length\n(content type=all, fragment length=20)")
-    # Let matplotlib auto-scale y-axis
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_mode_comparison_by_fragmentation(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
 ):
     """Plot: Mode comparison across fragment lengths (line plot)."""
     # Filter to target_length=500, content_type="all"
@@ -494,8 +507,8 @@ def plot_mode_comparison_by_fragmentation(
     ax.set_title(
         f"Reward vs Fragment Length\n(total length={target_length}, content type=all)"
     )
-    # Let matplotlib auto-scale y-axis
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
@@ -628,7 +641,7 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Reward Heatmap: Mode × Content\n(len=500, frag=20)")
 
 
-def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
+def plot_distribution(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     """Plot: Distribution of rewards by mode (across all configs)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -659,8 +672,9 @@ def plot_distribution(ax: plt.Axes, df: pd.DataFrame):
     ax.set_xlabel("Mode")
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Reward Distribution by Mode")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
 
 
 def plot_token_usage(
@@ -829,7 +843,9 @@ def plot_timing_by_content(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
-def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True):
+def plot_timing_efficiency(
+    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
+):
     """Plot: Reward vs timing scatter (cost-benefit analysis)."""
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -859,28 +875,34 @@ def plot_timing_efficiency(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = T
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Reward (Exact Match)")
     ax.set_title("Timing Efficiency: Reward vs Time")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def create_plots(
-    df: pd.DataFrame, output_path: Path | None = None, show_counts: bool = False
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    absolute: bool = False,
 ):
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
     # Top row: Standard metrics (like other environments)
-    plot_reward_by_mode(axes[0, 0], df, show_legend=False, show_counts=show_counts)
+    plot_reward_by_mode(
+        axes[0, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
+    )
     plot_main_model_tokens(axes[0, 1], df, show_legend=False, show_counts=show_counts)
     plot_timing_by_mode(axes[0, 2], df, show_legend=False, show_counts=show_counts)
 
     # Bottom row: Verbatim-copy specific
     plot_mode_comparison_by_content(
-        axes[1, 0], df, show_legend=False, show_counts=show_counts
+        axes[1, 0], df, show_legend=False, show_counts=show_counts, absolute=absolute
     )
-    plot_scaling_behavior(axes[1, 1], df, show_legend=False)
+    plot_scaling_behavior(axes[1, 1], df, show_legend=False, absolute=absolute)
     plot_char_vs_exact(axes[1, 2], df, show_legend=False, linear_fit=True)
 
     # Create central legend for modes (using markers for consistency)
@@ -956,6 +978,7 @@ def create_single_plot(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
+    absolute: bool = False,
     **kwargs,
 ):
     """Create a single standalone plot.
@@ -965,6 +988,7 @@ def create_single_plot(
         df: DataFrame with aggregated results
         output_path: Optional path to save the plot
         show_counts: Whether to show sample counts
+        absolute: Use fixed 0-1 y-axis range for reward plots
         **kwargs: Additional arguments passed to the plot function (e.g., linear_fit)
     """
     if plot_name not in PLOT_REGISTRY:
@@ -979,12 +1003,16 @@ def create_single_plot(
     # Pass appropriate arguments based on plot type
     if plot_name == "scatter":
         func(ax, df, **kwargs)
+    elif plot_name in ("reward", "content"):
+        func(ax, df, show_counts=show_counts, absolute=absolute)
+    elif plot_name in ("scaling", "length", "fragmentation"):
+        func(ax, df, absolute=absolute)
+    elif plot_name in ("distribution", "timing_efficiency"):
+        func(ax, df, absolute=absolute)
     elif plot_name in (
-        "reward",
         "main_tokens",
         "tokens",
         "timing",
-        "content",
         "timing_by_content",
     ):
         func(ax, df, show_counts=show_counts)
@@ -1114,6 +1142,12 @@ Examples:
         action="store_true",
         help="Show sample counts (n=X) above bars in bar chart plots",
     )
+    parser.add_argument(
+        "--absolute",
+        "-a",
+        action="store_true",
+        help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
+    )
 
     args = parser.parse_args()
 
@@ -1173,7 +1207,9 @@ Examples:
     print(f"Loaded {len(df)} configurations from {args.input}")
 
     if args.image == "main":
-        create_plots(df, args.output, show_counts=args.show_counts)
+        create_plots(
+            df, args.output, show_counts=args.show_counts, absolute=args.absolute
+        )
     else:
         # Build kwargs for plot-specific options
         kwargs = {}
@@ -1182,7 +1218,12 @@ Examples:
             kwargs["exclude_perfect"] = args.exclude_perfect
 
         create_single_plot(
-            args.image, df, args.output, show_counts=args.show_counts, **kwargs
+            args.image,
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            absolute=args.absolute,
+            **kwargs,
         )
 
 
