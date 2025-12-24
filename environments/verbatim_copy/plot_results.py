@@ -19,7 +19,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -339,7 +338,7 @@ def plot_mode_comparison_by_content(
 
     ax.set_xlabel("Content Type")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Reward by Content Type\n(len=500, frag=20)")
+    ax.set_title("Reward by Content Type\n(total length=500, fragment length=20)")
     ax.set_ylim(0, 1.3 if show_counts else 1.1)
     ax.set_xticks(x)
     ax.set_xticklabels(content_types)
@@ -389,7 +388,8 @@ def plot_scaling_behavior(ax: plt.Axes, df: pd.DataFrame, show_legend: bool = Tr
     frag_labels = None
     for mode in modes:
         data = filtered_frag[filtered_frag["mode"] == mode].copy()
-        data["sort_key"] = data["mean_fragment_length"].fillna(-1)
+        # Sort by fragment length, putting None (no fragmentation = largest) last
+        data["sort_key"] = data["mean_fragment_length"].fillna(float("inf"))
         data = data.sort_values("sort_key")
 
         if len(data) > 0:
@@ -443,8 +443,8 @@ def plot_mode_comparison_by_length(
 
     ax.set_xlabel("Target Length (chars)")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Mode Comparison vs Target Length\n(content=all, frag=20)")
-    ax.set_ylim(0, 1.1)
+    ax.set_title("Reward vs Total Length\n(content type=all, fragment length=20)")
+    # Let matplotlib auto-scale y-axis
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
@@ -455,21 +455,22 @@ def plot_mode_comparison_by_fragmentation(
 ):
     """Plot: Mode comparison across fragment lengths (line plot)."""
     # Filter to target_length=500, content_type="all"
-    filtered = df[(df["target_length"] == 500) & (df["content_type"] == "all")]
+    target_length = 500
+    filtered = df[
+        (df["target_length"] == target_length) & (df["content_type"] == "all")
+    ]
 
     modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
     x_labels_set = False
 
     for mode in modes:
         data = filtered[filtered["mode"] == mode].copy()
-        # Sort by fragment length, putting None first
-        data["sort_key"] = data["mean_fragment_length"].fillna(-1)
+        # Sort by fragment length, putting None (no fragmentation = largest) last
+        data["sort_key"] = data["mean_fragment_length"].fillna(float("inf"))
         data = data.sort_values("sort_key")
 
         if len(data) > 0:
-            style = MODE_STYLES.get(
-                mode, {"color": "gray", "marker": "o", "linestyle": "-"}
-            )
+            style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
             x_positions = range(len(data))
             ax.plot(
                 x_positions,
@@ -477,7 +478,7 @@ def plot_mode_comparison_by_fragmentation(
                 label=MODE_LABELS.get(mode, mode),
                 marker=style["marker"],
                 color=style["color"],
-                linestyle=style["linestyle"],
+                linestyle="-",  # Solid lines for individual plot
                 linewidth=2,
                 markersize=8,
             )
@@ -490,8 +491,10 @@ def plot_mode_comparison_by_fragmentation(
 
     ax.set_xlabel("Mean Fragment Length")
     ax.set_ylabel("Reward (Exact Match)")
-    ax.set_title("Mode Comparison vs Fragment Length\n(content=all, len=500)")
-    ax.set_ylim(0, 1.1)
+    ax.set_title(
+        f"Reward vs Fragment Length\n(total length={target_length}, content type=all)"
+    )
+    # Let matplotlib auto-scale y-axis
     ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
@@ -930,13 +933,13 @@ PLOT_REGISTRY = {
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage"),
     "timing": (plot_timing_by_mode, (10, 7), "Average Rollout Time"),
-    "content": (plot_mode_comparison_by_content, (10, 7), "Reward by Content Type"),
+    "content": (plot_mode_comparison_by_content, (10, 7), ""),  # No suptitle
     "scaling": (plot_scaling_behavior, (10, 7), "Scaling Behavior"),
-    "length": (plot_mode_comparison_by_length, (10, 7), "vs Target Length"),
+    "length": (plot_mode_comparison_by_length, (10, 7), ""),  # No suptitle
     "fragmentation": (
         plot_mode_comparison_by_fragmentation,
         (10, 7),
-        "vs Fragment Length",
+        "",  # No suptitle - the axis title is sufficient
     ),
     "heatmap": (plot_heatmap, (10, 7), "Reward Heatmap"),
     "distribution": (plot_distribution, (10, 7), "Reward Distribution"),
@@ -988,7 +991,8 @@ def create_single_plot(
     else:
         func(ax, df)
 
-    plt.suptitle(f"Verbatim Copy: {title}", fontsize=14, fontweight="bold", y=1.02)
+    if title:
+        plt.suptitle(f"Verbatim Copy: {title}", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
 
     if output_path:
