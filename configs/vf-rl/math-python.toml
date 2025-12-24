@@ -1,7 +1,7 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 
 [env]
-id = "primeintellect/wiki-search"
+id = "primeintellect/math-python"
 
 [inference]
 gpus = 6
@@ -15,7 +15,7 @@ tool_call_parser = "hermes"
 gpus = 2
 
 [trainer.args]
-run_name = "wiki-search"
+run_name = "math-python"
 micro_batch_size = 8
 rollouts_per_example = 16
 batch_size = 512
