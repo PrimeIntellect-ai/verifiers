@@ -43,6 +43,11 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
         env_args = metadata.get("env_args", {})
         use_rlm = env_args.get("use_rlm", False)
         include_env_tips = env_args.get("include_env_tips", False)
+        # New fields for sub-LLM tip ablations
+        env_tip_type = env_args.get(
+            "env_tip_type", "math"
+        )  # default "math" for backward compat
+        code_execution_timeout = env_args.get("code_execution_timeout_seconds", None)
 
         with open(results_file) as f:
             for line in f:
@@ -51,6 +56,8 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
                     result["_model"] = model
                     result["_use_rlm"] = use_rlm
                     result["_include_env_tips"] = include_env_tips
+                    result["_env_tip_type"] = env_tip_type
+                    result["_code_execution_timeout"] = code_execution_timeout
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
@@ -58,13 +65,31 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
 
 
 def get_mode(result: dict) -> str:
-    """Get mode from metadata flags."""
+    """Get mode from metadata flags.
+
+    Returns:
+        - "standard": Standard PythonEnv mode
+        - "rlm": RLMEnv without tips
+        - "rlm_tips": RLMEnv with math tips (env_tip_type="math" or backward compat)
+        - "rlm_tips_subllm": RLMEnv with sub-LLM tips (no timeout info)
+        - "rlm_tips_subllm_{N}s": RLMEnv with sub-LLM tips and specific timeout
+    """
     use_rlm = result.get("_use_rlm", False)
     include_env_tips = result.get("_include_env_tips", False)
+    env_tip_type = result.get("_env_tip_type", "math")
+    timeout = result.get("_code_execution_timeout")
 
-    if use_rlm:
-        return "rlm_tips" if include_env_tips else "rlm"
-    return "standard"
+    if not use_rlm:
+        return "standard"
+    if not include_env_tips:
+        return "rlm"
+    # Tips are enabled - check which type
+    if env_tip_type == "math":
+        return "rlm_tips"
+    # sub-LLM tips: include timeout if available
+    if timeout is not None:
+        return f"rlm_tips_subllm_{timeout}s"
+    return "rlm_tips_subllm"
 
 
 def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
@@ -173,17 +198,35 @@ def print_summary_table(summary: pd.DataFrame):
     print("=" * 100)
 
     # Sort by model and mode for readability
-    mode_order = {"standard": 0, "rlm": 1, "rlm_tips": 2}
+    def get_mode_order(mode: str) -> int:
+        """Get sort order for mode names."""
+        if mode == "standard":
+            return 0
+        elif mode == "rlm":
+            return 1
+        elif mode == "rlm_tips":
+            return 2
+        elif mode == "rlm_tips_subllm":
+            return 3
+        elif mode.startswith("rlm_tips_subllm_"):
+            # Extract timeout and sort by it
+            try:
+                timeout = int(mode.replace("rlm_tips_subllm_", "").replace("s", ""))
+                return 4 + timeout  # Higher timeouts come later
+            except ValueError:
+                return 100
+        return 100  # Unknown modes last
+
     summary = summary.copy()
-    summary["_mode_order"] = summary["mode"].map(mode_order)
+    summary["_mode_order"] = summary["mode"].apply(get_mode_order)
     summary = summary.sort_values(["model", "_mode_order"]).drop(
         columns=["_mode_order"]
     )
 
     print(
-        f"\n{'Model':<25} {'Mode':<12} {'Accuracy':>15} {'Samples':>10} {'Time (ms)':>12}"
+        f"\n{'Model':<25} {'Mode':<22} {'Accuracy':>15} {'Samples':>10} {'Time (ms)':>12}"
     )
-    print("-" * 100)
+    print("-" * 110)
 
     for _, row in summary.iterrows():
         model = normalize_model_name(row.get("model", "unknown"))
@@ -196,7 +239,7 @@ def print_summary_table(summary: pd.DataFrame):
         acc_str = f"{acc_mean:.3f}"
         time_str = f"{time_mean:.0f}" if pd.notna(time_mean) else "N/A"
 
-        print(f"{model:<25} {mode:<12} {acc_str:>15} {count:>10} {time_str:>12}")
+        print(f"{model:<25} {mode:<22} {acc_str:>15} {count:>10} {time_str:>12}")
 
     print("-" * 100)
     print(f"Total configurations: {len(summary)}")
@@ -225,9 +268,9 @@ def print_summary_table(summary: pd.DataFrame):
     print("TOKEN USAGE METRICS (mean values)")
     print("=" * 100)
     print(
-        f"\n{'Model':<25} {'Mode':<12} {'Turns':>10} {'Prompt Tok':>14} {'Compl Tok':>12} {'Tool Calls':>12}"
+        f"\n{'Model':<25} {'Mode':<22} {'Turns':>10} {'Prompt Tok':>14} {'Compl Tok':>12} {'Tool Calls':>12}"
     )
-    print("-" * 100)
+    print("-" * 110)
 
     for _, row in summary.iterrows():
         model = normalize_model_name(row.get("model", "unknown"))
@@ -238,18 +281,18 @@ def print_summary_table(summary: pd.DataFrame):
         tool_calls = row.get("total_tool_calls_mean", 0)
 
         print(
-            f"{model:<25} {mode:<12} {num_turns:>10.1f} {prompt_tok:>14.0f} {compl_tok:>12.0f} {tool_calls:>12.1f}"
+            f"{model:<25} {mode:<22} {num_turns:>10.1f} {prompt_tok:>14.0f} {compl_tok:>12.0f} {tool_calls:>12.1f}"
         )
-    print("-" * 100)
+    print("-" * 110)
 
-    # RLM mode metrics
-    rlm_rows = summary[summary["mode"].isin(["rlm", "rlm_tips"])]
+    # RLM mode metrics (include all RLM variants)
+    rlm_rows = summary[summary["mode"].str.startswith("rlm")]
     if len(rlm_rows) > 0:
         print("\n" + "=" * 100)
         print("RLM-SPECIFIC METRICS (mean values)")
         print("=" * 100)
-        print(f"\n{'Model':<25} {'Mode':<12} {'Sub-LLM Calls':>14} {'Batch Size':>12}")
-        print("-" * 100)
+        print(f"\n{'Model':<25} {'Mode':<22} {'Sub-LLM Calls':>14} {'Batch Size':>12}")
+        print("-" * 110)
 
         for _, row in rlm_rows.iterrows():
             model = normalize_model_name(row.get("model", "unknown"))
@@ -257,8 +300,8 @@ def print_summary_table(summary: pd.DataFrame):
             sub_llm_calls = row.get("sub_llm_call_count_mean", 0)
             batch_size = row.get("sub_llm_mean_batch_size_mean", 0)
 
-            print(f"{model:<25} {mode:<12} {sub_llm_calls:>14.1f} {batch_size:>12.1f}")
-        print("-" * 100)
+            print(f"{model:<25} {mode:<22} {sub_llm_calls:>14.1f} {batch_size:>12.1f}")
+        print("-" * 110)
 
 
 def main():
