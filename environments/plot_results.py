@@ -1378,8 +1378,10 @@ Examples:
         if n_models > 1:
             model_info = f"Aggregated across {n_models} models"
 
-    # Aggregate across models if requested
-    if not args.no_aggregate and "model" in df.columns and df["model"].nunique() > 1:
+    # Aggregate across models/subsets if requested
+    # Always aggregate when not disabled - needed to combine subsets (real, synth, etc.)
+    # even when filtering to a single model
+    if not args.no_aggregate:
         df = aggregate_across_models(df)
 
     # Report what we loaded
