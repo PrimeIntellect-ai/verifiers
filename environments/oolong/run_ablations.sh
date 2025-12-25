@@ -19,17 +19,17 @@ set -e
 # MODELS_FULL: These models run ALL ablations
 # Used for comprehensive testing with our core models
 MODELS_FULL=(
-    # "prime:prime-intellect/intellect-3"
+    "openrouter:prime-intellect/intellect-3"
     # "gpt-5-mini"
 )
 
 # MODELS_STANDARD: These models run all modes but only the real subset
 # Used for broader model coverage without full ablation cost
 MODELS_STANDARD=(
-    "openrouter:xiaomi/mimo-v2-flash:free"
-    "openrouter:z-ai/glm-4.6"
-    "deepseek:deepseek/deepseek-v3.2"
-    "openrouter:z-ai/glm-4.5-air"
+    # "openrouter:xiaomi/mimo-v2-flash:free"
+    # "openrouter:z-ai/glm-4.6"
+    # "deepseek:deepseek/deepseek-v3.2"
+    # "openrouter:z-ai/glm-4.5-air"
 )
 
 # Fewer examples since long-context evaluation is slow/costly
@@ -80,6 +80,8 @@ run_eval_openrouter() {
         PROVIDER_JSON='"provider": {"only": ["xiaomi/fp8"], "allow_fallbacks": false, "require_parameters": true}'
     elif [[ "$MODEL" == z-ai/* ]]; then
         PROVIDER_JSON='"provider": {"only": ["z-ai"], "allow_fallbacks": false, "require_parameters": true}'
+    elif [[ "$MODEL" == prime-intellect/* ]]; then
+        PROVIDER_JSON='"provider": {"only": ["nebius/fp8"], "allow_fallbacks": false, "require_parameters": true}'
     fi
     
     uv run vf-eval oolong -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \

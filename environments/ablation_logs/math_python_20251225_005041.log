@@ -1,0 +1,641 @@
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+Resolved 84 packages in 505ms
+   Building math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+      Built math-python @ file:///Users/snimu/work/verifiers/environments/math_python
+Prepared 1 package in 183ms
+Uninstalled 1 package in 0.61ms
+Installed 1 package in 0.92ms
+ ~ math-python==0.1.10 (from file:///Users/snimu/work/verifiers/environments/math_python)
+=== Math Python Ablations ===
+Models: openrouter:prime-intellect/intellect-3
+Examples per config: 50
+Rollouts per example: 1
+Modes: rlm rlm_tips standard
+
+########################################
+### Model: openrouter:prime-intellect/intellect-3
+########################################
+
+========================================
+=== Mode: rlm (use_rlm=true, include_env_tips=false) ===
+========================================
+
+Running: model=openrouter:prime-intellect/intellect-3, mode=rlm
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+2025-12-25 00:50:44 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-25 00:50:44 - verifiers.utils.env_utils - INFO - Using provided args: use_rlm=True, include_env_tips=False, shuffle=True, seed=42
+2025-12-25 00:50:44 - verifiers.utils.env_utils - INFO - Using default args: instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', sandbox_gpu_count=0, answer_key='answer', map_kwargs={}, max_turns=100, max_iterations=30, dataset_split='train', sandbox_timeout_per_command_seconds=60, filter_kwargs={}, difficulty_key=None, max_output_length=8192, sandbox_cpu_cores=1, sandbox_disk_size_gb=5, max_avg_reward=1.0, info_key='info', sandbox_memory_gb=2, question_key='question', min_avg_reward=0.0, code_execution_timeout_seconds=120, pip_install_packages='numpy sympy scipy', sandbox_timeout_minutes=60, dataset_subset='math', env_tip_type='math', dataset_name='PrimeIntellect/INTELLECT-3-RL', max_startup_wait_seconds=60
+2025-12-25 00:50:46 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-25 00:50:46 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: prime-intellect/intellect-3
+2025-12-25 00:50:46 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-25 00:50:46 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-25 00:50:53 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://votes-probe-instead-balance.trycloudflare.com
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [02:05<1:42:38, 125.67s/it]Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [02:55<1:04:52, 81.09s/it] Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [03:35<48:51, 62.36s/it]  Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [03:36<20:35, 27.44s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [03:37<14:24, 19.64s/it]Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [03:38<10:08, 14.14s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [03:39<07:11, 10.27s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [03:52<07:43, 11.31s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [03:57<06:13,  9.35s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [04:06<05:57,  9.17s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [04:08<04:27,  7.05s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [04:08<03:08,  5.11s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [04:11<02:38,  4.39s/it]Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [04:18<03:04,  5.27s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [04:23<02:55,  5.17s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [04:48<05:59, 10.88s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [04:50<04:22,  8.21s/it]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [05:16<07:05, 13.73s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [05:19<05:09, 10.32s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [06:05<10:14, 21.20s/it]Processing 50 groups (50 total rollouts):  44%|████▍     | 22/50 [06:26<09:50, 21.09s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [07:08<12:18, 27.34s/it]Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [07:10<08:35, 19.83s/it]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [07:36<09:03, 21.75s/it]Processing 50 groups (50 total rollouts):  52%|█████▏    | 26/50 [07:46<07:15, 18.15s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [07:49<05:10, 13.49s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [08:03<05:03, 13.80s/it]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [08:16<04:45, 13.59s/it]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [09:00<07:31, 22.55s/it]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [09:36<08:26, 26.64s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [09:44<06:18, 21.05s/it]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [09:53<04:56, 17.45s/it]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [10:34<06:32, 24.55s/it]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [10:36<04:25, 17.68s/it]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [12:15<09:49, 42.13s/it]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [12:26<07:05, 32.71s/it]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [13:05<06:54, 34.52s/it]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [13:10<04:45, 25.92s/it]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [13:25<03:44, 22.44s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [14:42<05:48, 38.77s/it]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [15:14<04:53, 36.70s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [15:14<03:01, 25.86s/it]Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [16:13<03:34, 35.73s/it]Processing 50 groups (50 total rollouts):  90%|█████████ | 45/50 [16:17<02:11, 26.22s/it]Processing 50 groups (50 total rollouts):  92%|█████████▏| 46/50 [17:05<02:11, 32.78s/it]Processing 50 groups (50 total rollouts):  94%|█████████▍| 47/50 [17:05<01:09, 23.10s/it]Processing 50 groups (50 total rollouts):  96%|█████████▌| 48/50 [18:09<01:10, 35.10s/it]Processing 50 groups (50 total rollouts):  98%|█████████▊| 49/50 [21:53<01:31, 91.87s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [25:41<00:00, 132.88s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [25:41<00:00, 30.84s/it] 
+2025-12-25 01:16:28 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/378a59b1
+2025-12-25 01:16:28 - verifiers.utils.eval_utils - INFO - Evaluation completed in 1542.03 seconds
+--- Evaluation ---
+Environment: math-python
+Model: prime-intellect/intellect-3
+Provider: https://openrouter.ai/api/v1/
+Examples: 50
+Rollouts per example: 1
+--- Example ---
+╭──────────────────────────────────────────────────────────────────────────────────────────────────── Step 0 ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓ │
+│ ┃ Prompt                                                                                          ┃ Completion                                                                                      ┃ Reward ┃ │
+│ ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩ │
+│ │ user: Solve the following math problem. Explain your reasoning and put the final answer in      │ user: Solve the following math problem. Explain your reasoning and put the final answer in      │   0.00 │ │
+│ │ \boxed{}. Use Python for all calculations.                                                      │ \boxed{}. Use Python for all calculations.                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ 9. $\mathbf{( G B R} \mathbf{5})^{\mathrm{IMO} 3}$ Let $\{f(n)\}$ be a strictly increasing      │ 9. $\mathbf{( G B R} \mathbf{5})^{\mathrm{IMO} 3}$ Let $\{f(n)\}$ be a strictly increasing      │        │ │
+│ │ sequence of positive integers: $0<f(1)<f(2)<f(3)<\cdots$. Of the positive integers not          │ sequence of positive integers: $0<f(1)<f(2)<f(3)<\cdots$. Of the positive integers not          │        │ │
+│ │ belonging to the sequence, the $n$th in order of magnitude is $f(f(n))+1$. Determine $f(240)$.  │ belonging to the sequence, the $n$th in order of magnitude is $f(f(n))+1$. Determine $f(240)$.  │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant: To solve the problem, we need to determine \( f(240) \) for a strictly increasing    │        │ │
+│ │                                                                                                 │ sequence \( \{f(n)\} \) of positive integers where the \( n \)-th positive integer not in the   │        │ │
+│ │                                                                                                 │ sequence is given by \( f(f(n)) + 1 \).                                                         │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ ### Key Steps and Reasoning:                                                                    │        │ │
+│ │                                                                                                 │ 1. **Functional Equation**: The sequence must satisfy the recurrence relation derived from the  │        │ │
+│ │                                                                                                 │ problem's condition:                                                                            │        │ │
+│ │                                                                                                 │    \[                                                                                           │        │ │
+│ │                                                                                                 │    f(f(n)) = f(n) + n - 1                                                                       │        │ │
+│ │                                                                                                 │    \]                                                                                           │        │ │
+│ │                                                                                                 │ 2. **Pattern Recognition**: The sequence \( f(n) \) can be expressed using the golden ratio \(  │        │ │
+│ │                                                                                                 │ \phi = \frac{1+\sqrt{5}}{2} \approx 1.618 \). Specifically, \( f(n) \) is the integer closest   │        │ │
+│ │                                                                                                 │ to \( n\phi \), which can be formally written as:                                               │        │ │
+│ │                                                                                                 │    \[                                                                                           │        │ │
+│ │                                                                                                 │    f(n) = \left\lfloor n\phi \right\rfloor                                                      │        │ │
+│ │                                                                                                 │    \]                                                                                           │        │ │
+│ │                                                                                                 │    where \( \left\lfloor \cdot \right\rfloor \) denotes the floor function.                     │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ 3. **Verification**: For smaller values of \( n \), it can be verified that this formula        │        │ │
+│ │                                                                                                 │ satisfies the given conditions. For example:                                                    │        │ │
+│ │                                                                                                 │    - \( f(1) = \left\lfloor 1 \cdot \phi \right\rfloor = 1 \)                                   │        │ │
+│ │                                                                                                 │    - \( f(2) = \left\lfloor 2 \cdot \phi \right\rfloor = 3 \)                                   │        │ │
+│ │                                                                                                 │    - \( f(3) = \left\lfloor 3 \cdot \phi \right\rfloor = 4 \)                                   │        │ │
+│ │                                                                                                 │    - \( f(4) = \left\lfloor 4 \cdot \phi \right\rfloor = 6 \)                                   │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │    These values satisfy the complementary sequence condition where the \( n \)-th missing term  │        │ │
+│ │                                                                                                 │ \( T(n) = f(f(n)) + 1 \).                                                                       │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ 4. **Calculation for \( n = 240 \)**:                                                           │        │ │
+│ │                                                                                                 │    - Compute \( 240 \times \phi \approx 240 \times 1.61803398875 \approx 388.328 \).            │        │ │
+│ │                                                                                                 │    - Applying the floor function gives \( \left\lfloor 388.328 \right\rfloor = 388 \).          │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ ### Final Answer:                                                                               │        │ │
+│ │                                                                                                 │ \[                                                                                              │        │ │
+│ │                                                                                                 │ \boxed{388}                                                                                     │        │ │
+│ │                                                                                                 │ \]                                                                                              │        │ │
+│ └─────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────┴────────┘ │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2025-12-25 01:16:28 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/378a59b1
+--- All ---
+Rewards:
+reward: avg - 0.040, std - 0.196
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+correct_answer_rlm: avg - 0.040, std - 0.196
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_call_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_prompt_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_completion_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_tool_calls: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_turns: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_batch_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_max_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_mean_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+turns: avg - 1.300, std - 0.608
+r1: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.0, 4.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0]
+prompt_tokens: avg - 1334.840, std - 874.682
+r1: [950.0, 989.0, 943.0, 1012.0, 984.0, 1035.0, 2169.0, 912.0, 942.0, 1003.0, 1018.0, 2183.0, 1878.0, 913.0, 2384.0, 950.0, 889.0, 1909.0, 1052.0, 931.0, 2221.0, 1041.0, 926.0, 933.0, 927.0, 973.0, 918.0, 945.0, 974.0, 3334.0, 888.0, 6134.0, 1940.0, 970.0, 937.0, 929.0, 949.0, 997.0, 957.0, 913.0, 2065.0, 953.0, 933.0, 1210.0, 883.0, 930.0, 928.0, 1977.0, 951.0, 2060.0]
+completion_tokens: avg - 13683.980, std - 10901.888
+r1: [28043.0, 21887.0, 16434.0, 23318.0, 2257.0, 11400.0, 10331.0, 5492.0, 23563.0, 30688.0, 13527.0, 1949.0, 5743.0, 4842.0, 4377.0, 8055.0, 4787.0, 1349.0, 26826.0, 30986.0, 3477.0, 53118.0, 6120.0, 5848.0, 13591.0, 10216.0, 1884.0, 16151.0, 7900.0, 11964.0, 12257.0, 20452.0, 2724.0, 5504.0, 12649.0, 9425.0, 10063.0, 11448.0, 26208.0, 6987.0, 2432.0, 36898.0, 5311.0, 16679.0, 21556.0, 12544.0, 3520.0, 4742.0, 29061.0, 27616.0]
+total_tool_calls: avg - 0.300, std - 0.608
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0]
+Info:
+is_truncated: avg - 0.000, std - 0.000
+stop_conditions: no_tools_called=48, answer_ready=2
+
+========================================
+=== Mode: rlm_tips (use_rlm=true, include_env_tips=true) ===
+========================================
+
+Running: model=openrouter:prime-intellect/intellect-3, mode=rlm_tips
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+2025-12-25 01:16:30 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-25 01:16:30 - verifiers.utils.env_utils - INFO - Using provided args: shuffle=True, include_env_tips=True, seed=42, use_rlm=True
+2025-12-25 01:16:30 - verifiers.utils.env_utils - INFO - Using default args: sandbox_cpu_cores=1, answer_key='answer', env_tip_type='math', dataset_split='train', code_execution_timeout_seconds=120, difficulty_key=None, pip_install_packages='numpy sympy scipy', max_startup_wait_seconds=60, min_avg_reward=0.0, sandbox_memory_gb=2, dataset_name='PrimeIntellect/INTELLECT-3-RL', sandbox_disk_size_gb=5, max_output_length=8192, sandbox_gpu_count=0, info_key='info', sandbox_timeout_minutes=60, instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', max_iterations=30, max_avg_reward=1.0, filter_kwargs={}, dataset_subset='math', question_key='question', map_kwargs={}, sandbox_timeout_per_command_seconds=60, max_turns=100
+Map:   0%|          | 0/21161 [00:00<?, ? examples/s]Map:  46%|████▌     | 9699/21161 [00:00<00:00, 96781.96 examples/s]Map:  94%|█████████▎| 19804/21161 [00:00<00:00, 87086.86 examples/s]Map: 100%|██████████| 21161/21161 [00:00<00:00, 88304.34 examples/s]
+Flattening the indices:   0%|          | 0/21161 [00:00<?, ? examples/s]Flattening the indices:  52%|█████▏    | 11000/21161 [00:00<00:00, 100768.46 examples/s]Flattening the indices: 100%|██████████| 21161/21161 [00:00<00:00, 96112.26 examples/s] Flattening the indices: 100%|██████████| 21161/21161 [00:00<00:00, 96306.27 examples/s]
+Map:   0%|          | 0/21161 [00:00<?, ? examples/s]Map:  33%|███▎      | 7000/21161 [00:00<00:00, 68834.36 examples/s]Map:  71%|███████   | 15000/21161 [00:00<00:00, 68773.84 examples/s]Map: 100%|██████████| 21161/21161 [00:00<00:00, 73011.17 examples/s]
+Map:   0%|          | 0/21161 [00:00<?, ? examples/s]Map:  33%|███▎      | 7000/21161 [00:00<00:00, 69010.40 examples/s]Map:  66%|██████▌   | 14000/21161 [00:00<00:00, 67450.90 examples/s]Map: 100%|██████████| 21161/21161 [00:00<00:00, 68044.33 examples/s]Map: 100%|██████████| 21161/21161 [00:00<00:00, 67623.88 examples/s]
+2025-12-25 01:16:33 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-25 01:16:33 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: prime-intellect/intellect-3
+2025-12-25 01:16:33 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-25 01:16:33 - verifiers.envs.RLMEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]2025-12-25 01:16:40 - verifiers.utils.tunnel - INFO - Cloudflare tunnel started: https://bless-postcard-prerequisite-suitable.trycloudflare.com
+Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [02:54<2:22:37, 174.64s/it]2025-12-25 01:19:49 - verifiers.envs.RLMEnv - ERROR - Got EmptyModelResponseError, caused by ValueError('Model returned no response choices')
+ValueError: Model returned no response choices
+Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [03:17<1:08:05, 85.12s/it] 2025-12-25 01:19:51 - verifiers.envs.RLMEnv - ERROR - Got EmptyModelResponseError, caused by ValueError('Model returned no response choices')
+ValueError: Model returned no response choices
+Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [03:18<36:43, 46.89s/it]  Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [03:23<23:14, 30.31s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [03:31<16:39, 22.22s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [03:37<12:23, 16.90s/it]Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [03:59<13:10, 18.39s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [04:09<11:09, 15.94s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [04:18<09:22, 13.71s/it]Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [04:21<06:58, 10.45s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [04:26<05:40,  8.73s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [04:37<05:49,  9.20s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [04:45<05:32,  8.99s/it]Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [04:49<04:29,  7.48s/it]2025-12-25 01:21:35 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 1107 column 1 (char 6083)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1107 column 1 (char 6083)
+Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [05:02<05:23,  9.25s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [05:03<03:47,  6.68s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [05:04<02:44,  4.99s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [05:09<02:35,  4.87s/it]Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [05:25<04:20,  8.40s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [05:30<03:35,  7.20s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [05:32<02:42,  5.61s/it]Processing 50 groups (50 total rollouts):  44%|████▍     | 22/50 [05:45<03:38,  7.79s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [05:45<02:30,  5.57s/it]Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [05:50<02:19,  5.36s/it]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [05:51<01:42,  4.12s/it]Processing 50 groups (50 total rollouts):  52%|█████▏    | 26/50 [06:08<03:12,  8.02s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [06:13<02:44,  7.14s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [06:15<02:03,  5.63s/it]Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [06:35<03:27,  9.89s/it]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [06:53<02:58,  9.38s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [07:14<03:41, 12.33s/it]2025-12-25 01:23:49 - verifiers.envs.RLMEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 1747 column 1 (char 9603)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1747 column 1 (char 9603)
+Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [07:17<02:47,  9.83s/it]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [07:23<02:19,  8.73s/it]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [07:35<02:24,  9.62s/it]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [07:42<02:05,  8.97s/it]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [07:44<01:29,  6.90s/it]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [07:45<01:03,  5.27s/it]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [07:50<00:55,  5.05s/it]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [08:20<02:05, 12.59s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [09:01<03:09, 21.05s/it]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [09:08<02:14, 16.81s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [10:00<03:11, 27.39s/it]Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [10:03<02:00, 20.10s/it]Processing 50 groups (50 total rollouts):  90%|█████████ | 45/50 [10:24<01:41, 20.34s/it]Processing 50 groups (50 total rollouts):  92%|█████████▏| 46/50 [11:21<02:04, 31.23s/it]Processing 50 groups (50 total rollouts):  94%|█████████▍| 47/50 [11:32<01:16, 25.37s/it]Processing 50 groups (50 total rollouts):  96%|█████████▌| 48/50 [12:18<01:03, 31.54s/it]Processing 50 groups (50 total rollouts):  98%|█████████▊| 49/50 [13:57<00:51, 51.68s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [14:38<00:00, 48.36s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [14:38<00:00, 17.56s/it]
+2025-12-25 01:31:11 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/e442056a
+2025-12-25 01:31:11 - verifiers.utils.eval_utils - INFO - Evaluation completed in 878.21 seconds
+--- Evaluation ---
+Environment: math-python
+Model: prime-intellect/intellect-3
+Provider: https://openrouter.ai/api/v1/
+Examples: 50
+Rollouts per example: 1
+--- Example ---
+╭──────────────────────────────────────────────────────────────────────────────────────────────────── Step 0 ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓ │
+│ ┃ Prompt                                                                                          ┃ Completion                                                                                      ┃ Reward ┃ │
+│ ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩ │
+│ │ user: Solve the following math problem. Explain your reasoning and put the final answer in      │ user: Solve the following math problem. Explain your reasoning and put the final answer in      │   0.00 │ │
+│ │ \boxed{}. Use Python for all calculations.                                                      │ \boxed{}. Use Python for all calculations.                                                      │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ <env_tips>                                                                                      │ <env_tips>                                                                                      │        │ │
+│ │ Use Python for calculations. The `sympy` library is available for symbolic math.                │ Use Python for calculations. The `sympy` library is available for symbolic math.                │        │ │
+│ │ </env_tips>                                                                                     │ </env_tips>                                                                                     │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │ 9. $\mathbf{( G B R} \mathbf{5})^{\mathrm{IMO} 3}$ Let $\{f(n)\}$ be a strictly increasing      │ 9. $\mathbf{( G B R} \mathbf{5})^{\mathrm{IMO} 3}$ Let $\{f(n)\}$ be a strictly increasing      │        │ │
+│ │ sequence of positive integers: $0<f(1)<f(2)<f(3)<\cdots$. Of the positive integers not          │ sequence of positive integers: $0<f(1)<f(2)<f(3)<\cdots$. Of the positive integers not          │        │ │
+│ │ belonging to the sequence, the $n$th in order of magnitude is $f(f(n))+1$. Determine $f(240)$.  │ belonging to the sequence, the $n$th in order of magnitude is $f(f(n))+1$. Determine $f(240)$.  │        │ │
+│ │                                                                                                 │                                                                                                 │        │ │
+│ │                                                                                                 │ assistant:                                                                                      │        │ │
+│ └─────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────┴────────┘ │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2025-12-25 01:31:11 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/e442056a
+--- All ---
+Rewards:
+reward: avg - 0.020, std - 0.140
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+correct_answer_rlm: avg - 0.020, std - 0.140
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_call_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_prompt_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_completion_tokens: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_tool_calls: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_total_turns: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_batch_count: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_max_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+sub_llm_mean_batch_size: avg - 0.000, std - 0.000
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+turns: avg - 1.240, std - 0.618
+r1: [1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0, 2.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 2.0]
+prompt_tokens: avg - 1291.780, std - 721.394
+r1: [978.0, 1017.0, 971.0, 1040.0, 2086.0, 1063.0, 2231.0, 2378.0, 970.0, 1031.0, 1046.0, 2354.0, 1986.0, 2093.0, 1031.0, 978.0, 917.0, 2135.0, 2631.0, 959.0, 2054.0, 0.0, 954.0, 961.0, 955.0, 1001.0, 946.0, 973.0, 1002.0, 3455.0, 916.0, 930.0, 1990.0, 0.0, 0.0, 957.0, 977.0, 0.0, 985.0, 941.0, 2144.0, 981.0, 961.0, 1238.0, 911.0, 958.0, 2352.0, 2053.0, 979.0, 2120.0]
+completion_tokens: avg - 10111.700, std - 7986.239
+r1: [12710.0, 22994.0, 6274.0, 12142.0, 6695.0, 16194.0, 12716.0, 9701.0, 8790.0, 36530.0, 10461.0, 3748.0, 3738.0, 5440.0, 4088.0, 6049.0, 3623.0, 1576.0, 9615.0, 23618.0, 6075.0, 0.0, 9806.0, 10423.0, 5005.0, 9670.0, 4492.0, 13007.0, 8411.0, 6698.0, 12666.0, 7529.0, 3124.0, 0.0, 0.0, 12793.0, 6883.0, 0.0, 18828.0, 4758.0, 3702.0, 18715.0, 8811.0, 19934.0, 15866.0, 8988.0, 10143.0, 2887.0, 33022.0, 26647.0]
+total_tool_calls: avg - 0.320, std - 0.508
+r1: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+Info:
+is_truncated: avg - 0.000, std - 0.000
+stop_conditions: no_tools_called=45, has_error=4, answer_ready=1
+errors: EmptyModelResponseError: 0.500, ModelError: 0.500
+
+========================================
+=== Mode: standard (use_rlm=false, include_env_tips=false) ===
+========================================
+
+Running: model=openrouter:prime-intellect/intellect-3, mode=standard
+warning: The `extra-build-dependencies` option is experimental and may change without warning. Pass `--preview-features extra-build-dependencies` to disable this warning.
+2025-12-25 01:31:13 - verifiers.utils.env_utils - INFO - Loading environment: math-python
+2025-12-25 01:31:13 - verifiers.utils.env_utils - INFO - Using provided args: include_env_tips=False, seed=42, use_rlm=False, shuffle=True
+2025-12-25 01:31:13 - verifiers.utils.env_utils - INFO - Using default args: map_kwargs={}, max_iterations=30, info_key='info', dataset_name='PrimeIntellect/INTELLECT-3-RL', sandbox_disk_size_gb=5, dataset_split='train', question_key='question', env_tip_type='math', max_startup_wait_seconds=60, filter_kwargs={}, max_turns=100, sandbox_gpu_count=0, min_avg_reward=0.0, dataset_subset='math', max_output_length=8192, max_avg_reward=1.0, instruction_prompt='Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use Python for all calculations.', sandbox_memory_gb=2, pip_install_packages='numpy sympy scipy', sandbox_timeout_per_command_seconds=60, difficulty_key=None, sandbox_timeout_minutes=60, answer_key='answer', code_execution_timeout_seconds=120, sandbox_cpu_cores=1
+2025-12-25 01:31:15 - verifiers.rubrics.RubricGroup - INFO - Initialized RubricGroup with 2 rubrics
+2025-12-25 01:31:15 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'math-python'
+2025-12-25 01:31:15 - verifiers.utils.eval_utils - INFO - Starting evaluation with model: prime-intellect/intellect-3
+2025-12-25 01:31:15 - verifiers.utils.eval_utils - INFO - Configuration: num_examples=50, rollouts_per_example=1, max_concurrent=50
+2025-12-25 01:31:15 - verifiers.envs.PythonEnv - INFO - eval_dataset is not set, falling back to train dataset
+Processing 50 groups (50 total rollouts):   0%|          | 0/50 [00:00<?, ?it/s]Processing 50 groups (50 total rollouts):   2%|▏         | 1/50 [01:02<50:54, 62.35s/it]2025-12-25 01:32:19 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 299 column 1 (char 1639)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 299 column 1 (char 1639)
+Processing 50 groups (50 total rollouts):   4%|▍         | 2/50 [01:05<21:50, 27.30s/it]Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Processing 50 groups (50 total rollouts):   6%|▌         | 3/50 [01:11<13:48, 17.62s/it]Processing 50 groups (50 total rollouts):   8%|▊         | 4/50 [01:13<08:58, 11.71s/it]Processing 50 groups (50 total rollouts):  10%|█         | 5/50 [01:20<07:29,  9.99s/it]Processing 50 groups (50 total rollouts):  12%|█▏        | 6/50 [01:25<06:02,  8.25s/it]2025-12-25 01:32:43 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 413 column 1 (char 2266)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 413 column 1 (char 2266)
+Processing 50 groups (50 total rollouts):  14%|█▍        | 7/50 [01:28<04:39,  6.49s/it]Processing 50 groups (50 total rollouts):  16%|█▌        | 8/50 [01:39<05:33,  7.94s/it]Processing 50 groups (50 total rollouts):  18%|█▊        | 9/50 [01:39<03:48,  5.57s/it]2025-12-25 01:32:58 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 491 column 1 (char 2695)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 491 column 1 (char 2695)
+Processing 50 groups (50 total rollouts):  20%|██        | 10/50 [01:44<03:26,  5.17s/it]Processing 50 groups (50 total rollouts):  22%|██▏       | 11/50 [01:51<03:41,  5.68s/it]Processing 50 groups (50 total rollouts):  24%|██▍       | 12/50 [01:51<02:39,  4.19s/it]Processing 50 groups (50 total rollouts):  26%|██▌       | 13/50 [01:53<02:06,  3.41s/it]2025-12-25 01:33:34 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by BadRequestError('Error code: 400 - {\'error\': {\'message\': \'Provider returned error\', \'code\': 400, \'metadata\': {\'raw\': \'{"detail":"Invalid request. Please check the parameters and try again. Details: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) None"}\', \'provider_name\': \'Nebius\'}}, \'user_id\': \'org_32aHESsFQau1gaCp9RHOqjPafI0\'}')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: Error code: 400 - {'error': {'message': 'Provider returned error', 'code': 400, 'metadata': {'raw': '{"detail":"Invalid request. Please check the parameters and try again. Details: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) None"}', 'provider_name': 'Nebius'}}, 'user_id': 'org_32aHESsFQau1gaCp9RHOqjPafI0'}
+Processing 50 groups (50 total rollouts):  28%|██▊       | 14/50 [02:19<06:08, 10.22s/it]2025-12-25 01:33:48 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 727 column 1 (char 3993)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 727 column 1 (char 3993)
+Processing 50 groups (50 total rollouts):  30%|███       | 15/50 [02:33<06:38, 11.37s/it]Processing 50 groups (50 total rollouts):  32%|███▏      | 16/50 [02:42<05:59, 10.57s/it]Processing 50 groups (50 total rollouts):  34%|███▍      | 17/50 [02:46<04:42,  8.58s/it]Processing 50 groups (50 total rollouts):  36%|███▌      | 18/50 [02:49<03:41,  6.94s/it]Processing 50 groups (50 total rollouts):  38%|███▊      | 19/50 [03:17<06:58, 13.49s/it]Processing 50 groups (50 total rollouts):  40%|████      | 20/50 [03:19<04:58,  9.95s/it]Processing 50 groups (50 total rollouts):  42%|████▏     | 21/50 [03:20<03:29,  7.22s/it]Processing 50 groups (50 total rollouts):  44%|████▍     | 22/50 [03:28<03:24,  7.31s/it]Processing 50 groups (50 total rollouts):  46%|████▌     | 23/50 [04:00<06:43, 14.93s/it]2025-12-25 01:35:27 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 1195 column 1 (char 6567)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1195 column 1 (char 6567)
+Processing 50 groups (50 total rollouts):  48%|████▊     | 24/50 [04:12<06:04, 14.04s/it]Processing 50 groups (50 total rollouts):  50%|█████     | 25/50 [04:26<05:51, 14.08s/it]Processing 50 groups (50 total rollouts):  52%|█████▏    | 26/50 [04:45<06:09, 15.41s/it]Processing 50 groups (50 total rollouts):  54%|█████▍    | 27/50 [05:05<06:25, 16.75s/it]Processing 50 groups (50 total rollouts):  56%|█████▌    | 28/50 [05:42<08:21, 22.78s/it]2025-12-25 01:36:58 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 1631 column 1 (char 8965)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1631 column 1 (char 8965)
+Processing 50 groups (50 total rollouts):  58%|█████▊    | 29/50 [05:43<05:43, 16.35s/it]Processing 50 groups (50 total rollouts):  60%|██████    | 30/50 [05:44<03:52, 11.61s/it]Processing 50 groups (50 total rollouts):  62%|██████▏   | 31/50 [06:07<04:49, 15.25s/it]Processing 50 groups (50 total rollouts):  64%|██████▍   | 32/50 [06:15<03:52, 12.90s/it]Processing 50 groups (50 total rollouts):  66%|██████▌   | 33/50 [06:35<04:16, 15.07s/it]Processing 50 groups (50 total rollouts):  68%|██████▊   | 34/50 [07:35<07:37, 28.60s/it]Processing 50 groups (50 total rollouts):  70%|███████   | 35/50 [07:46<05:49, 23.27s/it]Processing 50 groups (50 total rollouts):  72%|███████▏  | 36/50 [07:59<04:44, 20.33s/it]Processing 50 groups (50 total rollouts):  74%|███████▍  | 37/50 [08:02<03:16, 15.12s/it]Processing 50 groups (50 total rollouts):  76%|███████▌  | 38/50 [08:18<03:03, 15.26s/it]Processing 50 groups (50 total rollouts):  78%|███████▊  | 39/50 [08:51<03:46, 20.62s/it]Processing 50 groups (50 total rollouts):  80%|████████  | 40/50 [09:04<03:02, 18.25s/it]Processing 50 groups (50 total rollouts):  82%|████████▏ | 41/50 [09:06<02:00, 13.38s/it]Processing 50 groups (50 total rollouts):  84%|████████▍ | 42/50 [09:33<02:19, 17.44s/it]Processing 50 groups (50 total rollouts):  86%|████████▌ | 43/50 [10:39<03:44, 32.09s/it]Processing 50 groups (50 total rollouts):  88%|████████▊ | 44/50 [10:42<02:21, 23.51s/it]Processing 50 groups (50 total rollouts):  90%|█████████ | 45/50 [11:09<02:02, 24.54s/it]2025-12-25 01:42:34 - verifiers.envs.PythonEnv - ERROR - Got ModelError, caused by JSONDecodeError('Expecting value: line 3225 column 1 (char 17732)')
+Traceback (most recent call last):
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 397, in wrapper
+    return await func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/verifiers/envs/environment.py", line 457, in get_model_response_with_messages
+    response = await client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1599, in request
+    return await self._process_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1688, in _process_response
+    return await api_response.parse()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 430, in parse
+    parsed = self._parse(to=to)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/openai/_response.py", line 265, in _parse
+    data = response.json()
+           ^^^^^^^^^^^^^^^
+  File "/Users/snimu/work/verifiers/.venv/lib/python3.12/site-packages/httpx/_models.py", line 761, in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snimu/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 3225 column 1 (char 17732)
+Processing 50 groups (50 total rollouts):  92%|█████████▏| 46/50 [11:19<01:20, 20.04s/it]Processing 50 groups (50 total rollouts):  94%|█████████▍| 47/50 [12:42<01:56, 38.85s/it]Processing 50 groups (50 total rollouts):  96%|█████████▌| 48/50 [13:36<01:26, 43.49s/it]Processing 50 groups (50 total rollouts):  98%|█████████▊| 49/50 [13:51<00:34, 34.99s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [15:41<00:00, 57.45s/it]Processing 50 groups (50 total rollouts): 100%|██████████| 50/50 [15:41<00:00, 18.83s/it]
+2025-12-25 01:46:56 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/e2eb0395
+2025-12-25 01:46:56 - verifiers.utils.eval_utils - INFO - Evaluation completed in 941.45 seconds
+--- Evaluation ---
+Environment: math-python
+Model: prime-intellect/intellect-3
+Provider: https://openrouter.ai/api/v1/
+Examples: 50
+Rollouts per example: 1
+--- Example ---
+╭──────────────────────────────────────────────────────────────────────────────────────────────────── Step 0 ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓ │
+│ ┃ Prompt                                                                                                     ┃ Completion                                                                           ┃ Reward ┃ │
+│ ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩ │
+│ │ user: Solve the following math problem. Explain your reasoning and put the final answer in \boxed{}. Use   │                                                                                      │   0.00 │ │
+│ │ Python for all calculations.                                                                               │                                                                                      │        │ │
+│ │                                                                                                            │ error: ModelError(JSONDecodeError('Expecting value: line 491 column 1 (char 2695)')) │        │ │
+│ │ In addition to the Python Standard Library, you have access to: numpy sympy scipy.                         │                                                                                      │        │ │
+│ │                                                                                                            │                                                                                      │        │ │
+│ │ 9. $\mathbf{( G B R} \mathbf{5})^{\mathrm{IMO} 3}$ Let $\{f(n)\}$ be a strictly increasing sequence of     │                                                                                      │        │ │
+│ │ positive integers: $0<f(1)<f(2)<f(3)<\cdots$. Of the positive integers not belonging to the sequence, the  │                                                                                      │        │ │
+│ │ $n$th in order of magnitude is $f(f(n))+1$. Determine $f(240)$.                                            │                                                                                      │        │ │
+│ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────┴────────┘ │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2025-12-25 01:46:56 - verifiers.utils.eval_utils - INFO - Results saved to environments/math_python/outputs/evals/math-python--prime-intellect--intellect-3/e2eb0395
+--- All ---
+Rewards:
+reward: avg - 0.540, std - 0.498
+r1: [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+total_tool_calls: avg - 0.160, std - 0.543
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+python_calls: avg - 0.080, std - 0.271
+r1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+correct_answer: avg - 0.540, std - 0.498
+r1: [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+turns: avg - 0.920, std - 0.440
+r1: [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+prompt_tokens: avg - 416.460, std - 235.580
+r1: [0.0, 484.0, 438.0, 507.0, 479.0, 530.0, 438.0, 0.0, 0.0, 498.0, 297.0, 1295.0, 367.0, 408.0, 498.0, 445.0, 384.0, 364.0, 547.0, 426.0, 401.0, 0.0, 421.0, 428.0, 422.0, 468.0, 1008.0, 0.0, 0.0, 412.0, 383.0, 397.0, 919.0, 465.0, 0.0, 424.0, 444.0, 492.0, 452.0, 408.0, 399.0, 448.0, 428.0, 705.0, 378.0, 425.0, 423.0, 378.0, 446.0, 444.0]
+completion_tokens: avg - 12605.800, std - 11943.580
+r1: [0.0, 23189.0, 6208.0, 19724.0, 3368.0, 18843.0, 9226.0, 0.0, 0.0, 50435.0, 520.0, 2639.0, 6063.0, 3901.0, 7672.0, 14401.0, 2653.0, 3024.0, 13344.0, 26628.0, 7487.0, 0.0, 10930.0, 7980.0, 18705.0, 11691.0, 2781.0, 0.0, 0.0, 2403.0, 21841.0, 34943.0, 4230.0, 7674.0, 0.0, 22634.0, 14427.0, 21893.0, 13220.0, 40014.0, 4130.0, 40772.0, 10373.0, 15469.0, 19471.0, 30090.0, 6285.0, 4396.0, 26427.0, 18186.0]
+Info:
+is_truncated: avg - 0.000, std - 0.000
+stop_conditions: has_error=8, no_tools_called=42
+errors: ModelError: 1.000
+
+=== All ablations complete ===
+Results saved to: environments/math_python/outputs/evals/
+Run 'python environments/math_python/aggregate_results.py' to analyze.

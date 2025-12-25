@@ -15,8 +15,8 @@ set -e
 
 MODELS=(
     # "deepseek:deepseek/deepseek-v3.2"
-    "prime:prime-intellect/intellect-3"
-    "openrouter:z-ai/glm-4.5-air"
+    "openrouter:prime-intellect/intellect-3"
+    # "openrouter:z-ai/glm-4.5-air"
     # "openrouter:xiaomi/mimo-v2-flash:free"
     # "openrouter:z-ai/glm-4.6"
     # "gpt-5-mini"
@@ -66,6 +66,8 @@ run_eval_openrouter() {
         PROVIDER_JSON='"provider": {"only": ["xiaomi/fp8"], "allow_fallbacks": false, "require_parameters": true}'
     elif [[ "$MODEL" == z-ai/* ]]; then
         PROVIDER_JSON='"provider": {"only": ["z-ai"], "allow_fallbacks": false, "require_parameters": true}'
+    elif [[ "$MODEL" == prime-intellect/* ]]; then
+        PROVIDER_JSON='"provider": {"only": ["nebius/fp8"], "allow_fallbacks": false, "require_parameters": true}'
     fi
     
     uv run vf-eval math-python -n $NUM_EXAMPLES -r $ROLLOUTS -m "$MODEL" -c $CONCURRENCY \
