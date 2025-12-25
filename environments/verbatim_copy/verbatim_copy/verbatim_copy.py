@@ -268,6 +268,24 @@ def _create_main_model_metrics():
     return [turns, prompt_tokens, completion_tokens]
 
 
+def _create_repl_timing_metrics():
+    """Create 0-weighted reward functions for REPL timing metrics (RLM modes only)."""
+
+    def repl_total_time_seconds(state: vf.State, **_kwargs) -> float:
+        """Metric: Total time spent in REPL calls (seconds)."""
+        return float(state.get("repl_total_time_seconds", 0.0))
+
+    def repl_call_count(state: vf.State, **_kwargs) -> float:
+        """Metric: Number of REPL calls made during rollout."""
+        return float(state.get("repl_call_count", 0))
+
+    def repl_mean_time_seconds(state: vf.State, **_kwargs) -> float:
+        """Metric: Average time per REPL call (seconds)."""
+        return float(state.get("repl_mean_time_seconds", 0.0))
+
+    return [repl_total_time_seconds, repl_call_count, repl_mean_time_seconds]
+
+
 # =============================================================================
 # Environment Loading
 # =============================================================================
@@ -382,6 +400,10 @@ def load_environment(
     main_model_metrics = _create_main_model_metrics()
     reward_funcs.extend(main_model_metrics)
     weights.extend([0.0] * len(main_model_metrics))
+
+    repl_timing_metrics = _create_repl_timing_metrics()
+    reward_funcs.extend(repl_timing_metrics)
+    weights.extend([0.0] * len(repl_timing_metrics))
 
     rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 

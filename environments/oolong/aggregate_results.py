@@ -108,6 +108,10 @@ def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
             "turns": r.get("turns", 0),
             "prompt_tokens": r.get("prompt_tokens", 0),
             "completion_tokens": r.get("completion_tokens", 0),
+            # REPL timing metrics (RLM modes only)
+            "repl_total_time_seconds": r.get("repl_total_time_seconds", 0),
+            "repl_call_count": r.get("repl_call_count", 0),
+            "repl_mean_time_seconds": r.get("repl_mean_time_seconds", 0),
         }
         rows.append(row)
 
@@ -140,6 +144,10 @@ def compute_summary(df: pd.DataFrame) -> pd.DataFrame:
         "turns",
         "prompt_tokens",
         "completion_tokens",
+        # REPL timing metrics (RLM modes only)
+        "repl_total_time_seconds",
+        "repl_call_count",
+        "repl_mean_time_seconds",
     ]
 
     # Group and compute stats

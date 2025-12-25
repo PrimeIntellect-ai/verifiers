@@ -336,6 +336,23 @@ def load_environment(
     judge_rubric.add_reward_func(prompt_tokens, weight=0.0)
     judge_rubric.add_reward_func(completion_tokens, weight=0.0)
 
+    # REPL timing metrics (RLM modes only, will be 0 for standard mode)
+    def repl_total_time_seconds(state: dict, **kwargs) -> float:
+        """Metric: Total time spent in REPL calls (seconds)."""
+        return float(state.get("repl_total_time_seconds", 0.0))
+
+    def repl_call_count(state: dict, **kwargs) -> float:
+        """Metric: Number of REPL calls made during rollout."""
+        return float(state.get("repl_call_count", 0))
+
+    def repl_mean_time_seconds(state: dict, **kwargs) -> float:
+        """Metric: Average time per REPL call (seconds)."""
+        return float(state.get("repl_mean_time_seconds", 0.0))
+
+    judge_rubric.add_reward_func(repl_total_time_seconds, weight=0.0)
+    judge_rubric.add_reward_func(repl_call_count, weight=0.0)
+    judge_rubric.add_reward_func(repl_mean_time_seconds, weight=0.0)
+
     # Tool call metrics (works for all modes - counts main model's tool calls)
     def total_tool_calls(completion: Messages, **kwargs) -> float:
         """Metric: Total tool calls made by the main model."""

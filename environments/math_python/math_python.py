@@ -374,6 +374,19 @@ def load_environment(
                             total += len(tool_calls)
             return float(total)
 
+        # REPL timing metrics (RLM modes only)
+        def repl_total_time_seconds(state: vf.State, **_kwargs) -> float:
+            """Metric: Total time spent in REPL calls (seconds)."""
+            return float(state.get("repl_total_time_seconds", 0.0))
+
+        def repl_call_count(state: vf.State, **_kwargs) -> float:
+            """Metric: Number of REPL calls made during rollout."""
+            return float(state.get("repl_call_count", 0))
+
+        def repl_mean_time_seconds(state: vf.State, **_kwargs) -> float:
+            """Metric: Average time per REPL call (seconds)."""
+            return float(state.get("repl_mean_time_seconds", 0.0))
+
         reward_funcs = [
             correct_answer_rlm,
             sub_llm_call_count,
@@ -388,8 +401,11 @@ def load_environment(
             prompt_tokens,
             completion_tokens,
             total_tool_calls,
+            repl_total_time_seconds,
+            repl_call_count,
+            repl_mean_time_seconds,
         ]
-        weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        weights = [1.0] + [0.0] * 15  # Only correct_answer_rlm contributes to reward
 
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 

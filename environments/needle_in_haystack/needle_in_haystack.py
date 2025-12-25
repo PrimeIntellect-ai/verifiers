@@ -544,6 +544,19 @@ def load_environment(
                 total += c
             return float(total)
 
+        # REPL timing metrics (RLM modes only)
+        def repl_total_time_seconds(state: vf.State) -> float:
+            """Metric: Total time spent in REPL calls (seconds)."""
+            return float(state.get("repl_total_time_seconds", 0.0))
+
+        def repl_call_count(state: vf.State) -> float:
+            """Metric: Number of REPL calls made during rollout."""
+            return float(state.get("repl_call_count", 0))
+
+        def repl_mean_time_seconds(state: vf.State) -> float:
+            """Metric: Average time per REPL call (seconds)."""
+            return float(state.get("repl_mean_time_seconds", 0.0))
+
         reward_funcs = [
             partial_match_reward,
             exact_match_reward,
@@ -558,8 +571,11 @@ def load_environment(
             turns,
             prompt_tokens,
             completion_tokens,
+            repl_total_time_seconds,
+            repl_call_count,
+            repl_mean_time_seconds,
         ]
-        weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        weights = [1.0] + [0.0] * 15  # Only partial_match contributes to reward
 
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 
@@ -667,6 +683,19 @@ def load_environment(
                 total += c
             return float(total)
 
+        # REPL timing metrics (will be 0 for standard mode)
+        def repl_total_time_seconds(state: vf.State) -> float:
+            """Metric: Total time spent in REPL calls (seconds)."""
+            return float(state.get("repl_total_time_seconds", 0.0))
+
+        def repl_call_count(state: vf.State) -> float:
+            """Metric: Number of REPL calls made during rollout."""
+            return float(state.get("repl_call_count", 0))
+
+        def repl_mean_time_seconds(state: vf.State) -> float:
+            """Metric: Average time per REPL call (seconds)."""
+            return float(state.get("repl_mean_time_seconds", 0.0))
+
         reward_funcs = [
             partial_match_reward,
             exact_match_reward,
@@ -681,8 +710,11 @@ def load_environment(
             turns,
             prompt_tokens,
             completion_tokens,
+            repl_total_time_seconds,
+            repl_call_count,
+            repl_mean_time_seconds,
         ]
-        weights = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        weights = [1.0] + [0.0] * 15  # Only partial_match contributes to reward
 
         rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 

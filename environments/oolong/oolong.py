@@ -365,6 +365,24 @@ Respond either "yes" or "no" only."""
     reward_funcs.extend([turns, prompt_tokens, completion_tokens])
     weights.extend([0.0] * 3)
 
+    # REPL timing metrics (RLM modes only, will be 0 for standard mode)
+    def repl_total_time_seconds(state: vf.State, **_kwargs) -> float:
+        """Metric: Total time spent in REPL calls (seconds)."""
+        return float(state.get("repl_total_time_seconds", 0.0))
+
+    def repl_call_count(state: vf.State, **_kwargs) -> float:
+        """Metric: Number of REPL calls made during rollout."""
+        return float(state.get("repl_call_count", 0))
+
+    def repl_mean_time_seconds(state: vf.State, **_kwargs) -> float:
+        """Metric: Average time per REPL call (seconds)."""
+        return float(state.get("repl_mean_time_seconds", 0.0))
+
+    reward_funcs.extend(
+        [repl_total_time_seconds, repl_call_count, repl_mean_time_seconds]
+    )
+    weights.extend([0.0] * 3)
+
     rubric = vf.Rubric(funcs=reward_funcs, weights=weights)
 
     if use_rlm:
