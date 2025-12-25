@@ -346,6 +346,78 @@ def plot_timing(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
+def plot_turns(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Number of turns/iterations by mode and model."""
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        turns = []
+        counts = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0 and pd.notna(model_data["turns_mean"].values[0]):
+                turns.append(model_data["turns_mean"].values[0])
+                if "turns_count" in model_data.columns:
+                    counts.append(int(model_data["turns_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                turns.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            turns,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, turn_val, count in zip(bars, turns, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{turn_val:.1f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.2,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Turns")
+    ax.set_title("Average Turns by Mode")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
 def plot_token_usage(
     ax: plt.Axes,
     df: pd.DataFrame,
@@ -586,7 +658,7 @@ def create_plots(
         show_values=show_values,
         absolute=absolute,
     )
-    plot_timing(
+    plot_turns(
         axes[0, 1],
         df,
         show_legend=False,
@@ -655,6 +727,7 @@ def create_plots(
 # Mapping of plot names to (function, figsize, title)
 PLOT_REGISTRY = {
     "reward": (plot_reward_by_model, (10, 7), "Reward"),
+    "turns": (plot_turns, (10, 7), "Turns"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage (incl. Sub-LLM)"),
@@ -692,7 +765,7 @@ def create_single_plot(
         )
     elif plot_name == "timing_vs_reward":
         func(ax, df, absolute=absolute)
-    elif plot_name in ("timing", "main_tokens", "tokens"):
+    elif plot_name in ("turns", "timing", "main_tokens", "tokens"):
         func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         func(ax, df)
@@ -755,6 +828,7 @@ Examples:
         choices=[
             "main",
             "reward",
+            "turns",
             "timing",
             "main_tokens",
             "tokens",

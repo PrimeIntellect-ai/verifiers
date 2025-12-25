@@ -920,6 +920,96 @@ def plot_timing(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
+def plot_turns(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Number of turns/iterations by mode and model."""
+    # Handle both raw data (turns) and aggregated data (turns_mean)
+    if "turns" in df.columns:
+        # Raw data - aggregate on the fly
+        agg_df = (
+            df.groupby(["model", "mode"])
+            .agg(
+                turns_mean=("turns", "mean"),
+                turns_count=("turns", "count"),
+            )
+            .reset_index()
+        )
+    else:
+        # Already aggregated data
+        agg_dict = {"turns_mean": "mean"}
+        if "turns_count" in df.columns:
+            agg_dict["turns_count"] = "sum"
+        agg_df = df.groupby(["model", "mode"]).agg(agg_dict).reset_index()
+
+    models = agg_df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in agg_df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = agg_df[agg_df["mode"] == mode]
+        turns = []
+        counts = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0 and pd.notna(model_data["turns_mean"].values[0]):
+                turns.append(model_data["turns_mean"].values[0])
+                if "turns_count" in model_data.columns:
+                    counts.append(int(model_data["turns_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                turns.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            turns,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, turn_val, count in zip(bars, turns, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{turn_val:.1f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.2,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Turns")
+    ax.set_title("Average Turns by Mode")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
 def plot_timing_by_subset(
     ax: plt.Axes,
     df: pd.DataFrame,
@@ -1382,7 +1472,7 @@ def create_plots(
         show_values=show_values,
         absolute=absolute,
     )
-    plot_timing(
+    plot_turns(
         axes[0, 1],
         df,
         show_legend=False,
@@ -1470,6 +1560,7 @@ PLOT_REGISTRY = {
         (12, 7),
         "RLM Usage Metrics (by model)",
     ),
+    "turns": (plot_turns, (10, 7), "Turns"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "context": (plot_context_vs_reward, (10, 7), "Reward vs Context Length"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
@@ -1648,6 +1739,7 @@ Examples:
             "heatmap",
             "rlm_metrics",
             "rlm_metrics_by_model",
+            "turns",
             "timing",
             "context",
             "main_tokens",

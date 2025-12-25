@@ -969,7 +969,7 @@ def create_plots(
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_timing_by_mode(
+    plot_token_usage(
         axes[0, 2],
         df,
         show_legend=False,

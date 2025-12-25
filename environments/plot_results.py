@@ -510,7 +510,85 @@ def plot_token_usage(
 
     ax.set_xlabel("Environment")
     ax.set_ylabel("Total Tokens")
-    ax.set_title("Token Usage by Environment")
+    ax.set_title("Total Token Usage")
+    ax.set_xticks(x)
+    ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
+
+
+def plot_main_model_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Main model token usage only (no sub-LLM tokens)."""
+    environments = df["environment"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = np.arange(len(environments))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        tokens = []
+        counts = []
+        for env in environments:
+            env_data = mode_data[mode_data["environment"] == env]
+            if len(env_data) > 0:
+                # Main model tokens only (no sub-LLM)
+                main_prompt = (
+                    env_data["prompt_tokens_mean"].values[0]
+                    if "prompt_tokens_mean" in env_data.columns
+                    else 0
+                )
+                main_completion = (
+                    env_data["completion_tokens_mean"].values[0]
+                    if "completion_tokens_mean" in env_data.columns
+                    else 0
+                )
+                tokens.append((main_prompt or 0) + (main_completion or 0))
+                counts.append(get_count_for_env_data(env_data))
+            else:
+                tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        bars = ax.bar(
+            x + offset,
+            tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, token_count, count in zip(bars, tokens, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(token_count):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
+    ax.set_xlabel("Environment")
+    ax.set_ylabel("Main Model Tokens")
+    ax.set_title("Main Model Token Usage")
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
     if show_legend:
@@ -977,7 +1055,7 @@ def create_main_plots(
     """Create the main 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
-    # Top row
+    # Top row: Performance metrics
     plot_reward_by_environment(
         axes[0, 0],
         df,
@@ -993,31 +1071,30 @@ def create_main_plots(
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_token_efficiency(
+    plot_rlm_overhead(
         axes[0, 2],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
-        absolute=absolute,
     )
 
-    # Bottom row
-    plot_timing(
+    # Bottom row: Token costs
+    plot_main_model_tokens(
         axes[1, 0],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_reward_vs_tokens_scatter(axes[1, 1], df, show_legend=False, absolute=absolute)
-    plot_rlm_overhead(
-        axes[1, 2],
+    plot_token_usage(
+        axes[1, 1],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
     )
+    plot_reward_vs_tokens_scatter(axes[1, 2], df, show_legend=False, absolute=absolute)
 
     # Create central legend with modes (colors) and environments (shapes)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1090,6 +1167,7 @@ def create_single_plot(
         "reward": (plot_reward_by_environment, (10, 7)),
         "lift": (plot_rlm_lift, (10, 7)),
         "tokens": (plot_token_usage, (10, 7)),
+        "main_tokens": (plot_main_model_tokens, (10, 7)),
         "efficiency": (plot_token_efficiency, (10, 7)),
         "timing": (plot_timing, (10, 7)),
         "scatter": (plot_reward_vs_tokens_scatter, (10, 7)),
@@ -1117,7 +1195,7 @@ def create_single_plot(
         )
     elif plot_name == "scatter":
         plot_func(ax, df, absolute=absolute)
-    elif plot_name in ("lift", "tokens", "timing", "overhead"):
+    elif plot_name in ("lift", "tokens", "main_tokens", "timing", "overhead"):
         plot_func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         plot_func(ax, df)
@@ -1186,6 +1264,7 @@ Examples:
             "reward",
             "lift",
             "tokens",
+            "main_tokens",
             "efficiency",
             "timing",
             "scatter",

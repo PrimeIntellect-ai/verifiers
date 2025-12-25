@@ -401,6 +401,91 @@ def plot_timing(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
+def plot_turns(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Number of turns/iterations by mode and model."""
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        turns = []
+        counts = []
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            # Try both turns_mean (from aggregate) and num_turns_mean (from some datasets)
+            turns_col = (
+                "turns_mean" if "turns_mean" in model_data.columns else "num_turns_mean"
+            )
+            if (
+                len(model_data) > 0
+                and turns_col in model_data.columns
+                and pd.notna(model_data[turns_col].values[0])
+            ):
+                turns.append(model_data[turns_col].values[0])
+                count_col = (
+                    "turns_count"
+                    if "turns_count" in model_data.columns
+                    else "num_turns_count"
+                )
+                if count_col in model_data.columns:
+                    counts.append(int(model_data[count_col].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                turns.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            turns,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        # Add annotations above bars if requested
+        if show_values or show_counts:
+            for bar, turn_val, count in zip(bars, turns, counts):
+                annotations = []
+                if show_values:
+                    annotations.append(f"{turn_val:.1f}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.2,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        color="gray",
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Turns")
+    ax.set_title("Average Turns by Mode")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+
+
 def plot_standard_tool_usage(
     ax: plt.Axes,
     df: pd.DataFrame,
@@ -1357,18 +1442,20 @@ def _plot_ablation_completion_tokens(
     ax.legend(handles=legend_handles, loc="upper left", fontsize=8)
 
 
-def create_ablation_tokens_plots(
+def create_ablation_timing_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
     show_counts: bool = False,
     show_values: bool = False,
 ):
-    """Create the 1x3 token/timing breakdown plot.
+    """Create the 1x3 token/timing breakdown plot (includes timing).
 
     Shows prompt/completion token breakdown and timing for a single model:
     - Left: Prompt tokens (stacked: main model + sub-LLM)
     - Center: Completion tokens (stacked: main model + sub-LLM)
     - Right: Timing (total time per mode)
+
+    Note: Timing data may be unreliable due to network variability.
     """
     models = df["model"].unique()
     if len(models) != 1:
@@ -1471,8 +1558,8 @@ def create_ablation_plots(
 
     Shows all mode variants for a single model:
     - Left: Reward/accuracy
-    - Center: Token usage (stacked: main model + sub-LLM)
-    - Right: Timing
+    - Center: Prompt tokens (stacked: main model + sub-LLM)
+    - Right: Completion tokens (stacked: main model + sub-LLM)
     """
     models = df["model"].unique()
     if len(models) != 1:
@@ -1515,10 +1602,10 @@ def create_ablation_plots(
     _plot_ablation_reward(
         axes[0], df, all_modes, subllm_color_map, labels, show_counts, show_values
     )
-    _plot_ablation_tokens_stacked(
+    _plot_ablation_prompt_tokens(
         axes[1], df, all_modes, subllm_color_map, labels, show_counts, show_values
     )
-    _plot_ablation_timing(
+    _plot_ablation_completion_tokens(
         axes[2], df, all_modes, subllm_color_map, labels, show_counts, show_values
     )
 
@@ -1617,7 +1704,7 @@ def create_plots(
         show_values=show_values,
         absolute=absolute,
     )
-    plot_timing(
+    plot_turns(
         axes[0, 1],
         df,
         show_legend=False,
@@ -1686,6 +1773,7 @@ def create_plots(
 # Mapping of plot names to (function, figsize, title)
 PLOT_REGISTRY = {
     "reward": (plot_reward_by_model, (10, 7), "Reward"),
+    "turns": (plot_turns, (10, 7), "Turns"),
     "timing": (plot_timing, (10, 7), "Timing Comparison"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage"),
@@ -1710,8 +1798,8 @@ def create_single_plot(
     if plot_name == "ablation":
         create_ablation_plots(df, output_path, show_counts, show_values)
         return
-    if plot_name == "ablation_tokens":
-        create_ablation_tokens_plots(df, output_path, show_counts, show_values)
+    if plot_name == "ablation_timing":
+        create_ablation_timing_plots(df, output_path, show_counts, show_values)
         return
 
     if plot_name not in PLOT_REGISTRY:
@@ -1735,6 +1823,7 @@ def create_single_plot(
     elif plot_name == "timing_vs_reward":
         func(ax, df, absolute=absolute)
     elif plot_name in (
+        "turns",
         "timing",
         "main_tokens",
         "tokens",
@@ -1809,6 +1898,7 @@ Examples:
         choices=[
             "main",
             "reward",
+            "turns",
             "timing",
             "main_tokens",
             "tokens",
@@ -1817,10 +1907,10 @@ Examples:
             "sub_llm_tokens",
             "timing_vs_reward",
             "ablation",
-            "ablation_tokens",
+            "ablation_timing",
         ],
         default="main",
-        help="Which plot to generate: 'main' for 2x2 grid, 'ablation' for full mode comparison (requires -M), 'ablation_tokens' for prompt/completion breakdown, or individual plot name",
+        help="Which plot to generate: 'main' for 2x2 grid, 'ablation' for mode comparison (reward + tokens, requires -M), 'ablation_timing' for tokens + timing, or individual plot name",
     )
 
     # Model filtering options
