@@ -1133,6 +1133,334 @@ def _plot_ablation_timing(
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
 
 
+def _plot_ablation_prompt_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    all_modes: list[str],
+    subllm_color_map: dict[str, str],
+    labels: list[str],
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Subplot: Prompt token usage (main model + sub-LLM stacked)."""
+    x = range(len(all_modes))
+    width = 0.6
+
+    main_prompt = []
+    sub_prompt = []
+    colors = []
+    counts = []
+
+    for mode in all_modes:
+        mode_data = df[df["mode"] == mode]
+        if len(mode_data) > 0:
+            # Main model prompt tokens
+            val = mode_data["prompt_tokens_mean"].values[0]
+            main_prompt.append(0 if pd.isna(val) else val)
+
+            # Sub-LLM prompt tokens
+            sub_val = 0
+            if "sub_llm_prompt_tokens_mean" in mode_data.columns:
+                v = mode_data["sub_llm_prompt_tokens_mean"].values[0]
+                sub_val = 0 if pd.isna(v) else v
+            sub_prompt.append(sub_val)
+
+            # Get count
+            if "prompt_tokens_count" in mode_data.columns:
+                counts.append(int(mode_data["prompt_tokens_count"].values[0]))
+            else:
+                counts.append(None)
+        else:
+            main_prompt.append(0)
+            sub_prompt.append(0)
+            counts.append(None)
+
+        colors.append(_get_mode_color(mode, subllm_color_map))
+
+    # Stacked bar chart
+    ax.bar(
+        x,
+        main_prompt,
+        width,
+        label="Main Model",
+        color=colors,
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    ax.bar(
+        x,
+        sub_prompt,
+        width,
+        bottom=main_prompt,
+        label="Sub-LLM",
+        color=colors,
+        edgecolor="black",
+        linewidth=0.5,
+        hatch="///",
+        alpha=0.6,
+    )
+
+    # Add annotations
+    if show_values or show_counts:
+        for i, (main, sub, count) in enumerate(zip(main_prompt, sub_prompt, counts)):
+            total_height = main + sub
+            annotations = []
+            if show_values:
+                annotations.append(f"{int(total_height):,}")
+            if show_counts and count is not None and count > 0:
+                annotations.append(f"n={count}")
+            if annotations:
+                ax.text(
+                    i,
+                    total_height + total_height * 0.02,
+                    "\n".join(annotations),
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
+
+    ax.set_xlabel("Mode")
+    ax.set_ylabel("Prompt Tokens")
+    ax.set_title("Prompt Tokens")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+
+    # Add legend
+    legend_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=8)
+
+
+def _plot_ablation_completion_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    all_modes: list[str],
+    subllm_color_map: dict[str, str],
+    labels: list[str],
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Subplot: Completion token usage (main model + sub-LLM stacked)."""
+    x = range(len(all_modes))
+    width = 0.6
+
+    main_completion = []
+    sub_completion = []
+    colors = []
+    counts = []
+
+    for mode in all_modes:
+        mode_data = df[df["mode"] == mode]
+        if len(mode_data) > 0:
+            # Main model completion tokens
+            val = mode_data["completion_tokens_mean"].values[0]
+            main_completion.append(0 if pd.isna(val) else val)
+
+            # Sub-LLM completion tokens
+            sub_val = 0
+            if "sub_llm_completion_tokens_mean" in mode_data.columns:
+                v = mode_data["sub_llm_completion_tokens_mean"].values[0]
+                sub_val = 0 if pd.isna(v) else v
+            sub_completion.append(sub_val)
+
+            # Get count
+            if "completion_tokens_count" in mode_data.columns:
+                counts.append(int(mode_data["completion_tokens_count"].values[0]))
+            else:
+                counts.append(None)
+        else:
+            main_completion.append(0)
+            sub_completion.append(0)
+            counts.append(None)
+
+        colors.append(_get_mode_color(mode, subllm_color_map))
+
+    # Stacked bar chart
+    ax.bar(
+        x,
+        main_completion,
+        width,
+        label="Main Model",
+        color=colors,
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    ax.bar(
+        x,
+        sub_completion,
+        width,
+        bottom=main_completion,
+        label="Sub-LLM",
+        color=colors,
+        edgecolor="black",
+        linewidth=0.5,
+        hatch="///",
+        alpha=0.6,
+    )
+
+    # Add annotations
+    if show_values or show_counts:
+        for i, (main, sub, count) in enumerate(
+            zip(main_completion, sub_completion, counts)
+        ):
+            total_height = main + sub
+            annotations = []
+            if show_values:
+                annotations.append(f"{int(total_height):,}")
+            if show_counts and count is not None and count > 0:
+                annotations.append(f"n={count}")
+            if annotations:
+                ax.text(
+                    i,
+                    total_height + total_height * 0.02,
+                    "\n".join(annotations),
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="gray",
+                )
+
+    ax.set_xlabel("Mode")
+    ax.set_ylabel("Completion Tokens")
+    ax.set_title("Completion Tokens")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+
+    # Add legend
+    legend_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", fontsize=8)
+
+
+def create_ablation_tokens_plots(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Create the 1x3 token/timing breakdown plot.
+
+    Shows prompt/completion token breakdown and timing for a single model:
+    - Left: Prompt tokens (stacked: main model + sub-LLM)
+    - Center: Completion tokens (stacked: main model + sub-LLM)
+    - Right: Timing (total time per mode)
+    """
+    models = df["model"].unique()
+    if len(models) != 1:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(
+            0.5,
+            0.5,
+            f"Token breakdown plot requires exactly 1 model\n(found {len(models)})\n\nUse -M to select a model",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
+        ax.set_axis_off()
+        plt.show()
+        return
+
+    # Get common data
+    model_display, all_modes, subllm_color_map, labels = _get_ablation_common_data(df)
+
+    if len(all_modes) == 0:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(
+            0.5,
+            0.5,
+            "No mode data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_axis_off()
+        plt.show()
+        return
+
+    # Create 1x3 figure
+    fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+
+    # Plot each subplot
+    _plot_ablation_prompt_tokens(
+        axes[0], df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
+    _plot_ablation_completion_tokens(
+        axes[1], df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
+    _plot_ablation_timing(
+        axes[2], df, all_modes, subllm_color_map, labels, show_counts, show_values
+    )
+
+    # Create central legend for mode colors
+    legend_handles = []
+    for mode in ["standard", "rlm", "rlm_tips"]:
+        if mode in all_modes:
+            legend_handles.append(
+                Patch(
+                    facecolor=ABLATION_MODE_COLORS.get(
+                        mode, MODE_STYLES.get(mode, {}).get("color", "gray")
+                    ),
+                    edgecolor="black",
+                    linewidth=0.5,
+                    label=get_mode_label(mode),
+                )
+            )
+    subllm_in_data = [m for m in all_modes if m.startswith("rlm_tips_subllm")]
+    if subllm_in_data:
+        legend_handles.append(
+            Patch(
+                facecolor="#2ECC71",
+                edgecolor="black",
+                linewidth=0.5,
+                label="RLM+sub-LLM tips",
+            )
+        )
+
+    if legend_handles:
+        fig.legend(
+            handles=legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.02),
+            ncol=len(legend_handles),
+            fontsize=10,
+        )
+
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.15)
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Plot saved to: {output_path}")
+
+    plt.show()
+
+
 def create_ablation_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
@@ -1378,9 +1706,12 @@ def create_single_plot(
     absolute: bool = False,
 ):
     """Create a single standalone plot."""
-    # Handle ablation plot specially (it's a 1x3 grid, not single axis)
+    # Handle ablation plots specially (they're 1x3 grids, not single axis)
     if plot_name == "ablation":
         create_ablation_plots(df, output_path, show_counts, show_values)
+        return
+    if plot_name == "ablation_tokens":
+        create_ablation_tokens_plots(df, output_path, show_counts, show_values)
         return
 
     if plot_name not in PLOT_REGISTRY:
@@ -1486,9 +1817,10 @@ Examples:
             "sub_llm_tokens",
             "timing_vs_reward",
             "ablation",
+            "ablation_tokens",
         ],
         default="main",
-        help="Which plot to generate: 'main' for 2x2 grid, 'ablation' for full mode comparison (requires -M), or individual plot name",
+        help="Which plot to generate: 'main' for 2x2 grid, 'ablation' for full mode comparison (requires -M), 'ablation_tokens' for prompt/completion breakdown, or individual plot name",
     )
 
     # Model filtering options
