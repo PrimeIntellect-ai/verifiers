@@ -447,7 +447,6 @@ sampling_args = {
     "extra_body": {
         "return_tokens_as_token_ids": True,  # Return tokens as token IDs
         "return_token_ids": True,             # Include token_ids in response
-        "prompt_logprobs": 1,                 # Optional: include prompt logprobs
     },
 }
 ```
