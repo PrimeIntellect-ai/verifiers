@@ -50,7 +50,8 @@ Strategy for verbatim copying:
 2. Print answer["content"] to see exactly what you wrote
 3. Compare carefully with the original text - look for typos, transpositions, missing characters
 4. Fix any errors using string operations (slicing, replacement, etc.)
-5. Only set answer["ready"] = True after you have verified correctness
+5. Check the answer again and repeat the process if there are still errors
+6. Only set answer["ready"] = True after you have verified full correctness
 </env_tips>"""
 
 

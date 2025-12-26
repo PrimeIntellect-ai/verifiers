@@ -70,6 +70,8 @@ Strategy for deep research tasks:
 
 5. **Finalize**: Write your synthesized answer to `answer["content"]`, verify it addresses the original question, then set `answer["ready"] = True`.
 
+Make sure to provide the sub-LLMs with the required context for their tasks. Use them extensively.
+
 Key insight: Sub-LLMs handle the verbose web content, returning concise summaries. This keeps your context clean while leveraging deep research.
 </env_tips>"""
 

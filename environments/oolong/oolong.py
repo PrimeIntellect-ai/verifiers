@@ -35,12 +35,17 @@ from verifiers.utils.data_utils import extract_boxed_answer
 _ENV_TIPS = """
 
 <env_tips>
-Strategy for long-context information retrieval:
 
-1. Split the context into chunks (e.g., by paragraphs or fixed character windows with some overlap)
+To retrieve information from very long contexts, sub-LLMs are the key:
+
+1. Split the context into semantically meaningful chunks (e.g., by paragraphs); know that each sub-LLM can handle a large amount of context (several tens of thousands of characters). To decide on a chunking strategy, you can print a small part of the data, and/or use regular expressions to make sense of the data.
 2. Write a prompt describing what to look for, then append it to each chunk to create a list of prompts
-3. Call llm_batch() once with all prompts to scan chunks in parallel
-4. Aggregate the relevant findings from the responses
+3. Call llm_batch() once with up to 5 prompts in parallel to scan chunks in parallel; if there are more than 5 chunks (very likely), perform the task over multiple REPL calls. Store the prompts and responses in a Python variable each to ensure consistent calling and results.
+4. Aggregate the relevant findings from the responses using Python for all calculations.
+5. Repeat when required
+
+The key insight is that the limit is your context window size, but that sub-LLMs are just as capable as you are, with the same limits.
+Piping context into them programmatically, and aggregating results using Python yourself is the key to success.
 </env_tips>"""
 
 
