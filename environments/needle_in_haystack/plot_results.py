@@ -800,7 +800,7 @@ Examples:
     # Model filtering options
     parser.add_argument(
         "--model",
-        "-M",
+        "-m",
         nargs="*",
         type=str,
         default=None,

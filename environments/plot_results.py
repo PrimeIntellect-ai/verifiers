@@ -1560,7 +1560,7 @@ Examples:
     # Model filtering
     parser.add_argument(
         "--model",
-        "-M",
+        "-m",
         nargs="*",
         type=str,
         default=None,
