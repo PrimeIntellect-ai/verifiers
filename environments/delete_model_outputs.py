@@ -3,9 +3,10 @@
 Delete model outputs from an environment's outputs directory.
 
 Usage:
-    python delete_model_outputs.py --env oolong --list
-    python delete_model_outputs.py --env oolong --model gpt-5-mini
-    python delete_model_outputs.py --env oolong --model gpt-5-mini --dry-run
+    python delete_model_outputs.py -e oolong --list
+    python delete_model_outputs.py -e oolong -m gpt-5-mini
+    python delete_model_outputs.py -e oolong -m gpt-5-mini -M rlm
+    python delete_model_outputs.py -e oolong -m gpt-5-mini --dry-run
 """
 
 from __future__ import annotations
@@ -33,6 +34,20 @@ def get_outputs_dir(env_name: str) -> Path | None:
     return outputs_dir
 
 
+def get_mode_from_metadata(metadata: dict) -> str:
+    """Extract mode from metadata env_args."""
+    env_args = metadata.get("env_args", {})
+    use_rlm = env_args.get("use_rlm", False)
+    include_tips = env_args.get("include_env_tips", False)
+
+    if not use_rlm:
+        return "standard"
+    elif include_tips:
+        return "rlm_tips"
+    else:
+        return "rlm"
+
+
 def list_models(env_name: str):
     """List all models with outputs for an environment."""
     outputs_dir = get_outputs_dir(env_name)
@@ -44,14 +59,13 @@ def list_models(env_name: str):
         print(f"No evals directory found in {outputs_dir}")
         return
 
-    # Collect model info: model_name -> (dir_path, run_count)
-    models: dict[str, tuple[Path, int]] = {}
+    # Collect model info: model_name -> {mode -> count}
+    models: dict[str, dict[str, int]] = {}
 
     for model_dir in evals_dir.iterdir():
         if not model_dir.is_dir():
             continue
 
-        # Find model name from metadata
         for run_dir in model_dir.iterdir():
             if not run_dir.is_dir():
                 continue
@@ -60,39 +74,48 @@ def list_models(env_name: str):
                 with open(metadata_file) as f:
                     metadata = json.load(f)
                 model_name = metadata.get("model", "unknown")
-                run_count = len([r for r in model_dir.iterdir() if r.is_dir()])
-                models[model_name] = (model_dir, run_count)
-                break
+                mode = get_mode_from_metadata(metadata)
+
+                if model_name not in models:
+                    models[model_name] = {}
+                models[model_name][mode] = models[model_name].get(mode, 0) + 1
 
     if not models:
         print(f"No model outputs found for environment '{env_name}'")
         return
 
     print(f"Models with outputs in '{env_name}':")
-    for model_name, (dir_path, run_count) in sorted(models.items()):
-        print(f"  {model_name} ({run_count} run(s))")
+    for model_name in sorted(models.keys()):
+        mode_counts = models[model_name]
+        total = sum(mode_counts.values())
+        mode_str = ", ".join(f"{m}:{c}" for m, c in sorted(mode_counts.items()))
+        print(f"  {model_name} ({total} run(s): {mode_str})")
 
 
-def find_model_dirs(outputs_dir: Path, env_name: str, model_name: str) -> list[Path]:
-    """Find all output directories for a given model."""
+def find_model_runs(
+    outputs_dir: Path, env_name: str, model_name: str, mode: str | None = None
+) -> list[tuple[Path, list[Path]]]:
+    """Find all output directories for a given model, optionally filtered by mode.
+
+    Returns list of (model_dir, [matching_run_dirs]) tuples.
+    """
     evals_dir = outputs_dir / "evals"
     if not evals_dir.exists():
         return []
 
-    matching_dirs = []
+    results = []
 
-    # Pattern: <env_name>--<model_name>
-    # Model names can contain slashes, so we check metadata.json for exact match
     for model_dir in evals_dir.iterdir():
         if not model_dir.is_dir():
             continue
 
-        # Check if directory name matches pattern
         expected_prefix = f"{env_name}--"
         if not model_dir.name.startswith(expected_prefix):
             continue
 
-        # Verify by checking metadata in subdirectories
+        matching_runs = []
+        model_matched = False
+
         for run_dir in model_dir.iterdir():
             if not run_dir.is_dir():
                 continue
@@ -101,50 +124,78 @@ def find_model_dirs(outputs_dir: Path, env_name: str, model_name: str) -> list[P
                 with open(metadata_file) as f:
                     metadata = json.load(f)
                 if metadata.get("model") == model_name:
-                    matching_dirs.append(model_dir)
-                    break  # Found a match, no need to check more runs
+                    model_matched = True
+                    # If mode filter specified, check it
+                    if mode is None:
+                        matching_runs.append(run_dir)
+                    elif get_mode_from_metadata(metadata) == mode:
+                        matching_runs.append(run_dir)
 
-    return matching_dirs
+        if model_matched and matching_runs:
+            results.append((model_dir, matching_runs))
+
+    return results
 
 
 def delete_model_outputs(
-    env_name: str, model_name: str, dry_run: bool = False, force: bool = False
+    env_name: str,
+    model_name: str,
+    mode: str | None = None,
+    dry_run: bool = False,
+    force: bool = False,
 ):
-    """Delete all outputs for a model in an environment."""
+    """Delete all outputs for a model (and optionally mode) in an environment."""
     outputs_dir = get_outputs_dir(env_name)
     if outputs_dir is None:
         return
 
-    # Find matching directories
-    matching_dirs = find_model_dirs(outputs_dir, env_name, model_name)
+    results = find_model_runs(outputs_dir, env_name, model_name, mode)
 
-    if not matching_dirs:
-        print(f"No outputs found for model '{model_name}' in environment '{env_name}'")
+    if not results:
+        mode_str = f" in mode '{mode}'" if mode else ""
+        print(
+            f"No outputs found for model '{model_name}'{mode_str} in environment '{env_name}'"
+        )
         return
 
-    print(f"Found {len(matching_dirs)} output directory(s) for model '{model_name}':")
-    for d in matching_dirs:
-        # Count runs
-        runs = [r for r in d.iterdir() if r.is_dir()]
-        print(f"  {d} ({len(runs)} run(s))")
+    total_runs = sum(len(runs) for _, runs in results)
+    mode_str = f" (mode: {mode})" if mode else ""
+    print(f"Found {total_runs} run(s) for model '{model_name}'{mode_str}:")
+
+    for _, run_dirs in results:
+        for run_dir in run_dirs:
+            metadata_file = run_dir / "metadata.json"
+            with open(metadata_file) as f:
+                metadata = json.load(f)
+            run_mode = get_mode_from_metadata(metadata)
+            subset = metadata.get("env_args", {}).get("subset", "?")
+            print(f"  {run_dir.name} ({run_mode}, {subset})")
 
     if dry_run:
         print("\n[DRY RUN] No files deleted.")
         return
 
-    # Confirm deletion unless force is set
     if not force:
-        response = input("\nDelete these directories? [y/N] ")
+        response = input("\nDelete these runs? [y/N] ")
         if response.lower() != "y":
             print("Aborted.")
             return
 
-    # Delete
-    for d in matching_dirs:
-        print(f"Deleting {d}...")
-        shutil.rmtree(d)
+    # Delete only the matching runs (not entire model dir if mode filtered)
+    deleted = 0
+    for model_dir, run_dirs in results:
+        for run_dir in run_dirs:
+            print(f"Deleting {run_dir}...")
+            shutil.rmtree(run_dir)
+            deleted += 1
 
-    print(f"Deleted {len(matching_dirs)} directory(s).")
+        # Clean up empty model dir
+        remaining = [r for r in model_dir.iterdir() if r.is_dir()]
+        if not remaining:
+            print(f"Removing empty directory {model_dir}...")
+            model_dir.rmdir()
+
+    print(f"Deleted {deleted} run(s).")
 
 
 def main():
@@ -152,9 +203,15 @@ def main():
         description="Delete model outputs from an environment"
     )
     parser.add_argument(
-        "--env", "-e", required=True, help="Environment name (e.g., oolong)"
+        "--environment", "-e", required=True, help="Environment name (e.g., oolong)"
     )
     parser.add_argument("--model", "-m", help="Model name (e.g., gpt-5-mini)")
+    parser.add_argument(
+        "--mode",
+        "-M",
+        choices=["standard", "rlm", "rlm_tips"],
+        help="Filter by mode (standard, rlm, or rlm_tips)",
+    )
     parser.add_argument(
         "--list",
         "-l",
@@ -173,9 +230,11 @@ def main():
     args = parser.parse_args()
 
     if args.list:
-        list_models(args.env)
+        list_models(args.environment)
     elif args.model:
-        delete_model_outputs(args.env, args.model, args.dry_run, args.force)
+        delete_model_outputs(
+            args.environment, args.model, args.mode, args.dry_run, args.force
+        )
     else:
         parser.error("Either --list or --model is required")
 
