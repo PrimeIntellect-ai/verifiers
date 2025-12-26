@@ -1,9 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
-
-from peft import LoraConfig
-from transformers.trainer_utils import SchedulerType
-
+from typing import List, Optional
 
 @dataclass
 class UnslothConfig:
@@ -57,46 +53,15 @@ class UnslothConfig:
         metadata={"help": "Huggingface token for private model access."},
     )
 
-    # Model Lora parameters
-    r: int = field(
-        default=16,
-        metadata={"help": "LoRA rank."},
-    )
-
-    target_modules: List[str] = field(
-        default= [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        metadata={"help": "Target modules for LoRA."},
-    )
-
-    lora_alpha: int = field(
-        default=16,
-        metadata={"help": "LoRA alpha parameter."},
-    )
-
-    lora_dropout: float = field(
-        default=0.0,
-        metadata={"help": "LoRA dropout rate."},
-    )
+    # Additional Model Lora parameters
 
     use_gradient_checkpointing: str = field(
         default="unsloth",
         metadata={"help": "Gradient checkpointing strategy."},
     )
 
-    use_rslora: bool = field(
-        default=False,
-        metadata={"help": "Whether to use RS-LoRA."},
-    )
-
     loftq_config: Optional[dict] = field(
         default=None,
         metadata={"help": "Configuration for LoFT-Q."},
     )
+
