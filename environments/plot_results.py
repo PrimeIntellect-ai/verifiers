@@ -1039,6 +1039,271 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     ax.set_ylabel("Mode")
 
 
+def create_rewards_grid(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    show_values: bool = False,
+    absolute: bool = False,
+):
+    """Plot: 2x2 grid showing reward by model for each environment.
+
+    Each subplot shows one environment with all models on x-axis,
+    grouped bars for each mode (standard, rlm, rlm_tips).
+    """
+    target_envs = ["deepdive", "oolong", "math_python", "verbatim_copy"]
+    available_envs = [e for e in target_envs if e in df["environment"].unique()]
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes = axes.flatten()
+
+    reward_col = get_reward_column(df)
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for idx, env in enumerate(target_envs):
+        ax = axes[idx]
+
+        if env not in available_envs:
+            ax.text(
+                0.5,
+                0.5,
+                f"No data for {env}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(get_env_label(env).replace("\n", " "))
+            continue
+
+        env_df = df[df["environment"] == env]
+        models = env_df["model"].unique()
+
+        x = np.arange(len(models))
+        width = 0.25
+
+        for i, mode in enumerate(modes):
+            mode_data = env_df[env_df["mode"] == mode]
+            rewards = []
+            counts = []
+            for model in models:
+                model_data = mode_data[mode_data["model"] == model]
+                if len(model_data) > 0:
+                    rewards.append(model_data[reward_col].mean())
+                    counts.append(get_count_for_env_data(model_data))
+                else:
+                    rewards.append(0)
+                    counts.append(None)
+
+            offset = (i - len(modes) / 2 + 0.5) * width
+            style = MODE_STYLES.get(mode, {"color": "gray"})
+            bars = ax.bar(
+                x + offset,
+                rewards,
+                width,
+                label=MODE_LABELS.get(mode, mode),
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+            )
+
+            if show_values or show_counts:
+                for bar, reward, count in zip(bars, rewards, counts):
+                    annotations = []
+                    if show_values:
+                        annotations.append(f"{reward:.2f}")
+                    if show_counts and count is not None:
+                        annotations.append(f"n={count}")
+                    if annotations:
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 0.02,
+                            "\n".join(annotations),
+                            ha="center",
+                            va="bottom",
+                            fontsize=5,
+                            rotation=90,
+                        )
+
+        ax.set_xlabel("Model")
+        ax.set_ylabel("Reward")
+        ax.set_title(get_env_label(env).replace("\n", " "))
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [normalize_model_name(m) for m in models],
+            rotation=15,
+            ha="right",
+            fontsize=8,
+        )
+
+        if absolute:
+            ax.set_ylim(0, 1.1)
+            ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+
+    # Central legend
+    legend_handles = [
+        Patch(
+            facecolor=MODE_STYLES[m]["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            label=MODE_LABELS.get(m, m),
+        )
+        for m in modes
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=len(legend_handles),
+        fontsize=10,
+        bbox_to_anchor=(0.5, 0.02),
+    )
+
+    plt.suptitle("Reward by Model (per Environment)", fontsize=14, y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.1, top=0.93)
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Saved plot to {output_path}")
+    else:
+        plt.show()
+    plt.close()
+
+
+def create_tokens_grid(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: 2x2 grid showing main model token usage by model for each environment.
+
+    Each subplot shows one environment with all models on x-axis,
+    grouped bars for each mode (standard, rlm, rlm_tips).
+    """
+    target_envs = ["deepdive", "oolong", "math_python", "verbatim_copy"]
+    available_envs = [e for e in target_envs if e in df["environment"].unique()]
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes = axes.flatten()
+
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    for idx, env in enumerate(target_envs):
+        ax = axes[idx]
+
+        if env not in available_envs:
+            ax.text(
+                0.5,
+                0.5,
+                f"No data for {env}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(get_env_label(env).replace("\n", " "))
+            continue
+
+        env_df = df[df["environment"] == env]
+        models = env_df["model"].unique()
+
+        x = np.arange(len(models))
+        width = 0.25
+
+        for i, mode in enumerate(modes):
+            mode_data = env_df[env_df["mode"] == mode]
+            tokens = []
+            counts = []
+            for model in models:
+                model_data = mode_data[mode_data["model"] == model]
+                if len(model_data) > 0:
+                    # Main model tokens only
+                    main_prompt = (
+                        model_data["prompt_tokens_mean"].values[0]
+                        if "prompt_tokens_mean" in model_data.columns
+                        else 0
+                    )
+                    main_completion = (
+                        model_data["completion_tokens_mean"].values[0]
+                        if "completion_tokens_mean" in model_data.columns
+                        else 0
+                    )
+                    tokens.append((main_prompt or 0) + (main_completion or 0))
+                    counts.append(get_count_for_env_data(model_data))
+                else:
+                    tokens.append(0)
+                    counts.append(None)
+
+            offset = (i - len(modes) / 2 + 0.5) * width
+            style = MODE_STYLES.get(mode, {"color": "gray"})
+            bars = ax.bar(
+                x + offset,
+                tokens,
+                width,
+                label=MODE_LABELS.get(mode, mode),
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+            )
+
+            if show_values or show_counts:
+                for bar, token_count, count in zip(bars, tokens, counts):
+                    annotations = []
+                    if show_values:
+                        annotations.append(f"{int(token_count):,}")
+                    if show_counts and count is not None:
+                        annotations.append(f"n={count}")
+                    if annotations:
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 100,
+                            "\n".join(annotations),
+                            ha="center",
+                            va="bottom",
+                            fontsize=5,
+                            rotation=90,
+                        )
+
+        ax.set_xlabel("Model")
+        ax.set_ylabel("Main Model Tokens")
+        ax.set_title(get_env_label(env).replace("\n", " "))
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [normalize_model_name(m) for m in models],
+            rotation=15,
+            ha="right",
+            fontsize=8,
+        )
+
+    # Central legend
+    legend_handles = [
+        Patch(
+            facecolor=MODE_STYLES[m]["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            label=MODE_LABELS.get(m, m),
+        )
+        for m in modes
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=len(legend_handles),
+        fontsize=10,
+        bbox_to_anchor=(0.5, 0.02),
+    )
+
+    plt.suptitle("Main Model Tokens by Model (per Environment)", fontsize=14, y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.1, top=0.93)
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Saved plot to {output_path}")
+    else:
+        plt.show()
+    plt.close()
+
+
 # =============================================================================
 # Main Plot Creation
 # =============================================================================
@@ -1261,6 +1526,8 @@ Examples:
         type=str,
         choices=[
             "main",
+            "rewards_grid",
+            "tokens_grid",
             "reward",
             "lift",
             "tokens",
@@ -1272,7 +1539,7 @@ Examples:
             "heatmap",
         ],
         default="main",
-        help="Which plot to generate (default: main grid)",
+        help="Which plot to generate (default: main grid, rewards_grid/tokens_grid show per-model comparison)",
     )
 
     # Environment filtering
@@ -1381,7 +1648,8 @@ Examples:
     # Aggregate across models/subsets if requested
     # Always aggregate when not disabled - needed to combine subsets (real, synth, etc.)
     # even when filtering to a single model
-    if not args.no_aggregate:
+    # Exception: grid plots need per-model data
+    if not args.no_aggregate and args.image not in ("rewards_grid", "tokens_grid"):
         df = aggregate_across_models(df)
 
     # Report what we loaded
@@ -1400,6 +1668,21 @@ Examples:
             show_counts=args.show_counts,
             show_values=args.show_values,
             absolute=args.absolute,
+        )
+    elif args.image == "rewards_grid":
+        create_rewards_grid(
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
+            absolute=args.absolute,
+        )
+    elif args.image == "tokens_grid":
+        create_tokens_grid(
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
         )
     else:
         create_single_plot(
