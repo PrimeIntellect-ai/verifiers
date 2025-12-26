@@ -16,10 +16,10 @@ set -e
 MODELS=(
     # "deepseek:deepseek/deepseek-v3.2"
     "openrouter:prime-intellect/intellect-3"
-    # "openrouter:z-ai/glm-4.6"
-    # "gpt-5-mini"
+    "openrouter:z-ai/glm-4.5-air"
+    "gpt-5-mini"
+    "openrouter:z-ai/glm-4.6"
     # "openrouter:xiaomi/mimo-v2-flash:free"
-    # "openrouter:z-ai/glm-4.5-air"
 )
 
 NUM_EXAMPLES=50
