@@ -27,13 +27,16 @@ Verifiers: Environments for LLM Reinforcement Learning
   <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml">
     <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/test.yml/badge.svg" alt="Test" />
   </a>
-  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml">
-    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-environments.yml/badge.svg" alt="Envs" />
+  <a href="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-envs.yml">
+    <img src="https://github.com/PrimeIntellect-ai/verifiers/actions/workflows/publish-envs.yml/badge.svg" alt="Envs" />
   </a>
 </p>
 
+> Note: This repository hosts community-contributed, lightly reviewed environment implementations. Environments maintained by the Prime Intellect research team are available at [research-environments](https://github.com/PrimeIntellect-ai/research-environments/tree/main).
+
 ## News & Updates
 
+- [11/19/25] v0.1.8 is released, featuring a major refactor of the rollout system to use trajectory-based tracking for token-in token-out training across turns, as well as support for truncated or branching rollouts.
 - [11/07/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
 - [10/27/25] A new iteration of the Prime Intellect [Environments Program](https://docs.google.com/spreadsheets/d/13UDfRDjgIZXsMI2s9-Lmn8KSMMsgk2_zsfju6cx_pNU/edit?gid=0#gid=0) is live!  
 
@@ -41,7 +44,7 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 Verifiers is a library of modular components for creating RL environments and training LLM agents. Environments built with Verifiers can be used directly as LLM evaluations, synthetic data pipelines, or agent harnesses for any OpenAI-compatible model endpoint, in addition to RL training. Verifiers is supported by `prime-rl` for large-scale performance-optimized async RL training, includes a minimal `transformers`-based trainer (`vf.RLTrainer`) for simple algorithmic experiments, and can easily be integrated into any RL training stack which exposes an OpenAI-compatible inference client.
 
-Full documentation is available [here](https://verifiers.readthedocs.io/en/latest/). 
+Full documentation is available [here](https://docs.primeintellect.ai/verifiers). 
 
 Verifiers is the native library used by Prime Intellect's [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars); see [here](https://docs.primeintellect.ai/tutorials-environments/environments) for information about publishing your Environments to the Hub, and [here](https://github.com/PrimeIntellect-ai/prime-environments) for a collection of Environments built with Verifiers.
 
@@ -78,7 +81,7 @@ For advanced evaluation configurations with the `prime` [CLI](https://github.com
 ## RL Training
 
 ### `prime-rl`
-We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer, and provide a basic setup guide below. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
+We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer, and provide a basic setup guide below. See the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl) for more information.
 
 To get started, do: 
 

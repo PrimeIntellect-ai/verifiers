@@ -50,6 +50,7 @@ def _run_cli(monkeypatch, overrides):
         "save_every": -1,
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
+        "extra_env_kwargs": {},
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)

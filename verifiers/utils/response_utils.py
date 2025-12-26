@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import cast
 
 from verifiers.types import (
     ChatCompletion,
@@ -9,9 +9,6 @@ from verifiers.types import (
     ModelResponse,
     TrajectoryStepTokens,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 async def parse_response_tokens(
@@ -28,17 +25,29 @@ async def parse_response_tokens(
             return None
         if response.choices[0].logprobs is None:
             return None
-        if not hasattr(response.choices[0].logprobs, "content"):
-            return None
-        if response.choices[0].logprobs.content is None:
+        has_logprobs_obj = (
+            hasattr(response.choices[0].logprobs, "content")
+            and response.choices[0].logprobs.content is not None
+        )
+        has_logprobs_dict = (
+            isinstance(response.choices[0].logprobs, dict)
+            and "content" in response.choices[0].logprobs.keys()
+            and response.choices[0].logprobs["content"] is not None
+        )
+        if not (has_logprobs_obj or has_logprobs_dict):
             return None
         prompt_ids = getattr(response, "prompt_token_ids")
         prompt_mask = [0] * len(prompt_ids)
         completion_ids = getattr(response.choices[0], "token_ids")
         completion_mask = [1] * len(completion_ids)
-        completion_logprobs = [
-            token.logprob for token in response.choices[0].logprobs.content
-        ]
+        if has_logprobs_obj:
+            assert response.choices[0].logprobs.content is not None
+            logprobs_content = response.choices[0].logprobs.content
+            completion_logprobs = [token.logprob for token in logprobs_content]
+        else:
+            assert isinstance(response.choices[0].logprobs, dict)
+            logprobs_content = response.choices[0].logprobs["content"]
+            completion_logprobs = [token["logprob"] for token in logprobs_content]
     elif message_type == "completion":
         assert isinstance(response, Completion)
         if not hasattr(response.choices[0], "prompt_token_ids"):
@@ -96,7 +105,7 @@ async def parse_response_messages(
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
             response_text = response.choices[0].message.content or ""
-        response_message: ChatMessage = {
+        response_message: dict[str, object] = {
             "role": "assistant",
             "content": response_text,
         }
@@ -106,13 +115,28 @@ async def parse_response_messages(
             and response.choices[0].message.tool_calls
         ):
             tool_calls = response.choices[0].message.tool_calls
-            response_message["tool_calls"] = [  # type: ignore
+            response_message["tool_calls"] = [
                 tool_call.model_dump() for tool_call in tool_calls
             ]
-        completion_messages = list[ChatMessage]([response_message])
+        completion_messages = list[ChatMessage]([cast(ChatMessage, response_message)])
     else:
         assert isinstance(response, Completion)
         if response.choices and response.choices[0]:
             response_text = response.choices[0].text or ""
         completion_messages = str(response_text)
     return completion_messages
+
+
+async def parse_is_truncated(
+    response: ModelResponse, message_type: MessageType
+) -> bool:
+    if message_type == "chat":
+        assert isinstance(response, ChatCompletion)
+        assert len(response.choices) == 1, "Response should always have one choice"
+        return response.choices[0].finish_reason == "length"
+    elif message_type == "completion":
+        assert isinstance(response, Completion)
+        assert len(response.choices) == 1, "Response should always have one choice"
+        return response.choices[0].finish_reason == "length"
+    else:
+        return False

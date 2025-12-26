@@ -63,7 +63,7 @@ def install_prime_rl():
     if os.path.exists("prime-rl"):
         print("prime-rl directory already exists, skipping installation")
     else:
-        print(f"Installing prime-rl (will checkout commit: {PRIME_RL_COMMIT})...")
+        print(f"Installing prime-rl (commit ref: {PRIME_RL_COMMIT})...")
         install_url = f"https://raw.githubusercontent.com/{PRIME_RL_REPO}/{PRIME_RL_INSTALL_SCRIPT_REF}/scripts/install.sh"
         install_cmd = [
             "bash",
@@ -123,10 +123,54 @@ def download_configs(configs):
             print(f"{dst} already exists")
 
 
+def install_environments_to_prime_rl():
+    """Install all environments from environments/ folder into prime-rl workspace."""
+    envs_dir = "environments"
+    if not os.path.exists(envs_dir):
+        print(f"{envs_dir}/ not found, skipping environment installation")
+        return
+
+    if not os.path.exists("prime-rl"):
+        print("prime-rl/ not found, skipping environment installation")
+        return
+
+    env_modules = []
+    for entry in os.listdir(envs_dir):
+        env_path = os.path.join(envs_dir, entry)
+        if os.path.isdir(env_path) and os.path.exists(
+            os.path.join(env_path, "pyproject.toml")
+        ):
+            env_modules.append(entry)
+
+    if not env_modules:
+        print(f"No installable environments found in {envs_dir}/")
+        return
+
+    print(f"Installing {len(env_modules)} environments into prime-rl workspace...")
+    env_paths = [f"-e environments/{m}" for m in sorted(env_modules)]
+    install_cmd = [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "prime-rl/.venv/bin/python",
+        *env_paths,
+    ]
+    result = subprocess.run(install_cmd, check=False)
+    if result.returncode != 0:
+        print(
+            f"Error: Failed to install environments with exit code {result.returncode}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Installed {len(env_modules)} environments")
+
+
 def main():
     os.makedirs("configs", exist_ok=True)
 
     install_prime_rl()
+    install_environments_to_prime_rl()
 
     if not os.path.exists(ENDPOINTS_DST):
         wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)

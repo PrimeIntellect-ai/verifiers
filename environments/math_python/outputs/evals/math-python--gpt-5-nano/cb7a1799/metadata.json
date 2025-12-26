@@ -1,1 +1,0 @@
-{"env": "math-python", "model": "gpt-5-nano", "num_examples": 5, "rollouts_per_example": 3, "sampling_args": {"max_tokens": null}, "date": "2025-09-29 21:20:27", "time_ms": 30880.018949508667, "avg_reward": 1.0, "avg_total_tool_calls": 1.0666666666666667, "avg_python_calls": 1.0666666666666667, "avg_correct_answer_reward_func": 1.0}

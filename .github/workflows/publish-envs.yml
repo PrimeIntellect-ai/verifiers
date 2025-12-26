@@ -1,0 +1,100 @@
+name: Publish Envs
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  detect-changed-envs:
+    name: Detect changed envs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed environments
+        id: changed-envs
+        uses: tj-actions/changed-files@v47
+        with:
+          files: environments/**
+          dir_names: true
+          dir_names_max_depth: 2
+
+      - name: Set matrix
+        id: set-matrix
+        env:
+          CHANGED_ENVS: ${{ steps.changed-envs.outputs.all_changed_files }}
+        run: |
+          if [ -z "$CHANGED_ENVS" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"env_id\":[]}" >> $GITHUB_OUTPUT
+          else
+            # Filter to only actual environment directories (not files in environments/)
+            ENV_IDS=$(echo "$CHANGED_ENVS" | tr ' ' '\n' | while read -r path; do
+              dir=$(basename "$path")
+              # Verify it's actually a directory under environments/ and skip empty names
+              if [ -n "$dir" ] && [ -d "environments/$dir" ]; then
+                echo "$dir"
+              fi
+            done | sort -u | jq -R . | jq -sc .)
+            
+            if [ "$ENV_IDS" = "[]" ]; then
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              echo "matrix={\"env_id\":[]}" >> $GITHUB_OUTPUT
+            else
+              echo "Changed envs: $ENV_IDS"
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "matrix={\"env_id\":$ENV_IDS}" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  publish-envs:
+    name: Publish ${{ matrix.env_id }}
+    needs: detect-changed-envs
+    if: needs.detect-changed-envs.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-changed-envs.outputs.matrix) }}
+    env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install prime
+        run: uv tool install prime
+
+      - name: Push environment
+        env:
+          ENV_ID: ${{ matrix.env_id }}
+        run: |
+          echo "Publishing $ENV_ID"
+          set +e
+          output=$(prime env push -p "environments/$ENV_ID" 2>&1)
+          exit_code=$?
+          echo "$output"
+          set -e
+
+          if [ $exit_code -eq 0 ]; then
+            echo "✅ Successfully published $ENV_ID"
+          elif echo "$output" | grep -q "content hash.*already exists"; then
+            echo "::warning::Environment $ENV_ID already exists with the same content hash. Skipping upload."
+          else
+            echo "::error::Failed to publish $ENV_ID"
+            exit $exit_code
+          fi

@@ -2,6 +2,7 @@ import importlib.util
 import json
 import logging
 import time
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -13,6 +14,7 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.client_utils import setup_client
+from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
@@ -68,9 +70,11 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
 
     printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
     printable_completions = [messages_to_printable(c) for c in results["completion"]]
+    errors = [s.get("error") for s in results["state"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
+        errors,
         results["reward"],
         step=0,
         num_samples=num_samples,
@@ -82,19 +86,37 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     )
     r = results["metadata"]["rollouts_per_example"]
     n = len(results["reward"]) // r
+    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
-        # rounded to 3 decimal places
-        trials = [round(results["reward"][(i * n) + j], 3) for j in range(n)]
+        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
     for k in results["metrics"]:
         v = results["metrics"][k]
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
-            # rounded to 3 decimal places
-            trials = [round(v[(i * n) + j], 3) for j in range(n)]
+            trials = [round(v[i + (j * r)], 3) for j in range(n)]
             out = f"r{i + 1}: {trials}"
             print(out)
+
+    print("Info:")
+    print(
+        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+    )
+    counter = Counter(results["stop_conditions"])
+    print(
+        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
+    )
+    has_errors = [e is not None for e in errors]
+    if any(has_errors):
+        print(
+            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
+        )
+        errors = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in errors]
+        counter = Counter(error_chains)
+        for error_chain, count in counter.items():
+            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
@@ -108,6 +130,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+
+    # set extra environment kwargs
+    if config.extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+        vf_env.set_kwargs(**config.extra_env_kwargs)
 
     # run evaluation
     results_path = get_eval_results_path(config)
@@ -168,12 +195,14 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
     clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
     save_info = any(info != {} for info in results["info"])
     save_answer = any(answer != "" for answer in results["answer"])
+    errors = [s.get("error") for s in results["state"]]
     results_dict = {
         "example_id": results["example_id"],
         "prompt": clean_prompts,
         "completion": clean_completions,
         "task": results["task"],
         "reward": results["reward"],
+        "error": [repr(e) if e is not None else None for e in errors],
         "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
         "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
         "total_ms": [s["timing"]["total_ms"] for s in results["state"]],

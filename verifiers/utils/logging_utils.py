@@ -8,7 +8,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from verifiers.errors import Error
 from verifiers.types import Messages
+from verifiers.utils.error_utils import ErrorChain
 
 
 def setup_logging(
@@ -43,6 +45,7 @@ def setup_logging(
 def print_prompt_completions_sample(
     prompts: list[Messages],
     completions: list[Messages],
+    errors: list[Error | None],
     rewards: list[float],
     step: int,
     num_samples: int = 1,
@@ -98,6 +101,12 @@ def print_prompt_completions_sample(
 
         return out
 
+    def _format_error(error: BaseException) -> Text:
+        out = Text()
+        out.append(f"error: {ErrorChain(error)}", style="bold red")
+
+        return out
+
     console = Console()
     table = Table(show_header=True, header_style="bold white", expand=True)
 
@@ -113,10 +122,13 @@ def print_prompt_completions_sample(
     for i in range(samples_to_show):
         prompt = list(prompts)[i]
         completion = list(completions)[i]
+        error = errors[i]
         reward = reward_values[i]
 
         formatted_prompt = _format_messages(prompt)
         formatted_completion = _format_messages(completion)
+        if error is not None:
+            formatted_completion += Text("\n\n") + _format_error(error)
 
         table.add_row(formatted_prompt, formatted_completion, Text(f"{reward:.2f}"))
         if i < samples_to_show - 1:

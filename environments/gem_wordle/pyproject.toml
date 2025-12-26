@@ -1,0 +1,19 @@
+[project]
+name = "gem_wordle"
+description = "Gym-compatible Wordle environment powered by AxonRL's GEM framework"
+tags = ["gem", "multi-turn", "reasoning", "game", "gym", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.8",
+    "gem-llm",
+    "gymnasium",
+    "nltk"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["gem_wordle.py"]

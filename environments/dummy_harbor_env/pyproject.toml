@@ -1,0 +1,20 @@
+[project]
+name = "dummy-harbor-env"
+description = "Minimal Harbor environment for testing the CLI agent interception framework"
+tags = ["dummy", "testing", "cli-agent", "harbor"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.8.post2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["dummy_harbor_env.py", "pyproject.toml", "tasks/**/*"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

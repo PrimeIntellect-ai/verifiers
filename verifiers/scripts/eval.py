@@ -3,6 +3,7 @@ import asyncio
 import importlib.resources
 import json
 import logging
+import os
 from typing import Any, Dict
 
 try:
@@ -217,9 +218,16 @@ def main():
         default="",
         help="Name of dataset to save to Hugging Face Hub",
     )
+    parser.add_argument(
+        "--extra-env-kwargs",
+        "-x",
+        type=json.loads,
+        default={},
+        help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
+    )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else "INFO")
+    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
     # apply defaults: CLI args take precedence, then env defaults, then global defaults
     env_defaults = get_env_eval_defaults(args.env_id)
@@ -295,6 +303,7 @@ def main():
         env_id=args.env_id,
         env_args=args.env_args,
         env_dir_path=args.env_dir_path,
+        extra_env_kwargs=args.extra_env_kwargs,
         # evaluation
         model=args.model,
         client_config=client_config,

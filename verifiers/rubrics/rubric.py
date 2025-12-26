@@ -35,7 +35,7 @@ class Rubric:
         weights: list[float] | None = None,
         parser: vf.Parser | None = None,
     ):
-        self.logger = logging.getLogger(f"verifiers.rubrics.{self.__class__.__name__}")
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         self.funcs = funcs or []
         self.weights = weights or []
@@ -177,7 +177,7 @@ class Rubric:
             merged = dict(
                 prompts=[state["prompt"] for state in states],
                 completions=[state["completion"] for state in states],
-                answers=[state["answer"] for state in states],
+                answers=[state.get("answer", "") for state in states],
                 states=states,
                 tasks=[state["task"] for state in states],
                 infos=[state.get("info", {}) for state in states],
@@ -243,6 +243,14 @@ class Rubric:
         state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
         state["reward"] = rewards["reward"]
         state["metrics"] = rewards["metrics"]
+
+    async def dummy_score_group(self, states: list[State]):
+        """
+        Score a group of rollouts together with dummy rewards.
+        """
+        for state in states:
+            state["reward"] = 0.0
+            state["metrics"] = {}
 
     async def score_group(self, states: list[State], score_sem: AsyncContextManager):
         """

@@ -1,13 +1,15 @@
-__version__ = "0.1.8"
+__version__ = "0.1.8.post2"
 
 import importlib
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Optional
 
 # early imports to avoid circular dependencies
+from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
-from .utils.decorators import (  # noqa # isort: skip
+from .decorators import (  # noqa # isort: skip
     cleanup,
     stop,
     teardown,
@@ -72,7 +74,7 @@ def setup_logging(
     logger.propagate = False
 
 
-setup_logging()
+setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
     "Parser",
@@ -86,6 +88,10 @@ __all__ = [
     "MathRubric",
     "TextArenaEnv",
     "ReasoningGymEnv",
+    "GymEnv",
+    "CliAgentEnv",
+    "HarborEnv",
+    "MCPEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -127,6 +133,10 @@ _LAZY_IMPORTS = {
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "ReasoningGymEnv": "verifiers.envs.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.textarena_env:TextArenaEnv",
+    "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
+    "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
+    "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
+    "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
 }
 
 
@@ -144,6 +154,10 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
+    from .envs.experimental.gym_env import GymEnv  # noqa: F401
+    from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
+    from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
