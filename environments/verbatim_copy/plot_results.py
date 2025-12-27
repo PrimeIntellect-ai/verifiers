@@ -10,7 +10,7 @@ Creates a 2x3 grid of plots or individual plots:
 Usage:
     python plot_results.py [--input aggregate.csv] [--output plots.png]
     python plot_results.py --image scatter --linear-fit --exclude-perfect
-    python plot_results.py --image content
+    python plot_results.py --image reward_by_content_type
     python plot_results.py --image timing_by_length
 """
 
@@ -19,6 +19,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -394,72 +395,43 @@ def plot_mode_comparison_by_content(
 def plot_scaling_behavior(
     ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
 ):
-    """Plot: Combined scaling plot with twin x-axes for length and fragmentation.
+    """Plot: Reward vs target length, aggregated across models.
 
-    Bottom x-axis: Target Length (solid lines)
-    Top x-axis: Fragment Length (dotted lines)
+    Shows one line per mode (mean across models) at each target length.
     """
-    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+    # Filter to mean_fragment_length=20, content_type="all"
+    filtered = df[(df["mean_fragment_length"] == 20) & (df["content_type"] == "all")]
 
-    # Primary axis (bottom): Target Length - solid lines
-    filtered_length = df[
-        (df["mean_fragment_length"] == 20) & (df["content_type"] == "all")
-    ]
+    modes = [m for m in MODE_ORDER if m in filtered["mode"].unique()]
 
     for mode in modes:
-        data = filtered_length[filtered_length["mode"] == mode].sort_values(
-            "target_length"
+        mode_data = filtered[filtered["mode"] == mode]
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+
+        # Aggregate across models at each length
+        agg = (
+            mode_data.groupby("target_length")["reward_mean"]
+            .mean()
+            .reset_index(name="mean")
         )
-        if len(data) > 0:
-            style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+        agg = agg.sort_values("target_length")
+
+        if len(agg) > 0:
             ax.plot(
-                data["target_length"],
-                data["reward_mean"],
+                agg["target_length"],
+                agg["mean"],
                 marker=style["marker"],
                 color=style["color"],
-                linestyle="-",  # Solid for length
                 linewidth=2,
-                markersize=5,
+                markersize=6,
             )
 
-    ax.set_xlabel("Target Length (solid lines)")
+    ax.set_xlabel("Target Length (chars)")
     ax.set_ylabel("Reward")
-    if absolute:
-        ax.set_ylim(0.6, 1.1)
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
-
-    # Secondary axis (top): Fragment Length - dotted lines
-    ax2 = ax.twiny()
-    filtered_frag = df[(df["target_length"] == 500) & (df["content_type"] == "all")]
-
-    frag_labels = None
-    for mode in modes:
-        data = filtered_frag[filtered_frag["mode"] == mode].copy()
-        # Sort by fragment length, putting None (no fragmentation = largest) last
-        data["sort_key"] = data["mean_fragment_length"].fillna(float("inf"))
-        data = data.sort_values("sort_key")
-
-        if len(data) > 0:
-            style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
-            x_positions = list(range(len(data)))
-            ax2.plot(
-                x_positions,
-                data["reward_mean"],
-                marker=style["marker"],
-                color=style["color"],
-                linestyle=":",  # Dotted for fragmentation
-                linewidth=2,
-                markersize=5,
-            )
-            if frag_labels is None:
-                frag_labels = data["frag_label"].tolist()
-
-    if frag_labels:
-        ax2.set_xticks(list(range(len(frag_labels))))
-        ax2.set_xticklabels(frag_labels)
-    ax2.set_xlabel("Fragment Length (dotted lines)")
-
     ax.set_title("Scaling Behavior")
+    if absolute:
+        ax.set_ylim(0, 1.1)
+        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
 
 
 def plot_mode_comparison_by_length(
@@ -709,6 +681,242 @@ def plot_distribution(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False):
     if absolute:
         ax.set_ylim(0, 1.1)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+
+
+def plot_prompt_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Prompt token usage (main + sub-LLM stacked), split by model."""
+    if len(df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_tokens.append(model_data["prompt_tokens_mean"].values[0] or 0)
+                sub_val = 0
+                if "sub_llm_prompt_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_prompt_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(val) else val
+                sub_tokens.append(sub_val)
+                if "prompt_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["prompt_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax.bar(
+            [xi + offset for xi in x],
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                        color="gray",
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Prompt Tokens")
+    ax.set_title("Prompt Token Usage")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+
+
+def plot_completion_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Completion token usage (main + sub-LLM stacked), split by model."""
+    if len(df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_tokens.append(model_data["completion_tokens_mean"].values[0] or 0)
+                sub_val = 0
+                if "sub_llm_completion_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_completion_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(val) else val
+                sub_tokens.append(sub_val)
+                if "completion_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["completion_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax.bar(
+            [xi + offset for xi in x],
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                        color="gray",
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Completion Tokens")
+    ax.set_title("Completion Token Usage")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right"
+    )
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
 
 
 def plot_token_usage(
@@ -962,14 +1170,14 @@ def create_plots(
         show_values=show_values,
         absolute=absolute,
     )
-    plot_main_model_tokens(
+    plot_prompt_tokens(
         axes[0, 1],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_token_usage(
+    plot_completion_tokens(
         axes[0, 2],
         df,
         show_legend=False,
@@ -1038,8 +1246,14 @@ PLOT_REGISTRY = {
     "reward": (plot_reward_by_mode, (10, 7), "Reward"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage"),
+    "prompt_tokens": (plot_prompt_tokens, (10, 7), "Prompt Token Usage"),
+    "completion_tokens": (plot_completion_tokens, (10, 7), "Completion Token Usage"),
     "timing": (plot_timing_by_mode, (10, 7), "Average Rollout Time"),
-    "content": (plot_mode_comparison_by_content, (10, 7), ""),  # No suptitle
+    "reward_by_content_type": (
+        plot_mode_comparison_by_content,
+        (10, 7),
+        "",
+    ),  # No suptitle
     "scaling": (plot_scaling_behavior, (10, 7), "Scaling Behavior"),
     "length": (plot_mode_comparison_by_length, (10, 7), ""),  # No suptitle
     "fragmentation": (
@@ -1089,7 +1303,7 @@ def create_single_plot(
     # Pass appropriate arguments based on plot type
     if plot_name == "scatter":
         func(ax, df, **kwargs)
-    elif plot_name in ("reward", "content"):
+    elif plot_name in ("reward", "reward_by_content_type"):
         func(
             ax,
             df,
@@ -1104,6 +1318,8 @@ def create_single_plot(
     elif plot_name in (
         "main_tokens",
         "tokens",
+        "prompt_tokens",
+        "completion_tokens",
         "timing",
         "timing_by_content",
     ):
@@ -1150,7 +1366,7 @@ Examples:
     python plot_results.py --image scatter --linear-fit --exclude-perfect
     
     # Save individual plot to file
-    python plot_results.py --image content -o content_plot.png
+    python plot_results.py --image reward_by_content_type -o reward_by_content_type.png
     
     # Timing plots (optional)
     python plot_results.py --image timing              # Basic timing by mode
@@ -1184,8 +1400,10 @@ Examples:
             "reward",
             "main_tokens",
             "tokens",
+            "prompt_tokens",
+            "completion_tokens",
             "timing",
-            "content",
+            "reward_by_content_type",
             "scaling",
             "length",
             "fragmentation",

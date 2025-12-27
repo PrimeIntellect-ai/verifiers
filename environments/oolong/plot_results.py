@@ -58,6 +58,9 @@ SUBSET_LABELS = {
     "real": "Real",
 }
 
+# Models to exclude from multi-subplot grid plots by default (partial match)
+EXCLUDED_MODELS = {"mimo", "deepseek"}
+
 # Hatching patterns for different models (dense patterns for thin/low bars)
 HATCHES = ["///", "...", "+++", "***", "\\\\\\", "xxx", "ooo", "|||", "---"]
 
@@ -609,7 +612,11 @@ def plot_reward_vs_context_scatter(
 
 
 def plot_reward_vs_context_binned(
-    ax: plt.Axes, df: pd.DataFrame, num_bins: int = 10, absolute: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    num_bins: int = 10,
+    absolute: bool = False,
+    show_legend: bool = True,
 ):
     """Plot: Reward vs context length with binned means (raw data)."""
     if "context_length" not in df.columns:
@@ -666,7 +673,7 @@ def plot_reward_vs_context_binned(
             label=MODE_LABELS.get(mode, mode).replace("\n", " "),
             color=style["color"],
             marker=style["marker"],
-            linestyle=style["linestyle"],
+            linestyle="-",  # Use solid lines; colors and markers distinguish modes
             linewidth=2,
             markersize=8,
         )
@@ -677,7 +684,8 @@ def plot_reward_vs_context_binned(
     if absolute:
         ax.set_ylim(0, 1.1)
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
+    if show_legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
 def plot_reward_vs_context_binned_by_subset(
@@ -1412,6 +1420,263 @@ def plot_main_model_tokens(
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
+def plot_prompt_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Prompt token usage (main + sub-LLM stacked), split by model."""
+    if len(df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    # Handle raw data vs aggregated data
+    if "prompt_tokens" in df.columns:
+        agg_cols = {
+            "prompt_tokens_mean": ("prompt_tokens", "mean"),
+            "prompt_tokens_count": ("prompt_tokens", "count"),
+        }
+        if "sub_llm_prompt_tokens" in df.columns:
+            agg_cols["sub_llm_prompt_tokens_mean"] = ("sub_llm_prompt_tokens", "mean")
+        df = df.groupby(["model", "mode"]).agg(**agg_cols).reset_index()
+
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_tokens.append(model_data["prompt_tokens_mean"].values[0] or 0)
+                sub_val = 0
+                if "sub_llm_prompt_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_prompt_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(val) else val
+                sub_tokens.append(sub_val)
+                if "prompt_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["prompt_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax.bar(
+            [xi + offset for xi in x],
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Prompt Tokens")
+    ax.set_title("Prompt Token Usage")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right", fontsize=8
+    )
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+
+
+def plot_completion_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Completion token usage (main + sub-LLM stacked), split by model."""
+    if len(df) == 0:
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return
+
+    # Handle raw data vs aggregated data
+    if "completion_tokens" in df.columns:
+        agg_cols = {
+            "completion_tokens_mean": ("completion_tokens", "mean"),
+            "completion_tokens_count": ("completion_tokens", "count"),
+        }
+        if "sub_llm_completion_tokens" in df.columns:
+            agg_cols["sub_llm_completion_tokens_mean"] = (
+                "sub_llm_completion_tokens",
+                "mean",
+            )
+        df = df.groupby(["model", "mode"]).agg(**agg_cols).reset_index()
+
+    models = df["model"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+
+        for model in models:
+            model_data = mode_data[mode_data["model"] == model]
+            if len(model_data) > 0:
+                main_tokens.append(model_data["completion_tokens_mean"].values[0] or 0)
+                sub_val = 0
+                if "sub_llm_completion_tokens_mean" in model_data.columns:
+                    val = model_data["sub_llm_completion_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(val) else val
+                sub_tokens.append(sub_val)
+                if "completion_tokens_count" in model_data.columns:
+                    counts.append(int(model_data["completion_tokens_count"].values[0]))
+                else:
+                    counts.append(None)
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        bars = ax.bar(
+            [xi + offset for xi in x],
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax.bar(
+            [xi + offset for xi in x],
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
+    ax.set_xlabel("Model")
+    ax.set_ylabel("Completion Tokens")
+    ax.set_title("Completion Token Usage")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(
+        [normalize_model_name(m) for m in models], rotation=15, ha="right", fontsize=8
+    )
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+
+
 def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     """Plot: Heatmap of reward by mode × subset."""
     # Determine column name based on data type (raw vs aggregated)
@@ -1452,6 +1717,228 @@ def plot_heatmap(ax: plt.Axes, df: pd.DataFrame):
     ax.set_title("Reward Heatmap: Mode × Subset")
 
 
+def create_tokens_by_subset_grid(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Create a 2x3 grid showing token usage by subset.
+
+    Top row: Prompt tokens for each subset (synth, synth_with_labels, real)
+    Bottom row: Completion tokens for each subset
+    """
+    subsets = [s for s in SUBSET_ORDER if s in df["subset"].unique()]
+
+    if len(subsets) == 0:
+        print("No subsets found in data")
+        return
+
+    fig, axes = plt.subplots(2, len(subsets), figsize=(6 * len(subsets), 10))
+    if len(subsets) == 1:
+        axes = axes.reshape(2, 1)
+
+    # Handle raw data vs aggregated data
+    if "prompt_tokens" in df.columns:
+        agg_cols = {
+            "prompt_tokens_mean": ("prompt_tokens", "mean"),
+            "completion_tokens_mean": ("completion_tokens", "mean"),
+            "prompt_tokens_count": ("prompt_tokens", "count"),
+        }
+        if "sub_llm_prompt_tokens" in df.columns:
+            agg_cols["sub_llm_prompt_tokens_mean"] = ("sub_llm_prompt_tokens", "mean")
+        if "sub_llm_completion_tokens" in df.columns:
+            agg_cols["sub_llm_completion_tokens_mean"] = (
+                "sub_llm_completion_tokens",
+                "mean",
+            )
+        df = df.groupby(["model", "mode", "subset"]).agg(**agg_cols).reset_index()
+
+    # Filter out excluded models (partial match)
+    all_models = df["model"].unique()
+    models = [
+        m
+        for m in all_models
+        if not any(excl.lower() in m.lower() for excl in EXCLUDED_MODELS)
+    ]
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = range(len(models))
+    width = 0.25
+
+    for col_idx, subset in enumerate(subsets):
+        subset_df = df[df["subset"] == subset]
+
+        # Top row: Prompt tokens
+        ax_prompt = axes[0, col_idx]
+        for i, mode in enumerate(modes):
+            mode_data = subset_df[subset_df["mode"] == mode]
+            main_tokens = []
+            sub_tokens = []
+
+            for model in models:
+                model_data = mode_data[mode_data["model"] == model]
+                if len(model_data) > 0:
+                    main_tokens.append(model_data["prompt_tokens_mean"].values[0] or 0)
+                    sub_val = 0
+                    if "sub_llm_prompt_tokens_mean" in model_data.columns:
+                        val = model_data["sub_llm_prompt_tokens_mean"].values[0]
+                        sub_val = 0 if pd.isna(val) else val
+                    sub_tokens.append(sub_val)
+                else:
+                    main_tokens.append(0)
+                    sub_tokens.append(0)
+
+            offset = (i - len(modes) / 2 + 0.5) * width
+            style = MODE_STYLES.get(mode, {"color": "gray"})
+
+            ax_prompt.bar(
+                [xi + offset for xi in x],
+                main_tokens,
+                width,
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax_prompt.bar(
+                [xi + offset for xi in x],
+                sub_tokens,
+                width,
+                bottom=main_tokens,
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+                hatch="///",
+                alpha=0.6,
+            )
+
+        ax_prompt.set_xlabel("Model")
+        ax_prompt.set_ylabel("Prompt Tokens")
+        ax_prompt.set_title(f"Prompt Tokens - {SUBSET_LABELS.get(subset, subset)}")
+        ax_prompt.set_xticks(list(x))
+        ax_prompt.set_xticklabels(
+            [normalize_model_name(m) for m in models],
+            rotation=15,
+            ha="right",
+            fontsize=8,
+        )
+
+        # Bottom row: Completion tokens
+        ax_completion = axes[1, col_idx]
+        for i, mode in enumerate(modes):
+            mode_data = subset_df[subset_df["mode"] == mode]
+            main_tokens = []
+            sub_tokens = []
+
+            for model in models:
+                model_data = mode_data[mode_data["model"] == model]
+                if len(model_data) > 0:
+                    main_tokens.append(
+                        model_data["completion_tokens_mean"].values[0] or 0
+                    )
+                    sub_val = 0
+                    if "sub_llm_completion_tokens_mean" in model_data.columns:
+                        val = model_data["sub_llm_completion_tokens_mean"].values[0]
+                        sub_val = 0 if pd.isna(val) else val
+                    sub_tokens.append(sub_val)
+                else:
+                    main_tokens.append(0)
+                    sub_tokens.append(0)
+
+            offset = (i - len(modes) / 2 + 0.5) * width
+            style = MODE_STYLES.get(mode, {"color": "gray"})
+
+            ax_completion.bar(
+                [xi + offset for xi in x],
+                main_tokens,
+                width,
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax_completion.bar(
+                [xi + offset for xi in x],
+                sub_tokens,
+                width,
+                bottom=main_tokens,
+                color=style["color"],
+                edgecolor="black",
+                linewidth=0.5,
+                hatch="///",
+                alpha=0.6,
+            )
+
+        ax_completion.set_xlabel("Model")
+        ax_completion.set_ylabel("Completion Tokens")
+        ax_completion.set_title(
+            f"Completion Tokens - {SUBSET_LABELS.get(subset, subset)}"
+        )
+        ax_completion.set_xticks(list(x))
+        ax_completion.set_xticklabels(
+            [normalize_model_name(m) for m in models],
+            rotation=15,
+            ha="right",
+            fontsize=8,
+        )
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction (top-left subplot only)
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    axes[0, 0].legend(handles=pattern_handles, loc="upper left", fontsize=8)
+
+    # Create central legend for modes
+    legend_handles = []
+    for mode in modes:
+        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
+        mode_label = MODE_LABELS.get(mode, mode).replace("\n", " ")
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker=style["marker"],
+                color="w",
+                markerfacecolor=style["color"],
+                markeredgecolor="black",
+                markersize=10,
+                label=mode_label,
+            )
+        )
+
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.02),
+        ncol=len(modes),
+        fontsize=10,
+    )
+
+    plt.suptitle(
+        "Oolong: Token Usage by Subset",
+        fontsize=14,
+        fontweight="bold",
+        y=1.02,
+    )
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.08)
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Plot saved to: {output_path}")
+
+    plt.show()
+
+
 def create_plots(
     df: pd.DataFrame,
     output_path: Path | None = None,
@@ -1462,8 +1949,7 @@ def create_plots(
     """Create the 2x3 grid of plots."""
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
-    # Main plots (suppress individual legends)
-    # Left column: same as deepdive
+    # Top row: Reward-related plots
     plot_reward_by_model(
         axes[0, 0],
         df,
@@ -1472,38 +1958,38 @@ def create_plots(
         show_values=show_values,
         absolute=absolute,
     )
-    plot_turns(
-        axes[0, 1],
-        df,
-        show_legend=False,
-        show_counts=show_counts,
-        show_values=show_values,
-    )
-    plot_main_model_tokens(
-        axes[1, 0],
-        df,
-        show_legend=False,
-        show_counts=show_counts,
-        show_values=show_values,
-    )
-    plot_token_usage(
-        axes[1, 1],
-        df,
-        show_legend=False,
-        show_counts=show_counts,
-        show_values=show_values,
-    )
-
-    # Right column: oolong-specific
     plot_reward_by_subset(
-        axes[0, 2],
+        axes[0, 1],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
         absolute=absolute,
     )
-    plot_reward_vs_context_binned(axes[1, 2], df, absolute=absolute)
+    plot_reward_vs_context_binned(axes[0, 2], df, absolute=absolute, show_legend=False)
+
+    # Bottom row: Usage-related plots
+    plot_turns(
+        axes[1, 0],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_prompt_tokens(
+        axes[1, 1],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
+    plot_completion_tokens(
+        axes[1, 2],
+        df,
+        show_legend=False,
+        show_counts=show_counts,
+        show_values=show_values,
+    )
 
     # Create central legend for modes (using markers to match scatter plots)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
@@ -1565,6 +2051,8 @@ PLOT_REGISTRY = {
     "context": (plot_context_vs_reward, (10, 7), "Reward vs Context Length"),
     "main_tokens": (plot_main_model_tokens, (10, 7), "Main Model Token Usage"),
     "tokens": (plot_token_usage, (10, 7), "Total Token Usage"),
+    "prompt_tokens": (plot_prompt_tokens, (10, 7), "Prompt Token Usage"),
+    "completion_tokens": (plot_completion_tokens, (10, 7), "Completion Token Usage"),
     # Additional timing plots
     "timing_by_subset": (plot_timing_by_subset, (10, 7), "Timing by Subset"),
     "timing_vs_context": (plot_timing_vs_context, (10, 7), "Timing vs Context Length"),
@@ -1596,7 +2084,7 @@ RAW_DATA_PLOTS = {
 }
 
 # Plot types that manage their own figure (not single-axis plots)
-MULTI_AXIS_PLOTS = {"context_binned_by_subset"}
+MULTI_AXIS_PLOTS = {"context_binned_by_subset", "tokens_by_subset"}
 
 
 def create_single_plot(
@@ -1627,7 +2115,14 @@ def create_single_plot(
             absolute=absolute,
         )
     # Plots that support show_counts and show_values
-    elif plot_name in ("timing", "timing_by_subset", "main_tokens", "tokens"):
+    elif plot_name in (
+        "timing",
+        "timing_by_subset",
+        "main_tokens",
+        "tokens",
+        "prompt_tokens",
+        "completion_tokens",
+    ):
         func(ax, df, show_counts=show_counts, show_values=show_values)
     # Plots that support only absolute
     elif plot_name in (
@@ -1744,6 +2239,8 @@ Examples:
             "context",
             "main_tokens",
             "tokens",
+            "prompt_tokens",
+            "completion_tokens",
             # Additional timing plots
             "timing_by_subset",
             "timing_vs_context",
@@ -1753,6 +2250,8 @@ Examples:
             "context_binned",
             "context_binned_by_subset",
             "context_rolling",
+            # Multi-subplot grid plots
+            "tokens_by_subset",
         ],
         default="main",
         help="Which plot to generate: 'main' for 2x3 grid, or individual plot name. "
@@ -1900,6 +2399,13 @@ Examples:
         if args.image == "context_binned_by_subset":
             plot_reward_vs_context_binned_by_subset(
                 df, args.output, absolute=args.absolute
+            )
+        elif args.image == "tokens_by_subset":
+            create_tokens_by_subset_grid(
+                df,
+                args.output,
+                show_counts=args.show_counts,
+                show_values=args.show_values,
             )
     else:
         create_single_plot(

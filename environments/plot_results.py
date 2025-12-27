@@ -66,6 +66,9 @@ ENV_MARKERS = {
     "gsm8k": "h",  # hexagon
 }
 
+# Environments to exclude from cross-environment plots by default
+EXCLUDED_ENVIRONMENTS = {"needle_in_haystack"}
+
 
 def normalize_model_name(model: str) -> str:
     """Normalize model name for display."""
@@ -92,6 +95,9 @@ def discover_environments(base_path: Path) -> list[str]:
     environments = []
     for env_dir in sorted(base_path.iterdir()):
         if env_dir.is_dir():
+            # Skip excluded environments by default
+            if env_dir.name in EXCLUDED_ENVIRONMENTS:
+                continue
             csv_path = env_dir / "outputs" / "aggregate.csv"
             if csv_path.exists():
                 environments.append(env_dir.name)
@@ -433,7 +439,7 @@ def plot_token_usage(
     show_counts: bool = False,
     show_values: bool = False,
 ):
-    """Plot: Total token usage by environment and mode."""
+    """Plot: Total token usage by environment and mode (main + sub-LLM stacked)."""
     environments = df["environment"].unique()
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
@@ -442,12 +448,13 @@ def plot_token_usage(
 
     for i, mode in enumerate(modes):
         mode_data = df[df["mode"] == mode]
-        tokens = []
+        main_tokens = []
+        sub_tokens = []
         counts = []
         for env in environments:
             env_data = mode_data[mode_data["environment"] == env]
             if len(env_data) > 0:
-                # Sum main + sub-LLM tokens
+                # Main model tokens (prompt + completion)
                 main_prompt = (
                     env_data["prompt_tokens_mean"].values[0]
                     if "prompt_tokens_mean" in env_data.columns
@@ -458,6 +465,9 @@ def plot_token_usage(
                     if "completion_tokens_mean" in env_data.columns
                     else 0
                 )
+                main_tokens.append((main_prompt or 0) + (main_completion or 0))
+
+                # Sub-LLM tokens (prompt + completion)
                 sub_prompt = 0
                 sub_completion = 0
                 if "sub_llm_prompt_tokens_mean" in env_data.columns:
@@ -466,22 +476,21 @@ def plot_token_usage(
                 if "sub_llm_completion_tokens_mean" in env_data.columns:
                     val = env_data["sub_llm_completion_tokens_mean"].values[0]
                     sub_completion = 0 if pd.isna(val) else val
-                tokens.append(
-                    (main_prompt or 0)
-                    + (main_completion or 0)
-                    + sub_prompt
-                    + sub_completion
-                )
+                sub_tokens.append(sub_prompt + sub_completion)
+
                 counts.append(get_count_for_env_data(env_data))
             else:
-                tokens.append(0)
+                main_tokens.append(0)
+                sub_tokens.append(0)
                 counts.append(None)
 
         offset = (i - len(modes) / 2 + 0.5) * width
         style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        # Main model tokens (solid)
         bars = ax.bar(
             x + offset,
-            tokens,
+            main_tokens,
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
@@ -489,18 +498,32 @@ def plot_token_usage(
             linewidth=0.5,
         )
 
+        # Sub-LLM tokens (stacked, hatched)
+        ax.bar(
+            x + offset,
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
         # Add annotations above bars if requested
         if show_values or show_counts:
-            for bar, token_count, count in zip(bars, tokens, counts):
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
                 annotations = []
                 if show_values:
-                    annotations.append(f"{int(token_count):,}")
+                    annotations.append(f"{int(total):,}")
                 if show_counts and count is not None:
                     annotations.append(f"n={count}")
                 if annotations:
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 100,
+                        total + 100,
                         "\n".join(annotations),
                         ha="center",
                         va="bottom",
@@ -515,6 +538,220 @@ def plot_token_usage(
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
+
+
+def plot_prompt_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Prompt token usage by environment and mode (main + sub-LLM stacked)."""
+    environments = df["environment"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = np.arange(len(environments))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+        for env in environments:
+            env_data = mode_data[mode_data["environment"] == env]
+            if len(env_data) > 0:
+                main_val = (
+                    env_data["prompt_tokens_mean"].values[0]
+                    if "prompt_tokens_mean" in env_data.columns
+                    else 0
+                )
+                main_tokens.append(0 if pd.isna(main_val) else main_val)
+
+                sub_val = 0
+                if "sub_llm_prompt_tokens_mean" in env_data.columns:
+                    v = env_data["sub_llm_prompt_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(v) else v
+                sub_tokens.append(sub_val)
+                counts.append(get_count_for_env_data(env_data))
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        # Main model tokens
+        bars = ax.bar(
+            x + offset,
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        # Sub-LLM tokens (stacked, hatched)
+        ax.bar(
+            x + offset,
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
+    ax.set_xlabel("Environment")
+    ax.set_ylabel("Prompt Tokens")
+    ax.set_title("Prompt Token Usage")
+    ax.set_xticks(x)
+    ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+
+
+def plot_completion_tokens(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_legend: bool = True,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: Completion token usage by environment and mode (main + sub-LLM stacked)."""
+    environments = df["environment"].unique()
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    x = np.arange(len(environments))
+    width = 0.25
+
+    for i, mode in enumerate(modes):
+        mode_data = df[df["mode"] == mode]
+        main_tokens = []
+        sub_tokens = []
+        counts = []
+        for env in environments:
+            env_data = mode_data[mode_data["environment"] == env]
+            if len(env_data) > 0:
+                main_val = (
+                    env_data["completion_tokens_mean"].values[0]
+                    if "completion_tokens_mean" in env_data.columns
+                    else 0
+                )
+                main_tokens.append(0 if pd.isna(main_val) else main_val)
+
+                sub_val = 0
+                if "sub_llm_completion_tokens_mean" in env_data.columns:
+                    v = env_data["sub_llm_completion_tokens_mean"].values[0]
+                    sub_val = 0 if pd.isna(v) else v
+                sub_tokens.append(sub_val)
+                counts.append(get_count_for_env_data(env_data))
+            else:
+                main_tokens.append(0)
+                sub_tokens.append(0)
+                counts.append(None)
+
+        offset = (i - len(modes) / 2 + 0.5) * width
+        style = MODE_STYLES.get(mode, {"color": "gray"})
+
+        bars = ax.bar(
+            x + offset,
+            main_tokens,
+            width,
+            label=MODE_LABELS.get(mode, mode),
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax.bar(
+            x + offset,
+            sub_tokens,
+            width,
+            bottom=main_tokens,
+            color=style["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+        )
+
+        if show_values or show_counts:
+            for bar, main, sub, count in zip(bars, main_tokens, sub_tokens, counts):
+                total = main + sub
+                annotations = []
+                if show_values:
+                    annotations.append(f"{int(total):,}")
+                if show_counts and count is not None:
+                    annotations.append(f"n={count}")
+                if annotations:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        total + 100,
+                        "\n".join(annotations),
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=90,
+                    )
+
+    ax.set_xlabel("Environment")
+    ax.set_ylabel("Completion Tokens")
+    ax.set_title("Completion Token Usage")
+    ax.set_xticks(x)
+    ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
+
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
 
 
 def plot_main_model_tokens(
@@ -850,7 +1087,7 @@ def plot_reward_vs_tokens_scatter(
     ax.set_title("Reward vs Tokens")
     if absolute:
         ax.set_ylim(0, 1.1)
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
 
     if show_legend:
         # Create two-part legend: modes (colors) in left column, environments (shapes) in right columns
@@ -1304,6 +1541,76 @@ def create_tokens_grid(
     plt.close()
 
 
+def create_tokens_breakdown(
+    df: pd.DataFrame,
+    output_path: Path | None = None,
+    show_counts: bool = False,
+    show_values: bool = False,
+):
+    """Plot: 1x3 grid showing prompt tokens, completion tokens, and total tokens.
+
+    Each subplot shows main model tokens (solid) + sub-LLM tokens (hatched) stacked.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    plot_prompt_tokens(
+        axes[0], df, show_legend=False, show_counts=show_counts, show_values=show_values
+    )
+    plot_completion_tokens(
+        axes[1], df, show_legend=False, show_counts=show_counts, show_values=show_values
+    )
+    plot_token_usage(
+        axes[2], df, show_legend=False, show_counts=show_counts, show_values=show_values
+    )
+
+    # Create central legend with modes and main/sub-LLM distinction
+    modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
+
+    # Mode legend handles (colored squares)
+    mode_handles = [
+        Patch(
+            facecolor=MODE_STYLES[m]["color"],
+            edgecolor="black",
+            linewidth=0.5,
+            label=MODE_LABELS.get(m, m),
+        )
+        for m in modes
+    ]
+
+    # Main vs Sub-LLM legend handles
+    type_handles = [
+        Patch(facecolor="gray", edgecolor="black", linewidth=0.5, label="Main Model"),
+        Patch(
+            facecolor="gray",
+            edgecolor="black",
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+
+    all_handles = mode_handles + type_handles
+    fig.legend(
+        handles=all_handles,
+        loc="lower center",
+        ncol=len(all_handles),
+        fontsize=10,
+        bbox_to_anchor=(0.5, 0.02),
+    )
+
+    plt.suptitle("Token Usage Breakdown", fontsize=14, y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.15, top=0.90)
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        print(f"Saved plot to {output_path}")
+    else:
+        plt.show()
+    plt.close()
+
+
 # =============================================================================
 # Main Plot Creation
 # =============================================================================
@@ -1344,15 +1651,15 @@ def create_main_plots(
         show_values=show_values,
     )
 
-    # Bottom row: Token costs
-    plot_main_model_tokens(
+    # Bottom row: Token costs (prompt/completion breakdown with main + sub-LLM stacked)
+    plot_prompt_tokens(
         axes[1, 0],
         df,
         show_legend=False,
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_token_usage(
+    plot_completion_tokens(
         axes[1, 1],
         df,
         show_legend=False,
@@ -1432,6 +1739,8 @@ def create_single_plot(
         "reward": (plot_reward_by_environment, (10, 7)),
         "lift": (plot_rlm_lift, (10, 7)),
         "tokens": (plot_token_usage, (10, 7)),
+        "prompt_tokens": (plot_prompt_tokens, (10, 7)),
+        "completion_tokens": (plot_completion_tokens, (10, 7)),
         "main_tokens": (plot_main_model_tokens, (10, 7)),
         "efficiency": (plot_token_efficiency, (10, 7)),
         "timing": (plot_timing, (10, 7)),
@@ -1460,7 +1769,15 @@ def create_single_plot(
         )
     elif plot_name == "scatter":
         plot_func(ax, df, absolute=absolute)
-    elif plot_name in ("lift", "tokens", "main_tokens", "timing", "overhead"):
+    elif plot_name in (
+        "lift",
+        "tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "main_tokens",
+        "timing",
+        "overhead",
+    ):
         plot_func(ax, df, show_counts=show_counts, show_values=show_values)
     else:
         plot_func(ax, df)
@@ -1528,9 +1845,12 @@ Examples:
             "main",
             "rewards_grid",
             "tokens_grid",
+            "tokens_breakdown",
             "reward",
             "lift",
             "tokens",
+            "prompt_tokens",
+            "completion_tokens",
             "main_tokens",
             "efficiency",
             "timing",
@@ -1539,7 +1859,7 @@ Examples:
             "heatmap",
         ],
         default="main",
-        help="Which plot to generate (default: main grid, rewards_grid/tokens_grid show per-model comparison)",
+        help="Which plot to generate (default: main grid, tokens_breakdown shows prompt/completion/total)",
     )
 
     # Environment filtering
@@ -1679,6 +1999,13 @@ Examples:
         )
     elif args.image == "tokens_grid":
         create_tokens_grid(
+            df,
+            args.output,
+            show_counts=args.show_counts,
+            show_values=args.show_values,
+        )
+    elif args.image == "tokens_breakdown":
+        create_tokens_breakdown(
             df,
             args.output,
             show_counts=args.show_counts,
