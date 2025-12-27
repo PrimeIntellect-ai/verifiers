@@ -303,7 +303,7 @@ class RLTrainer(Trainer):
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
             logprobs = selective_log_softmax(logits, targets)
-            entropies = entropy_from_logits(logits)
+            entropies = entropy_from_logits(logits.detach())
             all_logprobs.append(logprobs)
             all_entropies.append(entropies)
         logprobs = torch.cat(all_logprobs, dim=0)
