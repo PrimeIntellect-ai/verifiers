@@ -1587,6 +1587,18 @@ PY
             self._extract_tokens(s.get("response"))[1] for s in main_steps
         )
 
+        # REPL call timing metrics (already tracked in tool_call_timings)
+        tool_timings = state.get("tool_call_timings", [])
+        state["repl_total_time_seconds"] = (
+            sum(t["execution_seconds"] for t in tool_timings) if tool_timings else 0.0
+        )
+        state["repl_call_count"] = len(tool_timings)
+        state["repl_mean_time_seconds"] = (
+            (state["repl_total_time_seconds"] / len(tool_timings))
+            if tool_timings
+            else 0.0
+        )
+
         # Release tunnel
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
