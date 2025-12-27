@@ -10,14 +10,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rich.markup import escape as safe_escape
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.theme import Theme
-from textual.widgets import Footer, Label, OptionList, Static
+from textual.widgets import Footer, Input, Label, OptionList, Static
 from textual.widgets._option_list import Option
+from textual.message import Message
+from textual.events import Blur
 
 
 # ----------------------------
@@ -388,6 +391,7 @@ class ViewRunScreen(Screen):
         Binding("b,backspace", "back", "Back"),
         Binding("left,h", "prev_record", "Previous"),
         Binding("right,l", "next_record", "Next"),
+        Binding("g", "go_to", "Go to record"),
     ]
 
     def __init__(self, run: RunInfo):
@@ -395,6 +399,50 @@ class ViewRunScreen(Screen):
         self.run = run
         self.records = load_run_results(run)
         self.current_record_idx = 0
+
+    class GoToInput(Input):
+        BINDINGS = [
+            Binding("escape,g", "cancel", "Cancel", show=True),
+            Binding("enter", "submit", "Go", show=True),
+        ]
+
+        class InvalidSubmission(Message):
+            def __init__(self) -> None:
+                super().__init__()
+
+        class GoToRecord(Message):
+            def __init__(self, record_index: int) -> None:
+                super().__init__()
+                self.record_index = record_index
+
+        async def _on_key(self, event: events.Key) -> None:
+            if event.key == "enter":
+                event.stop()
+                event.prevent_default()
+                if self.value and self.value.isdigit():
+                    self.post_message(self.GoToRecord(int(self.value)))
+                else:
+                    self.remove()
+                return
+
+            if event.key in ("g", "escape"):
+                event.stop()
+                event.prevent_default()
+                self.remove()
+                return
+
+            await super()._on_key(event)
+
+        @on(InvalidSubmission)
+        def show_invalid_state(self) -> None:
+            self.add_class("-invalid-submission")
+            self.app.bell()
+            self.set_timer(0.3, lambda: self.remove_class("-invalid-submission"))
+
+        @on(Blur)
+        def on_blur(self, event: Blur) -> None:
+            """Remove the input when it loses focus."""
+            self.remove()
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -582,6 +630,41 @@ class ViewRunScreen(Screen):
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
 
+    def action_go_to(self) -> None:
+        try:
+            go_to_input = self.query_one(self.GoToInput)
+            go_to_input.remove()
+        except NoMatches:
+            metadata_panel = self.query_one(".metadata-panel", Panel)
+            go_to_input = self.GoToInput(
+                placeholder="Index...", id="go-to-input", restrict=r"\d*"
+            )
+            metadata_panel.mount(go_to_input)
+            go_to_input.focus()
+
+    @on(GoToInput.GoToRecord)
+    def go_to_record_index(self, message: GoToInput.GoToRecord) -> None:
+        """Jump to the specified record index."""
+        if not self.records:
+            return
+
+        try:
+            go_to_input = self.query_one(self.GoToInput)
+        except NoMatches:
+            return
+
+        target_idx = message.record_index - 1
+        num_records = len(self.records)
+
+        if 0 <= target_idx < num_records:
+            self.current_record_idx = target_idx
+            self.update_display()
+            self.query_one("#prompt-scroll").scroll_y = 0
+            self.query_one("#completion-scroll").scroll_y = 0
+            go_to_input.remove()
+        else:
+            go_to_input.post_message(self.GoToInput.InvalidSubmission())
+
 
 # ----------------------------
 # Main App
@@ -716,7 +799,20 @@ class VerifiersTUI(App):
         min-height: 3;
         max-height: 6;
     }
-    
+
+    #go-to-input {
+        layer: overlay;
+        dock: right;
+        width: 12;
+        height: 1;
+        padding: 0 1;
+        border: none;
+    }
+
+    #go-to-input.-invalid-submission {
+        background: $error 50%;
+    }
+
     Footer {
         background: $panel;
     }
