@@ -192,9 +192,11 @@ def main():
     parser.add_argument(
         "--save-results",
         "-s",
+        nargs="?",
+        const=True,
         default=False,
-        action="store_true",
-        help="Save results to disk",
+        metavar="PATH",
+        help="Save results to disk. Optionally specify custom output path.",
     )
     # save every n rollouts
     parser.add_argument(
@@ -317,8 +319,9 @@ def main():
         print_results=True,
         verbose=args.verbose,
         # saving
+        output_dir=args.save_results if isinstance(args.save_results, str) else None,
         state_columns=args.state_columns,
-        save_results=args.save_results,
+        save_results=bool(args.save_results),
         save_every=args.save_every,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
