@@ -43,6 +43,13 @@ def get_model_and_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
+def unsloth_get_model_and_tokenizer(
+        model_name: str,
+        unsloth_config: dict[str, Any],
+    ) -> tuple[Any, Any]:
+    from unsloth import FastLanguageModel
+    model, tokenizer = FastLanguageModel.from_pretrained(model_name, **unsloth_config)
+    return model, tokenizer
 
 def pad(
     tensors: list[torch.Tensor],
@@ -166,6 +173,15 @@ def prepare_peft_model(
         model = enable_gradient_checkpointing(model, args.gradient_checkpointing_kwargs)
     model = cast(PreTrainedModel, get_peft_model(model, peft_config))
 
+    return model
+
+def unsloth_prepare_peft_model(
+    model: PreTrainedModel, unsloth_config: dict[str, Any],
+) -> PreTrainedModel:
+    """Prepares a model for PEFT training using Unsloth."""
+    from unsloth import FastLanguageModel
+    # TODO: check additional args ad kwargs
+    model = cast(PreTrainedModel, FastLanguageModel.get_peft_model(model, **unsloth_config))
     return model
 
 
