@@ -48,6 +48,8 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
             "env_tip_type", "math"
         )  # default "math" for backward compat
         code_execution_timeout = env_args.get("code_execution_timeout_seconds", None)
+        # Check for updated tips
+        updated_tips = env_args.get("updated_tips", False)
 
         with open(results_file) as f:
             for line in f:
@@ -58,6 +60,7 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
                     result["_include_env_tips"] = include_env_tips
                     result["_env_tip_type"] = env_tip_type
                     result["_code_execution_timeout"] = code_execution_timeout
+                    result["_updated_tips"] = updated_tips
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
@@ -71,6 +74,7 @@ def get_mode(result: dict) -> str:
         - "standard": Standard PythonEnv mode
         - "rlm": RLMEnv without tips
         - "rlm_tips": RLMEnv with math tips (env_tip_type="math" or backward compat)
+        - "rlm_tips_v2": RLMEnv with updated math tips
         - "rlm_tips_subllm": RLMEnv with sub-LLM tips (no timeout info)
         - "rlm_tips_subllm_{N}s": RLMEnv with sub-LLM tips and specific timeout
     """
@@ -78,6 +82,7 @@ def get_mode(result: dict) -> str:
     include_env_tips = result.get("_include_env_tips", False)
     env_tip_type = result.get("_env_tip_type", "math")
     timeout = result.get("_code_execution_timeout")
+    updated_tips = result.get("_updated_tips", False)
 
     if not use_rlm:
         return "standard"
@@ -85,6 +90,9 @@ def get_mode(result: dict) -> str:
         return "rlm"
     # Tips are enabled - check which type
     if env_tip_type == "math":
+        # Check if using updated tips
+        if updated_tips:
+            return "rlm_tips_v2"
         return "rlm_tips"
     # sub-LLM tips: include timeout if available
     if timeout is not None:
