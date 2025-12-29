@@ -110,9 +110,13 @@ def test_process_trajectory_steps_for_training():
                 completion_ids=[3, 4],
                 completion_mask=[1, 1],
                 completion_logprobs=[-0.1, -0.2],
+                overlong_prompt=False,
+                is_truncated=False,
             ),
             reward=1.0,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="test_trajectory",
             extras={},
         )
     ]
@@ -135,9 +139,13 @@ def test_process_trajectory_steps_for_training():
                 completion_ids=[6, 7, 8],
                 completion_mask=[1, 1, 1],
                 completion_logprobs=[-0.3, -0.4, -0.5],
+                overlong_prompt=False,
+                is_truncated=False,
             ),
             reward=0.5,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="test_trajectory",
             extras={},
         )
     ]
@@ -192,6 +200,8 @@ def test_process_trajectory_steps_skip_missing_tokens():
             tokens=None,
             reward=1.0,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="test_trajectory",
             extras={},
         ),
         TrajectoryStep(
@@ -204,9 +214,13 @@ def test_process_trajectory_steps_skip_missing_tokens():
                 completion_ids=[2, 3],
                 completion_mask=[1, 1],
                 completion_logprobs=[-0.1, -0.2],
+                overlong_prompt=False,
+                is_truncated=False,
             ),
             reward=0.5,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="test_trajectory",
             extras={},
         ),
     ]

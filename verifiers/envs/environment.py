@@ -6,6 +6,7 @@ import json
 import logging
 import signal
 import time
+import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -597,6 +598,7 @@ class Environment(ABC):
         else:
             state["oai_tools"] = []
         state["trajectory"] = []
+        state["current_trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None

@@ -56,6 +56,8 @@ class SimpleEnvironment(Environment):
             tokens=tokens,
             reward=None,
             advantage=None,
+            is_truncated=False,
+            trajectory_id=state["current_trajectory_id"],
             extras={},
         )
         state["trajectory"].append(trajectory_step)

@@ -939,6 +939,7 @@ class RLMEnv(SandboxEnv):
                         reward=None,
                         advantage=None,
                         is_truncated=is_truncated,
+                        trajectory_id=f"{batch_id}_{request_id}",
                         extras={
                             "is_sub_llm_call": True,
                             "parent_turn": parent_turn,
