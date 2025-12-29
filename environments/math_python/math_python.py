@@ -25,20 +25,14 @@ from verifiers.utils.data_utils import extract_boxed_answer
 logger = logging.getLogger("verifiers.math_python")
 
 _ENV_TIPS_MATH = """
-
 <env_tips>
-Use Python for all calculations.
+Use Python for calculations. The `sympy` library is available for symbolic math.
 </env_tips>"""
 
 _ENV_TIPS_SUB_LLMS = """
 
 <env_tips>
-Use Python for all calculations. Use sub-LLMs to validate the logical soundness of your reasoning.
-An easy way to do this is by reasoning directly in the REPL and writing the reasoning into a Python variable.
-This variable can then be piped directly into one or multiple parallel sub-LLM calls for validation.
-Ask the sub-LLMs explicitly to check correctness of the reasoning, and to give feedback about it.
-If the sub-LLMs agree that the reasoning is sound, you can be confident that your answer is correct.
-If the sub-LLMs disagree, you may need to revise your reasoning and repeat the process.
+Use `llm_batch()` for reasoning steps: breaking down the problem, validating intermediate results, and checking your logic. Use Python for numerical calculations.
 </env_tips>"""
 
 DEFAULT_INSTRUCTION_PROMPT = "Solve the following math problem. Explain your reasoning and put the final answer in \\boxed{}. Use Python for all calculations."

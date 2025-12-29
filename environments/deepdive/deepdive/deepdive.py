@@ -50,7 +50,6 @@ async def with_timeout(func: Callable, timeout_seconds: float) -> Any:
 # Environment-specific tips for RLM mode (used for SFT data generation)
 # These tips are wrapped in <env_tips> tags so they can be removed during training
 _ENV_TIPS = """
-
 <env_tips>
 Strategy for deep research tasks:
 
@@ -69,8 +68,6 @@ Strategy for deep research tasks:
 4. **Iterate if needed**: If the initial research reveals new questions or missing information, dispatch another batch of targeted sub-tasks. Repeat until you have sufficient evidence.
 
 5. **Finalize**: Write your synthesized answer to `answer["content"]`, verify it addresses the original question, then set `answer["ready"] = True`.
-
-Make sure to provide the sub-LLMs with the required context for their tasks. Use them extensively.
 
 Key insight: Sub-LLMs handle the verbose web content, returning concise summaries. This keeps your context clean while leveraging deep research.
 </env_tips>"""
