@@ -108,16 +108,18 @@ def apply_light_style() -> None:
 apply_dark_style()
 
 # Mode styling (consistent with individual environment plots)
-MODE_ORDER = ["standard", "rlm", "rlm_tips"]
+MODE_ORDER = ["standard", "rlm", "rlm_tips", "rlm_tips_v2"]
 MODE_LABELS = {
     "standard": "LLM",
     "rlm": "RLM",
     "rlm_tips": "RLM+tips",
+    "rlm_tips_v2": "RLM+tips v2",
 }
 MODE_STYLES = {
     "standard": {"color": "#E24A33", "marker": "o", "linestyle": "-"},
     "rlm": {"color": "#348ABD", "marker": "s", "linestyle": "--"},
     "rlm_tips": {"color": "#988ED5", "marker": "^", "linestyle": ":"},
+    "rlm_tips_v2": {"color": "#2CA02C", "marker": "D", "linestyle": "-."},
 }
 
 # Environment display names (auto-generated from folder names if not specified)
@@ -1986,6 +1988,12 @@ Examples:
         help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
     )
     parser.add_argument(
+        "--include-updated-tips",
+        "-u",
+        action="store_true",
+        help="Include updated tips (rlm_tips_v2) mode in plots",
+    )
+    parser.add_argument(
         "--light",
         action="store_true",
         help="Use light theme instead of dark (default)",
@@ -2015,6 +2023,15 @@ Examples:
     except ValueError as e:
         print(f"Error: {e}")
         return
+
+    if not args.include_updated_tips and "mode" in df.columns:
+        original_count = len(df)
+        df = df[df["mode"] != "rlm_tips_v2"]
+        filtered_count = original_count - len(df)
+        if filtered_count > 0:
+            print(
+                f"Filtered out {filtered_count} rlm_tips_v2 configurations (use -u to include)"
+            )
 
     # List models
     if args.list_models:
