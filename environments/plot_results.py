@@ -612,6 +612,23 @@ def plot_token_usage(
     ax.set_title("Total Token Usage")
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
+    # Add in-subplot legend for Main Model / Sub-LLM distinction
+    pattern_handles = [
+        Patch(
+            facecolor="#CCCCCC", edgecolor=EDGE_COLOR, linewidth=0.5, label="Main Model"
+        ),
+        Patch(
+            facecolor="#CCCCCC",
+            edgecolor=EDGE_COLOR,
+            linewidth=0.5,
+            hatch="///",
+            alpha=0.6,
+            label="Sub-LLM",
+        ),
+    ]
+    pattern_legend = ax.legend(handles=pattern_handles, loc="upper right", fontsize=8)
+    ax.add_artist(pattern_legend)
+
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
@@ -721,7 +738,7 @@ def plot_prompt_tokens(
             label="Sub-LLM",
         ),
     ]
-    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+    ax.legend(handles=pattern_handles, loc="upper right", fontsize=8)
 
 
 def plot_completion_tokens(
@@ -827,7 +844,7 @@ def plot_completion_tokens(
             label="Sub-LLM",
         ),
     ]
-    ax.legend(handles=pattern_handles, loc="upper left", fontsize=8)
+    ax.legend(handles=pattern_handles, loc="upper right", fontsize=8)
 
 
 def plot_main_model_tokens(
@@ -1203,8 +1220,8 @@ def plot_reward_vs_tokens_scatter(
                 ncol=1,
                 fontsize=7,
                 borderpad=0.3,
-                labelspacing=0.3,
-                handletextpad=0.4,
+                labelspacing=0.6,
+                handletextpad=0.6,
             )
             ax.add_artist(env_legend)
 
@@ -1638,7 +1655,7 @@ def create_tokens_breakdown(
         axes[2], df, show_legend=False, show_counts=show_counts, show_values=show_values
     )
 
-    # Create central legend with modes and main/sub-LLM distinction
+    # Create central legend with modes
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
 
     # Mode legend handles (colored squares)
@@ -1652,36 +1669,17 @@ def create_tokens_breakdown(
         for m in modes
     ]
 
-    # Main vs Sub-LLM legend handles
-    type_handles = [
-        Patch(
-            facecolor=MUTED_TEXT_COLOR,
-            edgecolor=EDGE_COLOR,
-            linewidth=0.5,
-            label="Main Model",
-        ),
-        Patch(
-            facecolor=MUTED_TEXT_COLOR,
-            edgecolor=EDGE_COLOR,
-            linewidth=0.5,
-            hatch="///",
-            alpha=0.6,
-            label="Sub-LLM",
-        ),
-    ]
-
-    all_handles = mode_handles + type_handles
     fig.legend(
-        handles=all_handles,
+        handles=mode_handles,
         loc="lower center",
-        ncol=len(all_handles),
+        ncol=max(1, len(mode_handles)),
         fontsize=10,
-        bbox_to_anchor=(0.5, 0.02),
+        bbox_to_anchor=(0.5, -0.02),
     )
 
     plt.suptitle("Token Usage Breakdown", fontsize=14, y=0.98)
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15, top=0.90)
+    plt.subplots_adjust(bottom=0.16, top=0.90)
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")

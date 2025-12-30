@@ -839,20 +839,29 @@ def plot_reward_vs_context_binned_by_subset(
             ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.3)
 
     axes[0].set_ylabel("Judge Reward (mean)")
-    axes[-1].legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=9)
+    handles, labels = axes[-1].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles=handles,
+            labels=labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.02),
+            ncol=3,
+            fontsize=9,
+        )
 
     plt.suptitle(
         f"Oolong: Reward vs Context Length by Subset (binned into {num_bins} ranges)",
         fontsize=14,
         fontweight="bold",
     )
-    plt.tight_layout()
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
     plt.close()
 
 
@@ -2010,8 +2019,8 @@ def create_tokens_by_subset_grid(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def create_plots(
@@ -2106,8 +2115,8 @@ def create_plots(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 # Mapping of plot names to (function, figsize, title)
@@ -2216,8 +2225,8 @@ def create_single_plot(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def main():

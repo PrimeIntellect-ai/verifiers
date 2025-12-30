@@ -1805,7 +1805,7 @@ def create_ablation_timing_plots(
         return
 
     # Create 1x3 figure
-    fig, axes = plt.subplots(1, 3, figsize=(16, 6))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 7))
 
     # Plot each subplot
     _plot_ablation_prompt_tokens(
@@ -1858,8 +1858,8 @@ def create_ablation_timing_plots(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def create_ablation_plots(
@@ -1952,19 +1952,18 @@ def create_ablation_plots(
         fig.legend(
             handles=legend_handles,
             loc="lower center",
-            bbox_to_anchor=(0.5, -0.02),
+            bbox_to_anchor=(0.5, 0.02),
             ncol=len(legend_handles),
             fontsize=10,
         )
 
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15)  # Make room for legend
+    plt.tight_layout(rect=(0.02, 0.1, 0.98, 0.98))
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def plot_ablation(
@@ -2080,8 +2079,8 @@ def create_plots(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 # Mapping of plot names to (function, figsize, title)
@@ -2158,8 +2157,8 @@ def create_single_plot(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def main():

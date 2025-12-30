@@ -1312,8 +1312,8 @@ def create_plots(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 # Mapping of plot names to (function, figsize, title)
@@ -1409,8 +1409,8 @@ def create_single_plot(
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Plot saved to: {output_path}")
-
-    plt.show()
+    else:
+        plt.show()
 
 
 def main():
