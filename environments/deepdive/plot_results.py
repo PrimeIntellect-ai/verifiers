@@ -24,8 +24,81 @@ from matplotlib.patches import Patch
 import pandas as pd
 import seaborn as sns
 
-# Set style at module level so it applies to all plots
-sns.set_style("whitegrid")
+DARK_FIGURE_BG = "#0f111a"
+DARK_AXES_BG = "#0f111a"
+DARK_GRID_COLOR = "#2a2f38"
+DARK_TEXT_COLOR = "#e6e6e6"
+DARK_MUTED_TEXT_COLOR = "#b3b3b3"
+DARK_EDGE_COLOR = "#d0d0d0"
+
+LIGHT_FIGURE_BG = "#ffffff"
+LIGHT_AXES_BG = "#ffffff"
+LIGHT_GRID_COLOR = "#e0e0e0"
+LIGHT_TEXT_COLOR = "#222222"
+LIGHT_MUTED_TEXT_COLOR = "#555555"
+LIGHT_EDGE_COLOR = "#333333"
+
+GRID_COLOR = DARK_GRID_COLOR
+TEXT_COLOR = DARK_TEXT_COLOR
+MUTED_TEXT_COLOR = DARK_MUTED_TEXT_COLOR
+EDGE_COLOR = DARK_EDGE_COLOR
+
+
+def apply_dark_style() -> None:
+    global GRID_COLOR, TEXT_COLOR, MUTED_TEXT_COLOR, EDGE_COLOR
+    GRID_COLOR = DARK_GRID_COLOR
+    TEXT_COLOR = DARK_TEXT_COLOR
+    MUTED_TEXT_COLOR = DARK_MUTED_TEXT_COLOR
+    EDGE_COLOR = DARK_EDGE_COLOR
+    sns.set_theme(
+        style="darkgrid",
+        rc={
+            "figure.facecolor": DARK_FIGURE_BG,
+            "axes.facecolor": DARK_AXES_BG,
+            "savefig.facecolor": DARK_FIGURE_BG,
+            "savefig.edgecolor": DARK_FIGURE_BG,
+            "axes.edgecolor": EDGE_COLOR,
+            "axes.labelcolor": TEXT_COLOR,
+            "axes.titlecolor": TEXT_COLOR,
+            "text.color": TEXT_COLOR,
+            "xtick.color": TEXT_COLOR,
+            "ytick.color": TEXT_COLOR,
+            "grid.color": GRID_COLOR,
+            "legend.frameon": True,
+            "legend.facecolor": DARK_AXES_BG,
+            "legend.edgecolor": GRID_COLOR,
+        },
+    )
+
+
+def apply_light_style() -> None:
+    global GRID_COLOR, TEXT_COLOR, MUTED_TEXT_COLOR, EDGE_COLOR
+    GRID_COLOR = LIGHT_GRID_COLOR
+    TEXT_COLOR = LIGHT_TEXT_COLOR
+    MUTED_TEXT_COLOR = LIGHT_MUTED_TEXT_COLOR
+    EDGE_COLOR = LIGHT_EDGE_COLOR
+    sns.set_theme(
+        style="whitegrid",
+        rc={
+            "figure.facecolor": LIGHT_FIGURE_BG,
+            "axes.facecolor": LIGHT_AXES_BG,
+            "savefig.facecolor": LIGHT_FIGURE_BG,
+            "savefig.edgecolor": LIGHT_FIGURE_BG,
+            "axes.edgecolor": EDGE_COLOR,
+            "axes.labelcolor": TEXT_COLOR,
+            "axes.titlecolor": TEXT_COLOR,
+            "text.color": TEXT_COLOR,
+            "xtick.color": TEXT_COLOR,
+            "ytick.color": TEXT_COLOR,
+            "grid.color": GRID_COLOR,
+            "legend.frameon": True,
+            "legend.facecolor": LIGHT_AXES_BG,
+            "legend.edgecolor": GRID_COLOR,
+        },
+    )
+
+
+apply_dark_style()
 
 # Mode styling for consistent visualization
 MODE_STYLES = {
@@ -105,7 +178,7 @@ def plot_reward_by_model(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -125,7 +198,7 @@ def plot_reward_by_model(
                         ha="center",
                         va="bottom",
                         fontsize=6,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -134,7 +207,7 @@ def plot_reward_by_model(
     if absolute:
         extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
         ax.set_ylim(0, 1.0 + extra)
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+        ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [normalize_model_name(m) for m in models], rotation=15, ha="right"
@@ -223,7 +296,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
                     value,
                     bar_width,
                     color=style["color"],
-                    edgecolor="black",
+                    edgecolor=EDGE_COLOR,
                     linewidth=0.5,
                     hatch=hatches[model_idx],
                 )
@@ -247,7 +320,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         legend_handles.append(
             Patch(
                 facecolor=style["color"],
-                edgecolor="black",
+                edgecolor=EDGE_COLOR,
                 linewidth=0.5,
                 label=mode_label,
             )
@@ -258,7 +331,7 @@ def plot_rlm_metrics(ax: plt.Axes, df: pd.DataFrame):
         legend_handles.append(
             Patch(
                 facecolor="white",
-                edgecolor="black",
+                edgecolor=EDGE_COLOR,
                 linewidth=0.5,
                 hatch=hatches[model_idx],
                 label=normalize_model_name(model),
@@ -314,7 +387,7 @@ def plot_timing(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -334,7 +407,7 @@ def plot_timing(
                         ha="center",
                         va="bottom",
                         fontsize=6,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -386,7 +459,7 @@ def plot_turns(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -406,7 +479,7 @@ def plot_turns(
                         ha="center",
                         va="bottom",
                         fontsize=6,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -484,7 +557,7 @@ def plot_token_usage(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -504,7 +577,7 @@ def plot_token_usage(
                         ha="center",
                         va="bottom",
                         fontsize=6,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -571,7 +644,7 @@ def plot_main_model_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -591,7 +664,7 @@ def plot_main_model_tokens(
                         ha="center",
                         va="bottom",
                         fontsize=6,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -663,7 +736,7 @@ def plot_prompt_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
         ax.bar(
@@ -672,7 +745,7 @@ def plot_prompt_tokens(
             width,
             bottom=main_tokens,
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -695,7 +768,7 @@ def plot_prompt_tokens(
                         va="bottom",
                         fontsize=6,
                         rotation=90,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -709,11 +782,11 @@ def plot_prompt_tokens(
     # Add in-subplot legend for Main Model / Sub-LLM distinction
     pattern_handles = [
         Patch(
-            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+            facecolor="#CCCCCC", edgecolor=EDGE_COLOR, linewidth=0.5, label="Main Model"
         ),
         Patch(
             facecolor="#CCCCCC",
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -781,7 +854,7 @@ def plot_completion_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
         ax.bar(
@@ -790,7 +863,7 @@ def plot_completion_tokens(
             width,
             bottom=main_tokens,
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -813,7 +886,7 @@ def plot_completion_tokens(
                         va="bottom",
                         fontsize=6,
                         rotation=90,
-                        color="gray",
+                        color=MUTED_TEXT_COLOR,
                     )
 
     ax.set_xlabel("Model")
@@ -827,11 +900,11 @@ def plot_completion_tokens(
     # Add in-subplot legend for Main Model / Sub-LLM distinction
     pattern_handles = [
         Patch(
-            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+            facecolor="#CCCCCC", edgecolor=EDGE_COLOR, linewidth=0.5, label="Main Model"
         ),
         Patch(
             facecolor="#CCCCCC",
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -864,7 +937,7 @@ def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False
                 marker=style["marker"],
                 s=100,
                 alpha=0.8,
-                edgecolors="black",
+                edgecolors=EDGE_COLOR,
                 linewidth=0.5,
             )
 
@@ -873,7 +946,7 @@ def plot_timing_vs_reward(ax: plt.Axes, df: pd.DataFrame, absolute: bool = False
     ax.set_title("Timing vs Reward\n(by mode)")
     if absolute:
         ax.set_ylim(0, 1.1)
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+        ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.5)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=9)
 
 
@@ -931,7 +1004,7 @@ def create_plots(
                 marker=style["marker"],
                 color="w",
                 markerfacecolor=style["color"],
-                markeredgecolor="black",
+                markeredgecolor=EDGE_COLOR,
                 markersize=10,
                 label=mode_label,
             )
@@ -1126,8 +1199,18 @@ Examples:
         action="store_true",
         help="Include updated tips (rlm_tips_v2) mode in plots",
     )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Use light theme instead of dark (default)",
+    )
 
     args = parser.parse_args()
+
+    if args.light:
+        apply_light_style()
+    else:
+        apply_dark_style()
 
     if not args.input.exists():
         print(f"Error: Input file not found: {args.input}")

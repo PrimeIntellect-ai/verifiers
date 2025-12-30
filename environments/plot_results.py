@@ -30,8 +30,81 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.patches import Patch
 
-# Set style at module level so it applies to all plots
-sns.set_style("whitegrid")
+DARK_FIGURE_BG = "#0f111a"
+DARK_AXES_BG = "#0f111a"
+DARK_GRID_COLOR = "#2a2f38"
+DARK_TEXT_COLOR = "#e6e6e6"
+DARK_MUTED_TEXT_COLOR = "#b3b3b3"
+DARK_EDGE_COLOR = "#d0d0d0"
+
+LIGHT_FIGURE_BG = "#ffffff"
+LIGHT_AXES_BG = "#ffffff"
+LIGHT_GRID_COLOR = "#e0e0e0"
+LIGHT_TEXT_COLOR = "#222222"
+LIGHT_MUTED_TEXT_COLOR = "#555555"
+LIGHT_EDGE_COLOR = "#333333"
+
+GRID_COLOR = DARK_GRID_COLOR
+TEXT_COLOR = DARK_TEXT_COLOR
+MUTED_TEXT_COLOR = DARK_MUTED_TEXT_COLOR
+EDGE_COLOR = DARK_EDGE_COLOR
+
+
+def apply_dark_style() -> None:
+    global GRID_COLOR, TEXT_COLOR, MUTED_TEXT_COLOR, EDGE_COLOR
+    GRID_COLOR = DARK_GRID_COLOR
+    TEXT_COLOR = DARK_TEXT_COLOR
+    MUTED_TEXT_COLOR = DARK_MUTED_TEXT_COLOR
+    EDGE_COLOR = DARK_EDGE_COLOR
+    sns.set_theme(
+        style="darkgrid",
+        rc={
+            "figure.facecolor": DARK_FIGURE_BG,
+            "axes.facecolor": DARK_AXES_BG,
+            "savefig.facecolor": DARK_FIGURE_BG,
+            "savefig.edgecolor": DARK_FIGURE_BG,
+            "axes.edgecolor": EDGE_COLOR,
+            "axes.labelcolor": TEXT_COLOR,
+            "axes.titlecolor": TEXT_COLOR,
+            "text.color": TEXT_COLOR,
+            "xtick.color": TEXT_COLOR,
+            "ytick.color": TEXT_COLOR,
+            "grid.color": GRID_COLOR,
+            "legend.frameon": True,
+            "legend.facecolor": DARK_AXES_BG,
+            "legend.edgecolor": GRID_COLOR,
+        },
+    )
+
+
+def apply_light_style() -> None:
+    global GRID_COLOR, TEXT_COLOR, MUTED_TEXT_COLOR, EDGE_COLOR
+    GRID_COLOR = LIGHT_GRID_COLOR
+    TEXT_COLOR = LIGHT_TEXT_COLOR
+    MUTED_TEXT_COLOR = LIGHT_MUTED_TEXT_COLOR
+    EDGE_COLOR = LIGHT_EDGE_COLOR
+    sns.set_theme(
+        style="whitegrid",
+        rc={
+            "figure.facecolor": LIGHT_FIGURE_BG,
+            "axes.facecolor": LIGHT_AXES_BG,
+            "savefig.facecolor": LIGHT_FIGURE_BG,
+            "savefig.edgecolor": LIGHT_FIGURE_BG,
+            "axes.edgecolor": EDGE_COLOR,
+            "axes.labelcolor": TEXT_COLOR,
+            "axes.titlecolor": TEXT_COLOR,
+            "text.color": TEXT_COLOR,
+            "xtick.color": TEXT_COLOR,
+            "ytick.color": TEXT_COLOR,
+            "grid.color": GRID_COLOR,
+            "legend.frameon": True,
+            "legend.facecolor": LIGHT_AXES_BG,
+            "legend.edgecolor": GRID_COLOR,
+        },
+    )
+
+
+apply_dark_style()
 
 # Mode styling (consistent with individual environment plots)
 MODE_ORDER = ["standard", "rlm", "rlm_tips"]
@@ -288,7 +361,7 @@ def plot_reward_by_environment(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -317,7 +390,7 @@ def plot_reward_by_environment(
     if absolute:
         extra = 0.1 + (0.05 if show_counts else 0) + (0.05 if show_values else 0)
         ax.set_ylim(0, 1.0 + extra)
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+        ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.3)
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
     if show_legend:
@@ -384,7 +457,7 @@ def plot_rlm_lift(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -427,7 +500,7 @@ def plot_rlm_lift(
     ax.set_title("RLM Lift over Standard Baseline")
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
-    ax.axhline(y=0, color="black", linestyle="-", alpha=0.5)
+    ax.axhline(y=0, color=MUTED_TEXT_COLOR, linestyle="-", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=9)
 
@@ -494,7 +567,7 @@ def plot_token_usage(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -505,7 +578,7 @@ def plot_token_usage(
             width,
             bottom=main_tokens,
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -590,7 +663,7 @@ def plot_prompt_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
         # Sub-LLM tokens (stacked, hatched)
@@ -600,7 +673,7 @@ def plot_prompt_tokens(
             width,
             bottom=main_tokens,
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -634,11 +707,11 @@ def plot_prompt_tokens(
     # Add in-subplot legend for Main Model / Sub-LLM distinction
     pattern_handles = [
         Patch(
-            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+            facecolor="#CCCCCC", edgecolor=EDGE_COLOR, linewidth=0.5, label="Main Model"
         ),
         Patch(
             facecolor="#CCCCCC",
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -697,7 +770,7 @@ def plot_completion_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
         ax.bar(
@@ -706,7 +779,7 @@ def plot_completion_tokens(
             width,
             bottom=main_tokens,
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -740,11 +813,11 @@ def plot_completion_tokens(
     # Add in-subplot legend for Main Model / Sub-LLM distinction
     pattern_handles = [
         Patch(
-            facecolor="#CCCCCC", edgecolor="black", linewidth=0.5, label="Main Model"
+            facecolor="#CCCCCC", edgecolor=EDGE_COLOR, linewidth=0.5, label="Main Model"
         ),
         Patch(
             facecolor="#CCCCCC",
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -800,7 +873,7 @@ def plot_main_model_tokens(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -901,7 +974,7 @@ def plot_token_efficiency(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -931,7 +1004,7 @@ def plot_token_efficiency(
     ax.set_xticks(x)
     ax.set_xticklabels([get_env_label(e) for e in environments], fontsize=9)
     if absolute:
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
+        ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.5)
     if show_legend:
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=9)
 
@@ -993,7 +1066,7 @@ def plot_timing(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -1077,7 +1150,7 @@ def plot_reward_vs_tokens_scatter(
                 marker=env_marker,
                 s=120,
                 alpha=0.85,
-                edgecolors="black",
+                edgecolors=EDGE_COLOR,
                 linewidth=0.5,
                 zorder=2,
             )
@@ -1087,7 +1160,7 @@ def plot_reward_vs_tokens_scatter(
     ax.set_title("Reward vs Tokens")
     if absolute:
         ax.set_ylim(0, 1.1)
-    ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+    ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.3)
 
     if show_legend:
         # Create two-part legend: modes (colors) in left column, environments (shapes) in right columns
@@ -1099,7 +1172,7 @@ def plot_reward_vs_tokens_scatter(
                 color=MODE_STYLES[m]["color"],
                 marker="o",
                 s=80,
-                edgecolors="black",
+                edgecolors=EDGE_COLOR,
                 linewidth=0.5,
                 label=MODE_LABELS.get(m, m),
             )
@@ -1111,10 +1184,10 @@ def plot_reward_vs_tokens_scatter(
             plt.scatter(
                 [],
                 [],
-                color="gray",
+                color=MUTED_TEXT_COLOR,
                 marker=ENV_MARKERS.get(env, "o"),
                 s=80,
-                edgecolors="black",
+                edgecolors=EDGE_COLOR,
                 linewidth=0.5,
                 label=get_env_label(env).replace("\n", " "),
             )
@@ -1208,7 +1281,7 @@ def plot_rlm_overhead(
             width,
             label=MODE_LABELS.get(mode, mode),
             color=style["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
         )
 
@@ -1339,7 +1412,7 @@ def create_rewards_grid(
                 width,
                 label=MODE_LABELS.get(mode, mode),
                 color=style["color"],
-                edgecolor="black",
+                edgecolor=EDGE_COLOR,
                 linewidth=0.5,
             )
 
@@ -1374,13 +1447,13 @@ def create_rewards_grid(
 
         if absolute:
             ax.set_ylim(0, 1.1)
-            ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.3)
+            ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.3)
 
     # Central legend
     legend_handles = [
         Patch(
             facecolor=MODE_STYLES[m]["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             label=MODE_LABELS.get(m, m),
         )
@@ -1478,7 +1551,7 @@ def create_tokens_grid(
                 width,
                 label=MODE_LABELS.get(mode, mode),
                 color=style["color"],
-                edgecolor="black",
+                edgecolor=EDGE_COLOR,
                 linewidth=0.5,
             )
 
@@ -1515,7 +1588,7 @@ def create_tokens_grid(
     legend_handles = [
         Patch(
             facecolor=MODE_STYLES[m]["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             label=MODE_LABELS.get(m, m),
         )
@@ -1570,7 +1643,7 @@ def create_tokens_breakdown(
     mode_handles = [
         Patch(
             facecolor=MODE_STYLES[m]["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             label=MODE_LABELS.get(m, m),
         )
@@ -1579,10 +1652,15 @@ def create_tokens_breakdown(
 
     # Main vs Sub-LLM legend handles
     type_handles = [
-        Patch(facecolor="gray", edgecolor="black", linewidth=0.5, label="Main Model"),
         Patch(
-            facecolor="gray",
-            edgecolor="black",
+            facecolor=MUTED_TEXT_COLOR,
+            edgecolor=EDGE_COLOR,
+            linewidth=0.5,
+            label="Main Model",
+        ),
+        Patch(
+            facecolor=MUTED_TEXT_COLOR,
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             hatch="///",
             alpha=0.6,
@@ -1676,7 +1754,7 @@ def create_main_plots(
     mode_handles = [
         Patch(
             facecolor=MODE_STYLES[m]["color"],
-            edgecolor="black",
+            edgecolor=EDGE_COLOR,
             linewidth=0.5,
             label=MODE_LABELS.get(m, m).replace("\n", " "),
         )
@@ -1687,10 +1765,10 @@ def create_main_plots(
         plt.scatter(
             [],
             [],
-            color="gray",
+            color=MUTED_TEXT_COLOR,
             marker=ENV_MARKERS.get(env, "o"),
             s=60,
-            edgecolors="black",
+            edgecolors=EDGE_COLOR,
             linewidth=0.5,
             label=get_env_label(env).replace("\n", " "),
         )
@@ -1918,8 +1996,18 @@ Examples:
         action="store_true",
         help="Use fixed 0-1 y-axis range for reward plots (default: auto-scale)",
     )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Use light theme instead of dark (default)",
+    )
 
     args = parser.parse_args()
+
+    if args.light:
+        apply_light_style()
+    else:
+        apply_dark_style()
 
     # List environments
     if args.list_environments:
