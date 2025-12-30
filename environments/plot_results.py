@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 DARK_FIGURE_BG = "#0f111a"
@@ -1099,7 +1100,11 @@ def plot_timing(
 
 
 def plot_reward_vs_tokens_scatter(
-    ax: plt.Axes, df: pd.DataFrame, show_legend: bool = True, absolute: bool = False
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    show_mode_legend: bool = True,
+    show_env_legend: bool = True,
+    absolute: bool = False,
 ):
     """Plot: Reward vs main model tokens scatter.
 
@@ -1162,60 +1167,55 @@ def plot_reward_vs_tokens_scatter(
         ax.set_ylim(0, 1.1)
     ax.axhline(y=1.0, color=MUTED_TEXT_COLOR, linestyle="--", alpha=0.3)
 
-    if show_legend:
-        # Create two-part legend: modes (colors) in left column, environments (shapes) in right columns
-        # Mode legend handles (colored circles)
+    if show_env_legend or show_mode_legend:
+        # Create two-part legend: modes (color) + environments (shape)
         mode_handles = [
-            plt.scatter(
-                [],
-                [],
-                color=MODE_STYLES[m]["color"],
-                marker="o",
-                s=80,
-                edgecolors=EDGE_COLOR,
-                linewidth=0.5,
+            Patch(
+                facecolor=MODE_STYLES[m]["color"],
+                edgecolor=EDGE_COLOR,
+                linewidth=0.6,
                 label=MODE_LABELS.get(m, m),
             )
             for m in modes
         ]
-        # Environment legend handles (gray shapes)
         env_list = list(environments)
         env_handles = [
-            plt.scatter(
-                [],
-                [],
-                color=MUTED_TEXT_COLOR,
+            Line2D(
+                [0],
+                [0],
                 marker=ENV_MARKERS.get(env, "o"),
-                s=80,
-                edgecolors=EDGE_COLOR,
-                linewidth=0.5,
+                color="none",
+                markerfacecolor="none",
+                markeredgecolor=MUTED_TEXT_COLOR,
+                markeredgewidth=1.4,
+                markersize=7,
                 label=get_env_label(env).replace("\n", " "),
             )
             for env in env_list
         ]
 
-        # Interleave: mode, env, env pattern for 3-column layout
-        # Row 1: mode0, env0, env3
-        # Row 2: mode1, env1, env4
-        # Row 3: mode2, env2, (empty)
-        interleaved_handles = []
-        n_envs = len(env_handles)
-        for i in range(3):  # 3 rows
-            if i < len(mode_handles):
-                interleaved_handles.append(mode_handles[i])
-            if i < n_envs:
-                interleaved_handles.append(env_handles[i])
-            if i + 3 < n_envs:
-                interleaved_handles.append(env_handles[i + 3])
+        if show_env_legend:
+            env_legend = ax.legend(
+                handles=env_handles,
+                loc="upper right",
+                ncol=1,
+                fontsize=7,
+                borderpad=0.3,
+                labelspacing=0.3,
+                handletextpad=0.4,
+            )
+            ax.add_artist(env_legend)
 
-        ax.legend(
-            handles=interleaved_handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.12),
-            ncol=3,
-            fontsize=8,
-            columnspacing=1.5,
-        )
+        if show_mode_legend:
+            ax.legend(
+                handles=mode_handles,
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.12),
+                ncol=min(3, len(mode_handles)),
+                fontsize=8,
+                columnspacing=1.5,
+            )
+            ax.figure.subplots_adjust(bottom=0.18)
 
 
 def plot_rlm_overhead(
@@ -1744,11 +1744,16 @@ def create_main_plots(
         show_counts=show_counts,
         show_values=show_values,
     )
-    plot_reward_vs_tokens_scatter(axes[1, 2], df, show_legend=False, absolute=absolute)
+    plot_reward_vs_tokens_scatter(
+        axes[1, 2],
+        df,
+        show_mode_legend=False,
+        show_env_legend=True,
+        absolute=absolute,
+    )
 
-    # Create central legend with modes (colors) and environments (shapes)
+    # Create central legend with modes (colors)
     modes = [m for m in MODE_ORDER if m in df["mode"].unique()]
-    environments = list(df["environment"].unique())
 
     # Mode legend handles (colored squares)
     mode_handles = [
@@ -1760,27 +1765,11 @@ def create_main_plots(
         )
         for m in modes
     ]
-    # Environment legend handles (gray shapes)
-    env_handles = [
-        plt.scatter(
-            [],
-            [],
-            color=MUTED_TEXT_COLOR,
-            marker=ENV_MARKERS.get(env, "o"),
-            s=60,
-            edgecolors=EDGE_COLOR,
-            linewidth=0.5,
-            label=get_env_label(env).replace("\n", " "),
-        )
-        for env in environments
-    ]
 
-    # Combined legend
-    all_handles = mode_handles + env_handles
     fig.legend(
-        handles=all_handles,
+        handles=mode_handles,
         loc="lower center",
-        ncol=len(all_handles),
+        ncol=max(1, len(mode_handles)),
         fontsize=9,
         frameon=True,
         bbox_to_anchor=(0.5, 0.02),
@@ -1793,7 +1782,7 @@ def create_main_plots(
         plt.suptitle("Cross-Environment RLM Analysis", fontsize=14, y=0.98)
 
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.1, top=0.93)
+    plt.subplots_adjust(bottom=0.12, top=0.93)
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
