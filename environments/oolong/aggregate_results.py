@@ -44,6 +44,7 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
         subset = env_args.get("subset", "synth")  # Default to synth
         use_rlm = env_args.get("use_rlm", False)
         include_env_tips = env_args.get("include_env_tips", False)
+        updated_tips = env_args.get("updated_tips", False)
 
         with open(results_file) as f:
             for line in f:
@@ -53,6 +54,7 @@ def load_all_results(outputs_dir: Path) -> list[dict]:
                     result["_subset"] = subset
                     result["_use_rlm"] = use_rlm
                     result["_include_env_tips"] = include_env_tips
+                    result["_updated_tips"] = updated_tips
                     all_results.append(result)
 
     print(f"Loaded {len(all_results)} total rollouts")
@@ -63,10 +65,16 @@ def get_mode(result: dict) -> str:
     """Get mode from metadata flags."""
     use_rlm = result.get("_use_rlm", False)
     include_env_tips = result.get("_include_env_tips", False)
+    updated_tips = result.get("_updated_tips", False)
 
-    if use_rlm:
-        return "rlm_tips" if include_env_tips else "rlm"
-    return "standard"
+    if not use_rlm:
+        return "standard"
+    if not include_env_tips:
+        return "rlm"
+    # Tips are enabled - check if using updated tips
+    if updated_tips:
+        return "rlm_tips_v2"
+    return "rlm_tips"
 
 
 def results_to_dataframe(results: list[dict]) -> pd.DataFrame:
