@@ -85,6 +85,19 @@ class TestStatefulToolEnv:
         assert mock_stateful_tool_env.skipped_args["secret_tool"] == ["secret"]
         assert "secret_tool" in mock_stateful_tool_env.tool_map
 
+    def test_add_tool_skips_dict_type_args(self, mock_stateful_tool_env):
+        def tool_with_dict(command: str, state: dict | None = None) -> str:
+            return command
+
+        mock_stateful_tool_env.add_tool(tool_with_dict, args_to_skip=["state"])
+
+        schema = next(
+            t
+            for t in mock_stateful_tool_env.oai_tools
+            if t["function"]["name"] == "tool_with_dict"
+        )
+        assert "state" not in schema["function"]["parameters"]["properties"]
+
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
         self, mock_openai_client, sample_chat_dataset
