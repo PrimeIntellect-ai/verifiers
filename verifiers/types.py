@@ -63,7 +63,7 @@ class TrajectoryStepTokens(TypedDict):
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
-    response: ModelResponse
+    response: ModelResponse | None
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None

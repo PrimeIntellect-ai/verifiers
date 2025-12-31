@@ -51,7 +51,10 @@ class ToolEnv(vf.MultiTurnEnv):
     async def no_tools_called(self, state: vf.State) -> bool:
         if len(state["trajectory"]) == 0:
             return False
-        last_message = state["trajectory"][-1]["completion"][-1]
+        last_completion = state["trajectory"][-1]["completion"]
+        if not last_completion:
+            return False
+        last_message = last_completion[-1]
         is_assistant_message = last_message["role"] == "assistant"
         no_tool_calls = (
             "tool_calls" not in last_message or last_message["tool_calls"] is None

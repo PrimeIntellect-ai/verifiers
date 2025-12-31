@@ -67,16 +67,25 @@ class MultiTurnEnv(vf.Environment):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: ModelResponse | None,
     ):
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
-        is_truncated = response_is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
-        )
+        if response is not None:
+            completion_messages = await parse_response_messages(
+                response, self.message_type
+            )
+            response_is_truncated = await parse_is_truncated(
+                response, self.message_type
+            )
+            tokens = await parse_response_tokens(
+                response, self.message_type, self.max_seq_len
+            )
+            is_truncated = response_is_truncated or (
+                tokens is not None and bool(tokens.get("is_truncated"))
+            )
+        else:
+            completion_messages = []
+            tokens = None
+            is_truncated = False
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
@@ -108,6 +117,9 @@ class MultiTurnEnv(vf.Environment):
         while not await self.is_completed(state):
             try:
                 prompt_messages = await self.get_prompt_messages(state)
+                if await self.is_completed(state):
+                    await self.add_model_response(state, prompt_messages, None)
+                    return state
                 response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
             except vf.Error as e:
