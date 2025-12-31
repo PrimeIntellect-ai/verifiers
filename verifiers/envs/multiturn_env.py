@@ -119,6 +119,7 @@ class MultiTurnEnv(vf.Environment):
                 prompt_messages = await self.get_prompt_messages(state)
                 if await self.is_completed(state):
                     await self.add_model_response(state, prompt_messages, None)
+                    await self._render_completion(state)
                     return state
                 response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
