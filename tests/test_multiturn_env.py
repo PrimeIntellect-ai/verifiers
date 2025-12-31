@@ -520,3 +520,67 @@ class TestMultiTurnEnv:
         for step in state["trajectory"]:
             assert hasattr(step["response"], "choices")
             assert len(step["response"].choices) > 0
+
+    @pytest.mark.asyncio
+    async def test_stop_condition_triggered_by_env_response(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that rollout stops gracefully when env_response triggers a stop condition.
+
+        This tests the edge case where get_prompt_messages() -> env_response() causes
+        a stop condition to become true before get_model_response() is called.
+        The rollout should add a trajectory step with empty completion and return.
+        """
+
+        class EnvResponseStopsEnv(MultiTurnEnv):
+            @stop
+            async def env_triggered_stop(self, state: State) -> bool:
+                return state.get("env_says_stop", False)
+
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> Messages:
+                # On second turn, env_response triggers stop condition
+                state["env_says_stop"] = True
+                return [{"role": "user", "content": "This triggers stop"}]
+
+        env = EnvResponseStopsEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            max_turns=5,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        # First response - normal
+        mock_openai_client.add_chat_response(
+            messages=[{"role": "user", "content": "Start"}],
+            response="First response",
+        )
+
+        prompt: Messages = [{"role": "user", "content": "Start"}]
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        # Should have 2 trajectory steps:
+        # 1. First turn with actual model response
+        # 2. Second turn where env_response triggered stop (empty completion)
+        assert len(state["trajectory"]) == 2
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "env_triggered_stop"
+
+        # First step should have normal completion
+        assert state["trajectory"][0]["completion"] != []
+        assert state["trajectory"][0]["response"] is not None
+
+        # Second step should have empty completion (no model was called)
+        assert state["trajectory"][1]["completion"] == []
+        assert state["trajectory"][1]["response"] is None
