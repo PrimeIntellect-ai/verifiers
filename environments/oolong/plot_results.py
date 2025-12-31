@@ -1984,17 +1984,12 @@ def create_tokens_by_subset_grid(
     # Create central legend for modes
     legend_handles = []
     for mode in modes:
-        style = MODE_STYLES.get(mode, {"color": "gray", "marker": "o"})
         mode_label = MODE_LABELS.get(mode, mode).replace("\n", " ")
         legend_handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker=style["marker"],
-                color="w",
-                markerfacecolor=style["color"],
-                markeredgecolor=EDGE_COLOR,
-                markersize=10,
+            Patch(
+                facecolor=MODE_STYLES.get(mode, {"color": "gray"})["color"],
+                edgecolor=EDGE_COLOR,
+                linewidth=0.5,
                 label=mode_label,
             )
         )
