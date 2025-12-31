@@ -83,7 +83,7 @@ class MultiTurnEnv(vf.Environment):
                 tokens is not None and bool(tokens.get("is_truncated"))
             )
         else:
-            completion_messages = []
+            completion_messages = "" if self.message_type == "completion" else []
             tokens = None
             is_truncated = False
         trajectory_step = TrajectoryStep(

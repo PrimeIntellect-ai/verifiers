@@ -584,3 +584,54 @@ class TestMultiTurnEnv:
         # Second step should have empty completion (no model was called)
         assert state["trajectory"][1]["completion"] == []
         assert state["trajectory"][1]["response"] is None
+
+    @pytest.mark.asyncio
+    async def test_stop_condition_triggered_by_env_response_completion_mode(
+        self, mock_openai_client
+    ):
+        """Test early exit in completion mode uses empty string, not empty list."""
+
+        class EnvResponseStopsEnv(MultiTurnEnv):
+            def __init__(self, **kwargs):
+                super().__init__(message_type="completion", **kwargs)
+
+            @stop
+            async def env_triggered_stop(self, state: State) -> bool:
+                return state.get("env_says_stop", False)
+
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> Messages:
+                state["env_says_stop"] = True
+                return " [stop]"
+
+        dataset = Dataset.from_dict({"prompt": ["Start:"], "answer": ["test"]})
+        env = EnvResponseStopsEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=dataset,
+            max_turns=5,
+        )
+
+        mock_openai_client.add_text_response("Start:", "First response")
+
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt="Start:",
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        assert len(state["trajectory"]) == 2
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "env_triggered_stop"
+
+        # Second step should have empty string completion (not empty list)
+        assert state["trajectory"][1]["completion"] == ""
+        assert state["trajectory"][1]["response"] is None
+
+        # Final completion should be a string
+        assert isinstance(state["completion"], str)
