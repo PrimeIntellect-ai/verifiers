@@ -13,21 +13,34 @@ from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
 def filter_signature(func, args_to_skip):
+    """Return a wrapper with filtered signature for schema generation.
+
+    Does not mutate the original function.
+    """
     if not args_to_skip:
         return func
     sig = inspect.signature(func)
-    target = getattr(func, "__func__", func)
-    target.__signature__ = sig.replace(
+    filtered_sig = sig.replace(
         parameters=[
             p
             for n, p in sig.parameters.items()
             if n not in args_to_skip and n != "self"
         ]
     )
-    target.__annotations__ = {
-        k: v for k, v in target.__annotations__.items() if k not in args_to_skip
+    filtered_annotations = {
+        k: v
+        for k, v in getattr(func, "__annotations__", {}).items()
+        if k not in args_to_skip
     }
-    return func
+
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    wrapper.__name__ = getattr(func, "__name__", "unknown")
+    wrapper.__doc__ = getattr(func, "__doc__", None)
+    wrapper.__signature__ = filtered_sig
+    wrapper.__annotations__ = filtered_annotations
+    return wrapper
 
 
 class StatefulToolEnv(vf.ToolEnv):
