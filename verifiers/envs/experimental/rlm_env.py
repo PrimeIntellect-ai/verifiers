@@ -126,13 +126,13 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             _full_context = json.load(f)
             extra_data = _full_context.get("input_data")
 
-    # Initialize answer structure
-    answer = {{"ready": False, "content": ""}}
+    # Initialize root answer structure
+    root_answer = {{"ready": False, "content": ""}}
     if Path(ANSWER_FILE).exists():
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
-            answer = json.load(f)
+            root_answer = json.load(f)
 
-    def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
+    def _single_llm_call(prompt: str, batch_id: str, depth: int, **kwargs) -> dict:
         """Make a single sub-LLM call via interception server.
         
         Returns a dict with 'content' and 'metadata' keys (including 'elapsed_seconds').
@@ -154,7 +154,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                 "messages": [{{"role": "user", "content": prompt}}],
                 "_batch_id": batch_id,
                 "_request_id": request_id,
-                "_rlm_depth": SUB_LLM_DEPTH,
+                "_rlm_depth": depth,
             }}
             # Add any extra kwargs
             for k, v in kwargs.items():
@@ -180,60 +180,91 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                 "metadata": {{"error": True, "elapsed_seconds": elapsed}},
             }}
 
-    def llm_batch(prompts: list, **kwargs) -> list:
-        """
-        Make multiple sub-LLM calls in parallel.
-        
-        Prints a summary of each call's metadata (including timing), then returns the list of responses.
-        
-        Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
-        Sandbox timeout is available via SANDBOX_TIMEOUT env var.
-        
-        Args:
-            prompts: List of prompts for the sub-LLMs
-            **kwargs: Additional arguments applied to all calls
-        
-        Returns:
-            List of response contents in the same order as the input prompts
-        """
-        from time import perf_counter
-        import uuid
-        batch_start = perf_counter()
-        batch_id = uuid.uuid4().hex[:8]
-        with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
-            futures = [executor.submit(_single_llm_call, p, batch_id, **kwargs) for p in prompts]
-            results = [f.result() for f in futures]
-        batch_elapsed = perf_counter() - batch_start
-        
-        # Print metadata summary with timing
-        print(f"llm_batch: {{len(results)}} call(s) in {{batch_elapsed:.2f}}s")
-        for i, r in enumerate(results):
-            meta = r.get("metadata", {{}})
-            elapsed = meta.get("elapsed_seconds", 0.0)
-            if meta.get("error"):
-                print(f"  [{{i}}]: error ({{elapsed:.2f}}s)")
-            else:
-                tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
-                tool_calls = meta.get("tool_call_count", 0)
-                max_turns = meta.get("max_turns_reached", False)
-                status = "⚠ max turns" if max_turns else "✓"
-                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls, {{elapsed:.2f}}s {{status}}")
-        
-        # Return just the content
-        return [r.get("content", "") for r in results]
+    def _make_llm_batch(session_depth: int):
+        def llm_batch(prompts: list, **kwargs) -> list:
+            """
+            Make multiple sub-LLM calls in parallel.
 
-    # Persistent execution namespace
-    namespace: dict[str, object] = {{
-        "__name__": "__main__",
-        "extra_data": extra_data,
-        "answer": answer,
-        "llm_batch": llm_batch,
-    }}
+            Prints a summary of each call's metadata (including timing), then returns the list of responses.
+
+            Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
+            Sandbox timeout is available via SANDBOX_TIMEOUT env var.
+
+            Args:
+                prompts: List of prompts for the sub-LLMs
+                **kwargs: Additional arguments applied to all calls
+
+            Returns:
+                List of response contents in the same order as the input prompts
+            """
+            from time import perf_counter
+            import uuid
+            batch_start = perf_counter()
+            batch_id = uuid.uuid4().hex[:8]
+            depth = max(1, session_depth + 1)
+            with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
+                futures = [
+                    executor.submit(_single_llm_call, p, batch_id, depth, **kwargs)
+                    for p in prompts
+                ]
+                results = [f.result() for f in futures]
+            batch_elapsed = perf_counter() - batch_start
+
+            # Print metadata summary with timing
+            print(f"llm_batch: {{len(results)}} call(s) in {{batch_elapsed:.2f}}s")
+            for i, r in enumerate(results):
+                meta = r.get("metadata", {{}})
+                elapsed = meta.get("elapsed_seconds", 0.0)
+                if meta.get("error"):
+                    print(f"  [{{i}}]: error ({{elapsed:.2f}}s)")
+                else:
+                    tokens = meta.get("prompt_tokens", 0) + meta.get(
+                        "completion_tokens", 0
+                    )
+                    tool_calls = meta.get("tool_call_count", 0)
+                    max_turns = meta.get("max_turns_reached", False)
+                    status = "⚠ max turns" if max_turns else "✓"
+                    print(
+                        f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls, "
+                        f"{{elapsed:.2f}}s {{status}}"
+                    )
+
+            # Return just the content
+            return [r.get("content", "") for r in results]
+
+        return llm_batch
+
+    sessions: dict[str, dict] = {{}}
+
+    def _init_session(session_id: str, session_depth: int | None) -> dict:
+        if session_id in sessions:
+            return sessions[session_id]
+
+        depth = session_depth
+        if depth is None:
+            depth = max(SUB_LLM_DEPTH - 1, 0)
+
+        answer = root_answer if session_id == "root" else {{"ready": False, "content": ""}}
+        namespace: dict[str, object] = {{
+            "__name__": "__main__",
+            "extra_data": extra_data,
+            "answer": answer,
+            "llm_batch": _make_llm_batch(depth),
+        }}
+        session = {{
+            "namespace": namespace,
+            "execution_count": 0,
+            "depth": depth,
+            "answer": answer,
+        }}
+        sessions[session_id] = session
+        return session
+
+    # Initialize root session
+    _init_session("root", 0)
 
     # Signal ready
     Path(READY_FLAG).write_text("ready", encoding="utf-8")
-
-    execution_count = 0
 
     while True:
         with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
@@ -244,16 +275,52 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         if request.get("shutdown"):
             break
         
-        code = request.get("code", "")
+        session_id = request.get("session_id") or "root"
+        session_depth = request.get("session_depth")
         seq = request.get("seq", 0)  # Sequence number for request/response matching
-        execution_count += 1
+
+        if request.get("close"):
+            if session_id != "root":
+                sessions.pop(session_id, None)
+            result = {{
+                "status": "ok",
+                "stdout": "",
+                "stderr": "",
+                "result": None,
+                "execution_count": 0,
+                "seq": seq,
+                "answer": {{"ready": False, "content": ""}},
+            }}
+            with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+                response_file.write(json.dumps(result))
+            continue
+
+        session = _init_session(session_id, session_depth)
+        namespace = session["namespace"]
+
+        if request.get("read_answer"):
+            result = {{
+                "status": "ok",
+                "stdout": "",
+                "stderr": "",
+                "result": None,
+                "execution_count": session.get("execution_count", 0),
+                "seq": seq,
+                "answer": namespace.get("answer", {{"ready": False, "content": ""}}),
+            }}
+            with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+                response_file.write(json.dumps(result))
+            continue
+
+        code = request.get("code", "")
+        session["execution_count"] += 1
         
         result = {{
             "status": "ok",
             "stdout": "",
             "stderr": "",
             "result": None,
-            "execution_count": execution_count,
+            "execution_count": session["execution_count"],
             "seq": seq,  # Echo back sequence number for framework to verify
             "answer": namespace.get("answer", {{"ready": False, "content": ""}}),
         }}
@@ -287,9 +354,10 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         result["stderr"] = stderr_buffer.getvalue()
         result["answer"] = namespace.get("answer", {{"ready": False, "content": ""}})
         
-        # Save answer to file for persistence
-        with open(ANSWER_FILE, "w", encoding="utf-8") as f:
-            json.dump(result["answer"], f)
+        # Save answer to file for persistence (root session only)
+        if session_id == "root":
+            with open(ANSWER_FILE, "w", encoding="utf-8") as f:
+                json.dump(result["answer"], f)
         
         with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
             response_file.write(json.dumps(result))
@@ -354,9 +422,19 @@ def _make_ready_wait_script(
 
 # System prompt for sub-LLMs (called via llm_batch)
 _SUB_LLM_SYSTEM_PROMPT = """You are a sub-agent being called by a parent model to help with a specific task.
-Answer the query directly and concisely. Put your final answer inside \\boxed{}.
 
-Example: If asked "What is 2+2?", respond with reasoning then \\boxed{4}."""
+You have access to the `call_python_repl` tool, which runs Python in a persistent REPL for this sub-task.
+The REPL provides:
+- `extra_data`: optional input data
+- `answer`: a dict with keys `content` and `ready`
+
+When ready, set:
+```python
+answer["content"] = "your answer"
+answer["ready"] = True
+```
+
+If you respond directly instead, keep it concise and put the final answer inside \\boxed{}."""
 
 
 # System prompt for RLM
@@ -500,6 +578,13 @@ class RLMEnv(SandboxEnv):
         if sub_llm_tool_levels is not None and sub_tools:
             raise ValueError("Use sub_llm_tool_levels or sub_tools, not both.")
 
+        if (max_sub_llm_depth is None or max_sub_llm_depth > 0) and (
+            sub_tool_max_turns < 1
+        ):
+            raise ValueError(
+                "sub_tool_max_turns must be >= 1 when sub-LLM tools are enabled."
+            )
+
         self.sub_model = sub_model
         self.sub_tool_max_turns = sub_tool_max_turns
         self.sub_llm_tool_levels = self._normalize_sub_llm_tool_levels(
@@ -568,6 +653,7 @@ class RLMEnv(SandboxEnv):
 
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
+        self._repl_lock = asyncio.Lock()
 
         # Logprobs support detection (None = not tested yet)
         self._sub_llm_supports_logprobs: bool | None = None
@@ -678,7 +764,9 @@ class RLMEnv(SandboxEnv):
 
     def _generate_sub_tools_documentation(self) -> str:
         """Generate documentation for sub-agent tools to include in system prompt."""
-        has_any_tools = any(self.sub_llm_tool_levels)
+        if self.max_sub_llm_depth == 0:
+            return ""
+        has_any_tools = True
         recursion_enabled = self._recursion_allowed_for_depth(1)
         if not has_any_tools and not recursion_enabled:
             return ""
@@ -693,6 +781,10 @@ class RLMEnv(SandboxEnv):
             "Sub-LLMs called via `llm_batch()` can use tools at each recursion level."
         )
         lines.append(f"Configured recursion depth: {depth_label}.\n")
+        lines.append(
+            "- All sub-LLMs can use `call_python_repl` to run code in a persistent REPL "
+            "and set `answer['content']` / `answer['ready']`.\n"
+        )
 
         if recursion_enabled:
             lines.append(
@@ -780,6 +872,80 @@ class RLMEnv(SandboxEnv):
             )
         return prompt
 
+    async def _call_sub_llm_repl(
+        self,
+        code: str,
+        rollout_context: dict[str, Any] | None,
+        session_id: str,
+        session_depth: int,
+    ) -> tuple[str, dict[str, Any]]:
+        """Execute code in the shared sandbox REPL for a sub-LLM session."""
+        sandbox_id = rollout_context.get("sandbox_id") if rollout_context else None
+        if not sandbox_id:
+            return (
+                "Error: REPL not available (sandbox_id missing).",
+                {"ready": False, "content": ""},
+            )
+
+        execution_start = perf_counter()
+        result = await self._execute_code(
+            sandbox_id,
+            code,
+            state=None,
+            session_id=session_id,
+            session_depth=session_depth,
+            rollout_context=rollout_context,
+        )
+        execution_time = perf_counter() - execution_start
+
+        output = self._format_execution_output(result)
+        output += f"\n[Execution time: {execution_time:.2f}s]"
+        return output, result.get("answer", {"ready": False, "content": ""})
+
+    async def _read_repl_answer(
+        self,
+        rollout_context: dict[str, Any] | None,
+        session_id: str,
+        session_depth: int,
+    ) -> dict[str, Any]:
+        """Read the answer dict from a REPL session without executing code."""
+        sandbox_id = rollout_context.get("sandbox_id") if rollout_context else None
+        if not sandbox_id:
+            return {"ready": False, "content": ""}
+
+        result = await self._execute_code(
+            sandbox_id,
+            code="",
+            state=None,
+            session_id=session_id,
+            session_depth=session_depth,
+            rollout_context=rollout_context,
+            read_answer=True,
+        )
+        return result.get("answer", {"ready": False, "content": ""})
+
+    async def _close_repl_session(
+        self,
+        rollout_context: dict[str, Any] | None,
+        session_id: str,
+    ) -> None:
+        """Best-effort cleanup of a sub-LLM REPL session."""
+        sandbox_id = rollout_context.get("sandbox_id") if rollout_context else None
+        if not sandbox_id or session_id == "root":
+            return
+        try:
+            await self._execute_code(
+                sandbox_id,
+                code="",
+                state=None,
+                session_id=session_id,
+                session_depth=0,
+                rollout_context=rollout_context,
+                close_session=True,
+            )
+        except Exception:
+            return
+
     async def _run_sub_llm_batch(
         self,
         client: Any,
@@ -802,6 +968,7 @@ class RLMEnv(SandboxEnv):
         async def _run_one(prompt: str) -> str:
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
+                repl_session_id = f"{batch_id}_{request_id}"
                 messages = [
                     {
                         "role": "system",
@@ -815,6 +982,7 @@ class RLMEnv(SandboxEnv):
                     messages,
                     depth=depth,
                     rollout_context=rollout_context,
+                    repl_session_id=repl_session_id,
                 )
                 if rollout_context and self.include_sub_llm_in_trajectory:
                     await self._record_sub_llm_steps(
@@ -835,6 +1003,9 @@ class RLMEnv(SandboxEnv):
         model: str,
         depth: int,
         rollout_context: dict[str, Any] | None = None,
+        repl_session_id: str | None = None,
+        repl_session_depth: int = 0,
+        repl_state: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]] | None, dict[str, Callable]]:
         """Build tools + tool map for a given depth, including recursion tool if enabled."""
         tools_for_depth = self._get_sub_llm_tools_for_depth(depth)
@@ -843,6 +1014,34 @@ class RLMEnv(SandboxEnv):
             for tool in tools_for_depth
         }
         oai_tools = [convert_func_to_oai_tool(tool) for tool in tools_for_depth]
+
+        repl_state = repl_state or {"ready": False, "content": ""}
+
+        async def call_python_repl(code: str) -> str:
+            """Execute Python code in a persistent REPL and update `answer` when ready."""
+            if not repl_session_id:
+                return "Error: REPL session not available."
+            output, answer = await self._call_sub_llm_repl(
+                code,
+                rollout_context=rollout_context,
+                session_id=repl_session_id,
+                session_depth=repl_session_depth,
+            )
+            if answer.get("ready", False):
+                repl_state["ready"] = True
+                repl_state["content"] = answer.get("content", "")
+            return output
+
+        call_python_repl.__name__ = "call_python_repl"
+
+        if call_python_repl.__name__ in tool_map:
+            raise ValueError(
+                "Sub-LLM tool name conflicts with built-in REPL tool: "
+                f"{call_python_repl.__name__}"
+            )
+
+        tool_map[call_python_repl.__name__] = call_python_repl
+        oai_tools.append(convert_func_to_oai_tool(call_python_repl))
 
         if self._recursion_allowed_for_depth(depth):
 
@@ -967,10 +1166,25 @@ class RLMEnv(SandboxEnv):
         messages: list[dict],
         depth: int = 1,
         rollout_context: dict[str, Any] | None = None,
+        repl_session_id: str | None = None,
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
+        repl_state: dict[str, Any] = {"ready": False, "content": ""}
+        cleanup_session = False
+        if repl_session_id is None:
+            repl_session_id = f"sub_{uuid.uuid4().hex[:8]}"
+            cleanup_session = True
+        else:
+            cleanup_session = True
+
         tools, tool_map = self._build_sub_llm_tooling(
-            client, model, depth, rollout_context=rollout_context
+            client,
+            model,
+            depth,
+            rollout_context=rollout_context,
+            repl_session_id=repl_session_id,
+            repl_session_depth=depth,
+            repl_state=repl_state,
         )
 
         # Fast path: no tools configured - single LLM call
@@ -996,109 +1210,112 @@ class RLMEnv(SandboxEnv):
                 max_turns_reached=False,
             )
 
-        # Tool-calling loop path
-        current_messages = list(messages)
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        tool_call_count = 0
-        num_turns = 0
-        turns: list[SubLLMTurn] = []
-        tools = tools if tools else None
+        try:
+            # Tool-calling loop path
+            current_messages = list(messages)
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            tool_call_count = 0
+            num_turns = 0
+            turns: list[SubLLMTurn] = []
+            tools = tools if tools else None
 
-        for _ in range(self.sub_tool_max_turns):
-            num_turns += 1
-            prompt_snapshot = [dict(m) for m in current_messages]
+            for turn_index in range(self.sub_tool_max_turns):
+                num_turns += 1
+                if self.sub_tool_max_turns - turn_index == 1:
+                    current_messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Warning: this is your final tool-enabled turn. "
+                                "If you need the REPL, use it now and set "
+                                "answer['ready'] = True when your answer is complete."
+                            ),
+                        }
+                    )
 
-            response = await self._call_sub_llm_api(
-                client, model, current_messages, tools
-            )
-            if response is None:
-                return self._make_timeout_result(
-                    turns,
-                    total_prompt_tokens,
-                    total_completion_tokens,
-                    tool_call_count,
-                    num_turns,
+                prompt_snapshot = [dict(m) for m in current_messages]
+
+                response = await self._call_sub_llm_api(
+                    client, model, current_messages, tools
+                )
+                if response is None:
+                    return self._make_timeout_result(
+                        turns,
+                        total_prompt_tokens,
+                        total_completion_tokens,
+                        tool_call_count,
+                        num_turns,
+                    )
+
+                prompt_tokens, completion_tokens = self._extract_tokens(response)
+                total_prompt_tokens += prompt_tokens
+                total_completion_tokens += completion_tokens
+
+                assistant_message = response.choices[0].message
+                tool_calls = getattr(assistant_message, "tool_calls", None)
+                turn_tool_count = len(tool_calls) if tool_calls else 0
+                tool_call_count += turn_tool_count
+
+                turns.append(
+                    SubLLMTurn(
+                        prompt_messages=prompt_snapshot,
+                        response=response,
+                        tool_call_count=turn_tool_count,
+                    )
                 )
 
-            prompt_tokens, completion_tokens = self._extract_tokens(response)
-            total_prompt_tokens += prompt_tokens
-            total_completion_tokens += completion_tokens
+                if not tool_calls:
+                    return SubLLMResult(
+                        final_content=assistant_message.content or "",
+                        turns=turns,
+                        total_prompt_tokens=total_prompt_tokens,
+                        total_completion_tokens=total_completion_tokens,
+                        tool_call_count=tool_call_count,
+                        num_turns=num_turns,
+                        max_turns_reached=False,
+                    )
 
-            assistant_message = response.choices[0].message
-            tool_calls = getattr(assistant_message, "tool_calls", None)
-            turn_tool_count = len(tool_calls) if tool_calls else 0
-            tool_call_count += turn_tool_count
+                current_messages.append(assistant_message.model_dump())
 
-            turns.append(
-                SubLLMTurn(
-                    prompt_messages=prompt_snapshot,
-                    response=response,
-                    tool_call_count=turn_tool_count,
-                )
+                for tool_call in tool_calls:
+                    tool_name = tool_call.function.name
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    tool_result = await self._call_sub_tool(
+                        tool_name, tool_args, tool_call.id, tool_map=tool_map
+                    )
+                    current_messages.append(tool_result)
+
+                if repl_state.get("ready"):
+                    return SubLLMResult(
+                        final_content=repl_state.get("content", ""),
+                        turns=turns,
+                        total_prompt_tokens=total_prompt_tokens,
+                        total_completion_tokens=total_completion_tokens,
+                        tool_call_count=tool_call_count,
+                        num_turns=num_turns,
+                        max_turns_reached=False,
+                    )
+
+            # Max turns reached - read answer from REPL session
+            answer = await self._read_repl_answer(
+                rollout_context, repl_session_id, depth
             )
-
-            if not tool_calls:
-                return SubLLMResult(
-                    final_content=assistant_message.content or "",
-                    turns=turns,
-                    total_prompt_tokens=total_prompt_tokens,
-                    total_completion_tokens=total_completion_tokens,
-                    tool_call_count=tool_call_count,
-                    num_turns=num_turns,
-                    max_turns_reached=False,
-                )
-
-            current_messages.append(assistant_message.model_dump())
-
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                try:
-                    tool_args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    tool_args = {}
-                tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id, tool_map=tool_map
-                )
-                current_messages.append(tool_result)
-
-        # Max turns reached - add prompt for final answer and make call without tools
-        num_turns += 1
-        current_messages.append(
-            {
-                "role": "user",
-                "content": "You've reached the maximum number of tool calls. "
-                "Based on the information gathered, provide your final answer inside \\boxed{}.",
-            }
-        )
-
-        prompt_snapshot = [dict(m) for m in current_messages]
-        response = await self._call_sub_llm_api(client, model, current_messages)
-        if response is None:
-            return self._make_timeout_result(
-                turns,
-                total_prompt_tokens,
-                total_completion_tokens,
-                tool_call_count,
-                num_turns,
+            return SubLLMResult(
+                final_content=answer.get("content", ""),
+                turns=turns,
+                total_prompt_tokens=total_prompt_tokens,
+                total_completion_tokens=total_completion_tokens,
+                tool_call_count=tool_call_count,
+                num_turns=num_turns,
+                max_turns_reached=True,
             )
-
-        turns.append(
-            SubLLMTurn(
-                prompt_messages=prompt_snapshot, response=response, tool_call_count=0
-            )
-        )
-        prompt_tokens, completion_tokens = self._extract_tokens(response)
-
-        return SubLLMResult(
-            final_content=response.choices[0].message.content or "",
-            turns=turns,
-            total_prompt_tokens=total_prompt_tokens + prompt_tokens,
-            total_completion_tokens=total_completion_tokens + completion_tokens,
-            tool_call_count=tool_call_count,
-            num_turns=num_turns,
-            max_turns_reached=True,
-        )
+        finally:
+            if cleanup_session:
+                await self._close_repl_session(rollout_context, repl_session_id)
 
     async def _record_sub_llm_steps(
         self,
@@ -1234,6 +1451,11 @@ class RLMEnv(SandboxEnv):
         ]
 
         try:
+            repl_session_id = (
+                f"{batch_id}_{request_id}"
+                if batch_id or request_id
+                else f"sub_{uuid.uuid4().hex[:8]}"
+            )
             # Run sub-LLM call (handles both with-tools and no-tools cases)
             result = await self._run_sub_llm(
                 client,
@@ -1241,6 +1463,7 @@ class RLMEnv(SandboxEnv):
                 messages_with_system,
                 depth=depth,
                 rollout_context=context,
+                repl_session_id=repl_session_id,
             )
             final_content = result["final_content"]
             prompt_tokens = result["total_prompt_tokens"]
@@ -1310,6 +1533,15 @@ class RLMEnv(SandboxEnv):
         logger.debug(f"Command completed in {elapsed:.1f}s")
         return result
 
+    def _get_rollout_context(self, state: State | None) -> dict[str, Any] | None:
+        """Resolve rollout context from state when available."""
+        if not state:
+            return None
+        rollout_id = state.get("rollout_id")
+        if not rollout_id:
+            return None
+        return self.active_rollouts.get(rollout_id)
+
     def update_tool_args(
         self,
         tool_name: str,
@@ -1351,6 +1583,9 @@ class RLMEnv(SandboxEnv):
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
+            "sandbox_id": state.get("sandbox_id"),
+            "repl_lock": asyncio.Lock(),
+            "exec_seq": 0,
         }
         return state
 
@@ -1444,6 +1679,10 @@ done
         self.active_sandboxes.add(sandbox.id)
         logger.debug(f"Created replacement sandbox {sandbox.id}")
         state["sandbox_id"] = sandbox.id
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["sandbox_id"] = sandbox.id
+            self.active_rollouts[rollout_id]["exec_seq"] = 0
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
@@ -1584,23 +1823,57 @@ done
             return False
         state["rlm_worker_ready"] = True
         state["_exec_seq"] = 0
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["exec_seq"] = 0
         return True
 
     async def _execute_code(
-        self, sandbox_id: str, code: str, state: State
+        self,
+        sandbox_id: str,
+        code: str,
+        state: State | None,
+        session_id: str = "root",
+        session_depth: int = 0,
+        rollout_context: dict[str, Any] | None = None,
+        read_answer: bool = False,
+        close_session: bool = False,
     ) -> dict[str, Any]:
         """Execute code in sandbox worker and return result."""
-        # Increment and track sequence number for this execution
-        seq = state.get("_exec_seq", 0) + 1
-        state["_exec_seq"] = seq
+        resolved_context = rollout_context or self._get_rollout_context(state)
+        lock = self._repl_lock
+        seq_container: dict[str, Any] | None = None
 
-        payload = {"code": code, "seq": seq}
-        payload_json = json.dumps(payload)
-        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+        if resolved_context is not None:
+            lock = resolved_context.get("repl_lock") or lock
+            seq_container = resolved_context
 
-        command = textwrap.dedent(
-            f"""
-            python3 - <<'PY'
+        async with lock:
+            # Increment and track sequence number for this execution
+            if seq_container is not None:
+                seq = seq_container.get("exec_seq", 0) + 1
+                seq_container["exec_seq"] = seq
+            else:
+                seq = (state or {}).get("_exec_seq", 0) + 1
+            if state is not None:
+                state["_exec_seq"] = seq
+
+            payload = {
+                "code": code,
+                "seq": seq,
+                "session_id": session_id,
+                "session_depth": session_depth,
+            }
+            if read_answer:
+                payload["read_answer"] = True
+            if close_session:
+                payload["close"] = True
+            payload_json = json.dumps(payload)
+            payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+
+            command = textwrap.dedent(
+                f"""
+                python3 - <<'PY'
 import base64
 import json
 import sys
@@ -1611,84 +1884,94 @@ with open('{self._COMMAND_FIFO}', 'w', encoding='utf-8') as command_file:
 with open('{self._RESPONSE_FIFO}', 'r', encoding='utf-8') as response_file:
     sys.stdout.write(response_file.read())
 PY
-            """
-        )
+                """
+            )
 
-        try:
-            # No retry for code execution - if code times out or fails, return error to model
-            result = await self.sandbox_client.execute_command(
-                sandbox_id, command, timeout=self.code_execution_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.warning(
-                f"Code execution timed out after {self.code_execution_timeout}s"
-            )
-            if self.abort_on_code_timeout:
-                # Abort rollout immediately on timeout
+            try:
+                # No retry for code execution - if code times out or fails, return error to model
+                result = await self.sandbox_client.execute_command(
+                    sandbox_id, command, timeout=self.code_execution_timeout
+                )
+            except CommandTimeoutError as e:
+                logger.warning(
+                    f"Code execution timed out after {self.code_execution_timeout}s"
+                )
+                if self.abort_on_code_timeout:
+                    # Abort rollout immediately on timeout
+                    raise vf.SandboxError() from e
+                if state is None:
+                    return {
+                        "status": "error",
+                        "stdout": "",
+                        "stderr": "",
+                        "result": (
+                            f"Code execution timed out after {self.code_execution_timeout} seconds."
+                        ),
+                        "answer": {"ready": False, "content": ""},
+                    }
+                recovered = await self._recover_from_code_timeout(state)
+                recovery_note = (
+                    " The sandbox was restarted and the REPL state was reset."
+                    if recovered
+                    else " Failed to restart the sandbox; the REPL may be unusable."
+                )
+                # Return error to model so it can try more efficient code
+                return {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": "",
+                    "result": (
+                        f"Code execution timed out after {self.code_execution_timeout} seconds."
+                        f"{recovery_note} Your code may be too slow - consider a more "
+                        "efficient algorithm or breaking the computation into smaller steps."
+                    ),
+                    "answer": {"ready": False, "content": ""},
+                }
+            except Exception as e:
+                # Other errors - abort the rollout
+                logger.error(f"Sandbox error during code execution: {e}")
                 raise vf.SandboxError() from e
-            recovered = await self._recover_from_code_timeout(state)
-            recovery_note = (
-                " The sandbox was restarted and the REPL state was reset."
-                if recovered
-                else " Failed to restart the sandbox; the REPL may be unusable."
-            )
-            # Return error to model so it can try more efficient code
-            return {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "result": (
-                    f"Code execution timed out after {self.code_execution_timeout} seconds."
-                    f"{recovery_note} Your code may be too slow - consider a more "
-                    "efficient algorithm or breaking the computation into smaller steps."
-                ),
-                "answer": {"ready": False, "content": ""},
-            }
-        except Exception as e:
-            # Other errors - abort the rollout
-            logger.error(f"Sandbox error during code execution: {e}")
-            raise vf.SandboxError() from e
 
-        if not result.stdout:
-            return {
-                "status": "error",
-                "stdout": "",
-                "stderr": result.stderr or "",
-                "result": "Worker returned no output",
-                "answer": {"ready": False, "content": ""},
-            }
+            if not result.stdout:
+                return {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": result.stderr or "",
+                    "result": "Worker returned no output",
+                    "answer": {"ready": False, "content": ""},
+                }
 
-        try:
-            parsed_result = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            return {
-                "status": "error",
-                "stdout": result.stdout,
-                "stderr": result.stderr or "",
-                "result": f"Failed to parse worker response: {e}",
-                "answer": {"ready": False, "content": ""},
-            }
+            try:
+                parsed_result = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                return {
+                    "status": "error",
+                    "stdout": result.stdout,
+                    "stderr": result.stderr or "",
+                    "result": f"Failed to parse worker response: {e}",
+                    "answer": {"ready": False, "content": ""},
+                }
 
-        # Check sequence number to detect stale responses (FIFO desync)
-        response_seq = parsed_result.get("seq", -1)
-        if response_seq != seq:
-            logger.warning(
-                f"FIFO sequence mismatch: expected seq={seq}, got seq={response_seq}. "
-                "This indicates a desync - likely from a previous timeout."
-            )
-            return {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "result": (
-                    f"Communication desync detected: received stale response "
-                    f"(expected seq={seq}, got seq={response_seq}). "
-                    "This may happen after a timeout. Please retry your command."
-                ),
-                "answer": {"ready": False, "content": ""},
-            }
+            # Check sequence number to detect stale responses (FIFO desync)
+            response_seq = parsed_result.get("seq", -1)
+            if response_seq != seq:
+                logger.warning(
+                    f"FIFO sequence mismatch: expected seq={seq}, got seq={response_seq}. "
+                    "This indicates a desync - likely from a previous timeout."
+                )
+                return {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": "",
+                    "result": (
+                        f"Communication desync detected: received stale response "
+                        f"(expected seq={seq}, got seq={response_seq}). "
+                        "This may happen after a timeout. Please retry your command."
+                    ),
+                    "answer": {"ready": False, "content": ""},
+                }
 
-        return parsed_result
+            return parsed_result
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
@@ -1753,7 +2036,13 @@ PY
 
         # Time the full tool call execution
         execution_start = perf_counter()
-        result = await self._execute_code(sandbox_id, code, state)
+        result = await self._execute_code(
+            sandbox_id,
+            code,
+            state,
+            session_id="root",
+            session_depth=0,
+        )
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 

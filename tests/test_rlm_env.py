@@ -1,5 +1,7 @@
 """Tests for the RLMEnv class."""
 
+import asyncio
+import base64
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +16,22 @@ from verifiers.envs.experimental.rlm_env import RLMEnv
 # =============================================================================
 # Fixtures
 # =============================================================================
+
+
+def _decode_payload_from_command(command: str) -> dict:
+    marker = "base64.b64decode("
+    start = command.find(marker)
+    assert start != -1, "Failed to locate payload in command"
+    start += len(marker)
+    while start < len(command) and command[start].isspace():
+        start += 1
+    quote = command[start]
+    assert quote in ("'", '"'), "Failed to locate quoted payload"
+    end = command.find(quote, start + 1)
+    assert end != -1, "Failed to locate end of payload"
+    payload_b64 = command[start + 1 : end]
+    payload_json = base64.b64decode(payload_b64).decode("utf-8")
+    return json.loads(payload_json)
 
 
 @pytest.fixture
@@ -178,10 +196,22 @@ class TestFormatExecutionOutput:
 class TestGenerateSubToolsDocumentation:
     """Tests for _generate_sub_tools_documentation method."""
 
-    def test_empty_when_no_sub_tools(self, rlm_env):
-        """Generate empty string when no sub_tools."""
+    def test_docs_include_repl_when_sub_llms_enabled(self, rlm_env):
+        """Generate docs that include the REPL tool when sub-LLMs are enabled."""
         docs = rlm_env._generate_sub_tools_documentation()
-        assert docs == ""
+        assert "call_python_repl" in docs
+
+    def test_empty_when_sub_llms_disabled(self, mock_sandbox_client, mock_dataset):
+        """Generate empty string when sub-LLMs are disabled."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(dataset=mock_dataset, max_sub_llm_depth=0)
+            docs = env._generate_sub_tools_documentation()
+            assert docs == ""
+            env.active_sandboxes.clear()
 
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
         """Generate proper markdown documentation for tools."""
@@ -198,6 +228,16 @@ class TestGenerateSubToolsDocumentation:
         assert "Parameters" in docs
         assert "`x`" in docs or "x" in docs
         assert "`y`" in docs or "y" in docs
+
+
+class TestWorkerScript:
+    """Tests for worker script contents."""
+
+    def test_worker_script_includes_session_fields(self):
+        script = rlm_module._RLM_WORKER_SCRIPT
+        assert "session_id" in script
+        assert "session_depth" in script
+        assert "read_answer" in script
 
 
 class TestExtractTunnelUrlFromLine:
@@ -261,6 +301,83 @@ async def test_execute_code_timeout_restarts_sandbox(rlm_env):
     rlm_env._recreate_sandbox.assert_awaited_once()
     rlm_env._prepare_sandbox_and_start_worker.assert_awaited_once()
     assert state["_exec_seq"] == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_code_payload_includes_session_fields(rlm_env):
+    captured: dict[str, dict] = {}
+
+    async def _fake_execute(_sandbox_id, command, timeout=None):
+        payload = _decode_payload_from_command(command)
+        captured["payload"] = payload
+        return MagicMock(
+            stdout=json.dumps(
+                {
+                    "seq": payload["seq"],
+                    "status": "ok",
+                    "stdout": "",
+                    "stderr": "",
+                    "result": None,
+                    "execution_count": 1,
+                    "answer": {"ready": False, "content": ""},
+                }
+            ),
+            stderr="",
+        )
+
+    rlm_env.sandbox_client.execute_command = AsyncMock(side_effect=_fake_execute)
+    state = {"_exec_seq": 0}
+    await rlm_env._execute_code(
+        "sandbox_123",
+        "print(1)",
+        state,
+        session_id="sub_1",
+        session_depth=2,
+        read_answer=True,
+        close_session=True,
+    )
+
+    payload = captured["payload"]
+    assert payload["session_id"] == "sub_1"
+    assert payload["session_depth"] == 2
+    assert payload["read_answer"] is True
+    assert payload["close"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_code_uses_rollout_context_seq(rlm_env):
+    async def _fake_execute(_sandbox_id, command, timeout=None):
+        payload = _decode_payload_from_command(command)
+        return MagicMock(
+            stdout=json.dumps(
+                {
+                    "seq": payload["seq"],
+                    "status": "ok",
+                    "stdout": "",
+                    "stderr": "",
+                    "result": None,
+                    "execution_count": 1,
+                    "answer": {"ready": False, "content": ""},
+                }
+            ),
+            stderr="",
+        )
+
+    rlm_env.sandbox_client.execute_command = AsyncMock(side_effect=_fake_execute)
+    rollout_context = {
+        "exec_seq": 0,
+        "repl_lock": asyncio.Lock(),
+        "sandbox_id": "sandbox_123",
+    }
+    await rlm_env._execute_code(
+        "sandbox_123",
+        "print(1)",
+        state=None,
+        rollout_context=rollout_context,
+        session_id="sub_1",
+        session_depth=1,
+    )
+    assert rollout_context["exec_seq"] == 1
 
 
 def test_sub_llm_timeouts_clamped_to_code_timeout(mock_sandbox_client, mock_dataset):
@@ -636,6 +753,21 @@ class TestContextLimitConfiguration:
             # Cleanup
             env.active_sandboxes.clear()
 
+    def test_sub_tool_max_turns_requires_positive(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """sub_tool_max_turns must be >= 1 when sub-LLMs are enabled."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            with pytest.raises(ValueError):
+                RLMEnv(
+                    dataset=mock_dataset,
+                    sub_tool_max_turns=0,
+                )
+
 
 class TestContextLimitWarning:
     """Tests for context limit warning injection."""
@@ -745,6 +877,31 @@ class TestContextLimitWarning:
         output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
 
         assert "[CONTEXT LIMIT WARNING]" not in output
+
+
+class TestSubLLMReplHelpers:
+    """Tests for sub-LLM REPL helper methods."""
+
+    @pytest.mark.asyncio
+    async def test_read_repl_answer_returns_answer(self, rlm_env):
+        rlm_env._execute_code = AsyncMock(
+            return_value={"answer": {"ready": True, "content": "ok"}}
+        )
+        answer = await rlm_env._read_repl_answer(
+            {"sandbox_id": "sandbox_123"}, session_id="sub_1", session_depth=2
+        )
+        assert answer["ready"] is True
+        assert answer["content"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_close_repl_session_sends_close(self, rlm_env):
+        rlm_env._execute_code = AsyncMock(return_value={})
+        await rlm_env._close_repl_session(
+            {"sandbox_id": "sandbox_123"}, session_id="sub_1"
+        )
+        rlm_env._execute_code.assert_awaited_once()
+        call_kwargs = rlm_env._execute_code.call_args.kwargs
+        assert call_kwargs["close_session"] is True
 
 
 class TestPromptTooLongStopCondition:
@@ -1028,6 +1185,54 @@ class TestRunSubLLMWithTools:
         assert mock_client.chat.completions.create.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_stops_when_repl_ready(self, rlm_env_with_sub_tools):
+        """Stops early when REPL sets answer ready."""
+        mock_client = MagicMock()
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_repl"
+        mock_tool_call.function.name = "call_python_repl"
+        mock_tool_call.function.arguments = '{"code": "answer[\\"content\\"]=\\"ok\\""}'
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = [mock_tool_call]
+        mock_message.content = None
+        mock_message.model_dump = MagicMock(
+            return_value={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_repl",
+                        "function": {
+                            "name": "call_python_repl",
+                            "arguments": '{"code": "answer[\\"content\\"]=\\"ok\\""}',
+                        },
+                    }
+                ],
+            }
+        )
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+
+        rlm_env_with_sub_tools._call_sub_llm_api = AsyncMock(return_value=mock_response)
+        rlm_env_with_sub_tools._call_sub_llm_repl = AsyncMock(
+            return_value=("ok", {"ready": True, "content": "FINAL"})
+        )
+
+        messages = [{"role": "user", "content": "Test"}]
+        result = await rlm_env_with_sub_tools._run_sub_llm(
+            mock_client,
+            "gpt-4",
+            messages,
+            rollout_context={"sandbox_id": "sandbox_123"},
+        )
+
+        assert result["final_content"] == "FINAL"
+        assert rlm_env_with_sub_tools._call_sub_llm_api.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_respects_max_turns_limit(self, rlm_env_with_sub_tools):
         """Respects sub_tool_max_turns limit."""
         mock_client = MagicMock()
@@ -1081,11 +1286,93 @@ class TestRunSubLLMWithTools:
         messages = [{"role": "user", "content": "Test"}]
         await rlm_env_with_sub_tools._run_sub_llm(mock_client, "gpt-4", messages)
 
-        # Should be max_turns + 1 (final call without tools)
+        # Should be max_turns (no final LLM call)
         assert (
             mock_client.chat.completions.create.call_count
-            == rlm_env_with_sub_tools.sub_tool_max_turns + 1
+            == rlm_env_with_sub_tools.sub_tool_max_turns
         )
+
+    @pytest.mark.asyncio
+    async def test_reads_repl_answer_on_max_turns(self, rlm_env_with_sub_tools):
+        """Reads answer from REPL session when max turns reached."""
+        mock_client = MagicMock()
+        rlm_env_with_sub_tools.sub_tool_max_turns = 1
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_repl"
+        mock_tool_call.function.name = "call_python_repl"
+        mock_tool_call.function.arguments = '{"code": "print(1)"}'
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = [mock_tool_call]
+        mock_message.content = None
+        mock_message.model_dump = MagicMock(
+            return_value={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_repl",
+                        "function": {
+                            "name": "call_python_repl",
+                            "arguments": '{"code": "print(1)"}',
+                        },
+                    }
+                ],
+            }
+        )
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+
+        rlm_env_with_sub_tools._call_sub_llm_api = AsyncMock(return_value=mock_response)
+        rlm_env_with_sub_tools._call_sub_llm_repl = AsyncMock(
+            return_value=("ok", {"ready": False, "content": ""})
+        )
+        rlm_env_with_sub_tools._read_repl_answer = AsyncMock(
+            return_value={"ready": True, "content": "FROM_REPL"}
+        )
+
+        messages = [{"role": "user", "content": "Test"}]
+        result = await rlm_env_with_sub_tools._run_sub_llm(
+            mock_client,
+            "gpt-4",
+            messages,
+            rollout_context={"sandbox_id": "sandbox_123"},
+        )
+
+        assert result["final_content"] == "FROM_REPL"
+        assert rlm_env_with_sub_tools._call_sub_llm_api.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_warns_before_last_turn(self, rlm_env_with_sub_tools):
+        """Injects warning before the final tool-enabled turn."""
+        mock_client = MagicMock()
+        rlm_env_with_sub_tools.sub_tool_max_turns = 1
+        captured: list[list[dict]] = []
+
+        async def _fake_call(_client, _model, messages, tools=None):
+            captured.append(messages)
+            mock_message = MagicMock()
+            mock_message.tool_calls = None
+            mock_message.content = "done"
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock(message=mock_message)]
+            return mock_response
+
+        rlm_env_with_sub_tools._call_sub_llm_api = AsyncMock(side_effect=_fake_call)
+
+        messages = [{"role": "user", "content": "Test"}]
+        await rlm_env_with_sub_tools._run_sub_llm(
+            mock_client,
+            "gpt-4",
+            messages,
+            rollout_context={"sandbox_id": "sandbox_123"},
+        )
+
+        assert captured
+        contents = [msg.get("content", "") for msg in captured[0]]
+        assert any("final tool-enabled turn" in content for content in contents)
 
 
 # =============================================================================
@@ -1168,6 +1455,10 @@ class TestHandleSubLLMRequest:
         rollout_id = "rlm_test123"
         mock_client = MagicMock()
         mock_response = MagicMock()
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+        mock_message.content = "response"
+        mock_response.choices = [MagicMock(message=mock_message)]
         mock_response.model_dump = MagicMock(
             return_value={"choices": [{"message": {"content": "response"}}]}
         )
