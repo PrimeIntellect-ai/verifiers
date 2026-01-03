@@ -334,6 +334,7 @@ class TestRLMEnvInitialization:
             assert env.max_output_length == 8192
             assert env.max_sub_llm_parallelism == 5
             assert env.context_key == "context"
+            assert env.max_sub_llm_depth == 1
 
     def test_custom_configuration(self, mock_sandbox_client, mock_dataset):
         """Custom sub_model, sub_tools, max_iterations, max_output_length."""
@@ -382,6 +383,40 @@ class TestRLMEnvInitialization:
         """Verify bash tool is removed from parent class."""
         # RLMEnv should not have bash in its tool_map
         assert "bash" not in rlm_env.tool_map
+
+
+# =============================================================================
+# Sub-LLM Tool Levels
+# =============================================================================
+
+
+class TestSubLLMToolLevels:
+    """Tests for sub-LLM tool level selection."""
+
+    def test_selects_tools_by_depth(self, mock_sandbox_client, mock_dataset):
+        def tool_one() -> str:
+            return "one"
+
+        def tool_two() -> str:
+            return "two"
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                sub_llm_tool_levels=[[tool_one], [tool_two]],
+                max_sub_llm_depth=3,
+            )
+
+            assert env._get_sub_llm_tools_for_depth(1) == [tool_one]
+            assert env._get_sub_llm_tools_for_depth(2) == [tool_two]
+            # Depth beyond config reuses last level
+            assert env._get_sub_llm_tools_for_depth(3) == [tool_two]
+
+            env.active_sandboxes.clear()
 
 
 # =============================================================================
@@ -857,6 +892,60 @@ class TestCallSubTool:
         assert result["tool_call_id"] == "call_456"
 
 
+class TestRecursiveSubLLMTools:
+    """Tests for recursive sub-LLM tooling."""
+
+    def test_recursion_tool_injected_when_depth_allows(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                max_sub_llm_depth=2,
+            )
+            mock_client = MagicMock()
+
+            _, tool_map_depth1 = env._build_sub_llm_tooling(mock_client, "gpt-4", 1)
+            _, tool_map_depth2 = env._build_sub_llm_tooling(mock_client, "gpt-4", 2)
+
+            assert env.sub_llm_recursion_tool_name in tool_map_depth1
+            assert env.sub_llm_recursion_tool_name not in tool_map_depth2
+
+            env.active_sandboxes.clear()
+
+    @pytest.mark.asyncio
+    async def test_recursion_tool_uses_next_depth(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                max_sub_llm_depth=3,
+            )
+            mock_client = MagicMock()
+
+            env._run_sub_llm_batch = AsyncMock(return_value=["ok"])
+
+            _, tool_map = env._build_sub_llm_tooling(mock_client, "gpt-4", 1)
+            recursion_tool = tool_map[env.sub_llm_recursion_tool_name]
+            result = await recursion_tool(prompts=["test"])
+
+            assert result == ["ok"]
+            env._run_sub_llm_batch.assert_awaited_once()
+            called_depth = env._run_sub_llm_batch.call_args.kwargs["depth"]
+            assert called_depth == 2
+
+            env.active_sandboxes.clear()
+
+
 class TestRunSubLLMWithTools:
     """Tests for _run_sub_llm method."""
 
@@ -1035,6 +1124,43 @@ class TestHandleSubLLMRequest:
         response = await rlm_env._handle_sub_llm_request(mock_request)
 
         assert response.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_depth_over_limit(self, mock_sandbox_client, mock_dataset):
+        """Returns 400 when requested depth exceeds configured limit."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                max_sub_llm_depth=0,
+            )
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock()
+
+            rollout_id = "rlm_test_depth"
+            env.active_rollouts[rollout_id] = {
+                "client": mock_client,
+                "model": "test-model",
+            }
+
+            mock_request = MagicMock()
+            mock_request.match_info = {"rollout_id": rollout_id}
+            mock_request.json = AsyncMock(
+                return_value={
+                    "messages": [{"role": "user", "content": "test"}],
+                    "_rlm_depth": 1,
+                }
+            )
+
+            response = await env._handle_sub_llm_request(mock_request)
+
+            assert response.status == 400
+            mock_client.chat.completions.create.assert_not_called()
+
+            env.active_sandboxes.clear()
 
     @pytest.mark.asyncio
     async def test_routes_to_correct_model(self, rlm_env):

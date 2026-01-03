@@ -104,6 +104,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     INTERCEPTION_URL = os.environ.get("RLM_INTERCEPTION_URL", "")
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
+    SUB_LLM_DEPTH = int(os.environ.get("RLM_SUB_LLM_DEPTH", "1"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
     SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
     if SANDBOX_TIMEOUT > 0:
@@ -152,6 +153,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                 "messages": [{{"role": "user", "content": prompt}}],
                 "_batch_id": batch_id,
                 "_request_id": request_id,
+                "_rlm_depth": SUB_LLM_DEPTH,
             }}
             # Add any extra kwargs
             for k, v in kwargs.items():
@@ -417,7 +419,16 @@ class RLMEnv(SandboxEnv):
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         sub_tools: List of Python functions that sub-LLMs can use as tools.
                    These tools are NOT available to the root model.
+        sub_llm_tool_levels: Optional per-depth tool lists for recursive sub-LLM calls.
+                   Index 0 is depth 1 (called from the REPL), index 1 is depth 2, etc.
+                   If depth exceeds the list length, the final list is reused.
+                   Mutually exclusive with sub_tools.
         sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        max_sub_llm_depth: Maximum recursion depth for sub-LLM calls. Depth starts at 1.
+                   Set to 0 to disable sub-LLMs entirely, or None for unlimited.
+        sub_llm_recursion_tool_name: Tool name exposed to sub-LLMs for recursive calls
+                   (default: "llm_batch").
+        root_tools: Optional tools for the root model (in addition to call_python_repl).
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
@@ -457,6 +468,10 @@ class RLMEnv(SandboxEnv):
         sub_model: str | None = None,
         sub_tools: list[Callable] | None = None,
         sub_tool_max_turns: int = 5,
+        sub_llm_tool_levels: list[list[Callable]] | None = None,
+        max_sub_llm_depth: int | None = 1,
+        sub_llm_recursion_tool_name: str = "llm_batch",
+        root_tools: list[Callable] | None = None,
         max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
@@ -473,9 +488,25 @@ class RLMEnv(SandboxEnv):
         rubric: Rubric | None = None,
         **kwargs,
     ):
+        if root_tools is not None:
+            if "tools" in kwargs:
+                raise ValueError("Use root_tools or tools, not both.")
+            kwargs["tools"] = root_tools
+
+        if max_sub_llm_depth is not None and max_sub_llm_depth < 0:
+            raise ValueError("max_sub_llm_depth must be >= 0 or None.")
+
+        if sub_llm_tool_levels is not None and sub_tools:
+            raise ValueError("Use sub_llm_tool_levels or sub_tools, not both.")
+
         self.sub_model = sub_model
-        self.sub_tools = sub_tools or []
         self.sub_tool_max_turns = sub_tool_max_turns
+        self.sub_llm_tool_levels = self._normalize_sub_llm_tool_levels(
+            sub_tools or [], sub_llm_tool_levels
+        )
+        self.max_sub_llm_depth = max_sub_llm_depth
+        self.sub_llm_recursion_tool_name = sub_llm_recursion_tool_name
+        self.sub_tools = self.sub_llm_tool_levels[0]
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
@@ -496,7 +527,7 @@ class RLMEnv(SandboxEnv):
             self.sub_llm_timeout,
         ) = self._compute_sub_llm_timeouts()
 
-        # Convert sub_tools to OAI format (reusing existing infrastructure)
+        # Convert level-1 sub_tools to OAI format (legacy accessors)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
         self.sub_tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
@@ -588,6 +619,41 @@ class RLMEnv(SandboxEnv):
         estimated_seconds = 30 * package_count
         return max(self.max_startup_wait_seconds, estimated_seconds)
 
+    @staticmethod
+    def _normalize_sub_llm_tool_levels(
+        sub_tools: list[Callable], sub_llm_tool_levels: list[list[Callable]] | None
+    ) -> list[list[Callable]]:
+        """Normalize sub-LLM tool levels into a non-empty list of tool lists."""
+        if sub_llm_tool_levels is None:
+            return [list(sub_tools)]
+
+        normalized: list[list[Callable]] = []
+        for level_tools in sub_llm_tool_levels:
+            normalized.append(list(level_tools or []))
+
+        return normalized or [[]]
+
+    def _get_sub_llm_tools_for_depth(self, depth: int) -> list[Callable]:
+        """Select the sub-LLM tools for a given recursion depth (1-indexed)."""
+        if depth < 1:
+            raise ValueError(f"Sub-LLM depth must be >= 1, got {depth}.")
+        index = min(depth - 1, len(self.sub_llm_tool_levels) - 1)
+        return list(self.sub_llm_tool_levels[index])
+
+    def _sub_llm_depth_allowed(self, depth: int) -> bool:
+        """Return True if the depth is within the configured limit."""
+        if depth < 1:
+            return False
+        if self.max_sub_llm_depth is None:
+            return True
+        return depth <= self.max_sub_llm_depth
+
+    def _recursion_allowed_for_depth(self, depth: int) -> bool:
+        """Return True if deeper recursion is allowed from this depth."""
+        if self.max_sub_llm_depth is None:
+            return True
+        return depth < self.max_sub_llm_depth
+
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
         if not self.pip_install_packages:
@@ -611,40 +677,55 @@ class RLMEnv(SandboxEnv):
 
     def _generate_sub_tools_documentation(self) -> str:
         """Generate documentation for sub-agent tools to include in system prompt."""
-        if not self.sub_tools:
+        has_any_tools = any(self.sub_llm_tool_levels)
+        recursion_enabled = self._recursion_allowed_for_depth(1)
+        if not has_any_tools and not recursion_enabled:
             return ""
 
+        depth_label = (
+            "unlimited"
+            if self.max_sub_llm_depth is None
+            else str(self.max_sub_llm_depth)
+        )
         lines = ["\n## Sub-Agent Tools\n"]
         lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
+            "Sub-LLMs called via `llm_batch()` can use tools at each recursion level."
         )
+        lines.append(f"Configured recursion depth: {depth_label}.\n")
 
-        for oai_tool in self.sub_oai_tools:
-            func_def = oai_tool["function"]
-            name = func_def["name"]
-            desc = func_def.get("description", "No description")
-            params = cast(
-                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
+        if recursion_enabled:
+            lines.append(
+                f"- Sub-LLMs may call `{self.sub_llm_recursion_tool_name}` to spawn "
+                "deeper sub-LLMs (until the depth limit).\n"
             )
 
-            lines.append(f"### `{name}`")
-            lines.append(f"{desc}\n")
+        for depth_index, level_tools in enumerate(self.sub_llm_tool_levels, start=1):
+            if not level_tools:
+                continue
+            lines.append(f"### Level {depth_index} tools")
+            for tool in level_tools:
+                oai_tool = convert_func_to_oai_tool(tool)
+                func_def = oai_tool["function"]
+                name = func_def["name"]
+                desc = func_def.get("description", "No description")
+                params = cast(
+                    dict[str, Any], func_def.get("parameters", {}).get("properties", {})
+                )
 
-            if params:
-                lines.append("**Parameters:**")
-                for param_name, param_info in params.items():
-                    param_type = param_info.get("type", "any")
-                    param_desc = param_info.get("description", "")
-                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
-                lines.append("")
+                lines.append(f"#### `{name}`")
+                lines.append(f"{desc}\n")
+
+                if params:
+                    lines.append("**Parameters:**")
+                    for param_name, param_info in params.items():
+                        param_type = param_info.get("type", "any")
+                        param_desc = param_info.get("description", "")
+                        lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
+                    lines.append("")
 
         lines.append(
-            "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
-            "tools autonomously."
-        )
-        lines.append(
-            "You do NOT need to manage tool calls yourself - just describe the task "
-            "in your prompt.\n"
+            "When delegating tasks to sub-LLMs, they can use their level's tools "
+            "autonomously. You only need to describe the task in your prompt.\n"
         )
 
         return "\n".join(lines)
@@ -688,12 +769,116 @@ class RLMEnv(SandboxEnv):
                 return False
             raise  # Re-raise other errors
 
+    def _build_sub_llm_system_prompt(self, depth: int) -> str:
+        """Build the system prompt for a given sub-LLM depth."""
+        prompt = _SUB_LLM_SYSTEM_PROMPT
+        if self._recursion_allowed_for_depth(depth):
+            prompt += (
+                f"\n\nYou may call `{self.sub_llm_recursion_tool_name}` to delegate "
+                "subtasks to deeper sub-LLMs."
+            )
+        return prompt
+
+    async def _run_sub_llm_batch(
+        self,
+        client: Any,
+        model: str,
+        prompts: list[str],
+        depth: int,
+        rollout_context: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Run multiple sub-LLM calls concurrently for the given depth."""
+        if not self._sub_llm_depth_allowed(depth):
+            return [
+                f"Error: Sub-LLM depth {depth} exceeds the configured limit."
+                for _ in prompts
+            ]
+
+        semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
+        batch_id = uuid.uuid4().hex[:8]
+        parent_turn = rollout_context.get("current_turn", 0) if rollout_context else 0
+
+        async def _run_one(prompt: str) -> str:
+            async with semaphore:
+                request_id = uuid.uuid4().hex[:8]
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self._build_sub_llm_system_prompt(depth),
+                    },
+                    {"role": "user", "content": prompt},
+                ]
+                result = await self._run_sub_llm(
+                    client,
+                    model,
+                    messages,
+                    depth=depth,
+                    rollout_context=rollout_context,
+                )
+                if rollout_context and self.include_sub_llm_in_trajectory:
+                    await self._record_sub_llm_steps(
+                        rollout_context,
+                        result["turns"],
+                        batch_id,
+                        request_id,
+                        parent_turn,
+                        depth,
+                    )
+                return extract_boxed_answer(result["final_content"])
+
+        return await asyncio.gather(*[_run_one(p) for p in prompts])
+
+    def _build_sub_llm_tooling(
+        self,
+        client: Any,
+        model: str,
+        depth: int,
+        rollout_context: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, Callable]]:
+        """Build tools + tool map for a given depth, including recursion tool if enabled."""
+        tools_for_depth = self._get_sub_llm_tools_for_depth(depth)
+        tool_map: dict[str, Callable] = {
+            getattr(tool, "__name__", tool.__class__.__name__): tool
+            for tool in tools_for_depth
+        }
+        oai_tools = [convert_func_to_oai_tool(tool) for tool in tools_for_depth]
+
+        if self._recursion_allowed_for_depth(depth):
+
+            async def llm_batch(prompts: list[str]) -> list[str]:
+                """Spawn deeper sub-LLM calls for a list of prompts."""
+                return await self._run_sub_llm_batch(
+                    client,
+                    model,
+                    prompts,
+                    depth=depth + 1,
+                    rollout_context=rollout_context,
+                )
+
+            llm_batch.__name__ = self.sub_llm_recursion_tool_name
+
+            if llm_batch.__name__ in tool_map:
+                raise ValueError(
+                    "Recursion tool name conflicts with an existing sub-LLM tool: "
+                    f"{llm_batch.__name__}"
+                )
+
+            tool_map[llm_batch.__name__] = llm_batch
+            oai_tools.append(convert_func_to_oai_tool(llm_batch))
+
+        return (oai_tools or None), tool_map
+
     async def _call_sub_tool(
-        self, tool_name: str, tool_args: dict, tool_call_id: str
+        self,
+        tool_name: str,
+        tool_args: dict,
+        tool_call_id: str,
+        tool_map: dict[str, Callable] | None = None,
     ) -> dict:
         """Execute a sub-agent tool call. Returns tool message dict."""
+        resolved_tool_map = tool_map or self.sub_tool_map
         try:
-            tool_func = self.sub_tool_map[tool_name]
+            tool_func = resolved_tool_map[tool_name]
             result = await maybe_await(tool_func, **tool_args)
             return {
                 "role": "tool",
@@ -775,11 +960,20 @@ class RLMEnv(SandboxEnv):
         )
 
     async def _run_sub_llm(
-        self, client: Any, model: str, messages: list[dict]
+        self,
+        client: Any,
+        model: str,
+        messages: list[dict],
+        depth: int = 1,
+        rollout_context: dict[str, Any] | None = None,
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
+        tools, tool_map = self._build_sub_llm_tooling(
+            client, model, depth, rollout_context=rollout_context
+        )
+
         # Fast path: no tools configured - single LLM call
-        if not self.sub_tools:
+        if not tools:
             response = await self._call_sub_llm_api(client, model, messages)
             if response is None:
                 return self._make_timeout_result([], 0, 0, 0, 0)
@@ -808,7 +1002,7 @@ class RLMEnv(SandboxEnv):
         tool_call_count = 0
         num_turns = 0
         turns: list[SubLLMTurn] = []
-        tools = self.sub_oai_tools if self.sub_oai_tools else None
+        tools = tools if tools else None
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
@@ -863,7 +1057,7 @@ class RLMEnv(SandboxEnv):
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id
+                    tool_name, tool_args, tool_call.id, tool_map=tool_map
                 )
                 current_messages.append(tool_result)
 
@@ -904,6 +1098,57 @@ class RLMEnv(SandboxEnv):
             num_turns=num_turns,
             max_turns_reached=True,
         )
+
+    async def _record_sub_llm_steps(
+        self,
+        context: dict[str, Any],
+        turns: list[SubLLMTurn],
+        batch_id: str,
+        request_id: str,
+        parent_turn: int,
+        depth: int,
+    ) -> None:
+        """Record sub-LLM trajectory steps for training and metrics."""
+        if not turns:
+            return
+
+        timestamp = time.time()
+        total_sub_turns = len(turns)
+
+        for sub_turn_index, turn in enumerate(turns):
+            tokens = await parse_response_tokens(
+                turn["response"], "chat", self.max_seq_len
+            )
+            completion_messages = await parse_response_messages(
+                turn["response"], "chat"
+            )
+            response_is_truncated = await parse_is_truncated(turn["response"], "chat")
+            is_truncated = response_is_truncated or (
+                tokens is not None and bool(tokens.get("is_truncated"))
+            )
+
+            trajectory_step = TrajectoryStep(
+                prompt=cast(Messages, turn["prompt_messages"]),
+                completion=completion_messages,
+                response=turn["response"],
+                tokens=tokens,
+                reward=None,
+                advantage=None,
+                is_truncated=is_truncated,
+                trajectory_id=f"{batch_id}_{request_id}",
+                extras={
+                    "is_sub_llm_call": True,
+                    "parent_turn": parent_turn,
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "sub_turn_index": sub_turn_index,
+                    "total_sub_turns": total_sub_turns,
+                    "timestamp": timestamp,
+                    "tool_call_count": turn["tool_call_count"],
+                    "sub_llm_depth": depth,
+                },
+            )
+            context.setdefault("sub_llm_trajectory_steps", []).append(trajectory_step)
 
     # =========================================================================
     # Interception Server (for sub-LLM calls from sandbox code)
@@ -958,16 +1203,44 @@ class RLMEnv(SandboxEnv):
         messages = request_body.get("messages", [])
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
+        raw_depth = request_body.get("_rlm_depth", 1)
+        try:
+            depth = int(raw_depth)
+        except (TypeError, ValueError):
+            depth = 1
+
+        if not self._sub_llm_depth_allowed(depth):
+            error_text = f"Error: Sub-LLM depth {depth} exceeds the configured limit."
+            return web.json_response(
+                {
+                    "choices": [{"message": {"content": f"\\boxed{{{error_text}}}"}}],
+                    "_rlm_metadata": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "tool_call_count": 0,
+                        "num_turns": 0,
+                        "max_turns_reached": True,
+                        "error": True,
+                    },
+                },
+                status=400,
+            )
 
         # Prepend system message with \boxed{} instruction
         messages_with_system = [
-            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
+            {"role": "system", "content": self._build_sub_llm_system_prompt(depth)},
             *messages,
         ]
 
         try:
             # Run sub-LLM call (handles both with-tools and no-tools cases)
-            result = await self._run_sub_llm(client, sub_model, messages_with_system)
+            result = await self._run_sub_llm(
+                client,
+                sub_model,
+                messages_with_system,
+                depth=depth,
+                rollout_context=context,
+            )
             final_content = result["final_content"]
             prompt_tokens = result["total_prompt_tokens"]
             completion_tokens = result["total_completion_tokens"]
@@ -982,49 +1255,9 @@ class RLMEnv(SandboxEnv):
             # Build TrajectorySteps if enabled
             if self.include_sub_llm_in_trajectory:
                 parent_turn = context.get("current_turn", 0)
-                timestamp = time.time()
-
-                total_sub_turns = len(turns)
-                for sub_turn_index, turn in enumerate(turns):
-                    # Parse tokens from response
-                    tokens = await parse_response_tokens(
-                        turn["response"], "chat", self.max_seq_len
-                    )
-                    # Parse completion messages
-                    completion_messages = await parse_response_messages(
-                        turn["response"], "chat"
-                    )
-                    # Check if response was truncated
-                    response_is_truncated = await parse_is_truncated(
-                        turn["response"], "chat"
-                    )
-                    is_truncated = response_is_truncated or (
-                        tokens is not None and bool(tokens.get("is_truncated"))
-                    )
-
-                    trajectory_step = TrajectoryStep(
-                        prompt=cast(Messages, turn["prompt_messages"]),
-                        completion=completion_messages,
-                        response=turn["response"],
-                        tokens=tokens,
-                        reward=None,
-                        advantage=None,
-                        is_truncated=is_truncated,
-                        trajectory_id=f"{batch_id}_{request_id}",
-                        extras={
-                            "is_sub_llm_call": True,
-                            "parent_turn": parent_turn,
-                            "batch_id": batch_id,
-                            "request_id": request_id,
-                            "sub_turn_index": sub_turn_index,
-                            "total_sub_turns": total_sub_turns,
-                            "timestamp": timestamp,
-                            "tool_call_count": turn["tool_call_count"],
-                        },
-                    )
-                    context.setdefault("sub_llm_trajectory_steps", []).append(
-                        trajectory_step
-                    )
+                await self._record_sub_llm_steps(
+                    context, turns, batch_id, request_id, parent_turn, depth
+                )
 
             # Build response dict for sandbox
             response_dict = {
@@ -1035,6 +1268,7 @@ class RLMEnv(SandboxEnv):
                     "tool_call_count": tool_call_count,
                     "num_turns": num_turns,
                     "max_turns_reached": max_turns_reached,
+                    "depth": depth,
                 },
             }
 
@@ -1134,6 +1368,7 @@ export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
 export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
 export RLM_SANDBOX_TIMEOUT="{self.code_execution_timeout}"
+export RLM_SUB_LLM_DEPTH="1"
 
 # Wait for worker script to exist (written AFTER pip install completes in start_command)
 # This can take 30-60+ seconds for heavy packages like numpy, sympy, scipy
