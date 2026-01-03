@@ -154,7 +154,7 @@ filterwarnings = [
     "ignore::UserWarning:transformers.*",
     "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
     "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
-    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib",
+    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]

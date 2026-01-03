@@ -520,3 +520,93 @@ class TestMultiTurnEnv:
         for step in state["trajectory"]:
             assert hasattr(step["response"], "choices")
             assert len(step["response"].choices) > 0
+
+    @pytest.mark.asyncio
+    async def test_final_env_response_stops_rollout(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that setting final_env_response stops rollout without extra model call."""
+
+        class FinalEnvResponseEnv(MultiTurnEnv):
+            async def env_response(self, messages, state, **kwargs):
+                state["env_calls"] = state.get("env_calls", 0) + 1
+                if state["env_calls"] >= 2:
+                    response = [{"role": "user", "content": "Game over!"}]
+                    state["final_env_response"] = response
+                    return response
+                return [{"role": "user", "content": f"Turn {state['env_calls']}"}]
+
+        env = FinalEnvResponseEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            max_turns=10,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        mock_openai_client.set_default_responses(chat_response="Model response")
+
+        prompt: Messages = [{"role": "user", "content": "Start"}]
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        # Should have 2 trajectory steps (model responses before final_env_response)
+        assert len(state["trajectory"]) == 2
+        assert state["is_completed"] is True
+        assert state["stop_condition"] == "has_final_env_response"
+        assert state["final_env_response"] == [
+            {"role": "user", "content": "Game over!"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_final_env_response_included_in_completion(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that final_env_response is included in state['completion']."""
+
+        class FinalEnvResponseEnv(MultiTurnEnv):
+            async def env_response(self, messages, state, **kwargs):
+                response = [{"role": "user", "content": "Final feedback"}]
+                state["final_env_response"] = response
+                return response
+
+        env = FinalEnvResponseEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            max_turns=10,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        mock_openai_client.add_chat_response(
+            messages=[{"role": "user", "content": "Start"}],
+            response="First response",
+        )
+
+        prompt: Messages = [{"role": "user", "content": "Start"}]
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=prompt,
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        # Completion should include the final_env_response
+        completion = state["completion"]
+        assert len(completion) == 2  # assistant + final env response
+        assert completion[0]["role"] == "assistant"
+        assert completion[0]["content"] == "First response"
+        assert completion[1]["role"] == "user"
+        assert completion[1]["content"] == "Final feedback"

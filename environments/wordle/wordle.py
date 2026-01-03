@@ -3,7 +3,7 @@ import random
 import re
 import time
 from copy import deepcopy
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import textarena as ta
 from datasets import Dataset
@@ -58,32 +58,29 @@ class WordleEnv(vf.MultiTurnEnv):
     async def cleanup_ta_env(self, state: vf.State):
         state.pop("ta_env")
 
-    @vf.stop
-    async def game_completed(self, state: vf.State) -> bool:
-        return state.get("game_completed", False)
-
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
-        # load env
         ta_env = state["ta_env"]
 
-        # parse guess
         guess = self.parser.parse_answer(messages)
         logger.debug(f"Parsed {guess=}")
-        # step env
         ta_env.step(str(guess))
 
         if ta_env.state.done:
             logger.debug(f"Game completed! {ta_env.state.game_info=}")
-            state["game_completed"] = True
-            return [{"role": "user", "content": ta_env.state.game_info[0]["reason"]}]
+            response = cast(
+                vf.Messages,
+                [{"role": "user", "content": ta_env.state.game_info[0]["reason"]}],
+            )
+            state["final_env_response"] = response
+            return response
         else:
             _, observation = ta_env.get_observation()
             logger.debug(f"Got {observation=}")
             feedback = self.feedback_fn(observation)
             logger.debug(f"Parsed {feedback=}")
-            return [{"role": "user", "content": str(feedback)}]
+            return cast(vf.Messages, [{"role": "user", "content": str(feedback)}])
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []
