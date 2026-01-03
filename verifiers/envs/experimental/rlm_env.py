@@ -48,6 +48,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.rlm_metrics_utils import add_metrics_to_state
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
@@ -1880,75 +1881,23 @@ PY
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
         """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
-        from collections import Counter
-
-        main_trajectory_len = len(state.get("trajectory", []))
         rollout_id = state.get("rollout_id")
+        sub_steps = []
 
         if rollout_id and rollout_id in self.active_rollouts:
             context = self.active_rollouts[rollout_id]
             sub_steps = context.get("sub_llm_trajectory_steps", [])
 
             if sub_steps:
-                # Extract unique (batch_id, request_id) pairs and count per batch
-                pairs = {
-                    (e.get("batch_id"), e.get("request_id"))
-                    for s in sub_steps
-                    if (e := s.get("extras", {})).get("batch_id")
-                }
-                batch_sizes = list(Counter(b for b, _ in pairs).values())
-
-                state["sub_llm_call_count"] = len(pairs)
-                state["sub_llm_prompt_tokens"] = sum(
-                    self._extract_tokens(s.get("response"))[0] for s in sub_steps
-                )
-                state["sub_llm_completion_tokens"] = sum(
-                    self._extract_tokens(s.get("response"))[1] for s in sub_steps
-                )
-                state["sub_llm_total_tool_calls"] = sum(
-                    s.get("extras", {}).get("tool_call_count", 0) or 0
-                    for s in sub_steps
-                )
-                state["sub_llm_total_turns"] = len(sub_steps)
-                state["sub_llm_batch_count"] = len(batch_sizes)
-                state["sub_llm_max_batch_size"] = max(batch_sizes, default=0)
-                state["sub_llm_mean_batch_size"] = (
-                    sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
-                )
-
-            if self.include_sub_llm_in_trajectory and sub_steps:
-                sub_steps_sorted = sorted(
-                    sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
-                )
+                if self.include_sub_llm_in_trajectory:
+                    sub_steps_sorted = sorted(
+                        sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
+                    )
                 state["trajectory"] = sub_steps_sorted + state["trajectory"]
 
             del self.active_rollouts[rollout_id]
 
-        # Compute main RLM metrics (excluding sub-LLM steps)
-        state["main_rlm_turns"] = main_trajectory_len
-        main_steps = [
-            s
-            for s in state.get("trajectory", [])
-            if not s.get("extras", {}).get("is_sub_llm_call")
-        ]
-        state["main_rlm_prompt_tokens"] = sum(
-            self._extract_tokens(s.get("response"))[0] for s in main_steps
-        )
-        state["main_rlm_completion_tokens"] = sum(
-            self._extract_tokens(s.get("response"))[1] for s in main_steps
-        )
-
-        # REPL call timing metrics (already tracked in tool_call_timings)
-        tool_timings = state.get("tool_call_timings", [])
-        state["repl_total_time_seconds"] = (
-            sum(t["execution_seconds"] for t in tool_timings) if tool_timings else 0.0
-        )
-        state["repl_call_count"] = len(tool_timings)
-        state["repl_mean_time_seconds"] = (
-            (state["repl_total_time_seconds"] / len(tool_timings))
-            if tool_timings
-            else 0.0
-        )
+        await add_metrics_to_state(state, sub_llm_steps=sub_steps)
 
         # Release tunnel
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:

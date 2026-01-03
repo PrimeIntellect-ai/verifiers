@@ -23,6 +23,8 @@ use `0` (or `0.0` for floats).
 
 - `sub_llm_call_count` (int)
   - Number of sub-LLM requests (i.e., batch items) across the rollout.
+  - If request identifiers are missing, this falls back to the number of
+    sub-LLM turns.
 - `sub_llm_total_turns` (int)
   - Total LLM turns across all sub-LLM calls (including tool loops and the
     final forced answer turn when max tool turns are reached).
@@ -96,4 +98,3 @@ inputs because they are structured and not scalar.
   - `max_sub_llm_depth` being `0`, `1`, `N`, or `None`
   - presence/absence of sub-LLM tools
   - recursion tool enablement
-
