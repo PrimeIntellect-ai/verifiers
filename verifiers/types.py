@@ -238,6 +238,7 @@ class EvalConfig(BaseModel):
     print_results: bool = False
     verbose: bool = False
     # saving
+    output_dir: str | None = None
     state_columns: list[str] | None = None
     save_results: bool = False
     save_every: int = -1

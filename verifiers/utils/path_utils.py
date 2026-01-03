@@ -15,13 +15,17 @@ def get_results_path(
 
 
 def get_eval_results_path(config: EvalConfig) -> Path:
+    # Use custom output_dir if provided
+    if config.output_dir is not None:
+        base_path = Path(config.output_dir)
+        return get_results_path(config.env_id, config.model, base_path)
+
+    # Fall back to default behavior
     module_name = config.env_id.replace("-", "_")
     local_env_dir = Path(config.env_dir_path) / module_name
 
     if local_env_dir.exists():
         base_path = local_env_dir / "outputs"
-        results_path = get_results_path(config.env_id, config.model, base_path)
     else:
         base_path = Path("./outputs")
-        results_path = get_results_path(config.env_id, config.model, base_path)
-    return results_path
+    return get_results_path(config.env_id, config.model, base_path)
