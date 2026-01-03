@@ -127,9 +127,7 @@ def test_get_rlm_rubrics_appends_metrics():
     def base_metric(*, state, **kwargs):
         return 0.0
 
-    funcs, weights = get_rlm_rubrics(
-        base=[base_metric], base_weights=[1.0], weight=0.0
-    )
+    funcs, weights = get_rlm_rubrics(base=[base_metric], base_weights=[1.0], weight=0.0)
 
     names = {func.__name__ for func in funcs}
     assert "sub_llm_call_count" in names

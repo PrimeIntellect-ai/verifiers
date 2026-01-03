@@ -1893,7 +1893,7 @@ PY
                     sub_steps_sorted = sorted(
                         sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
                     )
-                state["trajectory"] = sub_steps_sorted + state["trajectory"]
+                    state["trajectory"] = sub_steps_sorted + state["trajectory"]
 
             del self.active_rollouts[rollout_id]
 

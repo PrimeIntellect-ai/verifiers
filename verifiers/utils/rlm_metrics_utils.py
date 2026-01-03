@@ -58,15 +58,11 @@ async def add_metrics_to_state(
 
     if sub_llm_steps is None:
         sub_llm_steps = [
-            step
-            for step in trajectory
-            if _get_step_extras(step).get("is_sub_llm_call")
+            step for step in trajectory if _get_step_extras(step).get("is_sub_llm_call")
         ]
 
     main_steps = [
-        step
-        for step in trajectory
-        if not _get_step_extras(step).get("is_sub_llm_call")
+        step for step in trajectory if not _get_step_extras(step).get("is_sub_llm_call")
     ]
 
     total_prompt_tokens = 0
@@ -193,9 +189,7 @@ async def add_metrics_to_state(
 
     state["repl_total_time_seconds"] = total_time
     state["repl_call_count"] = call_count
-    state["repl_mean_time_seconds"] = (
-        total_time / call_count if call_count else 0.0
-    )
+    state["repl_mean_time_seconds"] = total_time / call_count if call_count else 0.0
 
 
 def _make_state_metric_func(key: str) -> Callable[..., float]:
