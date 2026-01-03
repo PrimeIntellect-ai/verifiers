@@ -39,17 +39,15 @@ from verifiers.types import Messages, State
 from typing import Tuple
 
 class MyProtocol(vf.MultiTurnEnv):
-    async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
+    async def env_response(self, messages: Messages, state: State) -> Messages:
         """Define how environment responds to model"""
         response = [{"role": "user", "content": "Environment feedback"}]
         state["turn"] = state.get("turn", 0) + 1
-        return response, state
+        return response
     
-    async def is_completed(self, messages: Messages, state: State) -> bool:
+    @vf.stop
+    async def task_complete(self, state: State) -> bool:
         """Define when interaction ends"""
-        # Always defer to the base implementation so turn limits are respected
-        if await super().is_completed(messages, state):
-            return True
         return state.get("task_complete", False)
 ```
 
@@ -143,22 +141,35 @@ Environments maintain state throughout interactions:
 
 ```python
 state = {
-    # automatically managed
-    "prompt": prompt, # inputs from dataset
-    "completion": [], # trajectory so far
-    "answer": answer, # golden answer (str)
-    "task": task, # optional environment ID column
-    "info": info, # evaluation metadata (dict) -- can use answer/info/both
-    "responses": [], # Raw API responses from OpenAI client
-    "example_id": example_id, # Source dataset row identifier
-    "turn": 0,
-    "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
+    # Input fields (automatically managed)
+    "prompt": prompt,              # Inputs from dataset (list[ChatMessage] or str)
+    "answer": answer,              # Golden answer (str, optional)
+    "task": task,                  # Environment ID column (str, optional)
+    "info": info,                  # Evaluation metadata (dict, optional) -- can use answer/info/both
+    "example_id": example_id,      # Source dataset row identifier (int)
+    
+    # Rollout tracking (automatically managed):
+    "trajectory": [],              # Trajectory steps (list[TrajectoryStep], one per LLM request/response)
+    "completion": None,            # Full conversation except the initial prompt (list[ChatMessage] or str),
+                                   # rendered from trajectory when rollout ends
+    "is_completed": False,         # Whether rollout has terminated (bool)
+    "stop_condition": None,        # Name of stop condition that terminated rollout (str, optional)
+    "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},  # Timing info (dict)
+    
     # custom user-managed state
     "lives_remaining": 2,
     "inventory": {"potion": 1, "power-up": 2}
     ...
 }
 ```
+
+**Trajectory Structure**: Each step in `state["trajectory"]` is a `TrajectoryStep` containing:
+- `prompt`: Messages sent to LLM for this request
+- `completion`: Messages returned from LLM for this request
+- `response`: Raw API response object
+- `tokens`: Token IDs, masks, and logprobs (if available)
+- `reward`: Reward for this step
+- `advantage`: Advantage for this step (for RL training)
 
 A wide variety of complex interaction protocols, reward schemes, and training algorithms can be coordinated via tracking appropriate data in `state`.
 
@@ -224,11 +235,12 @@ results = asyncio.run(env.evaluate(client=async_client, model="llama-3.1-8b"))
   ```
   - `rollouts_per_example > 1` repeats dataset entries internally.
   - `max_concurrent` throttles concurrent rollouts.
-  - `save_every` (when > 0) checkpoints intermediate progress during interleaved rollouts (set `interleave_scoring=True`).
+  - `save_every` (when > 0) checkpoints intermediate progress during rollouts.
 
 - **Scoring**:
-  - Each reward function returns a float. Weights applied inside `Rubric` combine them into `results.reward`.
-  - All individual scores are logged under `results.metrics` keyed by function name (even if weight is 0.0).
+  - Each reward function returns a float. Weights applied inside `Rubric` combine them into `state["reward"]`.
+  - All individual scores are logged under `state["metrics"]` keyed by function name (even if weight is 0.0).
+  - Scoring is performed at the group level by default, parallelizing across rollouts.
 
 - **Outputs** (`GenerateOutputs`):
   - `prompt`, `completion`, `answer`, `state`, `info`, `task`, `id`, `reward`, `metrics: dict[str, list[float]]`, plus a `metadata` block summarizing the run.
