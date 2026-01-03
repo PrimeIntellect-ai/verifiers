@@ -175,6 +175,13 @@ Common iterations:
 - Add new reward functions to the rubric
 - Configure dataset filtering or sampling
 
+### RLM Metrics
+
+If your environment embeds or wraps an RLM-style workflow, use the shared
+metrics schema to keep reporting consistent across recursion settings.
+See the [RLM Metrics Contract](rlm_metrics.md) for the stable keys and
+definitions expected in `state`.
+
 ## Using Prime CLI and the Environments Hub
 
 Prime Intellect provides a hosted [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments) for discovering, installing, and sharing verifiers packages. The [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) wraps the same templates and packaging helpers exposed here, so you can publish environments once and re-use them from local machines, CI pipelines, or Prime pods.
