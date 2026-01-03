@@ -425,6 +425,10 @@ class RLMEnv(SandboxEnv):
         system_prompt: Custom system prompt (default: RLM standard prompt)
         interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
         interception_port: Port for interception server (default: 8766)
+        cloudflared_tunnel_name: Optional named Cloudflare tunnel to use instead of
+                   quick tunnels. Requires cloudflared_tunnel_url.
+        cloudflared_tunnel_url: Public URL for the named tunnel. Requires
+                   cloudflared_tunnel_name.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
@@ -464,6 +468,8 @@ class RLMEnv(SandboxEnv):
         system_prompt: str | None = None,
         interception_host: str | None = None,
         interception_port: int = 8766,
+        cloudflared_tunnel_name: str | None = None,
+        cloudflared_tunnel_url: str | None = None,
         pip_install_packages: str = "",
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
@@ -483,6 +489,8 @@ class RLMEnv(SandboxEnv):
         self.custom_system_prompt = system_prompt
         self.interception_host = interception_host
         self.interception_port = interception_port
+        self.cloudflared_tunnel_name = cloudflared_tunnel_name
+        self.cloudflared_tunnel_url = cloudflared_tunnel_url
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
@@ -530,8 +538,22 @@ class RLMEnv(SandboxEnv):
         self._server_site: Any = None
 
         # Tunnel pool for exposing interception server to sandboxes
+        if (cloudflared_tunnel_name is None) != (cloudflared_tunnel_url is None):
+            raise ValueError(
+                "cloudflared_tunnel_name and cloudflared_tunnel_url must be set together"
+            )
+        if interception_host is not None and cloudflared_tunnel_name is not None:
+            raise ValueError(
+                "cloudflared_tunnel_name cannot be used with interception_host"
+            )
         self._tunnel_pool: TunnelPool | None = (
-            TunnelPool(port=interception_port) if interception_host is None else None
+            TunnelPool(
+                port=interception_port,
+                cloudflared_tunnel_name=cloudflared_tunnel_name,
+                cloudflared_tunnel_url=cloudflared_tunnel_url,
+            )
+            if interception_host is None
+            else None
         )
 
         # Active rollout tracking for sub-LLM request routing

@@ -1,9 +1,10 @@
 """
 Cloudflare tunnel utilities for exposing local servers to remote sandboxes.
 
-This module provides utilities for creating and managing Cloudflare Quick Tunnels,
-which allow code running in remote sandboxes to make HTTP requests back to the
-local machine without requiring manual network configuration.
+This module provides utilities for creating and managing Cloudflare tunnels,
+including Quick Tunnels and named tunnels. These allow code running in remote
+sandboxes to make HTTP requests back to the local machine without requiring
+manual network configuration.
 """
 
 import asyncio
@@ -161,6 +162,67 @@ def start_cloudflared_tunnel(
     )
 
 
+def start_cloudflared_named_tunnel(
+    tunnel_name: str,
+    tunnel_url: str,
+    max_wait_seconds: int = 30,
+) -> tuple[str, subprocess.Popen]:
+    """
+    Start a named cloudflared tunnel and return the URL and process.
+
+    Args:
+        tunnel_name: Name of the configured Cloudflare tunnel.
+        tunnel_url: Public URL for the named tunnel.
+        max_wait_seconds: Maximum time to wait for tunnel to stay alive.
+
+    Returns:
+        Tuple of (tunnel_url, tunnel_process).
+
+    Raises:
+        RuntimeError: If tunnel fails to start.
+    """
+    cloudflared_path = ensure_cloudflared_installed()
+
+    tunnel_process = subprocess.Popen(
+        [
+            cloudflared_path,
+            "tunnel",
+            "run",
+            tunnel_name,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stderr_lines: list[str] = []
+    check_interval = 0.5
+    max_iterations = max(1, int(max_wait_seconds / check_interval))
+
+    for _ in range(max_iterations):
+        if tunnel_process.poll() is not None:
+            if tunnel_process.stderr:
+                remaining = tunnel_process.stderr.read()
+                stderr_lines.append(remaining)
+            error_output = "".join(stderr_lines)
+            raise RuntimeError(f"cloudflared tunnel failed to start: {error_output}")
+
+        if tunnel_process.stderr:
+            line = tunnel_process.stderr.readline()
+            if line:
+                stderr_lines.append(line)
+
+        time.sleep(check_interval)
+        if tunnel_process.poll() is None:
+            logger.info(f"Cloudflare named tunnel started: {tunnel_url}")
+            return tunnel_url, tunnel_process
+
+    raise RuntimeError(
+        f"Named tunnel process did not stay alive after {max_wait_seconds} seconds."
+    )
+
+
 class TunnelPool:
     """
     Manages a pool of Cloudflare tunnels with automatic scaling.
@@ -169,9 +231,11 @@ class TunnelPool:
     round-robin selection. Automatically scales up when more rollouts are active.
 
     Args:
-        port: Local port to tunnel to.
+        port: Local port to tunnel to (used for quick tunnels).
         rollouts_per_tunnel: Maximum rollouts per tunnel before scaling up.
         max_wait_seconds: Maximum time to wait for each tunnel to start.
+        cloudflared_tunnel_name: Optional named tunnel to run instead of quick tunnels.
+        cloudflared_tunnel_url: Public URL for the named tunnel.
     """
 
     def __init__(
@@ -179,10 +243,20 @@ class TunnelPool:
         port: int,
         rollouts_per_tunnel: int = 50,
         max_wait_seconds: int = 30,
+        cloudflared_tunnel_name: str | None = None,
+        cloudflared_tunnel_url: str | None = None,
     ):
+        if (cloudflared_tunnel_name is None) != (cloudflared_tunnel_url is None):
+            raise ValueError(
+                "cloudflared_tunnel_name and cloudflared_tunnel_url must be set together"
+            )
         self.port = port
         self.rollouts_per_tunnel = rollouts_per_tunnel
         self.max_wait_seconds = max_wait_seconds
+        self.cloudflared_tunnel_name = cloudflared_tunnel_name
+        self.cloudflared_tunnel_url = (
+            cloudflared_tunnel_url.rstrip("/") if cloudflared_tunnel_url else None
+        )
         self._tunnels: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._round_robin_index = 0
@@ -209,9 +283,16 @@ class TunnelPool:
 
             while len(self._tunnels) < required_tunnels:
                 try:
-                    url, process = start_cloudflared_tunnel(
-                        self.port, self.max_wait_seconds
-                    )
+                    if self.cloudflared_tunnel_name:
+                        url, process = start_cloudflared_named_tunnel(
+                            self.cloudflared_tunnel_name,
+                            self.cloudflared_tunnel_url or "",
+                            self.max_wait_seconds,
+                        )
+                    else:
+                        url, process = start_cloudflared_tunnel(
+                            self.port, self.max_wait_seconds
+                        )
                     self._tunnels.append(
                         {
                             "url": url,

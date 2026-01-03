@@ -378,6 +378,43 @@ class TestRLMEnvInitialization:
 
             assert env.custom_system_prompt == custom_prompt
 
+    def test_named_tunnel_requires_name_and_url(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """Named tunnel args must be set together."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            with pytest.raises(ValueError, match="cloudflared_tunnel_name"):
+                RLMEnv(
+                    dataset=mock_dataset,
+                    cloudflared_tunnel_name="rlm",
+                )
+            with pytest.raises(ValueError, match="cloudflared_tunnel_name"):
+                RLMEnv(
+                    dataset=mock_dataset,
+                    cloudflared_tunnel_url="https://tunnel.example.com",
+                )
+
+    def test_named_tunnel_conflicts_with_interception_host(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """Named tunnel args shouldn't be set with interception_host."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            with pytest.raises(ValueError, match="interception_host"):
+                RLMEnv(
+                    dataset=mock_dataset,
+                    interception_host="127.0.0.1",
+                    cloudflared_tunnel_name="rlm",
+                    cloudflared_tunnel_url="https://tunnel.example.com",
+                )
+
     def test_bash_tool_removed(self, rlm_env):
         """Verify bash tool is removed from parent class."""
         # RLMEnv should not have bash in its tool_map
