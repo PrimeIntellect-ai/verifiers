@@ -598,7 +598,7 @@ class Environment(ABC):
         else:
             state["oai_tools"] = []
         state["trajectory"] = []
-        state["current_trajectory_id"] = uuid.uuid4().hex
+        state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None

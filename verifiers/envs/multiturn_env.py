@@ -85,7 +85,7 @@ class MultiTurnEnv(vf.Environment):
             reward=None,
             advantage=None,
             is_truncated=is_truncated,
-            trajectory_id=state["current_trajectory_id"],
+            trajectory_id=state["trajectory_id"],
             extras={},
         )
         trajectory_step["completion"] = completion_messages
