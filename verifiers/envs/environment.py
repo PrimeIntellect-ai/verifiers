@@ -336,7 +336,6 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
-    @final
     async def get_model_response(
         self,
         state: State,

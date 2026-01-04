@@ -87,7 +87,6 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
-    @final
     async def add_model_response(
         self,
         state: State,
