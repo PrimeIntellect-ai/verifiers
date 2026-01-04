@@ -502,9 +502,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_adds_system_prompt_on_first_turn(self, rlm_env):
         """Adds system prompt on first turn (empty trajectory)."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "What is 2+2?"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)
@@ -515,9 +532,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_appends_sub_tools_docs(self, rlm_env_with_sub_tools):
         """Appends sub-tools documentation to system prompt."""
+        metadata_summary = rlm_env_with_sub_tools._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env_with_sub_tools.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env_with_sub_tools._generate_packages_documentation()
+        sub_tools_docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Test"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env_with_sub_tools.get_prompt_messages(state)
@@ -528,9 +562,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_string_prompt_converted_to_messages(self, rlm_env):
         """String prompt is converted to message format."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": "What is 2+2?",
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)

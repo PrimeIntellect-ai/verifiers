@@ -1246,6 +1246,23 @@ done
         context_dict = {"input_data": context_data, "input_data_metadata": metadata}
         state["rlm_context"] = context_dict
 
+        metadata_summary = self._generate_metadata_documentation(metadata)
+        base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+        if "{metadata_summary}" in base_system_prompt:
+            # Use replace instead of format to avoid conflict with curly braces from Python code
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            # If custom prompt doesn't have placeholder, prepend it
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+
+        packages_docs = self._generate_packages_documentation()
+        sub_tools_docs = self._generate_sub_tools_documentation()
+        state["rlm_system_prompt"] = base_system_prompt + packages_docs + sub_tools_docs
+        state["rlm_packages_docs"] = packages_docs
+        state["rlm_sub_tools_docs"] = sub_tools_docs
+
         # 6. Prepare sandbox and start worker (with retry using fresh sandbox)
         max_sandbox_retries = 5
 
@@ -1570,23 +1587,11 @@ PY
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
-            # Build system prompt with metadata, packages and sub-tool documentation
-            metadata = state.get("rlm_context", {}).get("input_data_metadata", {})
-            metadata_summary = self._generate_metadata_documentation(metadata)
-
-            base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
-            if "{metadata_summary}" in base_system_prompt:
-                # Use replace instead of format to avoid conflict with curly braces from Python code
-                base_system_prompt = base_system_prompt.replace(
-                    "{metadata_summary}", metadata_summary
-                )
-            else:
-                # If custom prompt doesn't have placeholder, prepend it
-                base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
-
-            packages_docs = self._generate_packages_documentation()
-            sub_tools_docs = self._generate_sub_tools_documentation()
-            system_prompt = base_system_prompt + packages_docs + sub_tools_docs
+            system_prompt = state.get("rlm_system_prompt")
+            packages_docs = state.get("rlm_packages_docs")
+            sub_tools_docs = state.get("rlm_sub_tools_docs")
+            if system_prompt is None or packages_docs is None or sub_tools_docs is None:
+                raise ValueError("RLM setup_state must run before get_prompt_messages")
 
             messages = list(prompt)
             if not messages or messages[0].get("role") != "system":
