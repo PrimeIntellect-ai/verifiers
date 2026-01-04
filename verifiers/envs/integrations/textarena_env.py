@@ -80,7 +80,7 @@ class TextArenaEnv(vf.MultiTurnEnv):
 
     @vf.cleanup
     async def cleanup_ta_env(self, state: vf.State):
-        state.pop("ta_env")
+        state.pop("ta_env", None)
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
