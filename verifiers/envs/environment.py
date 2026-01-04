@@ -21,6 +21,7 @@ from typing import (
     Literal,
     TypeVar,
     cast,
+    final,
 )
 
 from datasets import Dataset
@@ -47,7 +48,6 @@ from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
-    concat_messages,
     strip_nones_from_content,
 )
 from verifiers.utils.path_utils import get_results_path
@@ -106,13 +106,13 @@ class Environment(ABC):
 
         if self.message_type == "chat":
             if dataset is not None:
-                self.dataset = self.format_dataset(
+                self.dataset = self._format_dataset(
                     dataset, self.system_prompt, self.few_shot, map_kwargs=map_kwargs
                 )
             else:
                 self.dataset = None
             if eval_dataset is not None:
-                self.eval_dataset = self.format_dataset(
+                self.eval_dataset = self._format_dataset(
                     eval_dataset,
                     self.system_prompt,
                     self.few_shot,
@@ -128,13 +128,13 @@ class Environment(ABC):
                     'to contain a "prompt" column.'
                 )
             if dataset is not None:
-                self.dataset = self.format_completion_dataset(
+                self.dataset = self._format_completion_dataset(
                     dataset, map_kwargs=map_kwargs
                 )
             else:
                 self.dataset = None
             if eval_dataset is not None:
-                self.eval_dataset = self.format_completion_dataset(
+                self.eval_dataset = self._format_completion_dataset(
                     eval_dataset, map_kwargs=map_kwargs
                 )
             else:
@@ -280,7 +280,7 @@ class Environment(ABC):
             dataset = dataset.map(add_task, **map_kwargs)
         return dataset
 
-    def format_dataset(
+    def _format_dataset(
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
@@ -299,7 +299,7 @@ class Environment(ABC):
         dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
-    def format_completion_dataset(
+    def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
         """
@@ -309,6 +309,7 @@ class Environment(ABC):
         dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
+    @final
     def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
         if self.dataset is None:
             raise ValueError("dataset is not set")
@@ -320,6 +321,7 @@ class Environment(ABC):
             return self.dataset.select(range(n))
         return self.dataset
 
+    @final
     def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
         if self.eval_dataset is None:
             self.logger.warning(
@@ -334,6 +336,7 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
+    @final
     async def get_model_response(
         self,
         state: State,
@@ -565,6 +568,7 @@ class Environment(ABC):
             )
         return response
 
+    @final
     async def init_state(
         self,
         input: RolloutInput,
@@ -609,13 +613,6 @@ class Environment(ABC):
             total_ms=0.0,
             start_time=time.time(),
         )
-        return state
-
-    @abstractmethod
-    async def setup_state(self, state: State) -> State:
-        """
-        Setup the state.
-        """
         return state
 
     @abstractmethod
@@ -665,29 +662,17 @@ class Environment(ABC):
         state["timing"]["generation_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 
-    async def _render_completion(self, state: State):
-        if len(state["trajectory"]) == 0:
-            state["completion"] = []
-            return
-        last_prompt = state["trajectory"][-1]["prompt"]
-        last_completion = state["trajectory"][-1]["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
-        if state.get("final_env_response"):
-            full_conversation = concat_messages(
-                [full_conversation, state["final_env_response"]]
-            )
-        state["completion"] = full_conversation[len(state["prompt"]) :]
-
+    @final
     async def is_completed(self, state: State, **kwargs) -> bool:
         """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
         for condition in self._stop_conditions:
             if await self._render_stop(state, condition):
                 await self._render_timing(state)
-                await self._render_completion(state)
                 await self._cleanup(state)
                 return True
         return False
 
+    @final
     async def run_rollout(
         self,
         sem: AsyncContextManager,
@@ -708,6 +693,7 @@ class Environment(ABC):
             )
         return state
 
+    @final
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
@@ -974,7 +960,7 @@ class Environment(ABC):
             executor.shutdown(wait=False)
 
     # evaluation
-    def get_eval_inputs(
+    def _get_eval_inputs(
         self, num_examples: int = -1, rollouts_per_example: int = 1
     ) -> List[RolloutInput]:
         if self.eval_dataset is None:
@@ -1007,7 +993,7 @@ class Environment(ABC):
         """
         Evaluate model on the Environment evaluation dataset.
         """
-        inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return await self.generate(
             inputs,
             client=client,
@@ -1041,7 +1027,7 @@ class Environment(ABC):
         """
         Evaluate model on the Environment evaluation dataset synchronously.
         """
-        inputs = self.get_eval_inputs(num_examples, rollouts_per_example)
+        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return self.generate_sync(
             inputs,
             client=client,
@@ -1056,6 +1042,7 @@ class Environment(ABC):
             save_every=save_every,
         )
 
+    # setters for use by trainers
     def set_kwargs(self, **kwargs) -> None:
         """
         Set environment attributes, using setter methods when available.
