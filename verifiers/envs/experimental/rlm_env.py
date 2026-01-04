@@ -48,6 +48,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
@@ -1723,6 +1724,34 @@ PY
         # Release tunnel
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
+
+    async def render_completion(self, state: State):
+        """Render completion from main model steps only, ignoring sub-LLM steps."""
+
+        if len(state["trajectory"]) == 0:
+            state["completion"] = []
+            return
+
+        # Find the last trajectory step from the main model (matching trajectory_id)
+        main_trajectory_id = state["trajectory_id"]
+        last_main_step = None
+        for step in reversed(state["trajectory"]):
+            if step.get("trajectory_id") == main_trajectory_id:
+                last_main_step = step
+                break
+
+        if last_main_step is None:
+            state["completion"] = []
+            return
+
+        last_prompt = last_main_step["prompt"]
+        last_completion = last_main_step["completion"]
+        full_conversation = concat_messages([last_prompt, last_completion])
+        if state.get("final_env_response"):
+            full_conversation = concat_messages(
+                [full_conversation, state["final_env_response"]]
+            )
+        state["completion"] = full_conversation[len(state["prompt"]) :]
 
     async def post_rollout(self, state: State):
         """Read final answer from sandbox if not already set."""
