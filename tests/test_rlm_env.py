@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
+from prime_sandboxes import CommandTimeoutError
 
+from verifiers.envs.experimental import rlm_env as rlm_module
 from verifiers.envs.experimental.rlm_env import RLMEnv
 
 
@@ -238,6 +240,77 @@ class TestExtractTunnelUrlFromLine:
         assert url is None
 
 
+@pytest.mark.asyncio
+async def test_execute_code_timeout_restarts_sandbox(rlm_env):
+    rlm_env.abort_on_code_timeout = False
+    rlm_env.code_execution_timeout = 1
+    rlm_env.sandbox_client.execute_command = AsyncMock(
+        side_effect=CommandTimeoutError("sandbox_123", "command", 1)
+    )
+    rlm_env._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
+    rlm_env._prepare_sandbox_and_start_worker = AsyncMock()
+
+    state = {
+        "sandbox_id": "sandbox_123",
+        "rlm_context": {"input_data": None, "input_data_metadata": {}},
+    }
+    result = await rlm_env._execute_code("sandbox_123", "print(1)", state)
+
+    assert result["status"] == "error"
+    assert "sandbox was restarted" in result["result"].lower()
+    rlm_env._recreate_sandbox.assert_awaited_once()
+    rlm_env._prepare_sandbox_and_start_worker.assert_awaited_once()
+    assert state["_exec_seq"] == 0
+
+
+def test_sub_llm_timeouts_clamped_to_code_timeout(mock_sandbox_client, mock_dataset):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(dataset=mock_dataset, code_execution_timeout=5)
+
+    assert env.sub_llm_api_timeout == 4
+    assert env.sub_llm_timeout == 4
+
+
+def test_install_wait_scales_with_packages(mock_sandbox_client, mock_dataset):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(
+            dataset=mock_dataset,
+            pip_install_packages="numpy scipy",
+            max_startup_wait_seconds=30,
+        )
+
+    assert env._compute_install_wait_seconds() == 90
+
+
+@pytest.mark.asyncio
+async def test_start_worker_waits_for_install_done(rlm_env):
+    rlm_env._execute_command_with_retry = AsyncMock(
+        return_value=MagicMock(stdout="", stderr="")
+    )
+    rlm_env._wait_for_install_done = AsyncMock()
+    rlm_env._wait_for_worker_ready = AsyncMock()
+
+    state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
+    await rlm_env._start_worker(state)
+
+    rlm_env._wait_for_install_done.assert_awaited_once()
+
+
+def test_worker_timeout_clamped_to_sandbox_timeout():
+    assert (
+        "SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)"
+        in rlm_module._RLM_WORKER_SCRIPT
+    )
+
+
 # =============================================================================
 # 2. Initialization and Configuration
 # =============================================================================
@@ -429,9 +502,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_adds_system_prompt_on_first_turn(self, rlm_env):
         """Adds system prompt on first turn (empty trajectory)."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "What is 2+2?"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)
@@ -442,9 +532,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_appends_sub_tools_docs(self, rlm_env_with_sub_tools):
         """Appends sub-tools documentation to system prompt."""
+        metadata_summary = rlm_env_with_sub_tools._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env_with_sub_tools.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env_with_sub_tools._generate_packages_documentation()
+        sub_tools_docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Test"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env_with_sub_tools.get_prompt_messages(state)
@@ -455,9 +562,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_string_prompt_converted_to_messages(self, rlm_env):
         """String prompt is converted to message format."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": "What is 2+2?",
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)
@@ -1189,6 +1313,8 @@ class TestSubLLMCleanup:
             tokens=None,
             reward=None,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="sub_batch1_req1",
             extras={"is_sub_llm_call": True, "timestamp": 1.0},
         )
         sub_step2 = TrajectoryStep(
@@ -1198,6 +1324,8 @@ class TestSubLLMCleanup:
             tokens=None,
             reward=None,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="sub_batch1_req2",
             extras={"is_sub_llm_call": True, "timestamp": 2.0},
         )
         rlm_env.active_rollouts[rollout_id] = {
@@ -1213,6 +1341,8 @@ class TestSubLLMCleanup:
             tokens=None,
             reward=None,
             advantage=None,
+            is_truncated=False,
+            trajectory_id="main_trajectory",
             extras={},
         )
         state = {"rollout_id": rollout_id, "trajectory": [main_step]}
@@ -1251,6 +1381,8 @@ class TestSubLLMCleanup:
                 tokens=None,
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="sub_batch1_req1",
                 extras={"is_sub_llm_call": True, "timestamp": 1.0},
             )
             env.active_rollouts[rollout_id] = {
@@ -1265,6 +1397,8 @@ class TestSubLLMCleanup:
                 tokens=None,
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="main_trajectory",
                 extras={},
             )
             state = {"rollout_id": rollout_id, "trajectory": [main_step]}

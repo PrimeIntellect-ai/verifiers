@@ -1,5 +1,9 @@
 # doublecheck
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/doublecheck">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `doublecheck`
 - **Short description**: Two-turn math QA that asks the model to answer, then prompts “Are you sure?”; scored with a math rubric.

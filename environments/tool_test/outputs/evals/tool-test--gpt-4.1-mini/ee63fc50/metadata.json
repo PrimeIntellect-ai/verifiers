@@ -1,1 +1,0 @@
-{"env": "tool-test", "model": "gpt-4.1-mini", "num_examples": 5, "rollouts_per_example": 3, "max_tokens": 1024, "temperature": null, "date": "2025-08-25", "time": "21:57:29", "avg_reward": 1.0, "avg_total_tool_calls": 1.8, "avg_tool_A_calls": 0.6, "avg_tool_B_calls": 0.6, "avg_tool_C_calls": 0.2, "avg_tool_D_calls": 0.4, "avg_tool_call_reward_func": 1.0}

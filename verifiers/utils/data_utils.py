@@ -266,8 +266,12 @@ def load_example_dataset(
     elif name == "aime2025":
         if split is None:
             split = "test"
-        aime_i = load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        aime_ii = load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
+        aime_i = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
+        )  # type: ignore[redundant-cast]
+        aime_ii = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
+        )  # type: ignore[redundant-cast]
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:
@@ -312,17 +316,19 @@ def load_example_dataset(
     elif name == "openrs_easy":
         if split is None:
             split = "train"
-        dataset = load_dataset("knoveleng/open-rs")[split]
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
         dataset = dataset.filter(lambda x: x["level"] == "Easy")
     elif name == "openrs_hard":
         if split is None:
             split = "train"
-        dataset = load_dataset("knoveleng/open-rs")[split]
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
         dataset = dataset.filter(lambda x: x["level"] == "Hard")
     elif name == "prime_code":
         if split is None:
             split = "train"
-        dataset = load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
+        dataset = cast(
+            Dataset, load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
+        )
         dataset = dataset.filter(
             lambda x: x["prompt"].startswith(
                 "Solve the following coding problem using the programming language python:"

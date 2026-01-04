@@ -1,5 +1,9 @@
 # math-python
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/math_python">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `math-python`
 - **Short description**: Tool-using math environment requiring Python tool calls to compute answers (via `PythonEnv` + `prime` sandboxes); graded by symbolic equivalence.

@@ -1,1 +1,0 @@
-{"env": "continuation-quality", "model": "meta-llama/llama-3.1-405b", "num_examples": 5, "rollouts_per_example": 3, "sampling_args": {"max_tokens": null}, "date": "2025-09-11", "time": "20:52:28", "avg_reward": 0.6333333333333333, "avg_grade_reward": 0.6333333333333333}

@@ -470,49 +470,47 @@ Build a Wordle-like game with multi-turn interaction:
 
 ```python
 from verifiers.types import Messages, State
-from typing import Tuple
 
 class WordleEnv(vf.MultiTurnEnv):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.max_guesses = 6
     
-    def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
-        if state.get("turn", 0) == 0:
+    async def env_response(self, messages: Messages, state: State) -> Messages:
+        if len(state["trajectory"]) == 0:
             # First turn: initialize
-            state["turn"] = 1
             state["target"] = state["answer"]
             state["guesses"] = []
-            return [{"role": "user", "content": "Guess a 5-letter word. You have 6 attempts."}], state
+            return [{"role": "user", "content": "Guess a 5-letter word. You have 6 attempts."}]
         
         # Get the last assistant message
         last_msg = messages[-1]
         if last_msg["role"] != "assistant":
-            return [], state  # No response if not assistant message
+            return []  # No response if not assistant message
             
         guess = last_msg["content"].strip().upper()
         target = state["target"]
         
         # Validate guess
         if len(guess) != 5 or not guess.isalpha():
-            return [{"role": "user", "content": "Please guess a 5-letter word."}], state
+            return [{"role": "user", "content": "Please guess a 5-letter word."}]
         
         # Generate feedback
         feedback = self.get_feedback(guess, target)
         state["guesses"].append(guess)
-        state["turn"] += 1
         
         if guess == target:
             state["solved"] = True
-            return [{"role": "user", "content": f"Correct! The word was {target}."}], state
-        elif state["turn"] > self.max_guesses:
+            return [{"role": "user", "content": f"Correct! The word was {target}."}]
+        elif len(state["guesses"]) >= self.max_guesses:
             state["failed"] = True
-            return [{"role": "user", "content": f"Out of guesses. The word was {target}."}], state
+            return [{"role": "user", "content": f"Out of guesses. The word was {target}."}]
         else:
-            remaining = self.max_guesses - state["turn"] + 1
-            return [{"role": "user", "content": f"{feedback}\n{remaining} guesses remaining."}], state
+            remaining = self.max_guesses - len(state["guesses"])
+            return [{"role": "user", "content": f"{feedback}\n{remaining} guesses remaining."}]
     
-    def is_completed(self, messages: Messages, state: State) -> bool:
+    @vf.stop
+    async def game_over(self, state: State) -> bool:
         return state.get("solved", False) or state.get("failed", False)
 ```
 
@@ -521,9 +519,12 @@ class WordleEnv(vf.MultiTurnEnv):
 Generate training data using environment rollouts:
 
 ```python
+import asyncio
+
 async def generate_training_data(env, client, model, num_samples=1000):
     """Generate diverse solutions for training."""
     results = []
+    score_sem = asyncio.Semaphore(1)  # Semaphore for scoring
     
     for i in range(num_samples):
         # Get a random prompt
@@ -532,25 +533,19 @@ async def generate_training_data(env, client, model, num_samples=1000):
         
         # Generate multiple solutions
         for temp in [0.3, 0.7, 1.0]:
-            completion, state = await env.rollout(
-                client=client,
-                model=model,
-                prompt=prompt,
-                answer=answer,
-                sampling_args={"temperature": temp, "max_tokens": 1000}
-            )
+            input = {"prompt": prompt, "answer": answer,
+                    "task": "default", "example_id": i}
+            state = await env.rollout(input=input, client=client, model=model, sampling_args={"temperature": temp, "max_tokens": 1000})
             
             # Score the solution
-            rewards = await env.rubric.score_rollout(
-                prompt, completion, answer, state
-            )
+            await env.rubric.score_rollout(state, score_sem)
             
             # Save high-quality solutions
-            if rewards["total"] > 0.8:
+            if state.get("reward") and state["reward"] > 0.8:
                 results.append({
                     "prompt": prompt,
-                    "completion": completion,
-                    "score": rewards["total"]
+                    "completion": state["completion"],
+                    "score": state["reward"]
                 })
     
     return Dataset.from_list(results)

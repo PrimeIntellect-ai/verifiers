@@ -1,5 +1,9 @@
 # continuation-quality
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/continuation_quality">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
 - **Environment ID**: `continuation-quality`
 - **Short description**: Single-turn quality grades on base model continuations using a judge model.

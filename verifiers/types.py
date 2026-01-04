@@ -68,6 +68,7 @@ class TrajectoryStep(TypedDict):
     reward: float | None
     advantage: float | None
     is_truncated: bool
+    trajectory_id: str
     extras: dict[str, Any]
 
 
