@@ -1074,7 +1074,7 @@ class Environment(ABC):
         """Set the score rollouts flag for this environment."""
         self.score_rollouts = score_rollouts
 
-    make_dataset = make_dataset
+    make_dataset = staticmethod(make_dataset)
 
 
 _EnvT = TypeVar("_EnvT", bound=Environment)
