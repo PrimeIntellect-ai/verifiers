@@ -266,8 +266,12 @@ def load_example_dataset(
     elif name == "aime2025":
         if split is None:
             split = "test"
-        aime_i = load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        aime_ii = load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
+        aime_i = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
+        )
+        aime_ii = cast(
+            Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
+        )
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:
