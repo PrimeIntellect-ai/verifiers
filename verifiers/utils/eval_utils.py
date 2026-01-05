@@ -123,18 +123,18 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     )
     scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
     total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
-    generation_min = generation_ms_arr / 1000
-    scoring_min = scoring_ms_arr / 1000
-    total_min = total_ms_arr / 1000
+    generation_arr = generation_ms_arr / 1000
+    scoring_arr = scoring_ms_arr / 1000
+    total_arr = total_ms_arr / 1000
     print("Timing:")
     print(
-        f"generation: min - {print_time(float(np.min(generation_min)))}, mean - {print_time(float(np.mean(generation_min)))}, max - {print_time(float(np.max(generation_min)))}"
+        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
     )
     print(
-        f"scoring: min - {print_time(float(np.min(scoring_min)))}, mean - {print_time(float(np.mean(scoring_min)))}, max - {print_time(float(np.max(scoring_min)))}"
+        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
     )
     print(
-        f"total: min - {print_time(float(np.min(total_min)))}, mean - {print_time(float(np.mean(total_min)))}, max - {print_time(float(np.max(total_min)))}"
+        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
     )
 
 
