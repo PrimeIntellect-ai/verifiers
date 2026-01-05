@@ -20,15 +20,6 @@ class PythonWorkerState(TypedDict):
     ready_wait_time: float
 
 
-class PythonMonitorRubric(vf.MonitorRubric):
-    def __init__(self):
-        super().__init__(
-            state_keys=[
-                ("python_state.ready_wait_time", "python_ready_wait_time"),
-            ]
-        )
-
-
 class PythonWorkerNotReadyError(vf.SandboxError): ...
 
 
@@ -36,6 +27,15 @@ class PythonWorkerRequestError(vf.SandboxError): ...
 
 
 class PythonWorkerDeadError(vf.SandboxError): ...
+
+
+class PythonMonitorRubric(vf.MonitorRubric):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_metric(self.python_ready_wait_time)
+
+    async def python_ready_wait_time(self, state: vf.State) -> float:
+        return state["python_state"]["ready_wait_time"]
 
 
 class PythonEnv(SandboxEnv):

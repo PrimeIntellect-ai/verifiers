@@ -4,9 +4,58 @@ from typing import Callable, cast
 from openai.types.chat import ChatCompletionAssistantMessageParam
 
 import verifiers as vf
-from verifiers.rubrics.tool_rubric import ToolRubric
+from verifiers.rubrics.monitor_rubric import MonitorRubric
+from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
+
+
+class ToolMonitorRubric(MonitorRubric):
+    """Monitor rubric that counts the number of tool calls in tool environments."""
+
+    def __init__(self, tools: list[Callable] | None = None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.tools = tools or []
+        self.tool_names = [tool.__name__ for tool in self.tools]  # type: ignore[union-attr]
+
+        # add tool metrics
+        self.add_metric(self.total_tool_calls)
+        for tool_name in self.tool_names:
+            self.add_metric(self.get_tool_call_count_func(tool_name))
+
+    async def total_tool_calls(self, completion: Messages) -> float:
+        """Count the total number of tool calls."""
+        total = 0
+        assert isinstance(completion, list)
+        for msg in completion:
+            if msg["role"] == "assistant" and "tool_calls" in msg:
+                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                tool_calls = assistant_msg.get("tool_calls", [])
+                if isinstance(tool_calls, list):
+                    total += len(tool_calls)
+        return float(total)
+
+    def get_tool_call_count_func(self, tool_name: str) -> Callable:
+        """Create a metric that counts calls to a specific tool."""
+
+        async def tool_call_count_func(completion: Messages) -> int:
+            """Count calls to {tool_name} tool."""
+            count = 0
+            # Find tool calls in assistant messages
+            assert isinstance(completion, list)
+            for msg in completion:
+                if msg["role"] == "assistant" and "tool_calls" in msg:
+                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                    tool_calls = assistant_msg.get("tool_calls", [])
+                    for tool_call in tool_calls:
+                        if tool_call.get("function", {}).get("name") == tool_name:
+                            count += 1
+
+            return count
+
+        tool_call_count_func.__name__ = f"{tool_name}_calls"
+        return tool_call_count_func
 
 
 class ToolEnv(vf.MultiTurnEnv):
@@ -28,7 +77,8 @@ class ToolEnv(vf.MultiTurnEnv):
             for tool in self.tools
         }
         super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
-        self.add_rubric(ToolRubric(tools=self.tools))
+
+        self.add_rubric(ToolMonitorRubric(tools=self.tools))
 
     def _should_stop_for_error(self, err: Exception) -> bool:
         """Check if error is in stop_errors."""

@@ -94,16 +94,20 @@ class SandboxState(TypedDict):
 
 
 class SandboxMonitorRubric(vf.MonitorRubric):
-    def __init__(self):
-        super().__init__(
-            state_keys=[
-                ("sandbox_state.ready_wait_time", "sandbox_ready_wait_time"),
-                (
-                    "sandbox_state.command_execution_times",
-                    "sandbox_command_execution_time",
-                    lambda x: sum(x) / len(x) if len(x) > 0 else 0.0,
-                ),
-            ]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_metric(self.sandbox_ready_wait_time)
+        self.add_metric(self.sandbox_command_execution_time)
+
+    async def sandbox_ready_wait_time(self, state: vf.State) -> float:
+        return state["sandbox_state"]["ready_wait_time"]
+
+    async def sandbox_command_execution_time(self, state: vf.State) -> float:
+        command_execution_times = state["sandbox_state"]["command_execution_times"]
+        return (
+            sum(command_execution_times) / len(command_execution_times)
+            if len(command_execution_times) > 0
+            else 0.0
         )
 
 
