@@ -1061,6 +1061,8 @@ class Environment(ABC):
     def add_rubric(self, rubric: Rubric) -> None:
         if self.rubric is None:
             self.rubric = rubric
+        elif isinstance(self.rubric, vf.RubricGroup):
+            self.rubric.rubrics.append(rubric)
         else:
             self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
 
