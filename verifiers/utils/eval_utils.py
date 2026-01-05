@@ -121,11 +121,12 @@ def print_results(
         for error_chain, count in counter.items():
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
     print("Performance:")
+    event_loop_lags_arr = np.array(event_loop_lags)
     mean_lag, med_lag, p90_lag, max_lag = (
-        np.mean(event_loop_lags),
-        np.median(event_loop_lags),
-        np.percentile(event_loop_lags, 90),
-        np.max(event_loop_lags),
+        np.mean(event_loop_lags_arr),
+        np.median(event_loop_lags_arr),
+        np.percentile(event_loop_lags_arr, 90),
+        np.max(event_loop_lags_arr),
     )
     print(
         f"event_loop_lag: mean - {mean_lag:.3f}, med - {med_lag:.3f}, p90 - {p90_lag:.3f}, max - {max_lag:.3f}"
