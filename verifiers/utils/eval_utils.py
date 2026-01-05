@@ -15,7 +15,7 @@ import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.logging_utils import print_prompt_completions_sample
+from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -117,6 +117,25 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
         counter = Counter(error_chains)
         for error_chain, count in counter.items():
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
+
+    generation_ms_arr = np.array(
+        [s["timing"]["generation_ms"] for s in results["state"]]
+    )
+    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
+    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
+    generation_min = generation_ms_arr / 1000
+    scoring_min = scoring_ms_arr / 1000
+    total_min = total_ms_arr / 1000
+    print("Timing:")
+    print(
+        f"generation: min - {print_time(float(np.min(generation_min)))}, mean - {print_time(float(np.mean(generation_min)))}, max - {print_time(float(np.max(generation_min)))}"
+    )
+    print(
+        f"scoring: min - {print_time(float(np.min(scoring_min)))}, mean - {print_time(float(np.mean(scoring_min)))}, max - {print_time(float(np.max(scoring_min)))}"
+    )
+    print(
+        f"total: min - {print_time(float(np.min(total_min)))}, mean - {print_time(float(np.mean(total_min)))}, max - {print_time(float(np.max(total_min)))}"
+    )
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:

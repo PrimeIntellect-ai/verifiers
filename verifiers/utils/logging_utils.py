@@ -136,3 +136,31 @@ def print_prompt_completions_sample(
 
     panel = Panel(table, expand=False, title=f"Step {step}", border_style="bold white")
     console.print(panel)
+
+
+def print_time(time_s: float) -> str:
+    """
+    Format a time in seconds to a human-readable format:
+    - >1d -> Xd Yh
+    - >1h -> Xh Ym
+    - >1m -> Xm Ys
+    - <1s -> Xms
+    - Else: Xs
+    """
+    if time_s > 86.400:  # >1d
+        d = time_s // 86.400
+        h = (time_s % 86.400) // 3600
+        return f"{d}d {h}h"
+    elif time_s > 3600:  # >1h
+        h = time_s // 3600
+        m = (time_s % 3600) // 60
+        return f"{h}h {m}m"
+    elif time_s > 60:  # >1m
+        m = time_s // 60
+        s = time_s % 60
+        return f"{m}m {s}s"
+    elif time_s < 1:  # <1s
+        ms = time_s * 1e3
+        return f"{ms:.0f}ms"
+    else:
+        return f"{time_s:.0f}s"
