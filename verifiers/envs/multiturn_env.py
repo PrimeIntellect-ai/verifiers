@@ -25,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class MultiTurnMonitorRubric(MonitorRubric):
-    """Monitor rubric that counts the number of turns in multi-turn environments."""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.num_turns)

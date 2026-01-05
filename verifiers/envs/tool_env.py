@@ -11,8 +11,6 @@ from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
 class ToolMonitorRubric(MonitorRubric):
-    """Monitor rubric that counts the number of tool calls in tool environments."""
-
     def __init__(self, tools: list[Callable] | None = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
