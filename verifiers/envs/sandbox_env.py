@@ -93,6 +93,12 @@ class SandboxState(TypedDict):
     command_execution_times: list[float]
 
 
+class SandboxCreationError(vf.SandboxError): ...
+
+
+class SandboxNotReadyError(vf.SandboxError): ...
+
+
 class SandboxMonitorRubric(vf.MonitorRubric):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -109,12 +115,6 @@ class SandboxMonitorRubric(vf.MonitorRubric):
             if len(command_execution_times) > 0
             else 0.0
         )
-
-
-class SandboxCreationError(vf.SandboxError): ...
-
-
-class SandboxNotReadyError(vf.SandboxError): ...
 
 
 class SandboxEnv(vf.StatefulToolEnv):
