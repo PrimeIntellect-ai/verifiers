@@ -602,6 +602,7 @@ class Environment(ABC):
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None
+        state["final_env_response"] = None
         state["timing"] = RolloutTiming(
             generation_ms=0.0,
             scoring_ms=0.0,
@@ -671,6 +672,10 @@ class Environment(ABC):
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
         full_conversation = concat_messages([last_prompt, last_completion])
+        if state.get("final_env_response"):
+            full_conversation = concat_messages(
+                [full_conversation, state["final_env_response"]]
+            )
         state["completion"] = full_conversation[len(state["prompt"]) :]
 
     async def is_completed(self, state: State, **kwargs) -> bool:

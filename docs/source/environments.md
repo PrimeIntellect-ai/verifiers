@@ -331,30 +331,25 @@ def load_environment(**kwargs):
 For interactive tasks requiring multiple steps:
 
 ```python
+from typing import cast
 from verifiers.types import Messages, State
-from typing import Tuple
 
 class MyGameEnv(vf.MultiTurnEnv):
 
-    async def env_response(self, messages: Messages, state: State) -> Messages:
-        """Define how the environment responds."""
-        last_msg = messages[-1]
-        if last_msg["role"] != "assistant":
-            return []
-
-        player_action = last_msg["content"]
-        if self.is_game_over(state):
-            state["done"] = True
-            return [{"role": "user", "content": "Game over!"}]
-
-        state = self.update_state(state, player_action)
-        feedback = self.get_game_feedback(state)
-        return [{"role": "user", "content": feedback}]
-
     @vf.stop
     async def game_over(self, state: State) -> bool:
-        """Check if game is complete."""
-        return state.get("solved", False) or state.get("failed", False)
+        return state.get("game_over", False)
+
+    async def env_response(self, messages: Messages, state: State) -> Messages:
+        """Define how the environment responds."""
+        player_action = messages[-1]["content"]
+        
+        if self.check_win(state, player_action):
+            state["game_over"] = True
+            return cast(Messages, [{"role": "user", "content": "You won!"}])
+
+        feedback = self.get_feedback(state, player_action)
+        return cast(Messages, [{"role": "user", "content": feedback}])
 ```
 
 ### ToolEnv
@@ -362,7 +357,7 @@ class MyGameEnv(vf.MultiTurnEnv):
 For tasks requiring external tools:
 
 ```python
-def calculate(expression: str) -> float:
+async def calculate(expression: str) -> float:
     """Calculate a mathematical expression."""
     return eval(expression)  # Simplified example
 
@@ -488,6 +483,35 @@ This is particularly useful for:
 - Training on multiple task types simultaneously
 - Evaluating general capabilities across domains
 - Creating curriculum learning setups
+
+### Final Environment Responses
+
+In multi-turn environments, rollouts normally alternate between model responses and environment responses until a stop condition is met. However, stop conditions are evaluated *before* `env_response` runs, which means if `env_response` determines the rollout should end (e.g., a game is won, an answer is submitted), the model will generate one more unnecessary response.
+
+To handle this, set `state["final_env_response"]` in `env_response` when the environment produces its final message:
+
+```python
+class GameEnv(vf.MultiTurnEnv):
+    async def env_response(self, messages: Messages, state: State) -> Messages:
+        result = self.process_action(messages[-1]["content"])
+        
+        if result.game_over:
+            response = cast(Messages, [{"role": "user", "content": result.feedback}])
+            state["final_env_response"] = response
+            return response
+        
+        return cast(Messages, [{"role": "user", "content": result.feedback}])
+```
+
+When `final_env_response` is set:
+- The rollout exits immediately without generating another model response
+- The final environment message is included in `state["completion"]` for reward computation
+- The trajectory maintains its `(prompt, completion)` structure for training (the final env message is not added to the trajectory)
+
+This pattern is useful when:
+- Rewards depend on the final environment feedback (e.g., "Correct!" or score)
+- A tool call signals completion (e.g., `submit_answer`)
+- You want to preserve trailing environment responses while maintaining clean trajectory objects (i.e. `(prompt, completion)` sequences)
 
 ## Installing from Repository
 

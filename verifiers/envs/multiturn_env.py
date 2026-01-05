@@ -44,6 +44,11 @@ class MultiTurnEnv(vf.Environment):
         """Check if the maximum number of turns has been reached."""
         return len(state["trajectory"]) >= self.max_turns and self.max_turns > 0
 
+    @vf.stop
+    async def has_final_env_response(self, state: State) -> bool:
+        """Check if env_response signaled termination via final_env_response."""
+        return state.get("final_env_response") is not None
+
     @abstractmethod
     async def env_response(
         self, messages: Messages, state: State, **kwargs
@@ -109,6 +114,8 @@ class MultiTurnEnv(vf.Environment):
         while not await self.is_completed(state):
             try:
                 prompt_messages = await self.get_prompt_messages(state)
+                if state.get("final_env_response") is not None:
+                    continue
                 response = await self.get_model_response(state, prompt_messages)
                 await self.add_model_response(state, prompt_messages, response)
             except vf.Error as e:
