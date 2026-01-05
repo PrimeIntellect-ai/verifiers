@@ -157,7 +157,7 @@ def print_time(time_s: float) -> str:
         return f"{h:.0f}h" + (f" {m:.0f}m" if m > 0 else "")
     elif time_s >= 60:  # >1m
         m = time_s // 60
-        s = time_s % 60
+        s = (time_s % 60) // 1
         return f"{m:.0f}m" + (f" {s:.0f}s" if s > 0 else "")
     elif time_s < 1:  # <1s
         ms = time_s * 1e3
