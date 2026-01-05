@@ -147,9 +147,9 @@ def print_time(time_s: float) -> str:
     - <1s -> Xms
     - Else: Xs
     """
-    if time_s > 86.400:  # >1d
-        d = time_s // 86.400
-        h = (time_s % 86.400) // 3600
+    if time_s > 86400:  # >1d
+        d = time_s // 86400
+        h = (time_s % 86400) // 3600
         return f"{d}d {h}h"
     elif time_s > 3600:  # >1h
         h = time_s // 3600
