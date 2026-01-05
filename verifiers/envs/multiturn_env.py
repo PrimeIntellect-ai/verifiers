@@ -27,10 +27,9 @@ logger = logging.getLogger(__name__)
 class MultiTurnMonitorRubric(MonitorRubric):
     """Monitor rubric that counts the number of turns in multi-turn environments."""
 
-    def __init__(self, max_turns: int, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        if max_turns > 1:
-            self.add_metric(self.num_turns)
+        self.add_metric(self.num_turns)
 
     async def num_turns(self, state: State) -> int:
         return len(state["trajectory"])
@@ -41,7 +40,7 @@ class MultiTurnEnv(vf.Environment):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
-        self.add_rubric(MultiTurnMonitorRubric(max_turns=max_turns))
+        self.add_rubric(MultiTurnMonitorRubric())
 
     @abstractmethod
     async def env_response(
