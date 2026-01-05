@@ -5,7 +5,6 @@ from typing import final
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.rubrics.monitor_rubric import MonitorRubric
 from verifiers.types import (
     Messages,
     ModelResponse,
@@ -24,7 +23,7 @@ from verifiers.utils.response_utils import (
 logger = logging.getLogger(__name__)
 
 
-class MultiTurnMonitorRubric(MonitorRubric):
+class MultiTurnMonitorRubric(vf.Rubric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.num_turns)

@@ -4,15 +4,14 @@ from typing import Callable, cast
 from openai.types.chat import ChatCompletionAssistantMessageParam
 
 import verifiers as vf
-from verifiers.rubrics.monitor_rubric import MonitorRubric
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
 
-class ToolMonitorRubric(MonitorRubric):
-    def __init__(self, tools: list[Callable] | None = None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class ToolMonitorRubric(vf.Rubric):
+    def __init__(self, tools: list[Callable] | None = None, **kwargs):
+        super().__init__(**kwargs)
 
         self.tools = tools or []
         self.tool_names = [tool.__name__ for tool in self.tools]  # type: ignore[union-attr]

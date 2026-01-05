@@ -99,9 +99,9 @@ class SandboxCreationError(vf.SandboxError): ...
 class SandboxNotReadyError(vf.SandboxError): ...
 
 
-class SandboxMonitorRubric(vf.MonitorRubric):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class SandboxMonitorRubric(vf.Rubric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.add_metric(self.sandbox_ready_wait_time)
         self.add_metric(self.sandbox_command_execution_time)
 

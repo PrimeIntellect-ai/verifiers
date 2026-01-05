@@ -29,9 +29,9 @@ class PythonWorkerRequestError(vf.SandboxError): ...
 class PythonWorkerDeadError(vf.SandboxError): ...
 
 
-class PythonMonitorRubric(vf.MonitorRubric):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class PythonMonitorRubric(vf.Rubric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.add_metric(self.python_ready_wait_time)
 
     async def python_ready_wait_time(self, state: vf.State) -> float:
