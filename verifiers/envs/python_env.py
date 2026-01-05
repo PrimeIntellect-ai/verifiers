@@ -210,6 +210,7 @@ PY
         state["python_state"] = {
             "ready": False,
             "execution_count": 0,
+            "ready_wait_time": -1.0,
         }
         return state
 
