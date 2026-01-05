@@ -28,7 +28,6 @@ from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
 from .rubrics.judge_rubric import JudgeRubric
-from .rubrics.monitor_rubric import MonitorRubric
 from .rubrics.rubric_group import RubricGroup
 from .utils.data_utils import (
     extract_boxed_answer,
@@ -84,7 +83,6 @@ __all__ = [
     "Rubric",
     "JudgeRubric",
     "RubricGroup",
-    "MonitorRubric",
     "MathRubric",
     "TextArenaEnv",
     "ReasoningGymEnv",
