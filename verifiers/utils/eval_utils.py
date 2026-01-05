@@ -60,7 +60,9 @@ def load_endpoints(endpoints_path: str):
 
 
 def print_results(
-    results: GenerateOutputs, event_loop_lags: list[float], num_samples: int = 1
+    results: GenerateOutputs,
+    event_loop_lags: list[float] | None = None,
+    num_samples: int = 1,
 ):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
@@ -120,17 +122,6 @@ def print_results(
         counter = Counter(error_chains)
         for error_chain, count in counter.items():
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
-    print("Performance:")
-    event_loop_lags_arr = np.array(event_loop_lags)
-    med_lag, p90_lag, max_lag = (
-        np.median(event_loop_lags_arr),
-        np.percentile(event_loop_lags_arr, 90),
-        np.max(event_loop_lags_arr),
-    )
-    print(
-        f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
-    )
-
     generation_ms_arr = np.array(
         [s["timing"]["generation_ms"] for s in results["state"]]
     )
@@ -149,6 +140,17 @@ def print_results(
     print(
         f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
     )
+    if event_loop_lags is not None:
+        print("Performance:")
+        event_loop_lags_arr = np.array(event_loop_lags)
+        med_lag, p90_lag, max_lag = (
+            np.median(event_loop_lags_arr),
+            np.percentile(event_loop_lags_arr, 90),
+            np.max(event_loop_lags_arr),
+        )
+        print(
+            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
+        )
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
