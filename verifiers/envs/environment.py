@@ -867,8 +867,10 @@ class Environment(ABC):
             pbar = tqdm(
                 total=len(group_list),
                 desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
+                postfix=dict(reward="?"),
             )
 
+        reward_sum, reward_count = 0, 0
         groups_completed = 0
         all_states: list[State] = []
         try:
@@ -877,8 +879,17 @@ class Environment(ABC):
                 all_states.extend(group_states)
                 groups_completed += 1
 
+                # track reward for rolling average
+                for s in group_states:
+                    r = s.get("reward")
+                    if r is not None:
+                        reward_sum += r
+                        reward_count += 1
+
                 if pbar is not None:
                     pbar.update(1)
+                    if reward_count > 0:
+                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
 
                 # save intermediate results
                 if (
