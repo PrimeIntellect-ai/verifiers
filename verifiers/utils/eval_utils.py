@@ -154,7 +154,7 @@ def print_results(
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
-    # set up threaded AsyncOpenAI client to with large timeout to enable long-running, high-concurrency evals
+    # set up threaded AsyncOpenAI client with large timeout to enable long-running, high-concurrency evals
     if config.max_concurrent_generation is not None:
         max_concurrent = config.max_concurrent_generation
     elif config.max_concurrent == -1:
