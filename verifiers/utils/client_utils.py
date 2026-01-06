@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import os
 import threading
 from typing import Any, Callable, Generic, TypeVar
@@ -59,8 +60,8 @@ class ThreadedAsyncClient(Generic[T]):
     ) -> None:
         self.factory = factory
         self._workers: list[tuple[asyncio.AbstractEventLoop, T]] = []
-        self._lock = threading.Lock()
-        self._idx = 0
+        self._init_lock = threading.Lock()
+        self._counter = itertools.count()
         self._ready = threading.Barrier(max_workers + 1)
 
         # Spawn daemon threads - they auto-terminate when main program exits
@@ -79,16 +80,14 @@ class ThreadedAsyncClient(Generic[T]):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         client = self.factory()
-        with self._lock:
+        with self._init_lock:
             self._workers.append((loop, client))
         self._ready.wait()
         loop.run_forever()
 
     def _get_worker(self) -> tuple[asyncio.AbstractEventLoop, Any]:
-        with self._lock:
-            worker = self._workers[self._idx]
-            self._idx = (self._idx + 1) % len(self._workers)
-        return worker
+        idx = next(self._counter) % len(self._workers)
+        return self._workers[idx]
 
     def __getattr__(self, name: str) -> ChainedProxy:
         return self.ChainedProxy(self, (name,))
