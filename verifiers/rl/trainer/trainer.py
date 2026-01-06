@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
@@ -387,13 +388,41 @@ class RLTrainer(Trainer):
         return DataLoader(StepsDataset(self.max_steps))
 
     def _inner_training_loop(self, *args, **kwargs):
-        """Override to ensure async orchestrator is stopped when training ends"""
+        """Override to ensure final checkpoint saved and orchestrator stopped."""
         try:
             return super()._inner_training_loop(*args, **kwargs)
         finally:
+            # Save final checkpoint BEFORE cleanup
+            if self.state.global_step > 0:
+                try:
+                    self._save_final_checkpoint()
+                except Exception as e:
+                    self.logger.warning(f"Failed to save final checkpoint: {e}")
+
             # cleanup
             if self.orchestrator:
                 self.orchestrator.stop()
+
+    def _save_final_checkpoint(self):
+        """Save final checkpoint to weights/step_N/ directory.
+
+        This ensures adapters are always available even for short runs where
+        save_steps > max_steps would otherwise skip checkpointing.
+        """
+        if not self.accelerator.is_main_process:
+            return
+
+        final_step = self.state.global_step
+        weights_dir = os.path.join(self.args.output_dir, "weights", f"step_{final_step}")
+
+        if os.path.exists(weights_dir):
+            self.logger.info(f"Final checkpoint already exists at {weights_dir}")
+            return
+
+        self.logger.info(f"Saving final checkpoint to {weights_dir}")
+        os.makedirs(weights_dir, exist_ok=True)
+        self.save_model(weights_dir)
+        self.logger.info(f"Final checkpoint saved at step {final_step}")
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
         mode = "train" if self.model is not None and self.model.training else "eval"
