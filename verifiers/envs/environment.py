@@ -45,6 +45,7 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.client_utils import ThreadedAsyncClient
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
@@ -340,7 +341,7 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages,
-        client: AsyncOpenAI | None = None,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI] | None = None,
         model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -360,13 +361,13 @@ class Environment(ABC):
         """
 
         def resolve_optional_args(
-            client: AsyncOpenAI | None,
+            client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI] | None,
             model: str | None,
             oai_tools: list[ChatCompletionToolParam] | None,
             sampling_args: SamplingArgs | None,
             message_type: MessageType | None,
         ) -> tuple[
-            AsyncOpenAI,
+            AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
             str,
             list[ChatCompletionToolParam] | None,
             SamplingArgs,
@@ -435,7 +436,7 @@ class Environment(ABC):
 
         @handle_overlong_prompt
         async def get_model_response_with_messages(
-            client: AsyncOpenAI,
+            client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
             model: str,
             prompt: Messages,
             oai_tools: list[ChatCompletionToolParam] | None,
@@ -495,7 +496,7 @@ class Environment(ABC):
 
         @handle_overlong_prompt
         async def get_model_response_with_tokens(
-            client: AsyncOpenAI,
+            client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
             model: str,
             prompt: Messages,
             prompt_ids: list[int],
@@ -571,7 +572,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -618,7 +619,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -676,7 +677,7 @@ class Environment(ABC):
         self,
         sem: AsyncContextManager,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -696,7 +697,7 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
@@ -725,7 +726,7 @@ class Environment(ABC):
         self,
         all_states: list[State],
         model: str,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         state_columns: list[str] | None,
         results_path: Path | None,
         gen_sampling_args: SamplingArgs,
@@ -797,7 +798,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -936,7 +937,7 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI] | OpenAI,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -986,7 +987,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1021,7 +1022,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client: OpenAI | AsyncOpenAI | ThreadedAsyncClient[AsyncOpenAI],
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
