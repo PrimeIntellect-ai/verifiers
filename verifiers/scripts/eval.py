@@ -205,6 +205,13 @@ def main():
         help="Save dataset every n rollouts",
     )
     parser.add_argument(
+        "--independent-scoring",
+        "-R",
+        default=False,
+        action="store_true",
+        help="Score each rollout individually instead of scoring by group",
+    )
+    parser.add_argument(
         "--save-to-hf-hub",
         "-H",
         default=False,
@@ -320,6 +327,7 @@ def main():
         state_columns=args.state_columns,
         save_results=args.save_results,
         save_every=args.save_every,
+        independent_scoring=args.independent_scoring,
         save_to_hf_hub=args.save_to_hf_hub,
         hf_hub_dataset_name=args.hf_hub_dataset_name,
     )

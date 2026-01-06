@@ -194,6 +194,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        independent_scoring=config.independent_scoring,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
