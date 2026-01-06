@@ -1,17 +1,13 @@
 import asyncio
 import os
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Generic, TypeVar, cast
+import threading
+from typing import Any, Callable, Generic, TypeVar
 
 import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 
 from verifiers.types import ClientConfig
-from verifiers.utils.thread_utils import (
-    get_or_create_thread_attr,
-    get_or_create_thread_loop,
-)
 
 T = TypeVar("T")
 
@@ -23,9 +19,9 @@ class ThreadedAsyncClient(Generic[T]):
     Used for higher performance in high-concurrency environments to alleviate
     the main event loop.
 
-    Dispatches method calls to a ThreadPoolExecutor where
-    each thread maintains its own client instance via thread-local storage.
-    Supports chained attribute access (e.g., client.chat.completions.create).
+    Each worker thread runs its own event loop via run_forever(), allowing
+    multiple concurrent async requests per worker. Coroutines are submitted
+    via run_coroutine_threadsafe and results are awaited in the main loop.
 
     Usage:
         client = ThreadedAsyncClient(
@@ -36,7 +32,7 @@ class ThreadedAsyncClient(Generic[T]):
     """
 
     class ChainedProxy:
-        """Walks attribute path and dispatches async call to thread pool."""
+        """Walks attribute path and dispatches async call to worker loop."""
 
         def __init__(
             self, parent: "ThreadedAsyncClient[T]", path: tuple[str, ...]
@@ -48,18 +44,12 @@ class ThreadedAsyncClient(Generic[T]):
             return ThreadedAsyncClient.ChainedProxy(self.parent, self.path + (name,))
 
         async def __call__(self, *args, **kwargs) -> Any:
-            def run_in_thread():
-                loop = get_or_create_thread_loop()
-                client = get_or_create_thread_attr(
-                    f"client_{id(self.parent)}", self.parent.factory
-                )
-                method: Any = client
-                for attr in self.path:
-                    method = getattr(method, attr)
-                return loop.run_until_complete(cast(Callable, method)(*args, **kwargs))
-
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(self.parent.executor, run_in_thread)
+            loop, client = self.parent._get_worker()
+            method: Any = client
+            for attr in self.path:
+                method = getattr(method, attr)
+            future = asyncio.run_coroutine_threadsafe(method(*args, **kwargs), loop)
+            return await asyncio.wrap_future(future)
 
     def __init__(
         self,
@@ -67,18 +57,46 @@ class ThreadedAsyncClient(Generic[T]):
         max_workers: int = 100,
         thread_name_prefix: str = "threaded-client",
     ) -> None:
-        self.executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix=thread_name_prefix,
-        )
         self.factory = factory
+        self._workers: list[tuple[asyncio.AbstractEventLoop, T]] = []
+        self._lock = threading.Lock()
+        self._idx = 0
+        self._ready = threading.Barrier(max_workers + 1)
+
+        # Spawn daemon threads - they auto-terminate when main program exits
+        for i in range(max_workers):
+            t = threading.Thread(
+                target=self._run_worker,
+                daemon=True,
+                name=f"{thread_name_prefix}-{i}",
+            )
+            t.start()
+
+        # Wait for all workers to initialize
+        self._ready.wait()
+
+    def _run_worker(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        client = self.factory()
+        with self._lock:
+            self._workers.append((loop, client))
+        self._ready.wait()
+        loop.run_forever()
+
+    def _get_worker(self) -> tuple[asyncio.AbstractEventLoop, Any]:
+        with self._lock:
+            worker = self._workers[self._idx]
+            self._idx = (self._idx + 1) % len(self._workers)
+        return worker
 
     def __getattr__(self, name: str) -> ChainedProxy:
         return self.ChainedProxy(self, (name,))
 
-    def teardown(self, wait: bool = True) -> None:
-        """Shutdown the thread pool executor."""
-        self.executor.shutdown(wait=wait)
+    def teardown(self) -> None:
+        """Stop worker loops."""
+        for loop, _ in self._workers:
+            loop.call_soon_threadsafe(loop.stop)
 
 
 def setup_client(
