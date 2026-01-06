@@ -37,6 +37,7 @@ else:
 
 from aiohttp import web
 from prime_sandboxes import CommandTimeoutError
+from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.envs.sandbox_env import (
@@ -55,7 +56,6 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
 
@@ -628,10 +628,10 @@ class RLMEnv(SandboxEnv):
         self._server_runner: Any = None
         self._server_site: Any = None
 
-        # Tunnel pool for exposing interception server to sandboxes
-        self._tunnel_pool: TunnelPool | None = (
-            TunnelPool(port=interception_port) if interception_host is None else None
-        )
+        # Prime Tunnel for exposing interception server to sandboxes
+        self._tunnel: Tunnel | None = None
+        self._tunnel_lock = asyncio.Lock()
+        self._use_tunnel = interception_host is None
 
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
@@ -1159,11 +1159,29 @@ class RLMEnv(SandboxEnv):
             logger.error(f"Sub-LLM call failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _get_tunnel_url(self) -> str:
+        """Get tunnel URL, starting the tunnel if needed."""
+        async with self._tunnel_lock:
+            if self._tunnel is None:
+                self._tunnel = Tunnel(local_port=self.interception_port)
+                url = await self._tunnel.start()
+                logger.debug(f"Prime Tunnel started: {url}")
+                return url
+            else:
+                return self._tunnel.url
+
     @vf.teardown
-    async def teardown_tunnels(self):
-        """Stop all cloudflared tunnel processes."""
-        if self._tunnel_pool:
-            self._tunnel_pool.teardown()
+    async def teardown_tunnel(self):
+        """Stop Prime Tunnel."""
+        async with self._tunnel_lock:
+            if self._tunnel is not None:
+                try:
+                    await self._tunnel.stop()
+                    logger.debug("Prime Tunnel stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping Prime Tunnel: {e}")
+                finally:
+                    self._tunnel = None
 
     # =========================================================================
     # State Management
@@ -1216,17 +1234,13 @@ class RLMEnv(SandboxEnv):
         """Start interception server, configure tunnel, and register rollout."""
         await self._ensure_interception_server()
 
-        if self._tunnel_pool:
-            tunnel_url = await self._tunnel_pool.get_tunnel_url(
-                len(self.active_rollouts)
-            )
+        if self._use_tunnel:
+            tunnel_url = await self._get_tunnel_url()
             interception_url = f"{tunnel_url}/rollout/{rollout_id}/v1/chat/completions"
         else:
-            tunnel_url = None
             interception_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/chat/completions"
 
         state["interception_url"] = interception_url
-        state["tunnel_url"] = tunnel_url
 
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
@@ -1781,15 +1795,11 @@ PY
 
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
-        """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
+        """Cleanup RLM-specific state."""
         rollout_id = state.get("rollout_id")
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
-
-        # Release tunnel
-        if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
-            await self._tunnel_pool.release_tunnel(tunnel_url)
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
