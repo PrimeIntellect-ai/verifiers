@@ -14,7 +14,7 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
+from verifiers.utils.client_utils import ThreadedAsyncClient, setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -154,12 +154,23 @@ def print_results(
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(
-        config.client_config,
+    # set up threaded AsyncOpenAI client to with large timeout to enable long-running, high-concurrency evals
+    if config.max_concurrent_generation is not None:
+        max_concurrent = config.max_concurrent_generation
+    elif config.max_concurrent == -1:
+        max_concurrent = config.num_examples * config.rollouts_per_example
+    else:
+        max_concurrent = config.max_concurrent
+    max_workers = max(
+        1, max_concurrent // config.client_config.max_keepalive_connections
+    )
+    client = ThreadedAsyncClient(
+        factory=lambda: setup_client(config.client_config),
+        max_workers=max_workers,
+        thread_name_prefix="threaded-oai-client",
     )
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
+        f"Initialized threaded AsyncOpenAI client ({max_workers=}) with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment
