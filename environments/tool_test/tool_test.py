@@ -65,7 +65,9 @@ tool_name_list = [tool.__name__ for tool in tool_list]
 def tool_call_reward_func(completion, info):
     # check if completion tool calls exactly matches info tool calls
     tool_calls = completion[-1].get("tool_calls", [])
-    called_tool_names = sorted([call.function.name for call in tool_calls])
+    called_tool_names = sorted(
+        [call.get("function", {}).get("name", "") for call in tool_calls]
+    )
     expected_tool_names = sorted(info["tool_names"])
     if called_tool_names == expected_tool_names:
         return 1.0
@@ -101,8 +103,7 @@ def load_environment(
     dataset = Dataset.from_list(train_rows)
     eval_dataset = Dataset.from_list(eval_rows)
     parser = vf.Parser()
-    rubric = vf.ToolRubric(tools=tool_list)
-    rubric.add_reward_func(tool_call_reward_func)
+    rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
         dataset=dataset,
         eval_dataset=eval_dataset,
