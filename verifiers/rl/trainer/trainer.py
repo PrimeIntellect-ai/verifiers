@@ -404,7 +404,7 @@ class RLTrainer(Trainer):
                 self.orchestrator.stop()
 
     def _save_final_checkpoint(self):
-        """Save final checkpoint to weights/step_N/ directory.
+        """Save final checkpoint to broadcasts/step_N/ directory.
 
         This ensures adapters are always available even for short runs where
         save_steps > max_steps would otherwise skip checkpointing.
@@ -413,15 +413,15 @@ class RLTrainer(Trainer):
             return
 
         final_step = self.state.global_step
-        weights_dir = os.path.join(self.args.output_dir, "weights", f"step_{final_step}")
+        broadcasts_dir = os.path.join(self.args.output_dir, "broadcasts", f"step_{final_step}")
 
-        if os.path.exists(weights_dir):
-            self.logger.info(f"Final checkpoint already exists at {weights_dir}")
+        if os.path.exists(broadcasts_dir):
+            self.logger.info(f"Final checkpoint already exists at {broadcasts_dir}")
             return
 
-        self.logger.info(f"Saving final checkpoint to {weights_dir}")
-        os.makedirs(weights_dir, exist_ok=True)
-        self.save_model(weights_dir)
+        self.logger.info(f"Saving final checkpoint to {broadcasts_dir}")
+        os.makedirs(broadcasts_dir, exist_ok=True)
+        self.save_model(broadcasts_dir)
         self.logger.info(f"Final checkpoint saved at step {final_step}")
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
