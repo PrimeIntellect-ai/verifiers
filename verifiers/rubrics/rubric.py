@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import AsyncContextManager, cast
+from typing import Any, AsyncContextManager, cast
 
 import verifiers as vf
 from verifiers.types import (
@@ -57,6 +57,13 @@ class Rubric:
     def add_reward_func(self, func: RewardFunc, weight: float = 1.0):
         self.funcs.append(func)
         self.weights.append(weight)
+
+    def add_metric(self, func: RewardFunc, weight: float = 0.0):
+        self.funcs.append(func)
+        self.weights.append(weight)
+
+    def add_class_object(self, name: str, obj: Any):
+        self.class_objects[name] = obj
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:

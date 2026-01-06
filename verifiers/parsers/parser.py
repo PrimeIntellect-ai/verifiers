@@ -42,7 +42,10 @@ class Parser:
         if isinstance(completion, str):
             return self.parse(completion)
         else:
-            ans = str(self.get_assistant_messages(completion)[-1].get("content", ""))
+            assistant_messages = self.get_assistant_messages(completion)
+            if not assistant_messages:
+                return None
+            ans = str(assistant_messages[-1].get("content", ""))
             return self.parse(ans)
 
     def get_format_reward_func(self) -> Callable:

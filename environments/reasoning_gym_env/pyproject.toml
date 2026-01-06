@@ -2,10 +2,10 @@
 name = "reasoning-gym-env"
 description = "ReasoningGym suite of programmatically-generated reasoning tasks"
 tags = ["reasoning-gym", "logic", "puzzles", "math", "train"]
-version = "0.1.3"
+version = "0.1.4"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.5.post0",
+    "verifiers>=0.1.8.post0",
     "reasoning-gym",
 ]
 

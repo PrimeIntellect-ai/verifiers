@@ -77,6 +77,8 @@ class TestSingleTurnEnv:
                     tokens=None,
                     reward=None,
                     advantage=None,
+                    is_truncated=False,
+                    trajectory_id="test_trajectory",
                     extras={},
                 )
             ],
@@ -487,6 +489,8 @@ class TestSingleTurnEnv:
                 tokens=None,
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="test_trajectory",
                 extras={},
             )
         ]
@@ -514,6 +518,8 @@ class TestSingleTurnEnv:
                 tokens=None,
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="test_trajectory",
                 extras={},
             ),
             TrajectoryStep(
@@ -523,6 +529,8 @@ class TestSingleTurnEnv:
                 tokens=None,
                 reward=None,
                 advantage=None,
+                is_truncated=False,
+                trajectory_id="test_trajectory",
                 extras={},
             ),
         ]

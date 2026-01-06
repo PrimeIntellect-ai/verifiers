@@ -48,6 +48,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
@@ -57,6 +58,104 @@ from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if not usage and isinstance(response, dict):
+        usage = response.get("usage")
+    if not usage:
+        return 0, 0
+    if isinstance(usage, dict):
+        return (
+            int(usage.get("prompt_tokens", 0) or 0),
+            int(usage.get("completion_tokens", 0) or 0),
+        )
+    return (
+        int(getattr(usage, "prompt_tokens", 0) or 0),
+        int(getattr(usage, "completion_tokens", 0) or 0),
+    )
+
+
+def _ensure_rlm_metric_state(state: State) -> None:
+    state.setdefault("sub_llm_call_count", 0)
+    state.setdefault("sub_llm_total_turns", 0)
+    state.setdefault("sub_llm_prompt_tokens", 0)
+    state.setdefault("sub_llm_completion_tokens", 0)
+    state.setdefault("sub_llm_total_tool_calls", 0)
+    state.setdefault("sub_llm_batch_count", 0)
+    state.setdefault("sub_llm_max_batch_size", 0)
+    state.setdefault("sub_llm_mean_batch_size", 0.0)
+
+    state.setdefault("main_rlm_turns", 0)
+    state.setdefault("main_rlm_prompt_tokens", 0)
+    state.setdefault("main_rlm_completion_tokens", 0)
+
+    state.setdefault("repl_total_time_seconds", 0.0)
+    state.setdefault("repl_call_count", 0)
+    state.setdefault("repl_mean_time_seconds", 0.0)
+
+    state.setdefault("_rlm_sub_llm_call_ids", {})
+    state.setdefault("_rlm_sub_llm_batch_counts", {})
+
+
+def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
+    _ensure_rlm_metric_state(state)
+    state["repl_total_time_seconds"] += execution_seconds
+    state["repl_call_count"] += 1
+    if state["repl_call_count"] > 0:
+        state["repl_mean_time_seconds"] = (
+            state["repl_total_time_seconds"] / state["repl_call_count"]
+        )
+
+
+def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
+    _ensure_rlm_metric_state(state)
+    extras = step.get("extras", {}) or {}
+    is_sub_llm = bool(extras.get("is_sub_llm_call"))
+
+    prompt_tokens, completion_tokens = _extract_tokens_from_response(
+        step.get("response")
+    )
+
+    if is_sub_llm:
+        state["sub_llm_total_turns"] += 1
+        state["sub_llm_prompt_tokens"] += prompt_tokens
+        state["sub_llm_completion_tokens"] += completion_tokens
+        state["sub_llm_total_tool_calls"] += int(extras.get("tool_call_count", 0) or 0)
+
+        batch_id = extras.get("batch_id")
+        request_id = extras.get("request_id")
+        call_ids: dict[str, bool] = state.get("_rlm_sub_llm_call_ids", {})
+        batch_counts: dict[str, int] = state.get("_rlm_sub_llm_batch_counts", {})
+
+        if batch_id:
+            request_id_norm = request_id if request_id not in (None, "") else "_missing"
+            key = f"{batch_id}:{request_id_norm}"
+            if key not in call_ids:
+                call_ids[key] = True
+                state["sub_llm_call_count"] += 1
+                batch_counts[batch_id] = batch_counts.get(batch_id, 0) + 1
+        else:
+            # Fallback: treat each turn as its own call if identifiers are missing.
+            state["sub_llm_call_count"] += 1
+
+        state["_rlm_sub_llm_call_ids"] = call_ids
+        state["_rlm_sub_llm_batch_counts"] = batch_counts
+
+        if batch_counts:
+            batch_sizes = list(batch_counts.values())
+            state["sub_llm_batch_count"] = len(batch_sizes)
+            state["sub_llm_max_batch_size"] = max(batch_sizes)
+            state["sub_llm_mean_batch_size"] = sum(batch_sizes) / len(batch_sizes)
+        else:
+            state["sub_llm_batch_count"] = 0
+            state["sub_llm_max_batch_size"] = 0
+            state["sub_llm_mean_batch_size"] = 0.0
+    else:
+        state["main_rlm_turns"] += 1
+        state["main_rlm_prompt_tokens"] += prompt_tokens
+        state["main_rlm_completion_tokens"] += completion_tokens
 
 
 class SubLLMTurn(TypedDict):
@@ -106,6 +205,8 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
     SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
+    if SANDBOX_TIMEOUT > 0:
+        SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)
 
     def ensure_fifo(path: str) -> None:
         if os.path.exists(path):
@@ -300,11 +401,10 @@ _RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
     command_fifo="{command_fifo}"
     response_fifo="{response_fifo}"
     ready_flag="{ready_flag}"
+    install_done_flag="{install_done_flag}"
     worker_path="{worker_path}"
 
-    rm -f "$command_fifo" "$response_fifo" "$ready_flag"
-
-    pip install -q requests {pip_install_packages}
+    rm -f "$command_fifo" "$response_fifo" "$ready_flag" "$install_done_flag"
 
     # Write worker script but do NOT start it yet
     # Worker will be started by setup_state after context/env vars are set
@@ -315,13 +415,20 @@ from pathlib import Path
 Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
 PY
 
+    pip install -q requests {pip_install_packages}
+    touch "$install_done_flag"
+
     tail -f /dev/null
     '
     """
 )
 
 
-def _make_ready_wait_script(ready_flag: str, max_wait_seconds: int) -> str:
+def _make_ready_wait_script(
+    ready_flag: str,
+    max_wait_seconds: int,
+    error_message: str = "RLM worker failed to start",
+) -> str:
     """Generate a ready wait script with configurable timeout."""
     # Each iteration sleeps 0.05 seconds, so calculate iterations needed
     iterations = max(1, int(max_wait_seconds / 0.05))
@@ -334,7 +441,7 @@ def _make_ready_wait_script(ready_flag: str, max_wait_seconds: int) -> str:
           fi
           sleep 0.05
         done
-        echo "RLM worker failed to start" >&2
+        echo "{error_message}" >&2
         exit 1
         '
         """
@@ -417,8 +524,9 @@ class RLMEnv(SandboxEnv):
         system_prompt: Custom system prompt (default: RLM standard prompt)
         interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
         interception_port: Port for interception server (default: 8766)
-        pip_install_packages: Space-separated packages to install (default: "requests")
-        max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 30)
+        pip_install_packages: Space-separated packages to install in addition to requests
+                   (default: "")
+        max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
                    When True (default), sub-LLM turns are prepended to the trajectory as
                    TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
@@ -439,6 +547,7 @@ class RLMEnv(SandboxEnv):
     _COMMAND_FIFO = "/tmp/rlm_cmd"
     _RESPONSE_FIFO = "/tmp/rlm_res"
     _READY_FLAG = "/tmp/rlm_ready"
+    _INSTALL_DONE_FLAG = "/tmp/rlm_install_done"
     _CONTEXT_FILE = "/tmp/rlm_context.json"
     _ANSWER_FILE = "/tmp/rlm_answer.json"
 
@@ -481,7 +590,10 @@ class RLMEnv(SandboxEnv):
         self.abort_on_code_timeout = abort_on_code_timeout
         # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
         # This ensures server responds before sandbox worker's HTTP request times out
-        self.sub_llm_api_timeout = max(10, int(self.code_execution_timeout * 0.8))
+        (
+            self.sub_llm_api_timeout,
+            self.sub_llm_timeout,
+        ) = self._compute_sub_llm_timeouts()
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
@@ -504,6 +616,7 @@ class RLMEnv(SandboxEnv):
             command_fifo=self._COMMAND_FIFO,
             response_fifo=self._RESPONSE_FIFO,
             ready_flag=self._READY_FLAG,
+            install_done_flag=self._INSTALL_DONE_FLAG,
             worker_path=self._WORKER_PATH,
             worker_b64=worker_b64,
             pip_install_packages=pip_install_packages,
@@ -544,6 +657,35 @@ class RLMEnv(SandboxEnv):
     # =========================================================================
     # Sub-Agent Tool Infrastructure
     # =========================================================================
+
+    def _compute_sub_llm_timeouts(self) -> tuple[int, int]:
+        """Compute sub-LLM timeouts based on the overall code execution timeout."""
+        code_timeout = max(1, int(self.code_execution_timeout))
+        min_timeout = min(10, max(1, code_timeout - 1))
+
+        api_timeout = max(min_timeout, int(code_timeout * 0.8))
+        worker_timeout = max(min_timeout, int(code_timeout * 0.9))
+
+        if code_timeout > 1:
+            api_timeout = min(api_timeout, code_timeout - 1)
+            worker_timeout = min(worker_timeout, code_timeout - 1)
+
+        api_timeout = min(api_timeout, worker_timeout)
+
+        if code_timeout < 10:
+            logger.warning(
+                "code_execution_timeout=%s is low; sub-LLM calls may be unreliable",
+                code_timeout,
+            )
+
+        return api_timeout, worker_timeout
+
+    def _compute_install_wait_seconds(self) -> int:
+        """Estimate how long to wait for pip installs based on package count."""
+        packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
+        package_count = len(packages) + 1  # Always includes requests
+        estimated_seconds = 30 * package_count
+        return max(self.max_startup_wait_seconds, estimated_seconds)
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
@@ -664,15 +806,43 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
+    def _normalize_message_content(self, messages: list[dict]) -> list[dict]:
+        """Normalize message content fields to formats the API accepts.
+
+        The API expects content to be: string, array of objects, or None.
+        Handles several malformed cases:
+        1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
+        2. Content is a content part object (has 'type' key) - wrap in array
+        """
+        normalized = []
+        for msg in messages:
+            msg_copy = dict(msg)
+            content = msg_copy.get("content")
+
+            if content is not None and isinstance(content, dict):
+                # Check if content is a nested message dict (has 'role' and 'content' keys)
+                # This happens when model passes message dicts to llm_batch instead of strings
+                if "role" in content and "content" in content:
+                    msg_copy["content"] = content["content"]
+                elif "type" in content:
+                    # Content part object (e.g. {"type": "text", "text": "..."}) - wrap in array
+                    msg_copy["content"] = [content]
+                else:
+                    # Unknown dict structure - try wrapping in array as fallback
+                    msg_copy["content"] = [content]
+            normalized.append(msg_copy)
+        return normalized
+
     async def _call_sub_llm_api(
         self, client: Any, model: str, messages: list[dict], tools: list | None = None
     ) -> Any | None:
         """Make a single sub-LLM API call with timeout. Returns None on timeout."""
+        normalized_messages = self._normalize_message_content(messages)
         try:
             return await asyncio.wait_for(
                 client.chat.completions.create(
                     model=model,
-                    messages=messages,
+                    messages=normalized_messages,
                     tools=tools,
                     logprobs=self._sub_llm_supports_logprobs or None,
                 ),
@@ -894,6 +1064,8 @@ class RLMEnv(SandboxEnv):
             *messages,
         ]
 
+        state_ref = context.get("state") if context else None
+
         try:
             # Run sub-LLM call (handles both with-tools and no-tools cases)
             result = await self._run_sub_llm(client, sub_model, messages_with_system)
@@ -908,13 +1080,23 @@ class RLMEnv(SandboxEnv):
             # Extract boxed answer for response to sandbox
             boxed_content = extract_boxed_answer(final_content)
 
-            # Build TrajectorySteps if enabled
-            if self.include_sub_llm_in_trajectory:
-                parent_turn = context.get("current_turn", 0)
-                timestamp = time.time()
+            parent_turn = context.get("current_turn", 0)
+            timestamp = time.time()
 
-                total_sub_turns = len(turns)
-                for sub_turn_index, turn in enumerate(turns):
+            total_sub_turns = len(turns)
+            for sub_turn_index, turn in enumerate(turns):
+                extras = {
+                    "is_sub_llm_call": True,
+                    "parent_turn": parent_turn,
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "sub_turn_index": sub_turn_index,
+                    "total_sub_turns": total_sub_turns,
+                    "timestamp": timestamp,
+                    "tool_call_count": turn["tool_call_count"],
+                }
+
+                if self.include_sub_llm_in_trajectory:
                     # Parse tokens from response
                     tokens = await parse_response_tokens(
                         turn["response"], "chat", self.max_seq_len
@@ -939,20 +1121,26 @@ class RLMEnv(SandboxEnv):
                         reward=None,
                         advantage=None,
                         is_truncated=is_truncated,
-                        extras={
-                            "is_sub_llm_call": True,
-                            "parent_turn": parent_turn,
-                            "batch_id": batch_id,
-                            "request_id": request_id,
-                            "sub_turn_index": sub_turn_index,
-                            "total_sub_turns": total_sub_turns,
-                            "timestamp": timestamp,
-                            "tool_call_count": turn["tool_call_count"],
-                        },
+                        trajectory_id=f"{batch_id}_{request_id}",
+                        extras=extras,
                     )
-                    context.setdefault("sub_llm_trajectory_steps", []).append(
-                        trajectory_step
+                    if state_ref is not None:
+                        await self.add_trajectory_step(state_ref, trajectory_step)
+                else:
+                    if state_ref is None:
+                        continue
+                    trajectory_step = TrajectoryStep(
+                        prompt=cast(Messages, turn["prompt_messages"]),
+                        completion=[],
+                        response=turn["response"],
+                        tokens=None,
+                        reward=None,
+                        advantage=None,
+                        is_truncated=False,
+                        trajectory_id=f"{batch_id}_{request_id}",
+                        extras=extras,
                     )
+                    update_rlm_metrics_from_step(state_ref, trajectory_step)
 
             # Build response dict for sandbox
             response_dict = {
@@ -1044,6 +1232,7 @@ class RLMEnv(SandboxEnv):
             "client": state.get("client"),
             "model": state.get("model"),
             "sub_model": self.sub_model or state.get("model"),
+            "state": state,
         }
         return state
 
@@ -1052,10 +1241,10 @@ class RLMEnv(SandboxEnv):
         sandbox_id = state["sandbox_id"]
         interception_url = state["interception_url"]
 
-        sub_llm_timeout = max(10, int(self.code_execution_timeout * 0.9))
-        # Calculate max wait iterations for worker script (written AFTER pip install completes)
-        # This can take 30-60+ seconds for heavy packages like numpy, sympy, scipy
+        sub_llm_timeout = self.sub_llm_timeout
+        # Calculate max wait iterations for worker script creation
         script_wait_iterations = max(1, int(self.max_startup_wait_seconds / 0.1))
+        await self._wait_for_install_done(sandbox_id)
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
@@ -1073,16 +1262,16 @@ for i in $(seq 1 {script_wait_iterations}); do
     sleep 0.1
 done
 
-if [ ! -f "{self._WORKER_PATH}" ]; then
-    echo "Worker script not found - pip install may have failed or timed out" >&2
-    exit 1
-fi
+        if [ ! -f "{self._WORKER_PATH}" ]; then
+            echo "Worker script not found - pip install may have failed or timed out" >&2
+            exit 1
+        fi
 
-# Small delay to ensure filesystem is fully synced before reading script
-sleep 0.2
+        # Small delay to ensure filesystem is fully synced before reading script
+        sleep 0.2
 
-# Start the worker
-nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
+        # Start the worker
+        nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
 """
         # Timeout needs to account for pip install wait + worker startup
         start_worker_timeout = self.max_startup_wait_seconds + 30
@@ -1174,6 +1363,23 @@ nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
         context_dict = {"input_data": context_data, "input_data_metadata": metadata}
         state["rlm_context"] = context_dict
 
+        metadata_summary = self._generate_metadata_documentation(metadata)
+        base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+        if "{metadata_summary}" in base_system_prompt:
+            # Use replace instead of format to avoid conflict with curly braces from Python code
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            # If custom prompt doesn't have placeholder, prepend it
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+
+        packages_docs = self._generate_packages_documentation()
+        sub_tools_docs = self._generate_sub_tools_documentation()
+        state["rlm_system_prompt"] = base_system_prompt + packages_docs + sub_tools_docs
+        state["rlm_packages_docs"] = packages_docs
+        state["rlm_sub_tools_docs"] = sub_tools_docs
+
         # 6. Prepare sandbox and start worker (with retry using fresh sandbox)
         max_sandbox_retries = 5
 
@@ -1202,6 +1408,8 @@ nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
         # Initialize FIFO sequence counter for detecting stale responses
         state["_exec_seq"] = 0
 
+        _ensure_rlm_metric_state(state)
+
         return state
 
     async def _write_json_to_sandbox(
@@ -1216,7 +1424,9 @@ nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         """Wait for worker to signal ready."""
         wait_script = _make_ready_wait_script(
-            self._READY_FLAG, self.max_startup_wait_seconds
+            self._READY_FLAG,
+            self.max_startup_wait_seconds,
+            error_message="RLM worker failed to start",
         )
         # Use max_startup_wait_seconds as timeout (+ buffer for script overhead)
         timeout = self.max_startup_wait_seconds + 10
@@ -1238,9 +1448,43 @@ nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
                 f"RLM worker failed to start: {debug_result.stdout[:500]}"
             )
 
+    async def _wait_for_install_done(self, sandbox_id: str) -> None:
+        """Wait for pip installs to finish before starting the worker."""
+        install_wait_seconds = self._compute_install_wait_seconds()
+        wait_script = _make_ready_wait_script(
+            self._INSTALL_DONE_FLAG,
+            install_wait_seconds,
+            error_message="RLM pip install did not complete",
+        )
+        timeout = install_wait_seconds + 10
+        result = await self._execute_command_with_retry(
+            sandbox_id, wait_script, timeout=timeout
+        )
+        if (
+            "pip install did not complete" in result.stdout
+            or "pip install did not complete" in (result.stderr or "")
+        ):
+            raise vf.SandboxError() from Exception("RLM pip install did not complete")
+
     # =========================================================================
     # Code Execution
     # =========================================================================
+
+    async def _recover_from_code_timeout(self, state: State) -> bool:
+        """Attempt to recover from a code execution timeout by recreating the sandbox."""
+        context_dict = state.get("rlm_context")
+        if not context_dict:
+            logger.error("Cannot recover from timeout: missing rlm_context in state")
+            return False
+        try:
+            state = await self._recreate_sandbox(state)
+            await self._prepare_sandbox_and_start_worker(state, context_dict)
+        except Exception as e:
+            logger.error(f"Failed to recover from code timeout: {e}")
+            return False
+        state["rlm_worker_ready"] = True
+        state["_exec_seq"] = 0
+        return True
 
     async def _execute_code(
         self, sandbox_id: str, code: str, state: State
@@ -1282,14 +1526,22 @@ PY
             if self.abort_on_code_timeout:
                 # Abort rollout immediately on timeout
                 raise vf.SandboxError() from e
+            recovered = await self._recover_from_code_timeout(state)
+            recovery_note = (
+                " The sandbox was restarted and the REPL state was reset."
+                if recovered
+                else " Failed to restart the sandbox; the REPL may be unusable."
+            )
             # Return error to model so it can try more efficient code
             return {
                 "status": "error",
                 "stdout": "",
                 "stderr": "",
-                "result": f"Code execution timed out after {self.code_execution_timeout} seconds. "
-                "Your code may be too slow - consider a more efficient algorithm or "
-                "breaking the computation into smaller steps.",
+                "result": (
+                    f"Code execution timed out after {self.code_execution_timeout} seconds."
+                    f"{recovery_note} Your code may be too slow - consider a more "
+                    "efficient algorithm or breaking the computation into smaller steps."
+                ),
                 "answer": {"ready": False, "content": ""},
             }
         except Exception as e:
@@ -1412,6 +1664,7 @@ PY
                 "execution_seconds": execution_time,
             }
         )
+        _update_rlm_repl_metrics(state, execution_time)
 
         # Append execution time to output
         output += f"\n[Execution time: {execution_time:.2f}s]"
@@ -1424,9 +1677,17 @@ PY
 
         # Inject context limit warning if approaching limit
         if self.max_seq_len and not state.get("context_warning_sent"):
-            # Get prompt token count from latest trajectory response
+            # Get prompt token count from latest main-model trajectory response
             trajectory = state.get("trajectory", [])
-            response = trajectory[-1].get("response") if trajectory else None
+            last_main = next(
+                (
+                    step
+                    for step in reversed(trajectory)
+                    if not step.get("extras", {}).get("is_sub_llm_call")
+                ),
+                None,
+            )
+            response = last_main.get("response") if last_main else None
             usage = getattr(response, "usage", None) if response else None
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
             warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
@@ -1442,6 +1703,10 @@ PY
 
         return output
 
+    async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
+        update_rlm_metrics_from_step(state, trajectory_step)
+        await super().add_trajectory_step(state, trajectory_step)
+
     # =========================================================================
     # MultiTurnEnv Interface
     # =========================================================================
@@ -1454,23 +1719,11 @@ PY
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
-            # Build system prompt with metadata, packages and sub-tool documentation
-            metadata = state.get("rlm_context", {}).get("input_data_metadata", {})
-            metadata_summary = self._generate_metadata_documentation(metadata)
-
-            base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
-            if "{metadata_summary}" in base_system_prompt:
-                # Use replace instead of format to avoid conflict with curly braces from Python code
-                base_system_prompt = base_system_prompt.replace(
-                    "{metadata_summary}", metadata_summary
-                )
-            else:
-                # If custom prompt doesn't have placeholder, prepend it
-                base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
-
-            packages_docs = self._generate_packages_documentation()
-            sub_tools_docs = self._generate_sub_tools_documentation()
-            system_prompt = base_system_prompt + packages_docs + sub_tools_docs
+            system_prompt = state.get("rlm_system_prompt")
+            packages_docs = state.get("rlm_packages_docs")
+            sub_tools_docs = state.get("rlm_sub_tools_docs")
+            if system_prompt is None or packages_docs is None or sub_tools_docs is None:
+                raise ValueError("RLM setup_state must run before get_prompt_messages")
 
             messages = list(prompt)
             if not messages or messages[0].get("role") != "system":
@@ -1529,67 +1782,42 @@ PY
     @vf.cleanup
     async def cleanup_rlm_state(self, state: State):
         """Cleanup RLM-specific state and prepend sub-LLM trajectory steps."""
-        from collections import Counter
-
-        main_trajectory_len = len(state.get("trajectory", []))
         rollout_id = state.get("rollout_id")
 
         if rollout_id and rollout_id in self.active_rollouts:
-            context = self.active_rollouts[rollout_id]
-            sub_steps = context.get("sub_llm_trajectory_steps", [])
-
-            if sub_steps:
-                # Extract unique (batch_id, request_id) pairs and count per batch
-                pairs = {
-                    (e.get("batch_id"), e.get("request_id"))
-                    for s in sub_steps
-                    if (e := s.get("extras", {})).get("batch_id")
-                }
-                batch_sizes = list(Counter(b for b, _ in pairs).values())
-
-                state["sub_llm_call_count"] = len(pairs)
-                state["sub_llm_prompt_tokens"] = sum(
-                    self._extract_tokens(s.get("response"))[0] for s in sub_steps
-                )
-                state["sub_llm_completion_tokens"] = sum(
-                    self._extract_tokens(s.get("response"))[1] for s in sub_steps
-                )
-                state["sub_llm_total_tool_calls"] = sum(
-                    s.get("extras", {}).get("tool_call_count", 0) or 0
-                    for s in sub_steps
-                )
-                state["sub_llm_total_turns"] = len(sub_steps)
-                state["sub_llm_batch_count"] = len(batch_sizes)
-                state["sub_llm_max_batch_size"] = max(batch_sizes, default=0)
-                state["sub_llm_mean_batch_size"] = (
-                    sum(batch_sizes) / len(batch_sizes) if batch_sizes else 0.0
-                )
-
-            if self.include_sub_llm_in_trajectory and sub_steps:
-                sub_steps_sorted = sorted(
-                    sub_steps, key=lambda s: s["extras"].get("timestamp", 0)
-                )
-                state["trajectory"] = sub_steps_sorted + state["trajectory"]
-
             del self.active_rollouts[rollout_id]
-
-        # Compute main RLM metrics (excluding sub-LLM steps)
-        state["main_rlm_turns"] = main_trajectory_len
-        main_steps = [
-            s
-            for s in state.get("trajectory", [])
-            if not s.get("extras", {}).get("is_sub_llm_call")
-        ]
-        state["main_rlm_prompt_tokens"] = sum(
-            self._extract_tokens(s.get("response"))[0] for s in main_steps
-        )
-        state["main_rlm_completion_tokens"] = sum(
-            self._extract_tokens(s.get("response"))[1] for s in main_steps
-        )
 
         # Release tunnel
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
+
+    async def render_completion(self, state: State):
+        """Render completion from main model steps only, ignoring sub-LLM steps."""
+
+        if len(state["trajectory"]) == 0:
+            state["completion"] = []
+            return
+
+        # Find the last trajectory step from the main model (matching trajectory_id)
+        main_trajectory_id = state["trajectory_id"]
+        last_main_step = None
+        for step in reversed(state["trajectory"]):
+            if step.get("trajectory_id") == main_trajectory_id:
+                last_main_step = step
+                break
+
+        if last_main_step is None:
+            state["completion"] = []
+            return
+
+        last_prompt = last_main_step["prompt"]
+        last_completion = last_main_step["completion"]
+        full_conversation = concat_messages([last_prompt, last_completion])
+        if state.get("final_env_response"):
+            full_conversation = concat_messages(
+                [full_conversation, state["final_env_response"]]
+            )
+        state["completion"] = full_conversation[len(state["prompt"]) :]
 
     async def post_rollout(self, state: State):
         """Read final answer from sandbox if not already set."""

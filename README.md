@@ -236,7 +236,7 @@ The following named attributes available for use by reward functions in your Rub
 - `prompt`: sequence of input messages
 - `completion`: sequence of messages generated during rollout by model and Environment
 - `answer`: primary answer column, optional (defaults to empty string if omitted)
-- `state`: can be modified during rollout to accumulate any metadata (`state['responses']` includes full OpenAI response objects by default)
+- `state`: can be modified during rollout to accumulate any metadata (`state['trajectory']` includes the full list of `TrajectoryStep` objects by default)
 - `info`: auxiliary info needed for reward computation (e.g. test cases), optional (defaults to empty dict if omitted)
 - `task`: tag for task type (used by `EnvGroup` and `RubricGroup`)
 - `parser`: the parser object declared. Note: `vf.Parser().get_format_reward_func()` is a no-op (always 1.0); use `vf.ThinkParser` or a custom parser if you want a real format adherence reward.
@@ -275,28 +275,27 @@ For training, or self-hosted endpoints, you'll want to enable auto tool choice i
 
 ### MultiTurnEnv
 
-Both `SingleTurnEnv` and `ToolEnv` are instances of `MultiTurnEnv`, which exposes an interface for writing custom Environment interaction protocols. Override `is_completed` and `env_response`, and make sure any custom completion logic defers to the base class so turn limits and other shared guards keep working.
+Both `SingleTurnEnv` and `ToolEnv` are instances of `MultiTurnEnv`, which exposes an interface for writing custom Environment interaction protocols. To implement a custom protocol, define an `env_response` method and use `@vf.stop` decorators for termination conditions.
 
 ```python
-from typing import Tuple
 import verifiers as vf
 from verifiers.types import Messages, State
+
 class YourMultiTurnEnv(vf.MultiTurnEnv):
     def __init__(self,
                  dataset: Dataset,
                  rubric: Rubric,
 				 max_turns: int,
                  **kwargs):
-	
-  async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-    # Always call the base check so max_turns and shared guards are respected
-    if await super().is_completed(messages, state, **kwargs):
-        return True
-    # return whether or not a rollout is completed
-    return state.get("task_complete", False)
 
-  async def env_response(self, messages: Messages, state: State, **kwargs) -> Tuple[Messages, State]:
-    # return new environment message(s) + updated state
+    async def env_response(self, messages: Messages, state: State, **kwargs) -> Messages:
+        # return new environment message(s); state can be updated in-place
+        return [{"role": "user", "content": "feedback"}]
+
+    @vf.stop
+    async def task_complete(self, state: State) -> bool:
+        # return whether or not a rollout is completed
+        return state.get("task_complete", False)
 ```
 
 If your application requires more fine-grained control than is allowed by `MultiTurnEnv`, you may want to inherit from the base `Environment` functionality directly and override the `rollout` method.

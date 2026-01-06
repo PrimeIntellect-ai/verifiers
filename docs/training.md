@@ -228,4 +228,4 @@ However, the best way to improve training is ensuring appropriate task difficult
 
 - Explore [Environments](environments.md) to create custom tasks
 - Review [Components](components.md) for advanced patterns
-- See the [examples directory](https://github.com/PrimeIntellect-ai/verifiers/tree/main/examples) on GitHub for complete training scripts
+- See the [prime-rl examples directory](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) on GitHub for complete training scripts

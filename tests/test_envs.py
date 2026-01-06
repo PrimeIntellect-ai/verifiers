@@ -15,6 +15,8 @@ SKIPPED_ENVS = [
     #                 ~~~~~~~~~~^^^^^^^^^^^^^^
     # KeyError: 'example_id'
     "continuation_quality",
+    # Slow expensive first-time setup
+    "wiki_search",
 ]
 
 
@@ -65,6 +67,7 @@ def test_readme_exists(env_dir: Path):
     assert (env_dir / "README.md").exists(), "README.md does not exist"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     """Test environment in a fresh venv with local verifiers installed first."""
