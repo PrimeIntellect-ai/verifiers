@@ -282,7 +282,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         state["sandbox_id"] = sandbox.id
         state["sandbox_state"] = {
             "ready": False,
-            "ready_wait_time": -1.0,
+            "ready_wait_time": 0.0,
             "command_execution_times": [],
         }
         return await super().setup_state(state, **kwargs)

@@ -210,7 +210,7 @@ PY
         state["python_state"] = {
             "ready": False,
             "execution_count": 0,
-            "ready_wait_time": -1.0,
+            "ready_wait_time": 0.0,
         }
         return state
 
@@ -248,10 +248,6 @@ PY
             sandbox_id, sandbox_state, {"code": code}
         )
         return self._format_response(python_state, sandbox_response)
-
-    @vf.cleanup
-    async def cleanup_python_state(self, state: vf.State):
-        state.pop("python_state", None)
 
     async def _wait_for_worker_ready(
         self,
