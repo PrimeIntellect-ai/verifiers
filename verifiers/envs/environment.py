@@ -674,22 +674,28 @@ class Environment(ABC):
     @final
     async def run_rollout(
         self,
-        sem: AsyncContextManager,
         input: RolloutInput,
         client: AsyncOpenAI,
         model: str,
-        sampling_args: SamplingArgs | None = None,
+        gen_sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager,
+        score_sem: AsyncContextManager | None = None,
+        score: bool = False,
     ) -> State:
-        """
-        Run a rollout with a semaphore (generation only, no scoring).
-        """
-        async with sem:
+        """Generate and, optionally, score a rollout."""
+        async with gen_sem:
             state = await self.rollout(
                 input,
                 client,
                 model,
-                sampling_args,
+                gen_sampling_args,
             )
+        if score:
+            assert score_sem is not None
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_rollout(state)
         return state
 
     @final
@@ -701,44 +707,27 @@ class Environment(ABC):
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
+        score: bool = True,
         **kwargs,
     ) -> list[State]:
-        """Generate and score one group."""
+        """Generate and, optionally, score one group."""
         rollout_tasks = [
             self.run_rollout(
-                gen_sem,
                 input,
                 client,
                 model,
                 gen_sampling_args,
+                gen_sem,
             )
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states, score_sem=score_sem)
-        else:
-            await self.rubric.dummy_score_group(group_states)
+        if score:
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_group(group_states)
         return list(group_states)
-
-    @final
-    async def run_single_rollout(
-        self,
-        input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager,
-    ) -> State:
-        """Generate and score a single rollout."""
-        state = await self.run_rollout(gen_sem, input, client, model, gen_sampling_args)
-        if self.score_rollouts:
-            await self.rubric.score_rollout(state, score_sem)
-        else:
-            state["reward"] = 0.0
-            state["metrics"] = {}
-        return state
 
     def _prepare_rollout_results(
         self,
@@ -861,13 +850,14 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    self.run_single_rollout(
+                    self.run_rollout(
                         input_item,
                         client,
                         model,
                         gen_sampling_args,
                         gen_sem,
                         score_sem,
+                        score=True,
                     )
                 )
                 tasks[task] = i

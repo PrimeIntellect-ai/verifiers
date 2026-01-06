@@ -212,6 +212,11 @@ class Rubric:
         async with score_sem:
             return await _call()
 
+    async def dummy_score_rollout(self, state: State):
+        """Score a single rollout with dummy rewards."""
+        state["reward"] = 0.0
+        state["metrics"] = {}
+
     async def score_rollout(self, state: State, score_sem: AsyncContextManager):
         """
         Evaluate all reward functions for a single rollout.
@@ -252,12 +257,9 @@ class Rubric:
         state["metrics"] = rewards["metrics"]
 
     async def dummy_score_group(self, states: list[State]):
-        """
-        Score a group of rollouts together with dummy rewards.
-        """
+        """Score a group of rollouts together with dummy rewards."""
         for state in states:
-            state["reward"] = 0.0
-            state["metrics"] = {}
+            await self.dummy_score_rollout(state)
 
     async def score_group(self, states: list[State], score_sem: AsyncContextManager):
         """
