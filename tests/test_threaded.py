@@ -47,8 +47,8 @@ class MockClient:
         return duration
 
     @cached_property
-    def route(self, name: str = "default_route") -> MockRoute:
-        return MockRoute(name)
+    def route(self) -> MockRoute:
+        return MockRoute()
 
 
 class TestThreaded:
