@@ -1,0 +1,22 @@
+model = "Qwen/Qwen2.5-1.5B-Instruct"
+
+[env]
+id = "gsm8k"
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+tensor_parallel_size = 1
+
+[trainer]
+gpus = 1
+run_name = "gsm8k"
+
+[trainer.args]
+micro_batch_size = 12
+rollouts_per_example = 12
+batch_size = 144
+max_steps = 100
+max_seq_len = 2048

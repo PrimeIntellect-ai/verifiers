@@ -1,0 +1,27 @@
+model = "Qwen/Qwen3-4B-Instruct-2507"
+
+[env]
+id = "kalomaze/alphabet-sort"
+
+[env.args]
+min_turns = 3
+max_turns = 5
+power_per_turn = false
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "alphabet-sort"
+micro_batch_size = 16
+rollouts_per_example = 16
+batch_size = 512
+max_steps = 100
+max_tokens = 512
+max_seq_len = 1024

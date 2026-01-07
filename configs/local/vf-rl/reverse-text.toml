@@ -1,0 +1,22 @@
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[env]
+id = "primeintellect/reverse-text"
+
+[inference]
+gpus = 1
+
+[inference.args]
+enforce_eager = true
+
+[trainer]
+gpus = 1
+
+[trainer.args]
+run_name = "reverse-text"
+micro_batch_size = 16
+rollouts_per_example = 16
+batch_size = 128
+max_steps = 100
+max_tokens = 128
+max_seq_len = 512

@@ -39,7 +39,6 @@ logs/
 .chroma_db/
 
 # development
-local/
 scratch/
 .idea/
 .vscode/
