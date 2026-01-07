@@ -1378,10 +1378,9 @@ done
 
         # Create new sandbox via parent's parent (SandboxEnv.setup_state)
         # We need to call the grandparent to avoid re-running RLM setup
+        request = self.get_sandbox_request(state)
         try:
-            sandbox = await self.with_retry(self.sandbox_client.create)(
-                self.sandbox_request
-            )
+            sandbox = await self.with_retry(self.sandbox_client.create)(request)
         except Exception as e:
             raise SandboxCreationError(e)
         self.active_sandboxes.add(sandbox.id)
