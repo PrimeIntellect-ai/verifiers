@@ -10,6 +10,7 @@ from typing import cast
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
@@ -165,10 +166,13 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     max_workers = max(
         1, max_concurrent // config.client_config.max_keepalive_connections
     )
-    client = Threaded(
-        factory=lambda: setup_client(config.client_config),
-        max_workers=max_workers,
-        thread_name_prefix="threaded-oai-client",
+    client = cast(
+        AsyncOpenAI,
+        Threaded(
+            factory=lambda: setup_client(config.client_config),
+            max_workers=max_workers,
+            thread_name_prefix="threaded-oai-client",
+        ),
     )
     logger.debug(
         f"Initialized threaded AsyncOpenAI client ({max_workers=}) with base_url: {config.client_config.api_base_url}"

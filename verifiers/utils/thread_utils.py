@@ -57,6 +57,8 @@ class _Threaded(Generic[T]):
         """Accumulates attribute path and dispatches method calls to workers."""
 
         __slots__ = ("_parent", "_path")
+        _parent: "_Threaded"
+        _path: tuple[str, ...]
 
         def __init__(self, parent: "_Threaded[T]", path: tuple[str, ...]):
             object.__setattr__(self, "_parent", parent)

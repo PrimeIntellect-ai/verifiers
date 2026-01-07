@@ -1,7 +1,7 @@
 import logging
 import sys
 import time
-from typing import Any
+from typing import Any, cast
 
 from verifiers.utils.thread_utils import Threaded
 
@@ -92,13 +92,16 @@ class SandboxEnv(vf.StatefulToolEnv):
         )
         self.add_rubric(SandboxMonitorRubric())
         self.timeout_per_command_seconds = timeout_per_command_seconds
-        self.sandbox_client = Threaded(
-            factory=lambda: AsyncSandboxClient(
-                max_connections=sandbox_client_max_connections,
-                max_keepalive_connections=sandbox_client_max_keepalive_connections,
+        self.sandbox_client = cast(
+            AsyncSandboxClient,
+            Threaded(
+                factory=lambda: AsyncSandboxClient(
+                    max_connections=sandbox_client_max_connections,
+                    max_keepalive_connections=sandbox_client_max_keepalive_connections,
+                ),
+                max_workers=sandbox_client_max_workers,
+                thread_name_prefix="threaded-sandbox-client",
             ),
-            max_workers=sandbox_client_max_workers,
-            thread_name_prefix="threaded-sandbox-client",
         )
         self.sandbox_request = CreateSandboxRequest(
             name=sandbox_name,
