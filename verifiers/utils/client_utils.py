@@ -2,7 +2,7 @@ import asyncio
 import itertools
 import os
 import threading
-from typing import Any, Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generic, TypeVar
 
 import httpx
 from httpx import AsyncClient
@@ -13,7 +13,7 @@ from verifiers.types import ClientConfig
 T = TypeVar("T")
 
 
-class ThreadedAsyncClient(Generic[T]):
+class _ThreadedAsyncClient(Generic[T]):
     """
     Generic wrapper to run async clients in a threadpool.
 
@@ -24,6 +24,16 @@ class ThreadedAsyncClient(Generic[T]):
     multiple concurrent async requests per worker. Coroutines are submitted
     via run_coroutine_threadsafe and results are awaited in the main loop.
 
+    Supports:
+        - Regular attribute access (e.g., client.base_url)
+        - Sync method calls (e.g., client.copy())
+        - Async method calls dispatched to worker threads
+
+    Typing:
+        Uses a TYPE_CHECKING trick so that ThreadedAsyncClient[T] appears as T
+        to static type checkers, enabling full autocomplete and type checking
+        for the wrapped client's API.
+
     Usage:
         client = ThreadedAsyncClient(
             factory=lambda: AsyncOpenAI(base_url=..., api_key=...),
@@ -33,24 +43,42 @@ class ThreadedAsyncClient(Generic[T]):
     """
 
     class ChainedProxy:
-        """Walks attribute path and dispatches async call to worker loop."""
+        """Walks attribute path and dispatches calls to worker loop."""
 
         def __init__(
-            self, parent: "ThreadedAsyncClient[T]", path: tuple[str, ...]
+            self, parent: "_ThreadedAsyncClient[T]", path: tuple[str, ...]
         ) -> None:
             self.parent = parent
             self.path = path
 
-        def __getattr__(self, name: str) -> "ThreadedAsyncClient.ChainedProxy":
-            return ThreadedAsyncClient.ChainedProxy(self.parent, self.path + (name,))
-
-        async def __call__(self, *args, **kwargs) -> Any:
-            loop, client = self.parent._get_worker()
-            method: Any = client
+        def _resolve_path(self, client: Any) -> Any:
+            """Walk the attribute path to get the target."""
+            target = client
             for attr in self.path:
-                method = getattr(method, attr)
-            future = asyncio.run_coroutine_threadsafe(method(*args, **kwargs), loop)
-            return await asyncio.wrap_future(future)
+                target = getattr(target, attr)
+            return target
+
+        def __getattr__(self, name: str) -> "_ThreadedAsyncClient.ChainedProxy":
+            return _ThreadedAsyncClient.ChainedProxy(self.parent, self.path + (name,))
+
+        def __call__(self, *args, **kwargs) -> Any | Coroutine[Any, Any, Any]:
+            # Check on reference client whether this is async or sync
+            ref_method = self._resolve_path(self.parent._ref)
+
+            if asyncio.iscoroutinefunction(ref_method):
+                # Async method - return a coroutine that dispatches to worker
+                async def async_dispatch() -> Any:
+                    loop, client = self.parent._get_worker()
+                    method = self._resolve_path(client)
+                    future = asyncio.run_coroutine_threadsafe(
+                        method(*args, **kwargs), loop
+                    )
+                    return await asyncio.wrap_future(future)
+
+                return async_dispatch()
+            else:
+                # Sync method - execute on reference client directly
+                return ref_method(*args, **kwargs)
 
     def __init__(
         self,
@@ -63,6 +91,7 @@ class ThreadedAsyncClient(Generic[T]):
         self._init_lock = threading.Lock()
         self._counter = itertools.count()
         self._ready = threading.Barrier(max_workers + 1)
+        self._ref = self.factory()
 
         # Spawn daemon threads - they auto-terminate when main program exits
         for i in range(max_workers):
@@ -89,13 +118,32 @@ class ThreadedAsyncClient(Generic[T]):
         idx = next(self._counter) % len(self._workers)
         return self._workers[idx]
 
-    def __getattr__(self, name: str) -> ChainedProxy:
+    def __getattr__(self, name: str) -> Any:
+        # Get attribute from reference client
+        ref_attr = getattr(self._ref, name)
+
+        # Non-callable attributes: return value directly
+        if not callable(ref_attr):
+            return ref_attr
+
+        # Callable: return a proxy to handle the call
         return self.ChainedProxy(self, (name,))
 
-    def teardown(self) -> None:
-        """Stop worker loops."""
-        for loop, _ in self._workers:
-            loop.call_soon_threadsafe(loop.stop)
+
+if TYPE_CHECKING:
+    # For static type checking, pretend ThreadedAsyncClient returns the wrapped client directly.
+    # This enables IDE autocomplete and type checking for the wrapped client's API.
+    class ThreadedAsyncClient(Generic[T]):
+        def __new__(
+            cls,
+            factory: Callable[[], T],
+            max_workers: int = 100,
+            thread_name_prefix: str = "threaded-client",
+        ) -> T: ...
+
+        def teardown(self) -> None: ...
+else:
+    ThreadedAsyncClient = _ThreadedAsyncClient
 
 
 def setup_client(
