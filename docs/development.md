@@ -1,11 +1,22 @@
-# Contributing & Testing
+# Development & Testing
 
 This guide covers setup, testing, and contributing to the verifiers package.
+
+## Table of Contents
+
+- [Setup](#setup)
+- [Project Structure](#project-structure)
+- [Running Tests](#running-tests)
+- [Writing Tests](#writing-tests)
+- [Contributing](#contributing)
+- [Common Issues](#common-issues)
+- [Environment Development](#environment-development)
+- [Quick Reference](#quick-reference)
 
 ## Setup
 
 ### Prerequisites
-- Python 3.11 or 3.12
+- Python 3.10, 3.11, 3.12, or 3.13
 - [uv](https://docs.astral.sh/uv/) package manager
 
 ### Installation
@@ -14,7 +25,14 @@ This guide covers setup, testing, and contributing to the verifiers package.
 # Clone and install for development
 git clone https://github.com/PrimeIntellect-ai/verifiers.git
 cd verifiers
+
+# CPU-only development:
+uv sync
+
+# GPU-based trainer development:
 uv sync --all-extras
+
+# Install pre-commit hooks:
 uv run pre-commit install
 ```
 
@@ -24,11 +42,17 @@ uv run pre-commit install
 verifiers/
 ├── verifiers/          # Main package
 │   ├── envs/           # Environment classes
+│   │   ├── integrations/   # Third-party wrappers (TextArena, ReasoningGym)
+│   │   └── experimental/   # Newer environments (MCP, Harbor, etc.)
 │   ├── parsers/        # Parser classes  
 │   ├── rubrics/        # Rubric classes
+│   ├── rl/             # Training infrastructure
+│   │   ├── inference/  # vLLM server utilities
+│   │   └── trainer/    # RLTrainer implementation
+│   ├── scripts/        # CLI entry points
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
-├── examples/           # Usage examples
+├── configs/            # Example training configurations
 ├── tests/              # Test suite
 └── docs/               # Documentation
 ```
@@ -43,7 +67,7 @@ uv run pytest tests/
 uv run pytest tests/ --cov=verifiers --cov-report=html
 
 # Run specific test file
-uv run pytest tests/test_parsers.py
+uv run pytest tests/test_parser.py
 
 # Stop on first failure with verbose output
 uv run pytest tests/ -xvs
@@ -61,7 +85,7 @@ uv run pytest -n auto tests/test_envs.py -vv
 uv run pytest tests/test_envs.py -k math_python
 ```
 
-The test suite includes 130+ tests covering parsers, rubrics, and environments. The test suite does not currently cover example environments or the trainer. If you require robust performance guarantees for training, you will likely want to use [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
+The test suite includes 380+ tests covering parsers, rubrics, environments, and utilities.
 
 ## Writing Tests
 
@@ -117,35 +141,39 @@ def test_with_mock(mock_client):
 3. **Make changes** following existing patterns
 4. **Add tests** for new functionality
 5. **Run tests**: `uv run pytest tests/`
-6. **Update docs** if adding/changing public APIs
-7. **Submit PR** with clear description
+6. **Run linting**: `uv run ruff check --fix .`
+7. **Update docs** if adding/changing public APIs
+8. **Submit PR** with clear description
 
 ### Code Style
 
-- Follow existing conventions in the codebase
+- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .`
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
+- Fail fast, fail loud - no defensive programming or silent fallbacks
 
 ### PR Checklist
 
-- [ ] Tests pass locally
+- [ ] Tests pass locally (`uv run pytest tests/`)
+- [ ] Linting passes (`uv run ruff check --fix .`)
+- [ ] Pre-commit hooks pass (`uv run pre-commit run --all-files`)
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
-- [ ] No breaking changes (or clearly documented)
 
 ## Common Issues
 
 ### Import Errors
 ```bash
 # Ensure package is installed in development mode
-uv pip install -e .
+uv sync
 ```
 
-### Async Test Issues
+### Integration Tests
 ```bash
-# May need nest-asyncio for some environments
-uv add nest-asyncio
+# Install optional dependencies for specific integrations
+uv sync --extra ta   # for TextArenaEnv
+uv sync --extra rg   # for ReasoningGymEnv
 ```
 
 ### Test Failures
@@ -203,26 +231,41 @@ def load_environment(**kwargs):
 
 ```bash
 # Development setup
-uv sync --all-extras
+uv sync                               # CPU-only
+uv sync --all-extras                  # With RL/training extras
 
 # Run tests
-uv run pytest tests/                   # All tests
-uv run pytest tests/ -xvs              # Debug mode
-uv run pytest tests/ --cov=verifiers   # With coverage
+uv run pytest tests/                  # All tests
+uv run pytest tests/ -xvs             # Debug mode
+uv run pytest tests/ --cov=verifiers  # With coverage
 
 # Run environment tests
 uv run pytest tests/test_envs.py -vv              # All environments
 uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
-# Environment tools
-vf-init new-env                        # Create environment
-vf-install new-env                     # Install environment
-vf-eval new-env                        # Test environment
-vf-tui                                 # Browse eval results in your terminal
+# Linting
+uv run ruff check --fix .             # Fix lint errors
+uv run pre-commit run --all-files     # Run all pre-commit hooks
 
-# Documentation
-cd docs && make html                   # Build docs
+# Environment tools
+vf-init new-env                       # Create environment
+vf-install new-env                    # Install environment
+vf-eval new-env -m gpt-4.1-mini -n 5  # Test environment
+vf-tui                                # Browse eval results
 ```
+
+### CLI Tools
+
+| Command | Description |
+|---------|-------------|
+| `vf-eval` | Run evaluations on environments |
+| `vf-init` | Initialize new environment from template |
+| `vf-install` | Install environment module |
+| `vf-setup` | Set up training workspace |
+| `vf-rl` | Run vf.RLTrainer |
+| `vf-train` | Run SFT training |
+| `vf-tui` | Terminal UI for browsing eval results |
+| `prime-rl` | Launch prime-rl training |
 
 ### Project Guidelines
 
@@ -230,5 +273,3 @@ cd docs && make html                   # Build docs
 - **Parsers**: Extract structured data from model outputs
 - **Rubrics**: Define multi-criteria evaluation functions
 - **Tests**: Comprehensive coverage with mocks for external dependencies
-
-For more details, see the full documentation at [readthedocs](https://verifiers.readthedocs.io).

@@ -1,0 +1,14 @@
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 1024
+
+[[env]]
+id = "primeintellect/math-python"
+
+[wandb]
+project = "math-python"
+name = "qwen3-30b-i-math-python"

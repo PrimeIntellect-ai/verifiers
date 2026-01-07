@@ -1,5 +1,7 @@
 # Environments
 
+This section walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
+
 ## Table of Contents
 - [Your First Environment](#your-first-environment)
 - [Datasets](#datasets)
@@ -23,10 +25,12 @@
   - [State Initialization](#state-initialization)
   - [Cleanup and Teardown](#cleanup-and-teardown)
   - [Signaling Early Termination](#signaling-early-termination)
+- [Developing Environments](#developing-environments)
+  - [pyproject.toml](#pyprojecttoml)
+  - [Managing Dependencies](#managing-dependencies)
+  - [Installation](#installation)
 - [Environment Groups](#environment-groups)
 - [Integrations and Experimental Environments](#integrations-and-experimental-environments)
-
-This section walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Your First Environment
 
@@ -600,6 +604,96 @@ async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messa
     # ... normal response logic
 ```
 This bypasses the normal model response loop and immediately terminates the rollout, which is useful when the environment response itself signals completion (e.g. a game is won, an answer is submitted) or is required for reward computation (e.g. final feedback or tool results).
+
+## Developing Environments
+
+Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `vf-setup` command initializes this structure:
+
+```bash
+vf-setup
+```
+
+The `vf-init` command initializes a new environment project:
+
+```bash
+vf-init my-env
+```
+
+This creates the following structure:
+
+```
+environments/my_env/
+├── my_env.py          # environment implementation
+├── pyproject.toml     # package metadata and dependencies
+└── README.md          # documentation template
+```
+
+The environment file must export a `load_environment()` function that returns a `vf.Environment`. Explicitly declare any arguments your environment accepts:
+
+```python
+import verifiers as vf
+
+def load_environment(difficulty: str = "easy", num_examples: int = -1) -> vf.Environment:
+    # build dataset, rubric, etc.
+    return vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
+```
+
+### pyproject.toml
+
+The `pyproject.toml` defines package metadata, dependencies, and evaluation defaults:
+
+```toml
+[project]
+name = "my-env"
+description = "My custom environment"
+tags = ["single-turn", "math", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["my_env.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 5
+```
+
+Key `pyproject.toml` sections:
+
+- **`[project]`** — Package name (used by `vf-install` and `vf-eval`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
+- **`[build-system]`** — Hatchling is used as the build backend for the Environments Hub.
+- **`[tool.hatch.build]`** — Lists files to include in the package. Always include `pyproject.toml` alongside your environment file to ensure that environment metadata is available when the environment is installed. Add any additional source files here.
+- **`[tool.verifiers.eval]`** — Default parameters for `vf-eval` when flags aren't provided.
+
+### Managing Dependencies
+
+All packages your environment needs must be declared in the `dependencies` array. Always include `verifiers` with a minimum version. If your environment uses additional libraries, add them here—they will be installed automatically when the environment is installed:
+
+```toml
+dependencies = [
+    "verifiers>=0.1.8",
+    "chromadb",
+    "nltk>=3.9.2",
+]
+```
+
+### Installation
+
+Install a local environment with `vf-install`:
+
+```bash
+vf-install my-env                    # from ./environments/my_env
+vf-install my-env -p /path/to/environments   # custom path
+```
+
+This runs `uv pip install -e` for local environments, making them importable by `vf-eval` and other integrations.
 
 ## Environment Groups
 

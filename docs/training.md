@@ -1,111 +1,136 @@
 # Training
 
-This guide covers RL training with `prime-rl` as well as the included `vf.RLTrainer`, both of which can be orchestrated via a single TOML config.
+This section covers how to use Verifiers environments for RL training with our Hosted Training platform, our open-source `prime-rl` trainer, or other supported libraries.
 
-If your primary goal is to train a model on a Verifiers Environment, we recommend using `prime-rl`, which distills the best practices from our research team's experience and the broader community into a stable, easy-to-use recipe. If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with the same core algorithm as `prime-rl`).
+## Table of Contents
 
+- [Hosted Training](#hosted-training)
+    - [Configuration](#configuration)
+- [Training with `prime-rl`](#training-with-prime-rl)
+    - [Setup and Configuration](#setup-and-configuration)
+- [Training with `vf.RLTrainer`](#training-with-vfrltrainer)
+    - [Setup and Configuration](#setup-and-configuration)
+    - [Generation Parameters](#generation-parameters)
+    - [Training Schedule](#training-schedule)
+- [RL Rules of Thumb](#rl-rules-of-thumb)
+    - [Before Training](#before-training)
+    - [Performance Trade-offs](#performance-trade-offs)
+    - [Common Issues](#common-issues)
+- [Other Trainers](#other-trainers)
+    - [SkyRL](#skyrl)
+    - [Tinker](#tinker)
+    - [Integrating with Other Trainers](#integrating-with-other-trainers)
 
-## `prime-rl`
+## Hosted Training
 
-We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer, and provide a basic setup guide below. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
+Hosted Training, available within our Lab platform, enables you to automatically train models via `prime-rl` without needing to manage your own infrastructure. Hosted Training supports LoRA for RL training, and can be used with any environment built with Verifiers. 
 
-To get started, do: 
+### Configuration
+
+Use the `vf-setup` script to download example configuration files for Hosted Training into your workspace:
 
 ```bash
 uv run vf-setup
 ```
 
-This will clone and install the `prime-rl` trainer and its dependencies, and set up a default configuration for training with the included `wiki-search` Environment.
+This will download example TOML configs for Hosted Training into `configs/lab/`, along with `endpoints.py`:
+
+```
+configs/
+├── endpoints.py
+└── lab/
+    ├── alphabet-sort.toml
+    ├── gsm8k.toml
+    ├── math-python.toml
+    ├── reverse-text.toml
+    ├── wiki-search.toml
+    └── wordle.toml
+```
+
+Example configuration file for the `primeintellect/alphabet-sort` environment with `Qwen/Qwen3-30B-A3B-Instruct-2507`:
+
+```toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 500
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 512
+
+[[env]]
+id = "primeintellect/alphabet-sort"
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }
+
+[wandb]
+project = "alphabet-sort"
+name = "qwen3-30b-i-alphabet-sort"
+```
+
+We currently support the following models for Hosted Training:
+- `Qwen/Qwen3-4B-Instruct-2507` 
+- `Qwen/Qwen3-4B-Thinking-2507`
+- `Qwen/Qwen3-30B-Instruct-2507`
+- `Qwen/Qwen3-30B-Thinking-2507`
+- `Qwen/Qwen3-235B-Instruct-2507`
+- `Qwen/Qwen3-235B-Thinking-2507`
+- `PrimeIntellect/INTELLECT-3`
+
+Hosted Training is currently in Private Beta. For access, please fill out [this form](https://form.typeform.com/to/iYn9UliG).
+
+## Training with `prime-rl`
+
+Our [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer is a production-ready async RL training framework that supports large-scale multi-node training, agentic rollouts with Verifiers environments, Mixture-of-Experts (MoE) models, LoRA adapters, and other training algorithms such as SFT and online distillation. We recommend using `prime-rl` for training with Verifiers environments on self-managed GPU infrastructure. The default configuration distills the best practices from our research team's experience and the broader community into a stable, easy-to-use recipe, including advanced features such as online difficulty filtering, continuous batching, in-flight weight updates, importance sampling and logprob clipping for stability, and more. 
+
+### Setup and Configuration
+
+To set up your workspace for training with `prime-rl`, run:
+```bash
+uv run vf-setup --prime-rl
+```
+
+This will clone and install the `prime-rl` trainer and its dependencies, and set up a default TOML config for training with the included `wiki-search` Environment on 8 GPUs.
 
 Then, you can start training with:
-
 ```bash
 uv run prime-rl @ configs/prime-rl/wiki-search.toml
 ```
 
-This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server.
+This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 
 
-### Configuration
+## Training with `vf.RLTrainer`
 
-`prime-rl` can be used with a single TOML file via its native `rl.py` script, which is used by the `uv run prime-rl` command from verifiers. 
-
-Example configuration file for the `primeintellect/wiki-search` Environment with `Qwen/Qwen3-4B-Instruct-2507`:
-
-```toml
-inference_gpu_ids = [0]
-trainer_gpu_ids = [1]
-
-max_steps = 500
-
-[model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
-
-[wandb]
-project = "wiki-search"
-name = "wiki-search-4b"
-
-[trainer.optim]
-lr = 1e-5
-weight_decay = 0.0
-
-[trainer.model.experimental.lora]
-rank = 8
-alpha = 32
-dropout = 0.0
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj"
-]
-
-[orchestrator]
-batch_size = 512
-rollouts_per_example = 16
-seq_len = 4096
-mask_truncated_completions = false
-zero_truncated_completions = true
-
-[orchestrator.sampling]
-max_tokens = 512
-
-[orchestrator.buffer]
-type = "online-difficulty"
-oversampling_factor = 2.0
-
-[[orchestrator.env]]
-id = "primeintellect/wiki-search"
-
-[inference.model]
-enable_auto_tool_choice = true
-tool_call_parser = "hermes"
-```
-
-For multi-node training, you will need to use separate configs for the trainer, orchestrator, and inference server, and launch processes separately. See the [prime-rl documentation](https://github.com/PrimeIntellect-ai/prime-rl) for more information.
-
-## vf.RLTrainer
+If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with a similar core algorithm as `prime-rl`).
 
 The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `verifiers/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
 
 The feature set is intentionally kept minimal and focused. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the `prime-rl` trainer. 
+
+### Setup and Configuration
 
 To use `vf.RLTrainer` in your own project, install with RL extras:
 ```bash
 uv add 'verifiers[rl]'
 ```
 
-Then, create a training configuration file, e.g. `configs/vf-rl/wiki-search.toml`, and do:
+Then, use the `vf-setup` script to download example configuration files for `vf.RLTrainer` into your workspace:
 
 ```bash
-uv run vf-rl @ configs/vf-rl/wiki-search.toml
+uv run vf-setup --vf-rl
 ```
+This will download example TOML configs for `vf.RLTrainer` into `configs/vf-rl/`, along with `endpoints.py`:
 
-Example configuration files can be created in your project by running `uv run vf-setup`.
-
-### Configuration
+```
+configs/
+├── endpoints.py
+└── vf-rl/
+    ├── alphabet-sort.toml
+    ├── gsm8k.toml
+    ├── math-python.toml
+    ├── reverse-text.toml
+    ├── wiki-search.toml
+    └── wordle.toml
+```
 
 `vf-rl` can be used with a single TOML file, largely mirroring the configuration options for `prime-rl` but with some key differences in organization and feature sets.
 
@@ -140,9 +165,11 @@ max_tokens = 512
 max_seq_len = 4096
 ```
 
-## Key Hyperparameters
+To start a training run with `vf.RLTrainer`, do:
 
-### Batch Configuration
+```bash
+uv run vf-rl @ configs/vf-rl/wiki-search.toml
+```
 
 Key fields in `[trainer.args]`:
 - `rollouts_per_example`: completions per prompt (group size)
@@ -173,14 +200,9 @@ Core fields in `[trainer.args]`:
 - `max_grad_norm`, `bf16`, `gradient_checkpointing`
 
 
-## LoRA Training
-
-LoRA training is supported in both `prime-rl` and `vf-rl`. In `prime-rl`, it can be configured via the `[trainer.model.experimental.lora]` section. In `vf-rl` it is enabled by default, and can be configured via the `[trainer.args]` section.
-
-
 ## RL Rules of Thumb
 
-RL is notoriously sensitive to implementation details. Here's practical guidance:
+RL training can be sensitive to implementation details and hyperparameters. Some simple practical guidance:
 
 ### Before Training
 
@@ -188,10 +210,10 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 2. **Check task difficulty**: If baseline is already 80%+, consider harder examples
 3. **Ensure reward diversity**: You want varied scores within each generation group
 
-### Stability vs Performance Trade-offs
+### Performance Trade-offs
 
 **For more aggressive training** (higher risk of collapse):
-- Increase learning rate (3e-5 to 1e-4 for LoRA, 3e-6 to 1e-5 for full finetuning)
+- Increase learning rate (1e-5 to 1e-4 for LoRA, 1e-6 to 1e-5 for full finetuning)
 - Decrease `rollouts_per_example` and `batch_size` for faster generation
 
 **For more stable training** (slower progress):
@@ -199,9 +221,7 @@ RL is notoriously sensitive to implementation details. Here's practical guidance
 - Increase `batch_size` (512-1024)
 - Use larger models (14B+)
 
-However, the best way to improve training is ensuring appropriate task difficulty for your model - not too easy, not too hard.
-
-## Troubleshooting
+The best way to improve training is to ensure appropriate task difficulty for your model. When using Hosted Training or `prime-rl`, you can enable online difficulty filtering to ensure that rollout groups used for training always contain a diversity of rewards.
 
 ### Common Issues
 
@@ -223,9 +243,18 @@ However, the best way to improve training is ensuring appropriate task difficult
 - Use online difficulty filtering
 - Calibrate difficulty appropriately via smarter models, easier tasks
 
+## Other Trainers
 
-## Next Steps
+`verifiers` is intended to be largely trainer-agnostic. It is supported by [SkyRL](https://github.com/novasky-ai/skyrl) and [Tinker](https://github.com/thinking-machines-lab/tinker), and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
 
-- Explore [Environments](environments.md) to create custom tasks
-- Review [Components](components.md) for advanced patterns
-- See the [prime-rl examples directory](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) on GitHub for complete training scripts
+### SkyRL
+
+[Verifiers + SkyRL](https://github.com/NovaSky-AI/SkyRL/tree/main/skyrl-train/integrations/verifiers)
+
+### Tinker
+
+[Verifiers + Tinker](https://github.com/thinking-machines-lab/tinker-cookbook/tree/main/tinker_cookbook/recipes/verifiers_rl)
+
+### Integrating with Other Trainers
+
+TODO: Add instructions for integrating with other trainers.

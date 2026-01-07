@@ -1,5 +1,7 @@
 # Evaluation
 
+This section explains how to run evaluations with Verifiers environments. See [Environments](environments.md) for information on building your own environments.
+
 ## Table of Contents
 - [Basic Usage](#basic-usage)
 - [Command Reference](#command-reference)
@@ -79,7 +81,7 @@ ENDPOINTS = {
 Then use the alias directly:
 
 ```bash
-vf-eval my-env -m deepseek-reasoner
+vf-eval my-env -m qwen3-235b-i
 ```
 
 If the model name isn't found in the registry, the `--api-base-url` and `--api-key-var` flags are used instead.
@@ -139,7 +141,7 @@ vf-eval my-env -s -C "judge_response,parsed_answer"
 
 ## Environment Defaults
 
-Environments can specify default evaluation parameters in their `pyproject.toml`:
+Environments can specify default evaluation parameters in their `pyproject.toml` (See [Developing Environments](environments.md#developing-environments)):
 
 ```toml
 [tool.verifiers.eval]

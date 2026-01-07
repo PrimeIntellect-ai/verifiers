@@ -1,3 +1,4 @@
+import argparse
 import os
 import subprocess
 import sys
@@ -7,9 +8,11 @@ import wget
 VERIFIERS_REPO = "primeintellect-ai/verifiers"
 PRIME_RL_REPO = "primeintellect-ai/prime-rl"
 VERIFIERS_COMMIT = "main"
-PRIME_RL_COMMIT = "will/trajectories"  # Commit hash, branch name, or tag to use for installed prime-rl version
+PRIME_RL_COMMIT = (
+    "main"  # Commit hash, branch name, or tag to use for installed prime-rl version
+)
 PRIME_RL_INSTALL_SCRIPT_REF = (
-    "will/trajectories"  # Ref to use for fetching the install script itself
+    "main"  # Ref to use for fetching the install script itself
 )
 
 ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/endpoints.py"
@@ -18,32 +21,37 @@ ENDPOINTS_DST = "configs/endpoints.py"
 ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
 ZERO3_DST = "configs/zero3.yaml"
 
-VERIFIERS_CONFIGS = [
+VF_RL_CONFIGS = [
     # (source_repo, source_path, dest_path)
     (
         VERIFIERS_REPO,
+        "configs/local/vf-rl/alphabet-sort.toml",
+        "configs/vf-rl/alphabet-sort.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/local/vf-rl/gsm8k.toml",
         "configs/vf-rl/gsm8k.toml",
-        "configs/vf-rl/gsm8k.toml",
     ),
     (
         VERIFIERS_REPO,
+        "configs/local/vf-rl/math-python.toml",
         "configs/vf-rl/math-python.toml",
-        "configs/vf-rl/math-python.toml",
     ),
     (
         VERIFIERS_REPO,
+        "configs/local/vf-rl/reverse-text.toml",
         "configs/vf-rl/reverse-text.toml",
-        "configs/vf-rl/reverse-text.toml",
     ),
     (
         VERIFIERS_REPO,
-        "configs/vf-rl/wordle.toml",
-        "configs/vf-rl/wordle.toml",
+        "configs/local/vf-rl/wiki-search.toml",
+        "configs/vf-rl/wiki-search.toml",
     ),
     (
         VERIFIERS_REPO,
-        "configs/vf-rl/tool-test.toml",
-        "configs/vf-rl/tool-test.toml",
+        "configs/local/vf-rl/wordle.toml",
+        "configs/vf-rl/wordle.toml",
     ),
 ]
 
@@ -52,8 +60,32 @@ PRIME_RL_CONFIGS = [
     # Configs can come from either verifiers or prime-rl repo
     (
         VERIFIERS_REPO,
+        "configs/local/prime-rl/wiki-search.toml",
         "configs/prime-rl/wiki-search.toml",
-        "configs/prime-rl/wiki-search.toml",
+    ),
+]
+
+LAB_CONFIGS = [
+    # (source_repo, source_path, dest_path)
+    (
+        VERIFIERS_REPO,
+        "configs/lab/alphabet-sort.toml",
+        "configs/lab/alphabet-sort.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/lab/reverse-text.toml",
+        "configs/lab/reverse-text.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/lab/wiki-search.toml",
+        "configs/lab/wiki-search.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/lab/wordle.toml",
+        "configs/lab/wordle.toml",
     ),
 ]
 
@@ -167,10 +199,24 @@ def install_environments_to_prime_rl():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Setup verifiers training environment")
+    parser.add_argument(
+        "--prime-rl",
+        action="store_true",
+        help="Install prime-rl and download prime-rl configs",
+    )
+    parser.add_argument(
+        "--vf-rl",
+        action="store_true",
+        help="Download vf-rl configs",
+    )
+    args = parser.parse_args()
+
     os.makedirs("configs", exist_ok=True)
 
-    install_prime_rl()
-    install_environments_to_prime_rl()
+    if args.prime_rl:
+        install_prime_rl()
+        install_environments_to_prime_rl()
 
     if not os.path.exists(ENDPOINTS_DST):
         wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)
@@ -178,14 +224,19 @@ def main():
     else:
         print(f"{ENDPOINTS_DST} already exists")
 
-    if not os.path.exists(ZERO3_DST):
-        wget.download(ZERO3_SRC, ZERO3_DST)
-        print(f"\nDownloaded {ZERO3_DST} from https://github.com/{VERIFIERS_REPO}")
-    else:
-        print(f"{ZERO3_DST} already exists")
+    if args.vf_rl:
+        if not os.path.exists(ZERO3_DST):
+            wget.download(ZERO3_SRC, ZERO3_DST)
+            print(f"\nDownloaded {ZERO3_DST} from https://github.com/{VERIFIERS_REPO}")
+        else:
+            print(f"{ZERO3_DST} already exists")
+        download_configs(VF_RL_CONFIGS)
 
-    download_configs(VERIFIERS_CONFIGS)
-    download_configs(PRIME_RL_CONFIGS)
+    if args.prime_rl:
+        download_configs(PRIME_RL_CONFIGS)
+
+    if not args.prime_rl and not args.vf_rl:
+        download_configs(LAB_CONFIGS)
 
 
 if __name__ == "__main__":
