@@ -140,7 +140,7 @@ def print_results(
     print(
         f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
     )
-    if event_loop_lags is not None:
+    if event_loop_lags:
         print("Performance:")
         event_loop_lags_arr = np.array(event_loop_lags)
         med_lag, p90_lag, max_lag = (
