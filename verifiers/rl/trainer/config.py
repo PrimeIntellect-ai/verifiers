@@ -5,7 +5,7 @@ from peft import LoraConfig
 from transformers import TrainingArguments
 from transformers.trainer_utils import SchedulerType
 
-from verifiers.configs.unsloth_config import UnslothConfig
+from verifiers.rl.configs.unsloth_config import UnslothConfig
 
 
 @dataclass
@@ -194,11 +194,6 @@ class RLConfig(TrainingArguments):
     vllm_server_port: int = field(
         default=8000,
         metadata={"help": "Port of the vLLM server to connect to."},
-    )
-
-    vllm_server_protocol: str = field(
-        default="http",
-        metadata={"help": "VLLM server protocol type (https or http)."},
     )
 
     vllm_server_timeout: float = field(

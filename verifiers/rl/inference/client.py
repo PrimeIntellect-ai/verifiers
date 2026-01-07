@@ -25,11 +25,10 @@ class VLLMClient(AsyncOpenAI):
         self,
         host: str = "0.0.0.0",
         port: int = 8000,
-        protocol: str = "http",
         group_port: int = 51216,
         connection_timeout: float = 0.0,
     ):
-        super().__init__(base_url=f"{protocol}://{host}:{port}/v1", api_key="local")
+        super().__init__(base_url=f"http://{host}:{port}/v1", api_key="local")
         self.session = requests.Session()
         # configure connection pooling to handle rapid requests better
         adapter = HTTPAdapter(
@@ -40,7 +39,7 @@ class VLLMClient(AsyncOpenAI):
 
         self.host = host
         self.server_port = port
-        self.server_url = f"{protocol}://{self.host}:{self.server_port}"
+        self.server_url = f"http://{self.host}:{self.server_port}"
 
         self.group_port = group_port
         self.check_server(connection_timeout)
