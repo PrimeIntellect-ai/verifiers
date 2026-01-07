@@ -269,12 +269,15 @@ class SandboxEnv(vf.StatefulToolEnv):
             # only warn, not raise an error on deletion
             self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
+    def get_sandbox_request(self, state: vf.State) -> CreateSandboxRequest:
+        """Return sandbox request for this rollout. Override to customize per-state."""
+        return self.sandbox_request.model_copy()
+
     async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
         """Create per-rollout sandbox"""
+        request = self.get_sandbox_request(state)
         try:
-            sandbox = await self.with_retry(self.sandbox_client.create)(
-                self.sandbox_request
-            )
+            sandbox = await self.with_retry(self.sandbox_client.create)(request)
         except Exception as e:
             raise SandboxCreationError(e)
         self.active_sandboxes.add(sandbox.id)
