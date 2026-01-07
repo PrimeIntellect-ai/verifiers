@@ -1,7 +1,7 @@
 import asyncio
 import itertools
 import threading
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 THREAD_LOCAL_STORAGE = threading.local()
 
@@ -35,146 +35,141 @@ T = TypeVar("T")
 
 class _Threaded(Generic[T]):
     """
-    Generic wrapper to run class replicas in a threadpool. Used to improve
-    performance in high-concurrency environments to remove pressure from the
-    main event loop. Used mostly for wrapping async clients (AsyncOpenAI,
-    AsyncSandboxClient, etc.) when doing 1k+ requests.
+    Generic wrapper to dispatch operations to thread-local class replicas.
+
+    Designed for high-concurrency async clients (AsyncOpenAI, AsyncSandboxClient, etc.)
+    where 1k+ concurrent requests would overwhelm a single event loop.
 
     Creates max_workers threads, each running their own event loop with a
-    thread-local replica of the class. ThreadedClass proxies the class by
-    round-robin dispatching to the workers. Because each worker owns its own
-    event loop, it can run multiple concurrent requests per worker.
-
-    The wrapper supports:
-        - Class + instance attribute access (via a reference instance)
-        - Sync method calls (executed on reference instance)
-        - Async method calls (dispatched to worker threads)
-
-    Uses a TYPE_CHECKING trick so that ThreadedClass[T] appears as T
-    to static type checkers, enabling full autocomplete and type checking.
+    thread-local replica of the class. Acts as an exact mirror of the wrapped class:
+    - Async methods return awaitables
+    - Sync methods return values directly
+    - Attributes return values directly
+    All attributes and methods may be nested (i.e. `client.chat.completions.create(...)`)
 
     Example Usage:
-        threaded_client = ThreadedClass(
-            factory=lambda: AsyncOpenAI(base_url=..., api_key=...),
-            max_workers=10,
-        )
-        response = await threaded_client.chat.completions.create(model="gpt-4", messages=[...])
+        client = Threaded(factory=lambda: AsyncOpenAI(...), max_workers=10)
+        response = await client.chat.completions.create(model="gpt-4", messages=[...])
+        base_url = client.base_url  # Direct attribute access
     """
 
     class ChainedProxy:
-        """Walks attribute path and dispatches calls to worker loop."""
+        """Accumulates attribute path and dispatches method calls to workers."""
+
+        __slots__ = ("_parent", "_path")
 
         def __init__(self, parent: "_Threaded[T]", path: tuple[str, ...]):
-            self.parent = parent
-            self.path = path
+            object.__setattr__(self, "_parent", parent)
+            object.__setattr__(self, "_path", path)
 
-        def _resolve_path(self, obj: Any) -> Any:
-            """Walk the attribute path to get the target."""
-            target = obj
-            for attr in self.path:
+        def _resolve_path(self, client: T) -> Any:
+            """Resolve the attribute path on a client instance."""
+            target = client
+            for attr in self._path:
                 target = getattr(target, attr)
             return target
 
-        def __getattr__(self, name: str) -> "_Threaded.ChainedProxy":
-            # For dunder attributes, get directly from the resolved target
-            # This correctly handles both class dunders and callable dunders like __name__
-            if name.startswith("__") and name.endswith("__"):
-                resolved = self._resolve_path(self.parent._ref)
-                try:
-                    return getattr(resolved, name)
-                except AttributeError:
-                    raise AttributeError(name)
+        def __getattr__(self, name: str) -> "_Threaded.ChainedProxy | Any":
+            """Extend path or resolve to value if target is not callable."""
+            new_path = self._path + (name,)
+            loop, client = self._parent._get_worker()
 
-            # Get the attribute from the resolved target
-            resolved = self._resolve_path(self.parent._ref)
-            sub_attr = getattr(resolved, name)
+            async def resolve() -> tuple[bool, Any]:
+                target = client
+                for attr in new_path:
+                    target = getattr(target, attr)
+                return callable(target), target
 
-            # If not callable, return directly (handles descriptors like cached_property)
-            if not callable(sub_attr):
-                return sub_attr
+            future = asyncio.run_coroutine_threadsafe(resolve(), loop)
+            is_callable, value = future.result()
 
-            # Otherwise, extend the proxy path for method calls
-            return _Threaded.ChainedProxy(self.parent, self.path + (name,))
+            if is_callable:
+                return _Threaded.ChainedProxy(self._parent, new_path)
+            return value
 
-        def __call__(self, *args, **kwargs) -> Any | Coroutine[Any, Any, Any]:
-            ref_client = self.parent._ref
-            ref_method = self._resolve_path(ref_client)
-            if asyncio.iscoroutinefunction(ref_method):
-                # async: return a coroutine that dispatches to worker
-                async def async_dispatch() -> Any:
-                    loop, client = self.parent._get_worker()
-                    method = self._resolve_path(client)
-                    future = asyncio.run_coroutine_threadsafe(
-                        method(*args, **kwargs), loop
-                    )
-                    return await asyncio.wrap_future(future)
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            """Dispatch method call to worker, returning awaitable for async methods."""
+            loop, client = self._parent._get_worker()
 
-                return async_dispatch()
+            async def check_is_async() -> bool:
+                target = self._resolve_path(client)
+                return asyncio.iscoroutinefunction(target)
+
+            future = asyncio.run_coroutine_threadsafe(check_is_async(), loop)
+            is_async = future.result()
+
+            async def execute() -> Any:
+                target = self._resolve_path(client)
+                result = target(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    return await result
+                return result
+
+            if is_async:
+
+                async def dispatch() -> Any:
+                    f = asyncio.run_coroutine_threadsafe(execute(), loop)
+                    return await asyncio.wrap_future(f)
+
+                return dispatch()
             else:
-                # sync: execute on reference client directly
-                return ref_method(*args, **kwargs)
+                future = asyncio.run_coroutine_threadsafe(execute(), loop)
+                return future.result()
 
     def __init__(
         self,
         factory: Callable[[], T],
         max_workers: int = 100,
-        thread_name_prefix: str = "threaded-class",
+        thread_name_prefix: str = "threaded",
     ) -> None:
-        self.factory = factory
+        self._factory = factory
         self._workers: list[tuple[asyncio.AbstractEventLoop, T]] = []
         self._init_lock = threading.Lock()
         self._counter = itertools.count()
         self._ready = threading.Barrier(max_workers + 1)
-        self._ref = self.factory()
 
-        def start_event_loop_in_thread() -> None:
-            """Run a new event loop in a background thread."""
+        def start_worker() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            client = self.factory()
+            client = factory()
             with self._init_lock:
                 self._workers.append((loop, client))
             self._ready.wait()
             loop.run_forever()
 
-        # spawn workers as daemons so they auto-terminate when main program exits
         for i in range(max_workers):
             t = threading.Thread(
-                target=start_event_loop_in_thread,
+                target=start_worker,
                 daemon=True,
                 name=f"{thread_name_prefix}-{i}",
             )
             t.start()
 
-        # wait for all workers to be ready
         self._ready.wait()
 
-    def _get_worker(self) -> tuple[asyncio.AbstractEventLoop, Any]:
+    def _get_worker(self) -> tuple[asyncio.AbstractEventLoop, T]:
+        """Get next worker in round-robin fashion."""
         idx = next(self._counter) % len(self._workers)
         return self._workers[idx]
 
-    def __getattr__(self, name: str) -> Any:
-        # For dunder attributes, get from the class of the reference instance
-        if name.startswith("__") and name.endswith("__"):
-            try:
-                return getattr(type(self._ref), name)
-            except AttributeError:
-                raise AttributeError(name)
+    def __getattr__(self, name: str) -> "ChainedProxy | Any":
+        """Access attribute, returning ChainedProxy for callables, value otherwise."""
+        loop, client = self._get_worker()
 
-        # Get the attribute from the reference instance
-        ref_attr = getattr(self._ref, name)
+        async def resolve() -> tuple[bool, Any]:
+            target = getattr(client, name)
+            return callable(target), target
 
-        # If not callable, return directly (handles descriptors like cached_property)
-        if not callable(ref_attr):
-            return ref_attr
+        future = asyncio.run_coroutine_threadsafe(resolve(), loop)
+        is_callable, value = future.result()
 
-        # Otherwise, return a proxy to handle method calls
-        return self.ChainedProxy(self, (name,))
+        if is_callable:
+            return self.ChainedProxy(self, (name,))
+        return value
 
 
 if TYPE_CHECKING:
-    # For static type checking, pretend ThreadedAsyncClient returns the wrapped client directly.
-    # This enables IDE autocomplete and type checking for the wrapped client's API.
+
     class Threaded(Generic[T]):
         def __new__(
             cls,
