@@ -72,17 +72,7 @@ class _Threaded(Generic[T]):
         def __getattr__(self, name: str) -> "_Threaded.ChainedProxy | Any":
             """Extend path or resolve to value if target is not callable."""
             new_path = self._path + (name,)
-            loop, client = self._parent._get_worker()
-
-            async def resolve() -> tuple[bool, Any]:
-                target = client
-                for attr in new_path:
-                    target = getattr(target, attr)
-                return callable(target), target
-
-            future = asyncio.run_coroutine_threadsafe(resolve(), loop)
-            is_callable, value = future.result()
-
+            is_callable, value = self._parent._resolve_path_callable(new_path)
             if is_callable:
                 return _Threaded.ChainedProxy(self._parent, new_path)
             return value
@@ -152,19 +142,25 @@ class _Threaded(Generic[T]):
         idx = next(self._counter) % len(self._workers)
         return self._workers[idx]
 
-    def __getattr__(self, name: str) -> "ChainedProxy | Any":
-        """Access attribute, returning ChainedProxy for callables, value otherwise."""
+    def _resolve_path_callable(self, path: tuple[str, ...]) -> tuple[bool, Any]:
+        """Resolve path on worker and return (is_callable, value)."""
         loop, client = self._get_worker()
 
         async def resolve() -> tuple[bool, Any]:
-            target = getattr(client, name)
+            target = client
+            for attr in path:
+                target = getattr(target, attr)
             return callable(target), target
 
         future = asyncio.run_coroutine_threadsafe(resolve(), loop)
-        is_callable, value = future.result()
+        return future.result()
 
+    def __getattr__(self, name: str) -> "ChainedProxy | Any":
+        """Access attribute, returning ChainedProxy for callables, value otherwise."""
+        path = (name,)
+        is_callable, value = self._resolve_path_callable(path)
         if is_callable:
-            return self.ChainedProxy(self, (name,))
+            return self.ChainedProxy(self, path)
         return value
 
 
