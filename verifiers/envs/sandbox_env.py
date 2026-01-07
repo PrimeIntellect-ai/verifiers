@@ -3,7 +3,7 @@ import sys
 import time
 from typing import Any
 
-from verifiers.utils.client_utils import ThreadedAsyncClient
+from verifiers.utils.thread_utils import Threaded
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -92,7 +92,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         )
         self.add_rubric(SandboxMonitorRubric())
         self.timeout_per_command_seconds = timeout_per_command_seconds
-        self.sandbox_client = ThreadedAsyncClient(
+        self.sandbox_client = Threaded(
             factory=lambda: AsyncSandboxClient(
                 max_connections=sandbox_client_max_connections,
                 max_keepalive_connections=sandbox_client_max_keepalive_connections,
@@ -286,7 +286,3 @@ class SandboxEnv(vf.StatefulToolEnv):
                 self.logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
             except Exception as e:
                 self.logger.warning(f"Bulk delete failed for batch: {e}")
-
-    @vf.teardown
-    async def teardown_sandbox_client(self):
-        self.sandbox_client.teardown()

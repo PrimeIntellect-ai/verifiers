@@ -1,11 +1,11 @@
-"""Tests for ThreadedAsyncClient in client_utils module."""
+"""Tests for Threaded in thread_utils module."""
 
 import asyncio
 import time
 
 import pytest
 
-from verifiers.utils.client_utils import ThreadedAsyncClient
+from verifiers.utils.thread_utils import Threaded
 
 
 class MockClient:
@@ -27,25 +27,23 @@ class MockClient:
         return duration
 
 
-class TestThreadedClient:
-    """Test 1: Verify that ThreadedAsyncClient with max_workers=1 mirrors everything."""
-
+class TestThreaded:
     def test_class_attribute_access(self):
         """Test that class attribute can be accessed by the threaded client."""
 
-        threaded_client = ThreadedAsyncClient(factory=MockClient, max_workers=1)
+        threaded_client = Threaded(factory=MockClient, max_workers=1)
         assert threaded_client.class_name == MockClient.class_name
 
     def test_instance_attribute_access(self):
         """Test that instance attribute can be accessed by the threaded client."""
 
-        threaded_client = ThreadedAsyncClient(factory=MockClient, max_workers=1)
+        threaded_client = Threaded(factory=MockClient, max_workers=1)
         assert threaded_client.instance_name == MockClient().instance_name
 
     def test_sync_method_call(self):
         """Test that sync method returns the same result as the wrapped client."""
         mock_client = MockClient(name="test")
-        threaded_client = ThreadedAsyncClient(
+        threaded_client = Threaded(
             factory=lambda: MockClient(name="test"), max_workers=1
         )
 
@@ -58,7 +56,7 @@ class TestThreadedClient:
     async def test_async_method_call(self):
         """Test that async method returns the same result as the wrapped client."""
         mock_client = MockClient()
-        threaded_client = ThreadedAsyncClient(factory=MockClient, max_workers=1)
+        threaded_client = Threaded(factory=MockClient, max_workers=1)
 
         mock_result = await mock_client.async_wait(0.01)
         threaded_result = await threaded_client.async_wait(0.01)
@@ -71,7 +69,7 @@ class TestThreadedClient:
 
         num_calls = 10
         wait_duration = 0.1
-        threaded_client = ThreadedAsyncClient(factory=MockClient, max_workers=1)
+        threaded_client = Threaded(factory=MockClient, max_workers=1)
 
         start = time.perf_counter()
         tasks = [threaded_client.async_wait(wait_duration) for _ in range(num_calls)]
@@ -90,7 +88,7 @@ class TestThreadedClient:
 
         num_calls = 10
         wait_duration = 0.1
-        threaded_client = ThreadedAsyncClient(factory=MockClient, max_workers=num_calls)
+        threaded_client = Threaded(factory=MockClient, max_workers=num_calls)
 
         start = time.perf_counter()
         tasks = [
