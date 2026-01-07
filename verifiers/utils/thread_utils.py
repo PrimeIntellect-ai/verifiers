@@ -64,9 +64,9 @@ class _Threaded(Generic[T]):
             object.__setattr__(self, "_parent", parent)
             object.__setattr__(self, "_path", path)
 
-        def _resolve_path(self, client: T) -> Any:
-            """Resolve the attribute path on a client instance."""
-            target = client
+        def _resolve_path(self, root: T) -> Any:
+            """Resolve the attribute path of a root instance."""
+            target = root
             for attr in self._path:
                 target = getattr(target, attr)
             return target
@@ -81,17 +81,17 @@ class _Threaded(Generic[T]):
 
         def __call__(self, *args: Any, **kwargs: Any) -> Any:
             """Dispatch method call to worker, returning awaitable for async methods."""
-            loop, client = self._parent._get_worker()
+            loop, root = self._parent._get_worker()
 
             async def check_is_async() -> bool:
-                target = self._resolve_path(client)
+                target = self._resolve_path(root)
                 return asyncio.iscoroutinefunction(target)
 
             future = asyncio.run_coroutine_threadsafe(check_is_async(), loop)
             is_async = future.result()
 
             async def execute() -> Any:
-                target = self._resolve_path(client)
+                target = self._resolve_path(root)
                 result = target(*args, **kwargs)
                 if asyncio.iscoroutine(result):
                     return await result
@@ -123,9 +123,9 @@ class _Threaded(Generic[T]):
         def start_worker() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            client = factory()
+            root = factory()
             with self._init_lock:
-                self._workers.append((loop, client))
+                self._workers.append((loop, root))
             self._ready.wait()
             loop.run_forever()
 
@@ -146,10 +146,10 @@ class _Threaded(Generic[T]):
 
     def _resolve_path_callable(self, path: tuple[str, ...]) -> tuple[bool, Any]:
         """Resolve path on worker and return (is_callable, value)."""
-        loop, client = self._get_worker()
+        loop, root = self._get_worker()
 
         async def resolve() -> tuple[bool, Any]:
-            target = client
+            target = root
             for attr in path:
                 target = getattr(target, attr)
             return callable(target), target
