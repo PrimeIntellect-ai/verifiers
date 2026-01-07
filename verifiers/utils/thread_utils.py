@@ -68,18 +68,37 @@ class _Threaded(Generic[T]):
             self.parent = parent
             self.path = path
 
+        def _resolve_path(self, obj: Any) -> Any:
+            """Walk the attribute path to get the target."""
+            target = obj
+            for attr in self.path:
+                target = getattr(target, attr)
+            return target
+
         def __getattr__(self, name: str) -> "_Threaded.ChainedProxy":
+            # For dunder attributes, get directly from the resolved target
+            # This correctly handles both class dunders and callable dunders like __name__
+            if name.startswith("__") and name.endswith("__"):
+                resolved = self._resolve_path(self.parent._ref)
+                try:
+                    return getattr(resolved, name)
+                except AttributeError:
+                    raise AttributeError(name)
+
+            # Get the attribute from the resolved target
+            resolved = self._resolve_path(self.parent._ref)
+            sub_attr = getattr(resolved, name)
+
+            # If not callable, return directly (handles descriptors like cached_property)
+            if not callable(sub_attr):
+                return sub_attr
+
+            # Otherwise, extend the proxy path for method calls
             return _Threaded.ChainedProxy(self.parent, self.path + (name,))
 
         def __call__(self, *args, **kwargs) -> Any | Coroutine[Any, Any, Any]:
-            def resolve_path(client: Any) -> Any:
-                """Walk the attribute path to get the target."""
-                target = client
-                for attr in self.path:
-                    target = getattr(target, attr)
-                return target
-
-            ref_method = resolve_path(self.parent._ref)
+            ref_client = self.parent._ref
+            ref_method = self._resolve_path(ref_client)
             if asyncio.iscoroutinefunction(ref_method):
                 # async: return a coroutine that dispatches to worker
                 async def async_dispatch() -> Any:
@@ -88,7 +107,7 @@ class _Threaded(Generic[T]):
                         return self.parent._workers[idx]
 
                     loop, client = get_worker()
-                    method = resolve_path(client)
+                    method = self._resolve_path(client)
                     future = asyncio.run_coroutine_threadsafe(
                         method(*args, **kwargs), loop
                     )
@@ -135,14 +154,21 @@ class _Threaded(Generic[T]):
         self._ready.wait()
 
     def __getattr__(self, name: str) -> Any:
-        # Get attribute from reference client
+        # For dunder attributes, get from the class of the reference instance
+        if name.startswith("__") and name.endswith("__"):
+            try:
+                return getattr(type(self._ref), name)
+            except AttributeError:
+                raise AttributeError(name)
+
+        # Get the attribute from the reference instance
         ref_attr = getattr(self._ref, name)
 
-        # return if non-callable
+        # If not callable, return directly (handles descriptors like cached_property)
         if not callable(ref_attr):
             return ref_attr
 
-        # else, return a proxy to handle the call
+        # Otherwise, return a proxy to handle method calls
         return self.ChainedProxy(self, (name,))
 
 
