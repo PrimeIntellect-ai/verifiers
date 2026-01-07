@@ -36,10 +36,10 @@ def filter_signature(func, args_to_skip):
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
 
-    wrapper.__name__ = getattr(func, "__name__", "unknown")
-    wrapper.__doc__ = getattr(func, "__doc__", None)
-    wrapper.__signature__ = filtered_sig
-    wrapper.__annotations__ = filtered_annotations
+    setattr(wrapper, "__name__", getattr(func, "__name__", "unknown"))
+    setattr(wrapper, "__doc__", getattr(func, "__doc__", None))
+    setattr(wrapper, "__signature__", filtered_sig)
+    setattr(wrapper, "__annotations__", filtered_annotations)
     return wrapper
 
 
