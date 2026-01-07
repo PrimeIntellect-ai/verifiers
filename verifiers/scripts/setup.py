@@ -21,6 +21,15 @@ ENDPOINTS_DST = "configs/endpoints.py"
 ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
 ZERO3_DST = "configs/zero3.yaml"
 
+AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/AGENTS.md"
+AGENTS_MD_DST = "AGENTS.md"
+
+CLAUDE_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/CLAUDE.md"
+CLAUDE_MD_DST = "CLAUDE.md"
+
+ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/environments/AGENTS.md"
+ENVS_AGENTS_MD_DST = "environments/AGENTS.md"
+
 VF_RL_CONFIGS = [
     # (source_repo, source_path, dest_path)
     (
@@ -71,6 +80,16 @@ LAB_CONFIGS = [
         VERIFIERS_REPO,
         "configs/lab/alphabet-sort.toml",
         "configs/lab/alphabet-sort.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/lab/gsm8k.toml",
+        "configs/lab/gsm8k.toml",
+    ),
+    (
+        VERIFIERS_REPO,
+        "configs/lab/math-python.toml",
+        "configs/lab/math-python.toml",
     ),
     (
         VERIFIERS_REPO,
@@ -210,9 +229,33 @@ def main():
         action="store_true",
         help="Download vf-rl configs",
     )
+    parser.add_argument(
+        "--skip-agents-md",
+        action="store_true",
+        help="Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md",
+    )
     args = parser.parse_args()
 
     os.makedirs("configs", exist_ok=True)
+    os.makedirs("environments", exist_ok=True)
+
+    if not args.skip_agents_md:
+        if os.path.exists(AGENTS_MD_DST):
+            os.remove(AGENTS_MD_DST)
+        wget.download(AGENTS_MD_SRC, AGENTS_MD_DST)
+        print(f"\nDownloaded {AGENTS_MD_DST} from https://github.com/{VERIFIERS_REPO}")
+
+        if os.path.exists(CLAUDE_MD_DST):
+            os.remove(CLAUDE_MD_DST)
+        wget.download(CLAUDE_MD_SRC, CLAUDE_MD_DST)
+        print(f"\nDownloaded {CLAUDE_MD_DST} from https://github.com/{VERIFIERS_REPO}")
+
+        if os.path.exists(ENVS_AGENTS_MD_DST):
+            os.remove(ENVS_AGENTS_MD_DST)
+        wget.download(ENVS_AGENTS_MD_SRC, ENVS_AGENTS_MD_DST)
+        print(
+            f"\nDownloaded {ENVS_AGENTS_MD_DST} from https://github.com/{VERIFIERS_REPO}"
+        )
 
     if args.prime_rl:
         install_prime_rl()

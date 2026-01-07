@@ -86,7 +86,7 @@ We recommend using the [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-r
 To get started, do: 
 
 ```bash
-uv run vf-setup
+uv run vf-setup --prime-rl
 ```
 
 This will clone and install the `prime-rl` trainer and its dependencies, and set up a default configuration for training with the included `wiki-search` Environment.
