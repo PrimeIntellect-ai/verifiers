@@ -28,6 +28,9 @@ __pycache__/
 *.pyd
 *.pyc
 
+# prime
+.prime
+
 # libraries
 /prime-rl
 
