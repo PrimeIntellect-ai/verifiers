@@ -102,11 +102,7 @@ class _Threaded(Generic[T]):
             if asyncio.iscoroutinefunction(ref_method):
                 # async: return a coroutine that dispatches to worker
                 async def async_dispatch() -> Any:
-                    def get_worker() -> tuple[asyncio.AbstractEventLoop, Any]:
-                        idx = next(self.parent._counter) % len(self.parent._workers)
-                        return self.parent._workers[idx]
-
-                    loop, client = get_worker()
+                    loop, client = self.parent._get_worker()
                     method = self._resolve_path(client)
                     future = asyncio.run_coroutine_threadsafe(
                         method(*args, **kwargs), loop
@@ -152,6 +148,10 @@ class _Threaded(Generic[T]):
 
         # wait for all workers to be ready
         self._ready.wait()
+
+    def _get_worker(self) -> tuple[asyncio.AbstractEventLoop, Any]:
+        idx = next(self._counter) % len(self._workers)
+        return self._workers[idx]
 
     def __getattr__(self, name: str) -> Any:
         # For dunder attributes, get from the class of the reference instance
