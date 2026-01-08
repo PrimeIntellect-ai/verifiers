@@ -1,3 +1,4 @@
+import inspect
 import json
 from abc import abstractmethod
 from typing import Callable, cast
@@ -9,6 +10,37 @@ from openai.types.chat import (
 
 import verifiers as vf
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
+
+
+def filter_signature(func, args_to_skip):
+    """Return a wrapper with filtered signature for schema generation.
+
+    Does not mutate the original function.
+    """
+    if not args_to_skip:
+        return func
+    sig = inspect.signature(func)
+    filtered_sig = sig.replace(
+        parameters=[
+            p
+            for n, p in sig.parameters.items()
+            if n not in args_to_skip and n != "self"
+        ]
+    )
+    filtered_annotations = {
+        k: v
+        for k, v in getattr(func, "__annotations__", {}).items()
+        if k not in args_to_skip
+    }
+
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    setattr(wrapper, "__name__", getattr(func, "__name__", "unknown"))
+    setattr(wrapper, "__doc__", getattr(func, "__doc__", None))
+    setattr(wrapper, "__signature__", filtered_sig)
+    setattr(wrapper, "__annotations__", filtered_annotations)
+    return wrapper
 
 
 class StatefulToolEnv(vf.ToolEnv):
@@ -48,7 +80,7 @@ class StatefulToolEnv(vf.ToolEnv):
         Assumes all non-skipped args use standard JSON types (no remaining $ref/$defs).
         """
         self.tools.append(tool)
-        oai_tool = convert_func_to_oai_tool(tool)
+        oai_tool = convert_func_to_oai_tool(filter_signature(tool, args_to_skip))
         assert "function" in oai_tool
         assert "parameters" in oai_tool["function"]
         params = oai_tool["function"]["parameters"]

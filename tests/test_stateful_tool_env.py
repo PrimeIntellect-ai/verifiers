@@ -85,6 +85,77 @@ class TestStatefulToolEnv:
         assert mock_stateful_tool_env.skipped_args["secret_tool"] == ["secret"]
         assert "secret_tool" in mock_stateful_tool_env.tool_map
 
+    def test_add_tool_skips_dict_type_args(self, mock_stateful_tool_env):
+        def tool_with_dict(command: str, state: dict | None = None) -> str:
+            return command
+
+        mock_stateful_tool_env.add_tool(tool_with_dict, args_to_skip=["state"])
+
+        schema = next(
+            t
+            for t in mock_stateful_tool_env.oai_tools
+            if t["function"]["name"] == "tool_with_dict"
+        )
+        assert "state" not in schema["function"]["parameters"]["properties"]
+
+    def test_add_tool_does_not_mutate_original_signature(self, mock_stateful_tool_env):
+        """Verify that add_tool with args_to_skip doesn't mutate the original function."""
+        import inspect
+
+        def my_tool(command: str, hidden: int, visible: bool = True) -> str:
+            """A tool with multiple parameters."""
+            return command
+
+        original_params = list(inspect.signature(my_tool).parameters.keys())
+        original_annotations = dict(my_tool.__annotations__)
+
+        mock_stateful_tool_env.add_tool(my_tool, args_to_skip=["hidden"])
+
+        # Original function signature should be unchanged
+        assert list(inspect.signature(my_tool).parameters.keys()) == original_params
+        assert my_tool.__annotations__ == original_annotations
+        assert "hidden" in inspect.signature(my_tool).parameters
+
+        # But schema should have hidden removed
+        schema = next(
+            t
+            for t in mock_stateful_tool_env.oai_tools
+            if t["function"]["name"] == "my_tool"
+        )
+        assert "hidden" not in schema["function"]["parameters"]["properties"]
+        assert "command" in schema["function"]["parameters"]["properties"]
+
+    def test_add_tool_does_not_mutate_bound_method_signature(
+        self, mock_stateful_tool_env
+    ):
+        """Verify that add_tool with args_to_skip doesn't mutate bound method signatures."""
+        import inspect
+
+        class ToolProvider:
+            def my_tool(self, command: str, hidden: int, visible: bool = True) -> str:
+                """A tool with multiple parameters."""
+                return command
+
+        bound_method = ToolProvider().my_tool
+        original_params = list(inspect.signature(bound_method).parameters.keys())
+
+        mock_stateful_tool_env.add_tool(bound_method, args_to_skip=["hidden"])
+
+        # Original bound method signature should be unchanged
+        assert (
+            list(inspect.signature(bound_method).parameters.keys()) == original_params
+        )
+        assert "hidden" in inspect.signature(bound_method).parameters
+
+        # But schema should have hidden removed
+        schema = next(
+            t
+            for t in mock_stateful_tool_env.oai_tools
+            if t["function"]["name"] == "my_tool"
+        )
+        assert "hidden" not in schema["function"]["parameters"]["properties"]
+        assert "command" in schema["function"]["parameters"]["properties"]
+
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
         self, mock_openai_client, sample_chat_dataset

@@ -54,6 +54,12 @@ from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
 )
+from verifiers.utils.rlm_data_serialization_utils import (
+    DataSerializer,
+    SerializerRegistry,
+    build_default_serializer_registry,
+    prepare_context_data,
+)
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.tunnel_utils import TunnelPool
 
@@ -282,7 +288,49 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     if Path(CONTEXT_FILE).exists():
         with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
             _full_context = json.load(f)
-            extra_data = _full_context.get("input_data")
+            data_spec = _full_context.get("input_data_spec") or {{}}
+            if data_spec:
+                payload_path = data_spec.get("payload_path")
+                payload_encoding = data_spec.get("payload_encoding")
+                payload = None
+                if not payload_path:
+                    raise ValueError("input_data_spec is missing payload_path")
+                if payload_encoding:
+                    with open(payload_path, "r", encoding=payload_encoding) as pf:
+                        payload = pf.read()
+                else:
+                    with open(payload_path, "rb") as pf:
+                        payload = pf.read()
+
+                dtype = data_spec.get("dtype", "")
+                deserializer_code = data_spec.get("deserializer_code")
+                deserializer_function = data_spec.get("deserializer_function")
+
+                if deserializer_code and deserializer_function:
+                    namespace = {{}}
+                    exec(deserializer_code, namespace)
+                    if deserializer_function not in namespace:
+                        raise ValueError(
+                            "Deserializer function '"
+                            + str(deserializer_function)
+                            + "' not found"
+                        )
+                    extra_data = namespace[deserializer_function](payload, data_spec)
+                elif dtype == "text":
+                    extra_data = payload
+                elif dtype == "json":
+                    if isinstance(payload, bytes):
+                        payload = payload.decode("utf-8")
+                    if isinstance(payload, str):
+                        extra_data = json.loads(payload)
+                    else:
+                        extra_data = payload
+                else:
+                    raise ValueError(
+                        "No deserializer provided for dtype '" + str(dtype) + "'."
+                    )
+            else:
+                extra_data = _full_context.get("input_data")
 
     # Initialize answer structure
     answer = {{"ready": False, "content": ""}}
@@ -464,8 +512,9 @@ _RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
     ready_flag="{ready_flag}"
     install_done_flag="{install_done_flag}"
     worker_path="{worker_path}"
+    worker_pid_file="{worker_pid_file}"
 
-    rm -f "$command_fifo" "$response_fifo" "$ready_flag" "$install_done_flag"
+    rm -f "$command_fifo" "$response_fifo" "$ready_flag" "$install_done_flag" "$worker_pid_file"
 
     # Write worker script but do NOT start it yet
     # Worker will be started by setup_state after context/env vars are set
@@ -475,9 +524,6 @@ from pathlib import Path
 
 Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
 PY
-
-    pip install -q requests {pip_install_packages}
-    touch "$install_done_flag"
 
     tail -f /dev/null
     '
@@ -503,6 +549,45 @@ def _make_ready_wait_script(
           sleep 0.05
         done
         echo "{error_message}" >&2
+        exit 1
+        '
+        """
+    )
+
+
+def _make_worker_ready_wait_script(
+    ready_flag: str,
+    pid_file: str,
+    log_file: str,
+    max_wait_seconds: int,
+) -> str:
+    """Wait for worker ready flag or fail fast if the worker process exits."""
+    iterations = max(1, int(max_wait_seconds / 0.1))
+    return textwrap.dedent(
+        f"""
+        bash -lc '
+        for i in $(seq 1 {iterations}); do
+          if [ -f "{ready_flag}" ]; then
+            exit 0
+          fi
+          if [ -f "{pid_file}" ]; then
+            pid=$(cat "{pid_file}" 2>/dev/null || true)
+            if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+              echo "RLM worker exited" >&2
+              if [ -f "{log_file}" ]; then
+                echo "---LOG---" >&2
+                tail -n 200 "{log_file}" >&2
+              fi
+              exit 1
+            fi
+          fi
+          sleep 0.1
+        done
+        echo "RLM worker failed to start" >&2
+        if [ -f "{log_file}" ]; then
+          echo "---LOG---" >&2
+          tail -n 200 "{log_file}" >&2
+        fi
         exit 1
         '
         """
@@ -582,6 +667,13 @@ class RLMEnv(SandboxEnv):
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         context_key: Key in info containing optional input data (default: "context")
+        context_dtype: Optional dtype override for input data serialization.
+                   If set, must match a supported serializer dtype.
+        data_serializers: Optional list of custom serializers provided by the designer.
+                   These are registered on top of the default registry (text/json),
+                   overriding by dtype if there are conflicts.
+        serializer_registry: Optional explicit serializer registry. If provided,
+                   data_serializers must be None and this registry is used as-is.
         system_prompt: Custom system prompt (default: RLM standard prompt)
         interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
         interception_port: Port for interception server (default: 8766)
@@ -609,6 +701,7 @@ class RLMEnv(SandboxEnv):
     _RESPONSE_FIFO = "/tmp/rlm_res"
     _READY_FLAG = "/tmp/rlm_ready"
     _INSTALL_DONE_FLAG = "/tmp/rlm_install_done"
+    _WORKER_PID_FILE = "/tmp/rlm_worker.pid"
     _CONTEXT_FILE = "/tmp/rlm_context.json"
     _ANSWER_FILE = "/tmp/rlm_answer.json"
 
@@ -621,6 +714,9 @@ class RLMEnv(SandboxEnv):
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
         context_key: str = "context",
+        context_dtype: str | None = None,
+        data_serializers: list[DataSerializer] | None = None,
+        serializer_registry: SerializerRegistry | None = None,
         system_prompt: str | None = None,
         interception_host: str | None = None,
         interception_port: int = 8766,
@@ -640,6 +736,19 @@ class RLMEnv(SandboxEnv):
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
         self.context_key = context_key
+        self.context_dtype = context_dtype
+        if serializer_registry is not None and data_serializers is not None:
+            raise ValueError(
+                "Provide either serializer_registry or data_serializers, not both."
+            )
+        if serializer_registry is not None:
+            self.serializer_registry = serializer_registry
+        else:
+            registry = build_default_serializer_registry()
+            for serializer in data_serializers or []:
+                registry.register(serializer, allow_override=True)
+            self.serializer_registry = registry
+        self.data_serializers = self.serializer_registry.all()
         self.custom_system_prompt = system_prompt
         self.interception_host = interception_host
         self.interception_port = interception_port
@@ -679,6 +788,7 @@ class RLMEnv(SandboxEnv):
             ready_flag=self._READY_FLAG,
             install_done_flag=self._INSTALL_DONE_FLAG,
             worker_path=self._WORKER_PATH,
+            worker_pid_file=self._WORKER_PID_FILE,
             worker_b64=worker_b64,
             pip_install_packages=pip_install_packages,
         )
@@ -1334,6 +1444,7 @@ done
 
         # Start the worker
         nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
+        echo $! > {self._WORKER_PID_FILE}
 """
         # Timeout needs to account for pip install wait + worker startup
         start_worker_timeout = self.max_startup_wait_seconds + 30
@@ -1351,6 +1462,16 @@ done
             await self.sandbox_client.wait_for_creation(sandbox_id)
         except Exception as e:
             raise SandboxNotReadyError(e)
+        payload_bytes = state.get("rlm_payload_bytes")
+        payload_path = state.get("rlm_payload_path")
+        payload_name = state.get("rlm_payload_name")
+        if payload_bytes is not None and payload_path:
+            await self.upload_file_to_sandbox(
+                sandbox_id,
+                payload_bytes,
+                payload_path,
+                payload_name,
+            )
         await self._write_json_to_sandbox(
             sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
         )
@@ -1414,16 +1535,24 @@ done
         # 5. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
-        metadata: dict[str, str | int] = {"type": str(type(context_data))}
-        if context_data is None:
-            metadata["size"] = 0
-        elif hasattr(context_data, "__len__"):
-            metadata["size"] = len(context_data)
-        else:
-            metadata["size"] = "unknown"
-        context_dict = {"input_data": context_data, "input_data_metadata": metadata}
-        state["rlm_context"] = context_dict
+        disk_size_gb = getattr(self.sandbox_request, "disk_size_gb", None)
+        max_payload_bytes = None
+        if isinstance(disk_size_gb, (int, float)) and disk_size_gb > 0:
+            max_payload_bytes = int(disk_size_gb * 1024**3)
 
+        prepared_context = prepare_context_data(
+            context_data,
+            self.context_dtype,
+            self.serializer_registry,
+            max_payload_bytes,
+        )
+        context_dict = prepared_context.context_dict
+        state["rlm_context"] = context_dict
+        state["rlm_payload_bytes"] = prepared_context.payload_bytes
+        state["rlm_payload_path"] = prepared_context.payload_path
+        state["rlm_payload_name"] = prepared_context.payload_name
+
+        metadata = context_dict.get("input_data_metadata", {})
         metadata_summary = self._generate_metadata_documentation(metadata)
         base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
         if "{metadata_summary}" in base_system_prompt:
@@ -1449,13 +1578,20 @@ done
                 await self._prepare_sandbox_and_start_worker(state, context_dict)
                 break  # Success
             except vf.SandboxError as e:
-                if (
-                    "worker failed to start" in str(e.__cause__)
-                    and attempt < max_sandbox_retries - 1
-                ):
+                cause_text = str(e.__cause__ or e)
+                lower_cause = cause_text.lower()
+                retryable = (
+                    isinstance(e, SandboxNotReadyError)
+                    or "worker failed to start" in lower_cause
+                    or "sandbox_not_ready" in lower_cause
+                    or "timeout during sandbox creation" in lower_cause
+                )
+                if retryable and attempt < max_sandbox_retries - 1:
                     logger.warning(
-                        f"Worker startup failed (attempt {attempt + 1}/{max_sandbox_retries}), "
-                        f"recreating sandbox..."
+                        "Sandbox startup failed (attempt %s/%s): %s. Recreating sandbox...",
+                        attempt + 1,
+                        max_sandbox_retries,
+                        cause_text,
                     )
                     state = await self._recreate_sandbox(state)
                 else:
@@ -1482,25 +1618,51 @@ done
             sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
         )
 
+    async def upload_file_to_sandbox(
+        self, sandbox_id: str, data: bytes, file_path: str, filename: str | None
+    ) -> None:
+        """Write raw bytes to sandbox file via a temporary file upload."""
+        import tempfile
+        from pathlib import Path
+
+        tmp_path = None
+        try:
+            suffix = f"-{filename}" if filename else ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+                tmp_file.write(data)
+            await self.with_retry(self.sandbox_client.upload_file)(
+                sandbox_id, file_path, str(tmp_path)
+            )
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
     async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
         """Wait for worker to signal ready."""
-        wait_script = _make_ready_wait_script(
+        wait_script = _make_worker_ready_wait_script(
             self._READY_FLAG,
+            self._WORKER_PID_FILE,
+            "/tmp/rlm_worker.log",
             self.max_startup_wait_seconds,
-            error_message="RLM worker failed to start",
         )
         # Use max_startup_wait_seconds as timeout (+ buffer for script overhead)
         timeout = self.max_startup_wait_seconds + 10
         result = await self._execute_command_with_retry(
             sandbox_id, wait_script, timeout=timeout
         )
-        if "failed to start" in result.stdout or "failed to start" in (
-            result.stderr or ""
+        stderr = result.stderr or ""
+        stdout = result.stdout or ""
+        if (
+            "RLM worker failed to start" in stdout
+            or "RLM worker failed to start" in stderr
+            or "RLM worker exited" in stdout
+            or "RLM worker exited" in stderr
         ):
             # Debug: get more info about why it failed
             debug_result = await self._execute_command_with_retry(
                 sandbox_id,
-                "ls -la /tmp/rlm* 2>&1; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1",
+                "ls -la /tmp/rlm* 2>&1; echo '---PID---'; cat /tmp/rlm_worker.pid 2>&1 || echo 'no pid'; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1",
             )
             logger.error(
                 f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
@@ -1510,22 +1672,46 @@ done
             )
 
     async def _wait_for_install_done(self, sandbox_id: str) -> None:
-        """Wait for pip installs to finish before starting the worker."""
+        """Install required packages inside the sandbox before starting the worker."""
         install_wait_seconds = self._compute_install_wait_seconds()
-        wait_script = _make_ready_wait_script(
-            self._INSTALL_DONE_FLAG,
-            install_wait_seconds,
-            error_message="RLM pip install did not complete",
-        )
+        packages = ["requests"]
+        extra_packages = [
+            p.strip() for p in self.pip_install_packages.split() if p.strip()
+        ]
+        packages.extend(extra_packages)
+        if not packages:
+            return
+        install_cmd = " ".join(packages)
         timeout = install_wait_seconds + 10
-        result = await self._execute_command_with_retry(
-            sandbox_id, wait_script, timeout=timeout
+        install_script = textwrap.dedent(
+            f"""
+            bash -lc '
+            set -euo pipefail
+            rm -f "{self._INSTALL_DONE_FLAG}"
+            pip install -q {install_cmd} 2>&1 | tee /tmp/rlm_pip.log
+            touch "{self._INSTALL_DONE_FLAG}"
+            '
+            """
         )
+        result = await self._execute_command_with_retry(
+            sandbox_id, install_script, timeout=timeout
+        )
+        exit_code = getattr(result, "exit_code", 0)
         if (
-            "pip install did not complete" in result.stdout
-            or "pip install did not complete" in (result.stderr or "")
+            isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and exit_code != 0
         ):
-            raise vf.SandboxError() from Exception("RLM pip install did not complete")
+            debug_result = await self._execute_command_with_retry(
+                sandbox_id,
+                "echo '---PIP LOG---'; tail -n 200 /tmp/rlm_pip.log 2>&1 || echo 'no pip log'",
+            )
+            logger.error(
+                "RLM pip install failed (exit_code=%s). Log tail:\n%s",
+                exit_code,
+                debug_result.stdout,
+            )
+            raise vf.SandboxError() from Exception("RLM pip install failed")
 
     # =========================================================================
     # Code Execution

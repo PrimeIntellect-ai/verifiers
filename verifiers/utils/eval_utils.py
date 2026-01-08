@@ -10,6 +10,7 @@ from typing import cast
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
+from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
@@ -19,6 +20,7 @@ from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.thread_utils import Threaded
 
 logger = logging.getLogger(__name__)
 
@@ -154,12 +156,26 @@ def print_results(
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(
-        config.client_config,
+    # set up threaded AsyncOpenAI client with large timeout to enable long-running, high-concurrency evals
+    if config.max_concurrent_generation is not None:
+        max_concurrent = config.max_concurrent_generation
+    elif config.max_concurrent == -1:
+        max_concurrent = config.num_examples * config.rollouts_per_example
+    else:
+        max_concurrent = config.max_concurrent
+    max_workers = max(
+        1, max_concurrent // config.client_config.max_keepalive_connections
+    )
+    client = cast(
+        AsyncOpenAI,
+        Threaded(
+            factory=lambda: setup_client(config.client_config),
+            max_workers=max_workers,
+            thread_name_prefix="threaded-oai-client",
+        ),
     )
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
+        f"Initialized threaded AsyncOpenAI client ({max_workers=}) with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment
