@@ -7,7 +7,6 @@ env/
 uv.lock
 .claude/
 .cursorrules
-.cursor/
 .ropeproject/
 .scratch/
 .chroma_db/
