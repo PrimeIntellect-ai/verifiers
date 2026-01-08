@@ -58,6 +58,8 @@ Verifiers v0.1.9 introduces several new experimental environments, monitor rubri
 
 ## Bug Fixes
 
+- Fix tool duplication when calling `add_tool` on `ToolEnv` with shared list reference
+- Fix `args_to_skip` validation failure for dict type parameters in `StatefulToolEnv` (#674)
 - Fix empty slice handling (#701)
 - Fix wiki-search environment (#697)
 - Fix tool test environment (#692)
@@ -72,6 +74,7 @@ Verifiers v0.1.9 introduces several new experimental environments, monitor rubri
 
 ## Infrastructure & Documentation
 
+- Ensure integrations can be installed via full path (#704)
 - Reorganize third-party env integrations (TextArena, ReasoningGym, etc.) (#682)
 - Experimental folder structure for newer environments (#643)
 - Overhaul docs with example configs (#700)
