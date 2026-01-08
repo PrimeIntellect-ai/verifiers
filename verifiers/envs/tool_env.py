@@ -24,14 +24,12 @@ class ToolMonitorRubric(vf.Rubric):
     def add_tool_metric(self, tool: Callable):
         tool_name = tool.__name__  # type: ignore[union-attr]
         if tool_name not in self.tool_names:
-            self.tools.append(tool)
             self.tool_names.append(tool_name)
             self.add_metric(self.get_tool_call_count_func(tool_name))
 
     def remove_tool_metric(self, tool: Callable):
         tool_name = tool.__name__  # type: ignore[union-attr]
         if tool_name in self.tool_names:
-            self.tools.remove(tool)
             self.tool_names.remove(tool_name)
             metric_name = f"{tool_name}_calls"
             for i, func in enumerate(self.funcs):
