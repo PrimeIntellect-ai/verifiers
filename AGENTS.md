@@ -40,7 +40,7 @@ uv run vf-setup
 This creates the recommended workspace structure and downloads useful starter files:
 ```
 configs/
-├── endpoints.py        # API endpoint configuration
+├── endpoints.py        # OpenAI-compatible API endpoint configuration
 └── lab/                # Example configs for Hosted Training
 environments/
 └── AGENTS.md           # Documentation for AI coding agents
@@ -83,7 +83,7 @@ uv run vf-install my-env
 
 To run a quick local evaluation with OpenAI-compatible models, do:
 ```bash
-uv run vf-eval my-env -m gpt-4.1-mini -n 5
+uv run vf-eval my-env -m gpt-5-nano -s # run and save eval results locally
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
