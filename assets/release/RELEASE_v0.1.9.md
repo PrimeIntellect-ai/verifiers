@@ -37,6 +37,8 @@ Verifiers v0.1.9 introduces several new experimental environments, monitor rubri
 - `system_prompt` is now prepended to existing prompts that don't already start with a system message
 
 ### Evaluation & Training
+- Optionally enable independent per-rollout scoring: run and score rollouts independently rather than only in groups (#694)
+- `vf-tui` improvements: regex search modal and run details panel (#705)
 - Log eventloop lag during `vf-eval` (#687)
 - Log timings in `vf-eval` (#686)
 - Show rolling average as tqdm postfix (#693)
