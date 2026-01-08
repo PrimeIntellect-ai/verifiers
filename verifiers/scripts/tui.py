@@ -335,6 +335,9 @@ class SelectModelScreen(Screen):
         option_list.focus()
 
     def action_back(self) -> None:
+        if self._highlight_timer is not None:
+            self._highlight_timer.stop()
+            self._highlight_timer = None
         self.app.pop_screen()
 
     @on(OptionList.OptionSelected, "#model-list")
@@ -755,6 +758,8 @@ class ViewRunScreen(Screen):
         self._highlight_timer = self.set_timer(3.0, self._clear_highlight)
 
     def _clear_highlight(self) -> None:
+        if not self.is_mounted:
+            return
         self._highlight_regex = None
         self._highlight_column = None
         self.update_display()
@@ -1072,6 +1077,38 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         self._update_results(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_select()
+
+    @on(OptionList.OptionHighlighted, "#prompt-results")
+    def on_prompt_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "prompt"
+        self._prompt_cursor = int(event.option_id)
+        self._sync_highlights()
+
+    @on(OptionList.OptionHighlighted, "#completion-results")
+    def on_completion_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "completion"
+        self._completion_cursor = int(event.option_id)
+        self._sync_highlights()
+
+    @on(OptionList.OptionSelected, "#prompt-results")
+    def on_prompt_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "prompt"
+        self._prompt_cursor = int(event.option_id)
+        self.action_select()
+
+    @on(OptionList.OptionSelected, "#completion-results")
+    def on_completion_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "completion"
+        self._completion_cursor = int(event.option_id)
         self.action_select()
 
     def on_key(self, event) -> None:
