@@ -210,10 +210,10 @@ class ClientConfig(BaseModel):
 
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
-    timeout: float = 3600.0  # 1h, oai default: 600.0 (10m)
-    max_connections: int = 1000  # oai default: 1000
-    max_keepalive_connections: int = 100  # oai default: 100
-    max_retries: int = 10  # oai default: 2
+    timeout: float = 3600.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
     extra_headers: dict[str, str] | None = None
 
 
