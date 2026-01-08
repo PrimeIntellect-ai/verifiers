@@ -3,6 +3,7 @@ import json
 from typing import Any, Callable, cast
 
 import verifiers as vf
+from openai.types.chat import ChatCompletionFunctionToolParam
 from .remote_env import RemoteEnv
 
 
@@ -23,8 +24,8 @@ class RemoteToolWrapper:
     async def __call__(self, **kwargs) -> str:
         return await self.env._call_remote_tool(self.name, kwargs)
 
-    def to_oai_tool(self) -> dict:
-        return {
+    def to_oai_tool(self) -> ChatCompletionFunctionToolParam:
+        tool: ChatCompletionFunctionToolParam = {
             "type": "function",
             "function": {
                 "name": self.__name__,
@@ -32,6 +33,7 @@ class RemoteToolWrapper:
                 "parameters": self.parameters or {"type": "object", "properties": {}},
             },
         }
+        return tool
 
 
 class RemoteRewardRubric(vf.Rubric):
@@ -135,7 +137,8 @@ class TypeScriptEnv(RemoteEnv):
             wrapper = RemoteToolWrapper(name, description, parameters, self)
             self.remote_tools[name] = wrapper
             self.tools.append(wrapper)
-            self.oai_tools.append(wrapper.to_oai_tool())
+            oai_tool = wrapper.to_oai_tool()
+            self.oai_tools.append(oai_tool)
             self.tool_map[name] = wrapper
 
     def _register_rewards(self, reward_specs: list[dict]) -> None:
