@@ -381,6 +381,13 @@ class SelectRunScreen(Screen):
                 Label(Text.assemble(("Model: ", "bold"), str(self.model))),
                 Label(Text("Select Run")),
                 OptionList(id="run-list"),
+                classes="run-list-panel",
+            )
+            yield Panel(
+                VerticalScroll(
+                    Static("", id="run-details", markup=False), id="run-details-scroll"
+                ),
+                classes="run-details-panel",
             )
         yield Footer()
 
@@ -404,6 +411,13 @@ class SelectRunScreen(Screen):
             )
 
         option_list.focus()
+        details_widget = self.query_one("#run-details", Static)
+        details_widget.update(Text("Select a run to see details", style="dim"))
+
+    @on(OptionList.OptionHighlighted, "#run-list")
+    def on_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is not None:
+            self._update_details_for_index(int(event.option_id))
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -425,6 +439,78 @@ class SelectRunScreen(Screen):
                 idx = int(option.id)
                 if 0 <= idx < len(self.runs):
                     self.app.push_screen(ViewRunScreen(self.runs[idx]))
+
+    def _update_details_for_index(self, idx: int) -> None:
+        if not (0 <= idx < len(self.runs)):
+            return
+        run = self.runs[idx]
+        details = self._build_run_details(run)
+        details_widget = self.query_one("#run-details", Static)
+        details_widget.update(details)
+
+    def _build_run_details(self, run: RunInfo) -> Text:
+        meta = run.metadata
+        out = Text()
+        out.append("Run ID: ", style="bold")
+        out.append(str(run.run_id))
+        out.append("\n")
+        out.append("Environment: ", style="bold")
+        out.append(str(run.env_id))
+        out.append("\n")
+        out.append("Model: ", style="bold")
+        out.append(str(run.model))
+        out.append("\n")
+        base_url = meta.get("base_url", "")
+        if base_url:
+            out.append("Base URL: ", style="bold")
+            out.append(str(base_url))
+            out.append("\n")
+
+        avg_reward = meta.get("avg_reward")
+        if isinstance(avg_reward, (int, float)):
+            out.append("Avg reward: ", style="bold")
+            out.append(f"{avg_reward:.3f}")
+            out.append("\n")
+
+        avg_metrics = meta.get("avg_metrics", {})
+        if isinstance(avg_metrics, dict) and avg_metrics:
+            out.append("Avg metrics: ", style="bold")
+            out.append("\n")
+            for key in sorted(avg_metrics.keys()):
+                value = avg_metrics.get(key)
+                if isinstance(value, (int, float)):
+                    out.append(f"  {key}: {value:.3f}\n")
+                else:
+                    out.append(f"  {key}: {value}\n")
+
+        time_ms = meta.get("time_ms")
+        if isinstance(time_ms, (int, float)):
+            seconds = time_ms / 1000.0
+            if seconds >= 60:
+                minutes = int(seconds // 60)
+                rem = seconds - minutes * 60
+                runtime_str = f"{minutes}m {rem:.1f}s"
+            else:
+                runtime_str = f"{seconds:.1f}s"
+            out.append("Runtime: ", style="bold")
+            out.append(runtime_str)
+            out.append("\n")
+
+        env_args = meta.get("env_args", {})
+        out.append("\nEnv args:\n", style="bold")
+        try:
+            out.append(json.dumps(env_args, ensure_ascii=False, indent=2))
+        except Exception:
+            out.append(str(env_args))
+
+        sampling_args = meta.get("sampling_args", {})
+        out.append("\n\nSampling args:\n", style="bold")
+        try:
+            out.append(json.dumps(sampling_args, ensure_ascii=False, indent=2))
+        except Exception:
+            out.append(str(sampling_args))
+
+        return out
 
 
 class ViewRunScreen(Screen):
@@ -853,6 +939,28 @@ class VerifiersTUI(App):
         height: auto;
         min-height: 3;
         max-height: 6;
+    }
+    
+    .run-list-panel {
+        height: 1fr;
+    }
+    
+    #run-list {
+        height: 1fr;
+        max-height: 100%;
+    }
+    
+    .run-details-panel {
+        height: 1fr;
+    }
+    
+    #run-details-scroll {
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-color: $secondary;
+        scrollbar-background: $panel;
+        scrollbar-corner-color: $panel;
     }
     
     Footer {
