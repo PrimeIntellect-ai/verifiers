@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 from typing import Any, Callable, cast
 
 import verifiers as vf
@@ -64,12 +63,21 @@ class RemoteRewardRubric(vf.Rubric):
 class TypeScriptEnv(RemoteEnv):
     def __init__(
         self,
-        sandbox_path: Path | str,
+        environment: str,
         server_port: int = 3000,
         server_ready_timeout: int = 120,
         **kwargs,
     ):
-        super().__init__(sandbox_path=sandbox_path, **kwargs)
+        """
+        TypeScript environment that runs a Bun server with tools and rewards.
+
+        Args:
+            environment: Environment identifier in format "owner/name" or "owner/name@version"
+            server_port: Port the TypeScript server listens on (default: 3000)
+            server_ready_timeout: Seconds to wait for server to be ready (default: 120)
+            **kwargs: Additional arguments passed to RemoteEnv
+        """
+        super().__init__(environment=environment, **kwargs)
 
         self.server_port = server_port
         self.server_ready_timeout = server_ready_timeout
