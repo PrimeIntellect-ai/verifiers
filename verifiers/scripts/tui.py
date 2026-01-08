@@ -802,9 +802,17 @@ class ViewRunScreen(Screen):
         if max_scroll is None:
             max_scroll = getattr(scroll, "scroll_y_max", None)
         if max_scroll is None:
-            scroll.scroll_y = max(0, target)
+            target = max(0, target)
         else:
-            scroll.scroll_y = max(0, min(target, max_scroll))
+            target = max(0, min(target, max_scroll))
+
+        if hasattr(scroll, "scroll_to"):
+            try:
+                scroll.scroll_to(y=target, animate=False)
+            except TypeError:
+                scroll.scroll_to(y=target)
+        else:
+            scroll.scroll_y = target
 
 
 # ----------------------------
