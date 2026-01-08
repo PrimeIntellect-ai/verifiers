@@ -335,9 +335,6 @@ class SelectModelScreen(Screen):
         option_list.focus()
 
     def action_back(self) -> None:
-        if self._highlight_timer is not None:
-            self._highlight_timer.stop()
-            self._highlight_timer = None
         self.app.pop_screen()
 
     @on(OptionList.OptionSelected, "#model-list")
