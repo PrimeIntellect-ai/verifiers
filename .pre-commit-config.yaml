@@ -10,6 +10,12 @@ repos:
         args: [--config=pyproject.toml]
   - repo: local
     hooks:
+      - id: sync-agents-md
+        name: Sync AGENTS.md from docs
+        entry: uv run python scripts/sync_agents_md.py
+        language: system
+        files: ^docs/(overview|environments)\.md$
+        pass_filenames: false
       - id: ty
         name: ty
         entry: ty

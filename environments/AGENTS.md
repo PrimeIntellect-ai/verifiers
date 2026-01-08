@@ -1,6 +1,10 @@
 # environments/AGENTS.md
 
-This section walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
+This file mirrors the "Environments" section from the Verifiers documentation, and is downloaded automatically using the setup script.
+
+---
+
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Table of Contents
 - [Your First Environment](#your-first-environment)
@@ -114,7 +118,7 @@ Together, these construct the full prompt:
 ]
 ```
 
-If your dataset already has a `prompt` column, both `question` and `system_prompt` are ignored.
+If your dataset already has a `prompt` column, `question` is ignored. However, if a `system_prompt` is provided, it will be prepended to existing prompts that don't already start with a system message.
 
 ### Evaluation Datasets
 

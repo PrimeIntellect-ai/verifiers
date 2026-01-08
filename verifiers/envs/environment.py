@@ -259,8 +259,23 @@ class Environment(ABC):
 
         else:
             if system_prompt is not None:
-                self.logger.warning(
-                    "Dataset already has a 'prompt' column, so the provided system_prompt will be ignored."
+
+                def prepend_system_prompt(
+                    prompt: list[ChatMessage],
+                ) -> list[ChatMessage]:
+                    assert isinstance(prompt, list), (
+                        f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
+                    )
+                    if prompt and prompt[0].get("role") == "system":
+                        return prompt
+                    sys_msg = cast(
+                        ChatMessage, {"role": "system", "content": system_prompt}
+                    )
+                    return [sys_msg, *prompt]
+
+                dataset = dataset.map(
+                    lambda x: {"prompt": prepend_system_prompt(x["prompt"])},
+                    **map_kwargs,
                 )
             if few_shot is not None:
                 self.logger.warning(

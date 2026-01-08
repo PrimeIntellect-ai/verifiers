@@ -78,6 +78,7 @@ class StatefulToolEnv(vf.ToolEnv):
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map[tool_name] = tool
         self.skipped_args[tool_name] = args_to_skip
+        self.tool_monitor_rubric.add_tool_metric(tool)
 
     def remove_tool(self, tool: Callable):
         self.tools.remove(tool)
@@ -89,6 +90,7 @@ class StatefulToolEnv(vf.ToolEnv):
         ]
         self.tool_map.pop(tool_name)
         self.skipped_args.pop(tool_name)
+        self.tool_monitor_rubric.remove_tool_metric(tool)
 
     @abstractmethod
     def update_tool_args(

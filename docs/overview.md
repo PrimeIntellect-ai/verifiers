@@ -9,7 +9,7 @@ Environments contain everything required to run and evaluate a model on a partic
 
 Environments can be used for training models with reinforcement learning (RL), evaluating capabilities, generating synthetic data, experimenting with agent harnesses, and more. 
 
-Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
+Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
 
 ## Getting Started
 
@@ -26,6 +26,22 @@ uv tool install prime
 Then, add `verifiers` to your project:
 ```bash
 uv add verifiers
+```
+
+To set up your workspace for developing environments, do:
+```bash
+uv run vf-setup
+```
+
+This creates the recommended workspace structure and downloads useful starter files:
+```
+configs/
+├── endpoints.py        # API endpoint configuration
+└── lab/                # Example configs for Hosted Training
+environments/
+└── AGENTS.md           # Documentation for AI coding agents
+AGENTS.md               # Top-level documentation for AI coding agents
+CLAUDE.md               # Claude-specific pointer to AGENTS.md
 ```
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
@@ -91,6 +107,6 @@ prime env install primeintellect/math-python
 
 **[Contributing](development.md)** — Contributing to verifiers
 
-**[API Reference](api_reference.md)** — Understanding the API and data structures
+**[API Reference](reference.md)** — Understanding the API and data structures
 
 **[FAQs](faqs.md)** - Other frequently asked questions.

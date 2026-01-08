@@ -36,6 +36,7 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 ## News & Updates
 
+- [01/08/26] v0.1.9 is released, featuring a number of new experimental environment class types, monitor rubrics for automatic metric collection, improved workspace setup flow, improved error handling, bug fixes, and a documentation overhaul.
 - [11/19/25] v0.1.8 is released, featuring a major refactor of the rollout system to use trajectory-based tracking for token-in token-out training across turns, as well as support for truncated or branching rollouts.
 - [11/07/25] Verifiers v0.1.7 is released! This includes an improved quickstart configuration for training with [prime-rl], a new included "nano" trainer (`vf.RLTrainer`, replacing `vf.GRPOTrainer`), and a number of bug fixes and improvements to the documentation.
 - [10/27/25] A new iteration of the Prime Intellect [Environments Program](https://docs.google.com/spreadsheets/d/13UDfRDjgIZXsMI2s9-Lmn8KSMMsgk2_zsfju6cx_pNU/edit?gid=0#gid=0) is live!  
