@@ -217,29 +217,22 @@ def install_environments_to_prime_rl():
         print(f"Installed {len(env_modules)} environments")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Setup verifiers training environment")
-    parser.add_argument(
-        "--prime-rl",
-        action="store_true",
-        help="Install prime-rl and download prime-rl configs",
-    )
-    parser.add_argument(
-        "--vf-rl",
-        action="store_true",
-        help="Download vf-rl configs",
-    )
-    parser.add_argument(
-        "--skip-agents-md",
-        action="store_true",
-        help="Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md",
-    )
-    args = parser.parse_args()
+def run_setup(
+    prime_rl: bool = False,
+    vf_rl: bool = False,
+    skip_agents_md: bool = False,
+) -> None:
+    """Run verifiers setup with the specified options.
 
+    Args:
+        prime_rl: Install prime-rl and download prime-rl configs.
+        vf_rl: Download vf-rl configs.
+        skip_agents_md: Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md.
+    """
     os.makedirs("configs", exist_ok=True)
     os.makedirs("environments", exist_ok=True)
 
-    if not args.skip_agents_md:
+    if not skip_agents_md:
         if os.path.exists(AGENTS_MD_DST):
             os.remove(AGENTS_MD_DST)
         wget.download(AGENTS_MD_SRC, AGENTS_MD_DST)
@@ -257,7 +250,7 @@ def main():
             f"\nDownloaded {ENVS_AGENTS_MD_DST} from https://github.com/{VERIFIERS_REPO}"
         )
 
-    if args.prime_rl:
+    if prime_rl:
         install_prime_rl()
         install_environments_to_prime_rl()
 
@@ -267,7 +260,7 @@ def main():
     else:
         print(f"{ENDPOINTS_DST} already exists")
 
-    if args.vf_rl:
+    if vf_rl:
         if not os.path.exists(ZERO3_DST):
             wget.download(ZERO3_SRC, ZERO3_DST)
             print(f"\nDownloaded {ZERO3_DST} from https://github.com/{VERIFIERS_REPO}")
@@ -275,11 +268,39 @@ def main():
             print(f"{ZERO3_DST} already exists")
         download_configs(VF_RL_CONFIGS)
 
-    if args.prime_rl:
+    if prime_rl:
         download_configs(PRIME_RL_CONFIGS)
 
-    if not args.prime_rl and not args.vf_rl:
+    if not prime_rl and not vf_rl:
         download_configs(LAB_CONFIGS)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Setup verifiers development workspace"
+    )
+    parser.add_argument(
+        "--prime-rl",
+        action="store_true",
+        help="Install prime-rl and download prime-rl configs",
+    )
+    parser.add_argument(
+        "--vf-rl",
+        action="store_true",
+        help="Download vf-rl configs",
+    )
+    parser.add_argument(
+        "--skip-agents-md",
+        action="store_true",
+        help="Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md",
+    )
+    args = parser.parse_args()
+
+    run_setup(
+        prime_rl=args.prime_rl,
+        vf_rl=args.vf_rl,
+        skip_agents_md=args.skip_agents_md,
+    )
 
 
 if __name__ == "__main__":
