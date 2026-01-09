@@ -31,7 +31,17 @@ class RunInfo:
     model: str
     run_id: str
     path: Path
-    metadata: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
+
+    def load_metadata(self) -> Dict[str, Any]:
+        if self.metadata is not None:
+            return self.metadata
+        meta_path = self.path / "metadata.json"
+        try:
+            self.metadata = json.loads(meta_path.read_text())
+        except Exception:
+            self.metadata = {}
+        return self.metadata
 
 
 def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[Path]:
@@ -82,46 +92,109 @@ def discover_results(
                 meta = run_dir / "metadata.json"
                 results = run_dir / "results.jsonl"
                 if meta.exists() and results.exists():
-                    try:
-                        metadata = json.loads(meta.read_text())
-                    except Exception:
-                        metadata = {}
                     run = RunInfo(
                         env_id=env_id,
                         model=model,
                         run_id=run_dir.name,
                         path=run_dir,
-                        metadata=metadata,
                     )
                     discovered.setdefault(env_id, {}).setdefault(model, []).append(run)
 
-    # Sort runs by time
-    for env_id, models in discovered.items():
-        for model, runs in models.items():
-            runs.sort(
-                key=lambda r: (
-                    r.metadata.get("date", ""),
-                    r.metadata.get("time", ""),
-                    r.run_id,
-                )
-            )
     return discovered
 
 
-def load_run_results(run: RunInfo) -> List[Dict[str, Any]]:
-    """Load results.jsonl into memory."""
-    data: List[Dict[str, Any]] = []
-    results_path = run.path / "results.jsonl"
-    with results_path.open("r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+class LazyRunResults:
+    """Lazy loader for results.jsonl with optional metadata count."""
+
+    def __init__(self, run: RunInfo):
+        self._path = run.path / "results.jsonl"
+        self._fh = self._path.open("r", encoding="utf-8")
+        self._offsets: List[int] = []
+        self._cache: Dict[int, Dict[str, Any]] = {}
+        self._eof = False
+        self._count: Optional[int] = None
+
+        meta = run.load_metadata()
+        num_examples = meta.get("num_examples")
+        rollouts_per_example = meta.get("rollouts_per_example")
+        if isinstance(num_examples, int) and num_examples >= 0:
+            if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
+                self._count = num_examples * rollouts_per_example
+            else:
+                self._count = num_examples
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+
+    def _read_next_line(self) -> Optional[str]:
+        if self._eof:
+            return None
+        pos = self._fh.tell()
+        line = self._fh.readline()
+        if not line:
+            self._eof = True
+            return None
+        self._offsets.append(pos)
+        return line
+
+    def _ensure_index(self, index: int) -> bool:
+        if index < 0:
+            return False
+        while len(self._offsets) <= index and not self._eof:
+            line = self._read_next_line()
+            if line is None:
+                break
+        return index < len(self._offsets)
+
+    def _ensure_count(self) -> int:
+        if self._count is not None:
+            return self._count
+        while not self._eof:
+            line = self._read_next_line()
+            if line is None:
+                break
+        self._count = len(self._offsets)
+        return self._count
+
+    def get(self, index: int) -> Dict[str, Any]:
+        if index in self._cache:
+            return self._cache[index]
+        if not self._ensure_index(index):
+            return {}
+        pos = self._fh.tell()
+        try:
+            self._fh.seek(self._offsets[index])
+            line = self._fh.readline()
             try:
-                data.append(json.loads(line))
+                data = json.loads(line)
             except json.JSONDecodeError:
-                continue
-    return data
+                data = {}
+        finally:
+            self._fh.seek(pos)
+        self._cache[index] = data
+        return data
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        return self.get(index)
+
+    def __len__(self) -> int:
+        return self._ensure_count()
+
+    def __bool__(self) -> bool:
+        if self._count is not None:
+            return self._count > 0
+        if self._offsets:
+            return True
+        if self._eof:
+            return False
+        line = self._read_next_line()
+        return line is not None
+
+
+def load_run_results(run: RunInfo) -> LazyRunResults:
+    """Open results.jsonl lazily."""
+    return LazyRunResults(run)
 
 
 # ----------------------------
@@ -394,8 +467,17 @@ class SelectRunScreen(Screen):
     def on_mount(self) -> None:
         option_list = self.query_one("#run-list", OptionList)
 
+        # Load metadata only for runs in this model, when the run list is shown.
+        self.runs.sort(
+            key=lambda r: (
+                r.load_metadata().get("date", ""),
+                r.load_metadata().get("time", ""),
+                r.run_id,
+            )
+        )
+
         for i, run in enumerate(self.runs):
-            meta = run.metadata
+            meta = run.load_metadata()
             datetime_str = f"{meta.get('date', '')} {meta.get('time', '')}".strip()
             reward = meta.get("avg_reward", "")
             if isinstance(reward, (int, float)):
@@ -449,7 +531,7 @@ class SelectRunScreen(Screen):
         details_widget.update(details)
 
     def _build_run_details(self, run: RunInfo) -> Text:
-        meta = run.metadata
+        meta = run.load_metadata()
         out = Text()
         out.append("Run ID: ", style="bold")
         out.append(str(run.run_id))
@@ -569,7 +651,7 @@ class ViewRunScreen(Screen):
         yield Footer()
 
     def _get_metadata_text(self) -> Text:
-        meta = self.run.metadata
+        meta = self.run.load_metadata()
         sampling_args = meta.get("sampling_args", {})
         avg_reward = meta.get("avg_reward", "")
         if isinstance(avg_reward, (int, float)):
@@ -641,6 +723,10 @@ class ViewRunScreen(Screen):
 
     def on_mount(self) -> None:
         self.update_display()
+
+    def on_unmount(self) -> None:
+        if hasattr(self.records, "close"):
+            self.records.close()
 
     def update_display(self) -> None:
         """Update the display with current record."""

@@ -199,6 +199,9 @@ Core fields in `[trainer.args]`:
 - `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`
 - `max_grad_norm`, `bf16`, `gradient_checkpointing`
 
+### Model loading
+
+By default, `vf.RLTrainer` will use Liger Kernel for optimized training. To disable Liger Kernel, set `use_liger = false` in `[trainer.args]`.
 
 ## RL Rules of Thumb
 
