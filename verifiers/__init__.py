@@ -84,6 +84,15 @@ __all__ = [
     "cleanup",
     "stop",
     "teardown",
+    "Error",
+    "ModelError",
+    "EmptyModelResponseError",
+    "OverlongPromptError",
+    "ToolError",
+    "ToolParseError",
+    "ToolCallError",
+    "InfraError",
+    "SandboxError",
 ]
 
 _LAZY_IMPORTS = {
