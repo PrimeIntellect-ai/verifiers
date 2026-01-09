@@ -53,12 +53,24 @@ class RLTrainer(Trainer):
         # model + tokenizer
         if isinstance(model, str):
             model_name = model
-            model, processing_class = vf.get_model_and_tokenizer(model)
+            if args.use_unsloth and args.unsloth_config is not None:
+                model, processing_class = vf.unsloth_get_model_and_tokenizer(
+                    model_name,
+                    unsloth_config=args.unsloth_base_model_args,
+                )
+            else:
+                model, processing_class = vf.get_model_and_tokenizer(model_name)
         else:
             model_name = model.config._name_or_path
         assert isinstance(model, PreTrainedModel)
-        if args.use_lora and isinstance(args.lora_config, PeftConfig):
-            model = prepare_peft_model(model, args.lora_config, args)
+        if args.use_lora:
+            if args.use_unsloth and args.unsloth_lora_args is not None:
+                model = vf.unsloth_prepare_peft_model(
+                    model,
+                    unsloth_config=args.unsloth_lora_args,
+                )
+            elif isinstance(args.lora_config, PeftConfig):
+                model = prepare_peft_model(model, args.lora_config, args)
         model.warnings_issued["estimate_tokens"] = True  # suppress warning
 
         super().__init__(
@@ -88,6 +100,7 @@ class RLTrainer(Trainer):
         if self.accelerator.is_main_process:
             host = args.vllm_server_host
             port = args.vllm_server_port
+            
             self.client = VLLMClient(
                 host=host, port=port, connection_timeout=args.vllm_server_timeout
             )

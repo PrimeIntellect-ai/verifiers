@@ -5,6 +5,8 @@ from peft import LoraConfig
 from transformers import TrainingArguments
 from transformers.trainer_utils import SchedulerType
 
+from verifiers.rl.configs.unsloth_config import UnslothConfig
+
 
 @dataclass
 class RLConfig(TrainingArguments):
@@ -188,10 +190,12 @@ class RLConfig(TrainingArguments):
         default="0.0.0.0",
         metadata={"help": "Host of the vLLM server to connect to."},
     )
+
     vllm_server_port: int = field(
         default=8000,
         metadata={"help": "Port of the vLLM server to connect to."},
     )
+
     vllm_server_timeout: float = field(
         default=300.0,
         metadata={
@@ -273,6 +277,28 @@ class RLConfig(TrainingArguments):
         metadata={"help": "Whether to shuffle the training dataset."},
     )
 
+    use_unsloth: bool = field(
+        default=False,
+        metadata={"help": "Whether to use UnslothConfig for additional model training parameters."},
+    )
+
+    unsloth_config: Optional[UnslothConfig] = field(
+        default=None,
+        metadata={"help": "UnslothConfig instance for additional model training parameters."},
+    )
+
+    unsloth_base_model_args: dict = field(
+        init=False,
+        default_factory=dict,
+        metadata={"help": "Arguments for loading the base model with Unsloth."},
+    )
+
+    unsloth_lora_args: dict = field(
+        init=False,
+        default_factory=dict,
+        metadata={"help": "Additional arguments for LoRA configuration with Unsloth."},
+    )
+
     def __post_init__(self):
         # configure output dir
         if self.output_dir is None:
@@ -324,6 +350,40 @@ class RLConfig(TrainingArguments):
             },
         }
         self.gradient_accumulation_steps = 1
+
+        if self.use_unsloth:
+            self.unsloth_base_model_args = {
+                "load_in_4bit": self.unsloth_config.load_in_4bit,
+                "load_in_8bit": self.unsloth_config.load_in_8bit,
+                "load_in_16bit": self.unsloth_config.load_in_16bit,
+                "full_finetuning": self.unsloth_config.full_finetuning,
+                "use_exact_model_name": self.unsloth_config.use_exact_model_name,
+                "gpu_memory_utilization": self.unsloth_config.gpu_memory_utilization,
+                "token": self.unsloth_config.token,
+            }
+
+            self.unsloth_lora_args = {
+                "r": self.lora_rank,
+                "lora_alpha": self.lora_alpha,
+                "target_modules": self.lora_target_modules,
+                "lora_dropout": self.lora_dropout,
+                "use_rslora": self.lora_use_rslora,
+                "loftq_config": self.unsloth_config.loftq_config,
+                "random_state": self.unsloth_config.random_state,
+                "use_gradient_checkpointing": self.unsloth_config.use_gradient_checkpointing,
+            }
+
+            self.unsloth_config.r, 
+            self.unsloth_config.lora_alpha,
+            self.unsloth_config.target_modules,
+            self.unsloth_config.lora_dropout = (
+                self.lora_rank,
+                self.lora_rank,
+                self.lora_alpha,
+                self.lora_target_modules,
+                self.lora_dropout,
+            )
+
         super().__post_init__()
 
         num_processes = self.world_size

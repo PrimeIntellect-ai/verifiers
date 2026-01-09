@@ -108,6 +108,7 @@ __all__ = [
     "get_model_and_tokenizer",
     "RLTrainer",
     "RLConfig",
+    "UnslothConfig",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
@@ -121,6 +122,7 @@ _LAZY_IMPORTS = {
     "get_model": "verifiers.rl.trainer.utils:get_model",
     "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers.rl.trainer:RLConfig",
+    "UnslothConfig": "verifiers.configs.unsloth_config:UnslothConfig",
     "RLTrainer": "verifiers.rl.trainer:RLTrainer",
     "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
     "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
@@ -168,6 +170,7 @@ if TYPE_CHECKING:
         grpo_defaults,
         lora_defaults,
     )
+    from .configs.unsloth_config import UnslothConfig  # noqa: F401
     from .rl.trainer.utils import (  # noqa: F401
         get_model,
         get_model_and_tokenizer,
