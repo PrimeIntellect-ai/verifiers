@@ -162,12 +162,16 @@ class LazyRunResults:
             return self._cache[index]
         if not self._ensure_index(index):
             return {}
-        self._fh.seek(self._offsets[index])
-        line = self._fh.readline()
+        pos = self._fh.tell()
         try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            data = {}
+            self._fh.seek(self._offsets[index])
+            line = self._fh.readline()
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                data = {}
+        finally:
+            self._fh.seek(pos)
         self._cache[index] = data
         return data
 
