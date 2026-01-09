@@ -321,6 +321,7 @@ class RLConfig(TrainingArguments):
                 "include_stop_str_in_output": False,
                 "return_tokens_as_token_ids": True,
                 "return_token_ids": True,
+                "prompt_logprobs": True,
             },
         }
         self.gradient_accumulation_steps = 1
