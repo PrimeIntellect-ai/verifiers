@@ -64,3 +64,16 @@ class TestImports:
                 else:
                     # This is an unexpected AttributeError, re-raise it
                     raise
+
+    def test_dir_includes_public_api(self):
+        """Test that dir(verifiers) exposes the public API."""
+        directory = dir(verifiers)
+        for name in verifiers.__all__:
+            assert name in directory, f"{name} missing from dir(verifiers)"
+
+    def test_star_import_matches_all(self):
+        """Test that star import exposes __all__ names."""
+        namespace: dict[str, object] = {}
+        exec("from verifiers import *", namespace)
+        for name in verifiers.__all__:
+            assert name in namespace, f"{name} missing from star import"
