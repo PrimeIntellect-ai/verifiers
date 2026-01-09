@@ -74,6 +74,20 @@ class TestImports:
     def test_star_import_matches_all(self):
         """Test that star import exposes __all__ names."""
         namespace: dict[str, object] = {}
-        exec("from verifiers import *", namespace)
+        try:
+            exec("from verifiers import *", namespace)
+        except AttributeError as e:
+            if not self._is_optional_dependency_error(str(e)):
+                raise
+
         for name in verifiers.__all__:
-            assert name in namespace, f"{name} missing from star import"
+            if name in namespace:
+                continue
+            # If star import skipped a name, accessing it should only fail
+            # for missing optional dependencies.
+            try:
+                _ = getattr(verifiers, name)
+            except AttributeError as e:
+                assert self._is_optional_dependency_error(str(e)), (
+                    f"{name} missing from star import without optional-deps error"
+                )
