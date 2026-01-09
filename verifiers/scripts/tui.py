@@ -116,8 +116,12 @@ class LazyRunResults:
 
         meta = run.load_metadata()
         num_examples = meta.get("num_examples")
+        rollouts_per_example = meta.get("rollouts_per_example")
         if isinstance(num_examples, int) and num_examples >= 0:
-            self._count = num_examples
+            if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
+                self._count = num_examples * rollouts_per_example
+            else:
+                self._count = num_examples
 
     def close(self) -> None:
         if not self._fh.closed:
