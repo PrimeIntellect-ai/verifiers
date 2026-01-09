@@ -49,6 +49,24 @@ IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
+# GDPO (Group Reward-Decoupled Policy Optimization) types
+# Reference: https://arxiv.org/html/2601.05242v1
+AdvantageMode = Literal["grpo", "gdpo"]
+GateOperator = Literal["==", "!=", ">", ">=", "<", "<="]
+
+
+class GateCondition(TypedDict, total=False):
+    """A single gating condition that compares a reward function's output to a threshold."""
+
+    func: str  # Name of reward function to check
+    op: GateOperator  # Comparison operator
+    value: float  # Threshold value
+
+
+# GateExpr is a recursive type for boolean expressions (AND/OR/NOT)
+# Due to Python typing limitations, we use dict for nested expressions
+GateExpr = GateCondition | dict[str, Any]
+
 
 class TrajectoryStepTokens(TypedDict):
     prompt_ids: list[int]
