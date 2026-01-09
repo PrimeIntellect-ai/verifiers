@@ -5,17 +5,16 @@ from datasets import Dataset
 import verifiers as vf
 
 try:
-    import reasoning_gym as rg  # type: ignore
+    import reasoning_gym as rg
     from reasoning_gym.composite import DatasetSpec
     from reasoning_gym.dataset import ProceduralDataset
     from reasoning_gym.utils import SYSTEM_PROMPTS
 
     DEFAULT_SYSTEM_PROMPT = SYSTEM_PROMPTS["default"]
-except ImportError:
-    print(
-        "reasoning-gym is not installed. Please install it with `uv pip install reasoning-gym`."
-    )
-    exit(1)
+except ImportError as e:
+    raise ImportError(
+        "ReasoningGymEnv requires reasoning-gym. Install with: uv add 'verifiers[rg]'"
+    ) from e
 
 
 class ReasoningGymEnv(vf.SingleTurnEnv):

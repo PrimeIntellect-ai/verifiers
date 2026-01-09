@@ -4,13 +4,13 @@
     {
       "group": "Verifiers",
       "pages": [
-        "source/overview",
-        "source/concepts",
-        "source/environments",
-        "source/components",
-        "source/training",
-        "source/development",
-        "source/api_reference"
+        "overview",
+        "environments",
+        "evaluation",
+        "training",
+        "development",
+        "reference",
+        "faqs"
       ]
     }
   ]

@@ -17,6 +17,7 @@ from verifiers.envs.sandbox_env import SandboxEnv, SandboxState
 class PythonWorkerState(TypedDict):
     ready: bool
     execution_count: int
+    ready_wait_time: float
 
 
 class PythonWorkerNotReadyError(vf.SandboxError): ...
@@ -26,6 +27,15 @@ class PythonWorkerRequestError(vf.SandboxError): ...
 
 
 class PythonWorkerDeadError(vf.SandboxError): ...
+
+
+class PythonMonitorRubric(vf.Rubric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.add_metric(self.python_ready_wait_time)
+
+    async def python_ready_wait_time(self, state: vf.State) -> float:
+        return state["python_state"]["ready_wait_time"]
 
 
 class PythonEnv(SandboxEnv):
@@ -189,6 +199,7 @@ PY
             start_command=start_command,
             **kwargs,
         )
+        self.add_rubric(PythonMonitorRubric())
         self.add_tool(
             self.python, args_to_skip=["sandbox_id", "sandbox_state", "python_state"]
         )
@@ -199,6 +210,7 @@ PY
         state["python_state"] = {
             "ready": False,
             "execution_count": 0,
+            "ready_wait_time": 0.0,
         }
         return state
 
@@ -229,7 +241,7 @@ PY
     ) -> str:
         """Execute `code` inside persistent Python REPL."""
         if not python_state["ready"]:
-            await self._wait_for_worker_ready(sandbox_state, sandbox_id)
+            await self._wait_for_worker_ready(sandbox_id, sandbox_state, python_state)
             python_state["ready"] = True
         self.logger.debug(f"Executing code\n{code}")
         sandbox_response = await self._send_worker_request(
@@ -237,12 +249,11 @@ PY
         )
         return self._format_response(python_state, sandbox_response)
 
-    @vf.cleanup
-    async def cleanup_python_state(self, state: vf.State):
-        state.pop("python_state", None)
-
     async def _wait_for_worker_ready(
-        self, sandbox_state: SandboxState, sandbox_id: str
+        self,
+        sandbox_id: str,
+        sandbox_state: SandboxState,
+        python_state: PythonWorkerState,
     ) -> None:
         s = time.time()
         try:
@@ -260,11 +271,13 @@ PY
             )
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr)
-            self.logger.debug(
-                f"Waited {time.time() - s:.1f}s for Python worker to be ready"
-            )
         except Exception as e:
             raise PythonWorkerNotReadyError from e
+        ready_wait_time = time.time() - s
+        python_state["ready_wait_time"] = ready_wait_time
+        self.logger.debug(
+            f"Waited {ready_wait_time:.1f}s for Python worker to be ready"
+        )
 
     async def _send_worker_request(
         self,

@@ -1,0 +1,15 @@
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 512
+
+[[env]]
+id = "primeintellect/alphabet-sort"
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }
+
+[wandb]
+project = "alphabet-sort"
+name = "qwen3-30b-i-alphabet-sort"

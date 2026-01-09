@@ -31,6 +31,7 @@ dependencies = [
     "datasets>=3.0.0",
     "jinja2>=3.1.6",
     "math-verify>=0.8.0",
+    "mcp>=1.14.1",
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
@@ -62,6 +63,13 @@ dev = [
 ]
 
 [project.optional-dependencies]
+rg = [
+    "reasoning-gym",
+]
+ta = [
+    "textarena",
+    "nltk",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
@@ -73,13 +81,6 @@ rl = [
     "liger-kernel>=0.5.10",
     "deepspeed>=0.17.6",
     "flash-attn>=2.8.3",
-]
-envs = [
-    "math-verify>=0.8.0",
-    "reasoning-gym",
-    "nltk",
-    "textarena",
-    "mcp>=1.14.1",
 ]
 
 [tool.uv.extra-build-dependencies]
@@ -154,7 +155,7 @@ filterwarnings = [
     "ignore::UserWarning:transformers.*",
     "ignore:The 'repr' attribute.*:UserWarning:pydantic.*",
     "ignore:The 'frozen' attribute.*:UserWarning:pydantic.*",
-    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib",
+    "ignore:.*is.*with.*str.*literal:SyntaxWarning:cellpylib.*",
 ]
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]

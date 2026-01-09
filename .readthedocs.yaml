@@ -11,4 +11,4 @@ build:
     python: "3.12"
   commands:
     - mkdir -p $READTHEDOCS_OUTPUT/html
-    - cp docs/rtd-redirect/index.html $READTHEDOCS_OUTPUT/html/index.html
+    - cp assets/rtd-redirect/index.html $READTHEDOCS_OUTPUT/html/index.html

@@ -68,6 +68,7 @@ class TrajectoryStep(TypedDict):
     reward: float | None
     advantage: float | None
     is_truncated: bool
+    trajectory_id: str
     extras: dict[str, Any]
 
 
@@ -232,6 +233,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
+    independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     # logging
     print_results: bool = False

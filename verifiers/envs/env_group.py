@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Mapping
+from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 
 from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
@@ -197,7 +197,7 @@ class EnvGroup(vf.Environment):
             f"Initialized EnvGroup with {len(envs)} environments: {self.env_names}"
         )
 
-    def format_dataset(
+    def _format_dataset(
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
@@ -232,7 +232,7 @@ class EnvGroup(vf.Environment):
         )
         return dataset
 
-    def format_completion_dataset(
+    def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
         """
@@ -253,20 +253,7 @@ class EnvGroup(vf.Environment):
         )
         return dataset
 
-    async def init_state(
-        self,
-        input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> vf.State:
-        env = self.get_env_for_task(input["task"])
-        return await env.init_state(input, client, model, sampling_args)
-
-    async def setup_state(self, state: vf.State) -> vf.State:
-        env = self.get_env_for_task(state["task"])
-        return await env.setup_state(state)
-
+    @final
     async def rollout(
         self,
         input: RolloutInput,
@@ -281,19 +268,19 @@ class EnvGroup(vf.Environment):
         return self.env_map.get(task, self.envs[0])
 
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
-        """Set the maximum sequence length for this environment group and all sub-environments."""
+        """Set the max_seq_len value for this environment group and all sub-environments."""
         self.max_seq_len = max_seq_len
         for env in self.envs:
             env.set_max_seq_len(max_seq_len)
 
     def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
-        """Set the interleaved rollouts flag for this environment group and all sub-environments."""
+        """Set the interleaved_rollouts flag for this environment group and all sub-environments."""
         self.interleaved_rollouts = interleaved_rollouts
         for env in self.envs:
             env.set_interleaved_rollouts(interleaved_rollouts)
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
-        """Set the score rollouts flag for this environment group and all sub-environments."""
+        """Set the score_rollouts flag for this environment group and all sub-environments."""
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)

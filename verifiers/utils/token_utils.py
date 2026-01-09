@@ -73,7 +73,7 @@ def prepare_sampling_args_for_token_prompts(
 ) -> SamplingArgs:
     """Ensures necessary fields are set for token prompts to work."""
     sampling_args["logprobs"] = True
-    extra_body = dict(return_token_ids=True, prompt_logprobs=True)
+    extra_body = dict(return_token_ids=True)
     if "extra_body" in sampling_args:
         sampling_args["extra_body"].update(extra_body)
     else:

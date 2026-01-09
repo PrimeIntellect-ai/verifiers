@@ -57,7 +57,7 @@ class JudgeRubric(Rubric):
         prompt: Messages,
         completion: Messages,
         answer: str,
-        state: State,
+        state: State | None = None,
     ) -> str:
         if isinstance(prompt, list):
             last_msg = prompt[-1]
@@ -71,7 +71,7 @@ class JudgeRubric(Rubric):
         judge_prompt = self.judge_prompt.format(
             question=question, answer=answer, response=response
         )
-        cached = state.get("judge_response")
+        cached = state.get("judge_response") if state else None
         if isinstance(cached, dict) and judge_prompt in cached:
             return cached[judge_prompt]
         # Normalize judge sampling args for chat API
@@ -133,8 +133,9 @@ class JudgeRubric(Rubric):
                 f"Error: {str(e)}"
             ) from e
 
-        if not isinstance(cached, dict):
-            cached = {}
-        cached[judge_prompt] = judge_response
-        state["judge_response"] = cached
+        if state:
+            if not isinstance(cached, dict):
+                cached = {}
+            cached[judge_prompt] = judge_response
+            state["judge_response"] = cached
         return judge_response

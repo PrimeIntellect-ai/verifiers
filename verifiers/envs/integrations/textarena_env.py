@@ -1,3 +1,4 @@
+import logging
 import random
 from copy import deepcopy
 from typing import Any, Callable, cast
@@ -8,9 +9,10 @@ import verifiers as vf
 
 try:
     import nltk  # type: ignore
-except ImportError:
-    print("nltk is not installed. Please install it with `uv pip install nltk`.")
-    exit(1)
+except ImportError as e:
+    raise ImportError(
+        "TextArenaEnv requires nltk. Install with: uv add 'verifiers[ta]'"
+    ) from e
 
 
 # monkey-patch nltk.download to always be quiet before importing textarena
@@ -21,11 +23,10 @@ nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore
 
 try:
     import textarena as ta  # type: ignore
-except ImportError:
-    print(
-        "textarena is not installed. Please install it with `uv pip install textarena`."
-    )
-    exit(1)
+except ImportError as e:
+    raise ImportError(
+        "TextArenaEnv requires textarena. Install with: uv add 'verifiers[ta]'"
+    ) from e
 
 
 class TextArenaEnv(vf.MultiTurnEnv):
@@ -50,10 +51,12 @@ class TextArenaEnv(vf.MultiTurnEnv):
 
         self.game = game
         self.ta_env = ta.make(env_id=game)
+        self.ta_env.reset(num_players=1)
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
         self.feedback_fn = feedback_fn
+        self.logger = logging.getLogger(__name__)
 
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
@@ -69,41 +72,44 @@ class TextArenaEnv(vf.MultiTurnEnv):
             **kwargs,
         )
 
+    async def setup_state(self, state: vf.State, **kwargs) -> vf.State:
+        ta_env = deepcopy(self.ta_env)
+        ta_env.state.game_state["secret_word"] = state["answer"]
+        state["ta_env"] = ta_env
+        return state
+
     @vf.cleanup
     async def cleanup_ta_env(self, state: vf.State):
-        state.pop("ta_env")
-
-    @vf.stop
-    async def game_completed(self, state: vf.State) -> bool:
-        return state.get("game_completed", False)
+        state.pop("ta_env", None)
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
-        # load env
-        if "ta_env" not in state:
-            ta_env = deepcopy(self.ta_env)
-            ta_env.reset(num_players=1)
-            ta_env.state.game_state["secret_word"] = state["answer"]
-            state["ta_env"] = ta_env
-        else:
-            ta_env = state["ta_env"]
-        # parse guess
+        ta_env = state["ta_env"]
         guess = self.parser.parse_answer(messages)
-        # step env
-        game_completed, _ = ta_env.step(str(guess))
-        state["game_completed"] = game_completed
-        _, observation = ta_env.get_observation()
-        feedback = self.feedback_fn(observation)
-        return cast(vf.Messages, [{"role": "user", "content": str(feedback)}])
+        self.logger.debug(f"Parsed {guess=}")
+        ta_env.step(str(guess))
+
+        if ta_env.state.done:
+            self.logger.debug(f"Game completed! {ta_env.state.game_info=}")
+            response = cast(
+                vf.Messages,
+                [{"role": "user", "content": ta_env.state.game_info[0]["reason"]}],
+            )
+            state["final_env_response"] = response
+            return response
+        else:
+            _, observation = ta_env.get_observation()
+            self.logger.debug(f"Got {observation=}")
+            feedback = self.feedback_fn(observation)
+            self.logger.debug(f"Parsed {feedback=}")
+            return cast(vf.Messages, [{"role": "user", "content": str(feedback)}])
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
         dataset_rows = []
         eval_dataset_rows = []
-        ta_env = ta.make(env_id=self.game)
-        ta_env.reset(num_players=1)
-        _, user_prompt = ta_env.get_observation()
-        words = ta_env.word_list
+        _, user_prompt = self.ta_env.get_observation()
+        words = self.ta_env.word_list
         # set seed
         random.seed(self.seed)
         for i in range(self.num_train_examples + self.num_eval_examples):

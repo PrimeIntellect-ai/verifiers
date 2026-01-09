@@ -45,6 +45,17 @@ class TestParser:
         result = basic_parser.parse_answer(completion)
         assert result == "The answer is 4"
 
+    def test_parse_answer_with_empty_completion(self, basic_parser):
+        """Test parse_answer with empty completion list."""
+        result = basic_parser.parse_answer([])
+        assert result is None
+
+    def test_parse_answer_with_no_assistant_messages(self, basic_parser):
+        """Test parse_answer with completion containing no assistant messages."""
+        completion = [{"role": "user", "content": "Hello"}]
+        result = basic_parser.parse_answer(completion)
+        assert result is None
+
     def test_get_format_reward_func(self, basic_parser):
         """Test that format reward function returns 1.0 by default."""
         reward_func = basic_parser.get_format_reward_func()

@@ -1,0 +1,14 @@
+model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 256
+
+[[env]]
+id = "primeintellect/reverse-text"
+
+[wandb]
+project = "reverse-text"
+name = "qwen3-30b-t-reverse-text"

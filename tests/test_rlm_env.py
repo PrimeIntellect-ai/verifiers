@@ -1,11 +1,23 @@
 """Tests for the RLMEnv class."""
 
 import json
+import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
+from prime_sandboxes import CommandTimeoutError
 
+import verifiers as vf
+from verifiers.utils.rlm_data_serialization_utils import (
+    DataSerializer,
+    SerializedData,
+    build_default_data_serializers,
+    build_builtin_serializer,
+    deserialize_builtin,
+    prepare_context_data,
+)
+from verifiers.envs.experimental import rlm_env as rlm_module
 from verifiers.envs.experimental.rlm_env import RLMEnv
 
 
@@ -23,6 +35,8 @@ def mock_sandbox_client():
     client.bulk_delete = AsyncMock()
     client.wait_for_creation = AsyncMock()
     client.execute_command = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
+    client.upload_file = AsyncMock()
+    client.upload_bytes = AsyncMock()
     return client
 
 
@@ -238,6 +252,77 @@ class TestExtractTunnelUrlFromLine:
         assert url is None
 
 
+@pytest.mark.asyncio
+async def test_execute_code_timeout_restarts_sandbox(rlm_env):
+    rlm_env.abort_on_code_timeout = False
+    rlm_env.code_execution_timeout = 1
+    rlm_env.sandbox_client.execute_command = AsyncMock(
+        side_effect=CommandTimeoutError("sandbox_123", "command", 1)
+    )
+    rlm_env._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
+    rlm_env._prepare_sandbox_and_start_worker = AsyncMock()
+
+    state = {
+        "sandbox_id": "sandbox_123",
+        "rlm_context": {"input_data_spec": None, "input_data_metadata": {}},
+    }
+    result = await rlm_env._execute_code("sandbox_123", "print(1)", state)
+
+    assert result["status"] == "error"
+    assert "sandbox was restarted" in result["result"].lower()
+    rlm_env._recreate_sandbox.assert_awaited_once()
+    rlm_env._prepare_sandbox_and_start_worker.assert_awaited_once()
+    assert state["_exec_seq"] == 0
+
+
+def test_sub_llm_timeouts_clamped_to_code_timeout(mock_sandbox_client, mock_dataset):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(dataset=mock_dataset, code_execution_timeout=5)
+
+    assert env.sub_llm_api_timeout == 4
+    assert env.sub_llm_timeout == 4
+
+
+def test_install_wait_scales_with_packages(mock_sandbox_client, mock_dataset):
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(
+            dataset=mock_dataset,
+            pip_install_packages="numpy scipy",
+            max_startup_wait_seconds=30,
+        )
+
+    assert env._compute_install_wait_seconds() == 90
+
+
+@pytest.mark.asyncio
+async def test_start_worker_waits_for_install_done(rlm_env):
+    rlm_env._execute_command_with_retry = AsyncMock(
+        return_value=MagicMock(stdout="", stderr="")
+    )
+    rlm_env._wait_for_install_done = AsyncMock()
+    rlm_env._wait_for_worker_ready = AsyncMock()
+
+    state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
+    await rlm_env._start_worker(state)
+
+    rlm_env._wait_for_install_done.assert_awaited_once()
+
+
+def test_worker_timeout_clamped_to_sandbox_timeout():
+    assert (
+        "SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)"
+        in rlm_module._RLM_WORKER_SCRIPT
+    )
+
+
 # =============================================================================
 # 2. Initialization and Configuration
 # =============================================================================
@@ -386,7 +471,227 @@ class TestSetupState:
         result = await rlm_env.setup_state(state)
 
         assert "rlm_context" in result
-        assert result["rlm_context"]["input_data"] == context_data
+        input_spec = result["rlm_context"]["input_data_spec"]
+        assert input_spec is not None
+        assert input_spec["dtype"] == "builtin"
+        assert input_spec["payload_path"] is not None
+
+
+class TestInstallPackages:
+    """Tests for sandbox package installation behavior."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_ignores_non_int_exit_code(self, rlm_env):
+        """Non-int exit_code from mocks should not raise."""
+        rlm_env._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(exit_code=MagicMock(), stdout="", stderr="")
+        )
+
+        await rlm_env._wait_for_install_done("sandbox_123")
+
+        rlm_env._execute_command_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_raises_on_nonzero_exit_code(self, rlm_env):
+        """Non-zero integer exit_code should raise SandboxError."""
+        rlm_env._execute_command_with_retry = AsyncMock(
+            side_effect=[
+                MagicMock(exit_code=1, stdout="", stderr=""),
+                MagicMock(stdout="log", stderr=""),
+            ]
+        )
+
+        with pytest.raises(vf.SandboxError):
+            await rlm_env._wait_for_install_done("sandbox_123")
+
+        assert rlm_env._execute_command_with_retry.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_includes_requests_and_extras(self, rlm_env):
+        """Install command should include requests plus extra packages."""
+        rlm_env.pip_install_packages = "polars>=0.20.0 numpy"
+        rlm_env._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(exit_code=0, stdout="", stderr="")
+        )
+
+        await rlm_env._wait_for_install_done("sandbox_123")
+
+        install_script = rlm_env._execute_command_with_retry.call_args.args[1]
+        assert "pip install -q requests polars>=0.20.0 numpy" in install_script
+
+
+# =============================================================================
+# 3. Data Serialization
+# =============================================================================
+
+
+class TestDataSerialization:
+    """Tests for prepare_context_data and default serializers."""
+
+    def test_prepare_text_context_data_for_text(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            "hello", None, serializers, max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "text"
+        assert spec["payload_path"] is not None
+        assert prepared.payload_bytes is not None
+
+        metadata = prepared.context_dict["input_data_metadata"]
+        assert "str" in metadata["type"]
+        assert metadata["size"] == 5
+        assert "hash" not in metadata
+
+    def test_prepare_builtin_context_data_for_dict(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            {"a": 1}, None, serializers, max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+        assert spec["payload_path"] is not None
+
+        metadata = prepared.context_dict["input_data_metadata"]
+        assert metadata["dtype"] == "builtin"
+
+    def test_prepare_context_data_requires_supported_dtype(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Unsupported dtype.*dict"):
+            prepare_context_data(
+                {"a": 1}, "unknown", serializers, max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_rejects_unknown_type(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Unsupported data type.*object"):
+            prepare_context_data(object(), None, serializers, max_payload_bytes=1024)
+
+    def test_prepare_file_payload_with_deserializer(self):
+        serializer = DataSerializer(
+            dtype="file",
+            serialize=lambda data: SerializedData(
+                dtype="file",
+                inline_data=None,
+                file_bytes=b"payload",
+                file_name="payload.bin",
+                metadata={"type": "file"},
+                deserializer_code="def decode(payload, spec):\n    return payload\n",
+                deserializer_function="decode",
+            ),
+        )
+        prepared = prepare_context_data(
+            object(), "file", [serializer], max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec["payload_path"] is not None
+        assert spec["deserializer_code"] is not None
+        assert spec["deserializer_function"] == "decode"
+
+    def test_inline_payload_rejected(self):
+        serializer = DataSerializer(
+            dtype="inline",
+            serialize=lambda data: SerializedData(
+                dtype="inline",
+                inline_data={"value": "nope"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "inline"},
+            ),
+        )
+        with pytest.raises(ValueError, match="Inline payloads are not supported"):
+            prepare_context_data(
+                object(), "inline", [serializer], max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_requires_deserializer_for_custom_dtype(self):
+        serializer = DataSerializer(
+            dtype="binary",
+            serialize=lambda data: SerializedData(
+                dtype="binary",
+                inline_data=None,
+                file_bytes=b"payload",
+                file_name="payload.bin",
+                metadata={"type": "binary"},
+            ),
+        )
+        with pytest.raises(ValueError, match="requires a deserializer"):
+            prepare_context_data(
+                object(), "binary", [serializer], max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_accepts_nested_primitives(self):
+        serializers = build_default_data_serializers()
+        data = {"values": [1, 2, (3, 4)], "flag": True}
+        prepared = prepare_context_data(data, None, serializers, max_payload_bytes=1024)
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_prepare_context_data_accepts_tuple(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            (1, 2, 3), None, serializers, max_payload_bytes=1024
+        )
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_prepare_context_data_accepts_bytes(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            b"payload", None, serializers, max_payload_bytes=1024
+        )
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_payload_size_enforced(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Payload exceeds sandbox storage limit"):
+            prepare_context_data("hello", None, serializers, max_payload_bytes=1)
+
+    def test_prepare_context_data_ambiguous_match_requires_dtype(self):
+        serializer_a = DataSerializer(
+            dtype="a",
+            serialize=lambda data: SerializedData(
+                dtype="a",
+                inline_data={"value": "a"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "a"},
+            ),
+            can_handle=lambda data: True,
+        )
+        serializer_b = DataSerializer(
+            dtype="b",
+            serialize=lambda data: SerializedData(
+                dtype="b",
+                inline_data={"value": "b"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "b"},
+            ),
+            can_handle=lambda data: True,
+        )
+        with pytest.raises(ValueError, match="Ambiguous data type"):
+            prepare_context_data(object(), None, [serializer_a, serializer_b], None)
+
+    def test_builtin_serializer_handles_special_floats(self):
+        serializer = build_builtin_serializer()
+        data = {"values": [float("nan"), float("inf"), float("-inf")]}
+        serialized = serializer.serialize(data)
+        assert serialized.file_bytes is not None
+        decoded = deserialize_builtin(serialized.file_bytes, {})
+        values = decoded["values"]
+        assert math.isnan(values[0])
+        assert values[1] == float("inf")
+        assert values[2] == float("-inf")
 
 
 class TestCleanupRLMState:
@@ -429,9 +734,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_adds_system_prompt_on_first_turn(self, rlm_env):
         """Adds system prompt on first turn (empty trajectory)."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "What is 2+2?"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)
@@ -442,9 +764,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_appends_sub_tools_docs(self, rlm_env_with_sub_tools):
         """Appends sub-tools documentation to system prompt."""
+        metadata_summary = rlm_env_with_sub_tools._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env_with_sub_tools.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env_with_sub_tools._generate_packages_documentation()
+        sub_tools_docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Test"}],
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env_with_sub_tools.get_prompt_messages(state)
@@ -455,9 +794,26 @@ class TestGetPromptMessages:
     @pytest.mark.asyncio
     async def test_string_prompt_converted_to_messages(self, rlm_env):
         """String prompt is converted to message format."""
+        metadata_summary = rlm_env._generate_metadata_documentation({})
+        base_system_prompt = (
+            rlm_env.custom_system_prompt or rlm_module._RLM_SYSTEM_PROMPT
+        )
+        if "{metadata_summary}" in base_system_prompt:
+            base_system_prompt = base_system_prompt.replace(
+                "{metadata_summary}", metadata_summary
+            )
+        else:
+            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+        packages_docs = rlm_env._generate_packages_documentation()
+        sub_tools_docs = rlm_env._generate_sub_tools_documentation()
+        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
         state = {
             "trajectory": [],
             "prompt": "What is 2+2?",
+            "rlm_context": {"input_data_metadata": {}},
+            "rlm_system_prompt": system_prompt,
+            "rlm_packages_docs": packages_docs,
+            "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env.get_prompt_messages(state)
@@ -637,6 +993,38 @@ class TestContextLimitWarning:
         output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
 
         assert "[CONTEXT LIMIT WARNING]" not in output
+
+    @pytest.mark.asyncio
+    async def test_warning_uses_last_main_step(self, rlm_env):
+        """Uses the last main-model step even if a sub-LLM step is last."""
+        rlm_env.max_seq_len = 10000
+        rlm_env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        main_response = MagicMock()
+        main_response.usage = MagicMock(prompt_tokens=8500)
+        sub_response = MagicMock()
+        sub_response.usage = MagicMock(prompt_tokens=10)
+
+        state = {
+            "trajectory": [
+                {"response": main_response, "extras": {}},
+                {"response": sub_response, "extras": {"is_sub_llm_call": True}},
+            ],
+            "context_warning_sent": False,
+        }
+
+        output = await rlm_env.call_python_repl("print('test')", "sandbox_123", state)
+
+        assert "[CONTEXT LIMIT WARNING]" in output
 
 
 class TestPromptTooLongStopCondition:
@@ -1173,65 +1561,85 @@ class TestSubLLMMetricsWithTools:
 
 
 class TestSubLLMCleanup:
-    """Tests for sub-LLM cleanup."""
+    """Tests for sub-LLM trajectory insertion behavior."""
 
     @pytest.mark.asyncio
-    async def test_prepends_trajectory_steps_during_cleanup(self, rlm_env):
-        """Prepends sub-LLM trajectory steps to main trajectory during cleanup."""
+    async def test_adds_steps_immediately(self, rlm_env):
+        """Adds sub-LLM steps immediately via add_trajectory_step."""
         from verifiers.types import TrajectoryStep
 
         rollout_id = "rlm_test123"
-        # Create mock sub-LLM trajectory steps
-        sub_step1 = TrajectoryStep(
-            prompt=[{"role": "user", "content": "sub prompt 1"}],
-            completion=[{"role": "assistant", "content": "sub response 1"}],
-            response=None,
-            tokens=None,
-            reward=None,
-            advantage=None,
-            extras={"is_sub_llm_call": True, "timestamp": 1.0},
-        )
-        sub_step2 = TrajectoryStep(
-            prompt=[{"role": "user", "content": "sub prompt 2"}],
-            completion=[{"role": "assistant", "content": "sub response 2"}],
-            response=None,
-            tokens=None,
-            reward=None,
-            advantage=None,
-            extras={"is_sub_llm_call": True, "timestamp": 2.0},
-        )
+        state = {"trajectory": [], "trajectory_id": "root"}
         rlm_env.active_rollouts[rollout_id] = {
             "client": MagicMock(),
-            "sub_llm_trajectory_steps": [sub_step2, sub_step1],  # Out of order
+            "model": "test-model",
+            "sub_model": "test-model",
+            "state": state,
         }
 
-        # Main trajectory step
-        main_step = TrajectoryStep(
-            prompt=[{"role": "user", "content": "main prompt"}],
-            completion=[{"role": "assistant", "content": "main response"}],
-            response=None,
-            tokens=None,
-            reward=None,
-            advantage=None,
-            extras={},
+        mock_turn_1 = {
+            "prompt_messages": [],
+            "response": MagicMock(),
+            "tool_call_count": 0,
+        }
+        mock_turn_2 = {
+            "prompt_messages": [],
+            "response": MagicMock(),
+            "tool_call_count": 0,
+        }
+        rlm_env._run_sub_llm = AsyncMock(
+            return_value={
+                "final_content": "done",
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "tool_call_count": 0,
+                "num_turns": 2,
+                "max_turns_reached": False,
+                "turns": [mock_turn_1, mock_turn_2],
+            }
         )
-        state = {"rollout_id": rollout_id, "trajectory": [main_step]}
-        await rlm_env.cleanup_rlm_state(state)
 
-        # Trajectory should have sub-LLM steps (sorted by timestamp) prepended
-        assert len(state["trajectory"]) == 3
-        assert state["trajectory"][0]["extras"].get("is_sub_llm_call") is True
-        assert (
-            state["trajectory"][0]["extras"]["timestamp"] == 1.0
-        )  # First by timestamp
-        assert state["trajectory"][1]["extras"]["timestamp"] == 2.0
-        assert state["trajectory"][2]["extras"].get("is_sub_llm_call") is not True
+        with (
+            patch.object(
+                rlm_module, "parse_response_tokens", new=AsyncMock(return_value=None)
+            ),
+            patch.object(
+                rlm_module,
+                "parse_response_messages",
+                new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
+            ),
+            patch.object(
+                rlm_module, "parse_is_truncated", new=AsyncMock(return_value=False)
+            ),
+        ):
+            mock_request = MagicMock()
+            mock_request.match_info = {"rollout_id": rollout_id}
+            mock_request.json = AsyncMock(
+                return_value={
+                    "messages": [{"role": "user", "content": "test"}],
+                    "_batch_id": "batch1",
+                    "_request_id": "req1",
+                }
+            )
+
+            recorded: list[TrajectoryStep] = []
+
+            async def _add_step(state, step):
+                recorded.append(step)
+                state["trajectory"].append(step)
+
+            rlm_env.add_trajectory_step = AsyncMock(side_effect=_add_step)
+
+            await rlm_env._handle_sub_llm_request(mock_request)
+
+        assert len(state["trajectory"]) == 2
+        assert recorded == state["trajectory"]
+        assert state["trajectory"][0]["extras"]["sub_turn_index"] == 0
+        assert state["trajectory"][1]["extras"]["sub_turn_index"] == 1
 
     @pytest.mark.asyncio
-    async def test_no_prepend_when_disabled(self, mock_sandbox_client, mock_dataset):
-        """Does not prepend sub-LLM steps when include_sub_llm_in_trajectory=False."""
-        from verifiers.types import TrajectoryStep
-
+    async def test_no_add_when_disabled(self, mock_sandbox_client, mock_dataset):
+        """Does not add sub-LLM steps when include_sub_llm_in_trajectory=False."""
         with (
             patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
             patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
@@ -1244,35 +1652,62 @@ class TestSubLLMCleanup:
             env.sandbox_client = mock_sandbox_client
 
             rollout_id = "rlm_test123"
-            sub_step = TrajectoryStep(
-                prompt=[{"role": "user", "content": "sub prompt"}],
-                completion=[{"role": "assistant", "content": "sub response"}],
-                response=None,
-                tokens=None,
-                reward=None,
-                advantage=None,
-                extras={"is_sub_llm_call": True, "timestamp": 1.0},
-            )
+            state = {"trajectory": [], "trajectory_id": "root"}
             env.active_rollouts[rollout_id] = {
                 "client": MagicMock(),
-                "sub_llm_trajectory_steps": [sub_step],
+                "model": "test-model",
+                "sub_model": "test-model",
+                "state": state,
             }
 
-            main_step = TrajectoryStep(
-                prompt=[{"role": "user", "content": "main prompt"}],
-                completion=[{"role": "assistant", "content": "main response"}],
-                response=None,
-                tokens=None,
-                reward=None,
-                advantage=None,
-                extras={},
+            env._run_sub_llm = AsyncMock(
+                return_value={
+                    "final_content": "done",
+                    "total_prompt_tokens": 0,
+                    "total_completion_tokens": 0,
+                    "tool_call_count": 0,
+                    "num_turns": 1,
+                    "max_turns_reached": False,
+                    "turns": [
+                        {
+                            "prompt_messages": [],
+                            "response": MagicMock(),
+                            "tool_call_count": 0,
+                        }
+                    ],
+                }
             )
-            state = {"rollout_id": rollout_id, "trajectory": [main_step]}
-            await env.cleanup_rlm_state(state)
 
-            # Should only have main step
-            assert len(state["trajectory"]) == 1
-            assert state["trajectory"][0]["extras"].get("is_sub_llm_call") is not True
+            with (
+                patch.object(
+                    rlm_module,
+                    "parse_response_tokens",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch.object(
+                    rlm_module,
+                    "parse_response_messages",
+                    new=AsyncMock(
+                        return_value=[{"role": "assistant", "content": "ok"}]
+                    ),
+                ),
+                patch.object(
+                    rlm_module, "parse_is_truncated", new=AsyncMock(return_value=False)
+                ),
+            ):
+                mock_request = MagicMock()
+                mock_request.match_info = {"rollout_id": rollout_id}
+                mock_request.json = AsyncMock(
+                    return_value={
+                        "messages": [{"role": "user", "content": "test"}],
+                        "_batch_id": "batch1",
+                        "_request_id": "req1",
+                    }
+                )
+
+                await env._handle_sub_llm_request(mock_request)
+
+            assert state["trajectory"] == []
 
             # Cleanup
             env.active_sandboxes.clear()
