@@ -308,12 +308,15 @@ class Rubric:
 
         return [(v - mean) / std for v in values]
 
-    def _zscore_normalize_batch(self, values: list[float]) -> list[float]:
+    def zscore_normalize_batch(self, values: list[float]) -> list[float]:
         """
         Z-score normalize values WITH epsilon (batch-wise normalization).
 
         Per paper Equation 6: Â_sum = (A_sum - μ) / (σ + ε)
         Epsilon provides numerical stability for batch normalization.
+
+        This method is public so it can be called by the orchestrator/trainer
+        after collecting advantages from ALL examples in the training batch.
 
         Args:
             values: List of values to normalize across batch
@@ -339,18 +342,21 @@ class Rubric:
         """
         Compute GDPO advantages per paper (arXiv:2601.05242).
 
+        NOTE: This method performs steps 1-3 only (gating, group normalization, weighted sum).
+        Step 4 (batch-wise normalization) must be applied separately by the caller
+        after collecting advantages across ALL examples in the batch.
+
         Algorithm:
         1. Apply reward conditioning/gating (Eq. 8)
         2. Per-reward GROUP-wise z-score normalization (Eq. 4) - within each question's rollouts
         3. Sum normalized advantages with weights (Eq. 5)
-        4. BATCH-wise z-score normalization with epsilon (Eq. 6)
 
         Args:
             states: List of states (needed to group by example_id)
             aggregated_metrics: Raw scores per reward function {func_name: [scores]}
 
         Returns:
-            List of final advantages for each state
+            List of pre-batch-normalized advantages (A_sum) for each state
         """
         num_states = len(states)
         if num_states == 0:
@@ -407,9 +413,10 @@ class Rubric:
             for i in range(num_states):
                 A_sum[i] += norm_scores[i] * weight
 
-        # Step 4: BATCH-wise z-score normalization with epsilon (Eq. 6)
-        # Â_sum^(i,j) = (A_sum^(i,j) - μ_batch) / (σ_batch + ε)
-        return self._zscore_normalize_batch(A_sum)
+        # NOTE: Step 4 (batch-wise normalization) is NOT applied here.
+        # The orchestrator/trainer must call zscore_normalize_batch() after
+        # collecting advantages from ALL examples in the training batch.
+        return A_sum
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""

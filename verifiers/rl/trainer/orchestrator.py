@@ -250,6 +250,17 @@ class Orchestrator:
                 completion_logprobs.append(tokens["completion_logprobs"])
                 advantages.append(step["advantage"])
 
+        # GDPO: Apply batch-wise normalization (Eq. 6) across ALL advantages
+        # This is done here because score_group() only sees one example's rollouts,
+        # but Eq. 6 requires normalization across the full training batch.
+        if (
+            hasattr(self.env, "rubric")
+            and self.env.rubric is not None
+            and getattr(self.env.rubric, "advantage_mode", "grpo") == "gdpo"
+            and advantages
+        ):
+            advantages = self.env.rubric.zscore_normalize_batch(advantages)
+
         # Build rewards_dict from rollout-level data (for logging only)
         rewards_dict = {"reward": env_results["reward"]}
         for k in env_results["metrics"]:

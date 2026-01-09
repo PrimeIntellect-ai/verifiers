@@ -527,7 +527,7 @@ class TestGDPO:
         """Test batch z-score normalization uses epsilon in denominator."""
         rubric = Rubric(epsilon=0.1)  # Large epsilon for testing
         values = [1.0, 1.0, 1.0]  # All same -> std=0
-        result = rubric._zscore_normalize_batch(values)
+        result = rubric.zscore_normalize_batch(values)
 
         # With epsilon: (0) / (0 + 0.1) = 0
         for r in result:
@@ -537,7 +537,7 @@ class TestGDPO:
         """Test z-score normalization with empty list."""
         rubric = Rubric(epsilon=1e-8)
         assert rubric._zscore_normalize_group([]) == []
-        assert rubric._zscore_normalize_batch([]) == []
+        assert rubric.zscore_normalize_batch([]) == []
 
     def test_evaluate_gate_simple_condition(self):
         """Test gate evaluation with simple condition."""
@@ -682,7 +682,11 @@ class TestGDPO:
 
     @pytest.mark.asyncio
     async def test_score_group_gdpo_mode_no_gates(self):
-        """Test GDPO mode without gates (per-reward group normalization)."""
+        """Test GDPO mode without gates (per-reward group normalization).
+
+        NOTE: score_group() returns pre-batch-normalized advantages (A_sum).
+        Batch normalization (Eq. 6) is applied by the orchestrator, not here.
+        """
 
         def func1(completion, **kwargs):
             return float(len(completion))
@@ -728,15 +732,19 @@ class TestGDPO:
 
         # func1 rewards: [1, 2, 3] -> within-group z-score -> [-1.22, 0, 1.22]
         # func2 rewards: [0, 1, 0] -> within-group z-score -> [-0.71, 1.41, -0.71]
-        # Sum: [-1.93, 1.41, 0.51]
-        # Batch z-score of sum gives final advantages
+        # Sum (pre-batch-norm): [-1.93, 1.41, 0.51]
+        # NOTE: Batch normalization is NOT applied in score_group() - done by orchestrator
         # The middle state (bx) should have highest advantage
         assert states[1]["advantage"] > states[0]["advantage"]
         assert states[1]["advantage"] > states[2]["advantage"]
 
     @pytest.mark.asyncio
     async def test_score_group_gdpo_mode_with_gates(self):
-        """Test GDPO mode with gating conditions."""
+        """Test GDPO mode with gating conditions.
+
+        NOTE: score_group() returns pre-batch-normalized advantages (A_sum).
+        Batch normalization (Eq. 6) is applied by the orchestrator, not here.
+        """
 
         def correct_answer(completion, answer, **kwargs):
             return 1.0 if completion == answer else 0.0
@@ -788,6 +796,7 @@ class TestGDPO:
         #
         # For correct_answer: [1, 0, 1] -> z-score within group
         # For style_score after gating: [0.8, 0, 0.8] -> z-score within group
+        # NOTE: Batch normalization is NOT applied in score_group() - done by orchestrator
         #
         # The "wrong" state should have worst advantage
         assert states[1]["advantage"] < states[0]["advantage"]
@@ -834,7 +843,11 @@ class TestGDPO:
 
     @pytest.mark.asyncio
     async def test_gdpo_group_wise_normalization(self):
-        """Test that GDPO normalizes within groups (same example_id) per paper Eq. 4."""
+        """Test that GDPO normalizes within groups (same example_id) per paper Eq. 4.
+
+        NOTE: score_group() returns pre-batch-normalized advantages (A_sum).
+        Batch normalization (Eq. 6) is applied by the orchestrator, not here.
+        """
 
         def reward_func(completion, **kwargs):
             return float(len(completion))
@@ -873,12 +886,12 @@ class TestGDPO:
         await rubric.score_group(states, score_sem)
 
         # Within each group: rewards [1, 2, 3] -> z-score -> [-1.22, 0, 1.22] (approx)
-        # Both groups have identical z-scores, so after batch normalization
-        # the final advantages should be symmetric around 0
+        # These are pre-batch-normalized values (A_sum)
+        # NOTE: Batch normalization is NOT applied in score_group() - done by orchestrator
 
         # Group 0: indices 0, 1, 2
         # Group 1: indices 3, 4, 5
-        # Within-group advantages before batch norm should be equal
+        # Within-group advantages (pre-batch norm) should be equal
         group0_advs = [
             states[0]["advantage"],
             states[1]["advantage"],
