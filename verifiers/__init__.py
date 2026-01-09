@@ -4,38 +4,7 @@ import importlib
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Optional
-
-# early imports to avoid circular dependencies
-from .errors import *  # noqa # isort: skip
-from .types import *  # noqa # isort: skip
-from .decorators import (  # noqa # isort: skip
-    cleanup,
-    stop,
-    teardown,
-)
-from .parsers.parser import Parser  # noqa # isort: skip
-from .rubrics.rubric import Rubric  # noqa # isort: skip
-from .envs.environment import Environment  # noqa # isort: skip
-from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
-from .envs.tool_env import ToolEnv  # noqa # isort: skip
-
-# main imports
-from .envs.env_group import EnvGroup
-from .envs.singleturn_env import SingleTurnEnv
-from .envs.stateful_tool_env import StatefulToolEnv
-from .parsers.maybe_think_parser import MaybeThinkParser
-from .parsers.think_parser import ThinkParser
-from .parsers.xml_parser import XMLParser
-from .rubrics.judge_rubric import JudgeRubric
-from .rubrics.rubric_group import RubricGroup
-from .utils.data_utils import (
-    extract_boxed_answer,
-    extract_hash_answer,
-    load_example_dataset,
-)
-from .utils.env_utils import load_environment
-from .utils.logging_utils import print_prompt_completions_sample
+from typing import Optional, TYPE_CHECKING
 
 
 # Setup default logging configuration
@@ -118,37 +87,83 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
-    "get_model": "verifiers.rl.trainer.utils:get_model",
-    "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
-    "RLConfig": "verifiers.rl.trainer:RLConfig",
-    "RLTrainer": "verifiers.rl.trainer:RLTrainer",
-    "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
-    "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
-    "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
-    "lora_defaults": "verifiers.rl.trainer:lora_defaults",
+    "Parser": "verifiers.parsers.parser:Parser",
+    "ThinkParser": "verifiers.parsers.think_parser:ThinkParser",
+    "MaybeThinkParser": "verifiers.parsers.maybe_think_parser:MaybeThinkParser",
+    "XMLParser": "verifiers.parsers.xml_parser:XMLParser",
+    "Rubric": "verifiers.rubrics.rubric:Rubric",
+    "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
+    "RubricGroup": "verifiers.rubrics.rubric_group:RubricGroup",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
-    "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
-    "PythonEnv": "verifiers.envs.python_env:PythonEnv",
+    "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
+    "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
     "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
     "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
     "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
-    "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
-    "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
+    "Environment": "verifiers.envs.environment:Environment",
+    "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
+    "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
+    "PythonEnv": "verifiers.envs.python_env:PythonEnv",
+    "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
+    "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
+    "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
+    "EnvGroup": "verifiers.envs.env_group:EnvGroup",
+    "extract_boxed_answer": "verifiers.utils.data_utils:extract_boxed_answer",
+    "extract_hash_answer": "verifiers.utils.data_utils:extract_hash_answer",
+    "load_example_dataset": "verifiers.utils.data_utils:load_example_dataset",
+    "load_environment": "verifiers.utils.env_utils:load_environment",
+    "print_prompt_completions_sample": (
+        "verifiers.utils.logging_utils:print_prompt_completions_sample"
+    ),
+    "get_model": "verifiers.rl.trainer.utils:get_model",
+    "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
+    "RLTrainer": "verifiers.rl.trainer:RLTrainer",
+    "RLConfig": "verifiers.rl.trainer:RLConfig",
+    "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
+    "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
+    "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
+    "lora_defaults": "verifiers.rl.trainer:lora_defaults",
+    "cleanup": "verifiers.decorators:cleanup",
+    "stop": "verifiers.decorators:stop",
+    "teardown": "verifiers.decorators:teardown",
+    "Error": "verifiers.errors:Error",
+    "ModelError": "verifiers.errors:ModelError",
+    "EmptyModelResponseError": "verifiers.errors:EmptyModelResponseError",
+    "OverlongPromptError": "verifiers.errors:OverlongPromptError",
+    "ToolError": "verifiers.errors:ToolError",
+    "ToolParseError": "verifiers.errors:ToolParseError",
+    "ToolCallError": "verifiers.errors:ToolCallError",
+    "InfraError": "verifiers.errors:InfraError",
+    "SandboxError": "verifiers.errors:SandboxError",
 }
 
 
 def __getattr__(name: str):
-    try:
-        module, attr = _LAZY_IMPORTS[name].split(":")
-        return getattr(importlib.import_module(module), attr)
-    except KeyError:
-        raise AttributeError(f"module 'verifiers' has no attribute '{name}'")
-    except ModuleNotFoundError as e:
-        # warn that accessed var needs [all] to be installed
-        raise AttributeError(
-            f"To use verifiers.{name}, install as `verifiers[all]`. "
-        ) from e
+    target = _LAZY_IMPORTS.get(name)
+    if target is not None:
+        module, attr = target.split(":")
+        try:
+            return getattr(importlib.import_module(module), attr)
+        except ModuleNotFoundError as e:
+            # warn that accessed var needs [all] to be installed
+            raise AttributeError(
+                f"To use verifiers.{name}, install as `verifiers[all]`. "
+            ) from e
+
+    for module_name in ("verifiers.errors", "verifiers.types"):
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        if hasattr(module, name):
+            return getattr(module, name)
+
+    raise AttributeError(f"module 'verifiers' has no attribute '{name}'")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals().keys()) | set(__all__) | set(_LAZY_IMPORTS.keys()))
 
 
 if TYPE_CHECKING:
