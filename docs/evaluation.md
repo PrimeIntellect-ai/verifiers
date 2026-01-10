@@ -84,7 +84,7 @@ Then use the alias directly:
 prime eval run my-env -m qwen3-235b-i
 ```
 
-If the model name isn't found in the registry, the `--api-base-url` and `--api-key-var` flags are used instead.
+If the model name is in the registry, those values are used by default, but you can override them with `--api-base-url` and/or `--api-key-var`. If the model name isn't found, the CLI flags are used (falling back to defaults when omitted).
 
 ### Sampling Parameters
 
@@ -150,4 +150,3 @@ rollouts_per_example = 5
 ```
 
 These defaults are used when flags aren't explicitly provided. Priority order: CLI flags → environment defaults → global defaults.
-
