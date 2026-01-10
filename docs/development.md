@@ -188,13 +188,13 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 
 ```bash
 # Initialize template
-vf-init my-environment
+prime env init my-environment
 
 # Install locally for testing
-vf-install my-environment
+prime env install my-environment
 
 # Test your environment
-vf-eval my-environment -m gpt-4.1-mini -n 5
+prime eval run my-environment -m gpt-4.1-mini -n 5
 ```
 
 ### Environment Module Structure
@@ -248,24 +248,23 @@ uv run ruff check --fix .             # Fix lint errors
 uv run pre-commit run --all-files     # Run all pre-commit hooks
 
 # Environment tools
-vf-init new-env                       # Create environment
-vf-install new-env                    # Install environment
-vf-eval new-env -m gpt-4.1-mini -n 5  # Test environment
-vf-tui                                # Browse eval results
+prime env init new-env                       # Create environment
+prime env install new-env                    # Install environment
+prime eval run new-env -m gpt-4.1-mini -n 5  # Test environment
+prime eval tui                               # Browse eval results
 ```
 
 ### CLI Tools
 
-| Command | Description |
+ | Command | Description |
 |---------|-------------|
-| `vf-eval` | Run evaluations on environments |
-| `vf-init` | Initialize new environment from template |
-| `vf-install` | Install environment module |
-| `vf-setup` | Set up training workspace |
-| `vf-rl` | Run vf.RLTrainer |
-| `vf-train` | Run SFT training |
-| `vf-tui` | Terminal UI for browsing eval results |
-| `prime-rl` | Launch prime-rl training |
+| `prime eval run` | Run evaluations on environments |
+| `prime env init` | Initialize new environment from template |
+| `prime env install` | Install environment module |
+| `prime lab setup` | Set up training workspace |
+| `prime eval tui` | Terminal UI for browsing eval results |
+| `prime rl run` | Launch Hosted Training |
+| `uv run prime-rl` | Launch prime-rl training |
 
 ### Project Guidelines
 

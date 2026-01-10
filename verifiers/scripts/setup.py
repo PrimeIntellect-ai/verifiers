@@ -217,10 +217,30 @@ def install_environments_to_prime_rl():
         print(f"Installed {len(env_modules)} environments")
 
 
+def ensure_uv_project():
+    """Ensure we're in a uv project, initializing one if needed, and add verifiers."""
+    if not os.path.exists("pyproject.toml"):
+        print("No pyproject.toml found, initializing uv project...")
+        print("Running: uv init")
+        result = subprocess.run(["uv", "init"], check=False)
+        if result.returncode != 0:
+            print("Error: Failed to initialize uv project", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Found existing pyproject.toml")
+
+    print("Running: uv add verifiers")
+    result = subprocess.run(["uv", "add", "verifiers"], check=False)
+    if result.returncode != 0:
+        print("Error: Failed to add verifiers", file=sys.stderr)
+        sys.exit(1)
+
+
 def run_setup(
     prime_rl: bool = False,
     vf_rl: bool = False,
     skip_agents_md: bool = False,
+    skip_install: bool = False,
 ) -> None:
     """Run verifiers setup with the specified options.
 
@@ -228,7 +248,11 @@ def run_setup(
         prime_rl: Install prime-rl and download prime-rl configs.
         vf_rl: Download vf-rl configs.
         skip_agents_md: Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md.
+        skip_install: Skip uv project initialization and verifiers installation.
     """
+    if not skip_install:
+        ensure_uv_project()
+
     os.makedirs("configs", exist_ok=True)
     os.makedirs("environments", exist_ok=True)
 
@@ -294,12 +318,18 @@ def main():
         action="store_true",
         help="Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md",
     )
+    parser.add_argument(
+        "--skip-install",
+        action="store_true",
+        help="Skip uv project initialization and verifiers installation",
+    )
     args = parser.parse_args()
 
     run_setup(
         prime_rl=args.prime_rl,
         vf_rl=args.vf_rl,
         skip_agents_md=args.skip_agents_md,
+        skip_install=args.skip_install,
     )
 
 

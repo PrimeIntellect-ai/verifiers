@@ -128,7 +128,7 @@ return vf.SingleTurnEnv(
 )
 ```
 
-When running `vf-eval`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
+When running `prime eval run`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
 
 ## Rubrics
 
@@ -667,10 +667,10 @@ rollouts_per_example = 5
 
 Key `pyproject.toml` sections:
 
-- **`[project]`** — Package name (used by `vf-install` and `vf-eval`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
+- **`[project]`** — Package name (used by `prime env install` and `prime eval run`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
 - **`[build-system]`** — Hatchling is used as the build backend for the Environments Hub.
 - **`[tool.hatch.build]`** — Lists files to include in the package. Always include `pyproject.toml` alongside your environment file to ensure that environment metadata is available when the environment is installed. Add any additional source files here.
-- **`[tool.verifiers.eval]`** — Default parameters for `vf-eval` when flags aren't provided.
+- **`[tool.verifiers.eval]`** — Default parameters for `prime eval run` when flags aren't provided.
 
 ### Managing Dependencies
 
@@ -693,7 +693,7 @@ vf-install my-env                    # from ./environments/my_env
 vf-install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e` for local environments, making them importable by `vf-eval` and other integrations.
+This runs `uv pip install -e` for local environments, making them importable by `prime eval run` and other integrations.
 
 ## Environment Groups
 

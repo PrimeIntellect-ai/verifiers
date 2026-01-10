@@ -99,14 +99,4 @@ ENDPOINTS = {
         "url": "https://api.openai.com/v1",
         "key": "OPENAI_API_KEY",
     },
-    "deepseek-chat": {
-        "model": "deepseek-chat",
-        "url": "https://api.deepseek.com/v1",
-        "key": "DEEPSEEK_API_KEY",
-    },
-    "deepseek-reasoner": {
-        "model": "deepseek-reasoner",
-        "url": "https://api.deepseek.com/v1",
-        "key": "DEEPSEEK_API_KEY",
-    },
 }

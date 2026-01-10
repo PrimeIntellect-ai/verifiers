@@ -4,20 +4,20 @@
 
 ### How do I quickly test my environment?
 
-Use `vf-eval` with a small sample:
+Use `prime eval run` with a small sample:
 
 ```bash
-vf-eval my-environment -m gpt-4.1-mini -n 5 -s
+prime eval run my-environment -m gpt-4.1-mini -n 5
 ```
 
 The `-s` flag prints sample outputs so you can see what's happening.
 
 ### How do I see what the model is outputting?
 
-**If using `vf-eval`**: Results are saved automatically. Browse them interactively with:
+**If using `prime eval run`**: Results are saved automatically. Browse them interactively with:
 
 ```bash
-vf-tui
+prime eval tui
 ```
 
 **If using the Python API** (`env.generate()` / `env.evaluate()`):
@@ -31,7 +31,7 @@ vf.print_prompt_completions_sample(outputs, n=3)
 Set the `VF_LOG_LEVEL` environment variable:
 
 ```bash
-VF_LOG_LEVEL=DEBUG vf-eval my-environment -m gpt-4.1-mini -n 5
+VF_LOG_LEVEL=DEBUG prime eval run my-environment -m gpt-4.1-mini -n 5
 ```
 
 ## Environments

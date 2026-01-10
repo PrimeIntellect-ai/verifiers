@@ -13,18 +13,18 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Output and Saving](#output-and-saving)
 - [Environment Defaults](#environment-defaults)
 
-Use `vf-eval` to execute rollouts against any OpenAI-compatible model and report aggregate metrics.
+Use `prime eval` to execute rollouts against any OpenAI-compatible model and report aggregate metrics.
 
 ## Basic Usage
 
 Environments must be installed as Python packages before evaluation. From a local environment:
 
 ```bash
-uv run vf-install my-env           # installs ./environments/my_env as a package
-uv run vf-eval my-env -m gpt-4.1-mini -n 10
+prime env install my-env           # installs ./environments/my_env as a package
+prime eval run my-env -m gpt-4.1-mini -n 10
 ```
 
-`vf-eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 10 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+`prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
 ## Command Reference
 
@@ -42,13 +42,13 @@ The `env_id` is converted to a Python module name (`my-env` → `my_env`) and im
 The `--env-args` flag passes arguments to your `load_environment()` function:
 
 ```bash
-vf-eval my-env -a '{"difficulty": "hard", "num_examples": 100}'
+prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
 ```
 
 The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` which may not be exposed via `load_environment()`:
 
 ```bash
-vf-eval my-env -x '{"max_turns": 20}'
+prime eval run my-env -x '{"max_turns": 20}'
 ```
 
 ### Model Configuration
@@ -81,7 +81,7 @@ ENDPOINTS = {
 Then use the alias directly:
 
 ```bash
-vf-eval my-env -m qwen3-235b-i
+prime eval run my-env -m qwen3-235b-i
 ```
 
 If the model name isn't found in the registry, the `--api-base-url` and `--api-key-var` flags are used instead.
@@ -97,7 +97,7 @@ If the model name isn't found in the registry, the `--api-base-url` and `--api-k
 The `--sampling-args` flag accepts any parameters supported by the model's API:
 
 ```bash
-vf-eval my-env -S '{"temperature": 0.7, "top_p": 0.9}'
+prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 ```
 
 ### Evaluation Scope
@@ -136,7 +136,7 @@ Results are saved to `./outputs/evals/{env_id}--{model}/` as a Hugging Face data
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
 
 ```bash
-vf-eval my-env -s -C "judge_response,parsed_answer"
+prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
 
 ## Environment Defaults
