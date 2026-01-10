@@ -250,9 +250,11 @@ class SubLLMResult(TypedDict):
 _RLM_WORKER_SCRIPT = textwrap.dedent(
     '''
     import ast
+    import base64
     import contextlib
     import io
     import json
+    import mimetypes
     import os
     import sys
     import traceback
@@ -337,6 +339,85 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     if Path(ANSWER_FILE).exists():
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
             answer = json.load(f)
+
+    artifacts = []
+
+    def emit_artifact(artifact: dict) -> str:
+        if not isinstance(artifact, dict):
+            raise TypeError("emit_artifact expects a dict")
+        artifacts.append(artifact)
+        return f"[artifact:{{len(artifacts) - 1}}]"
+
+    def _guess_mime_from_path(path: str) -> str | None:
+        mime, _ = mimetypes.guess_type(path)
+        return mime
+
+    def _encode_image_bytes(data, mime: str | None) -> tuple[bytes, str]:
+        # Return (bytes, mime)
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            out = bytes(data)
+            return out, (mime or "image/png")
+
+        if isinstance(data, str):
+            if os.path.exists(data):
+                with open(data, "rb") as f:
+                    out = f.read()
+                guessed = _guess_mime_from_path(data)
+                return out, (mime or guessed or "image/png")
+            try:
+                out = base64.b64decode(data, validate=True)
+                return out, (mime or "image/png")
+            except Exception as e:
+                raise ValueError(
+                    "emit_image expected a file path or base64 string"
+                ) from e
+
+        # Optional PIL + numpy support
+        try:
+            from PIL import Image  # type: ignore
+        except Exception:
+            Image = None
+        if Image is not None:
+            if isinstance(data, Image.Image):
+                buf = io.BytesIO()
+                fmt = "PNG"
+                if mime and mime.lower() in ("image/jpeg", "image/jpg"):
+                    fmt = "JPEG"
+                elif mime and mime.lower() == "image/webp":
+                    fmt = "WEBP"
+                data.save(buf, format=fmt)
+                return buf.getvalue(), (mime or "image/png")
+            try:
+                import numpy as np  # type: ignore
+            except Exception:
+                np = None
+            if np is not None and isinstance(data, np.ndarray):
+                img = Image.fromarray(data)
+                buf = io.BytesIO()
+                fmt = "PNG"
+                if mime and mime.lower() in ("image/jpeg", "image/jpg"):
+                    fmt = "JPEG"
+                elif mime and mime.lower() == "image/webp":
+                    fmt = "WEBP"
+                img.save(buf, format=fmt)
+                return buf.getvalue(), (mime or "image/png")
+
+        raise TypeError(
+            "emit_image expects bytes, base64 str, file path, or PIL/numpy image"
+        )
+
+    def emit_image(data, *, mime: str | None = None, name: str | None = None, meta: dict | None = None) -> str:
+        img_bytes, resolved_mime = _encode_image_bytes(data, mime)
+        encoded = base64.b64encode(img_bytes).decode("ascii")
+        artifact = {{
+            "type": "image",
+            "mime": resolved_mime,
+            "data_b64": encoded,
+            "byte_size": len(img_bytes),
+            "name": name,
+            "meta": meta or {{}},
+        }}
+        return emit_artifact(artifact)
 
     def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
         """Make a single sub-LLM call via interception server.
@@ -433,6 +514,9 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         "extra_data": extra_data,
         "answer": answer,
         "llm_batch": llm_batch,
+        "emit_image": emit_image,
+        "emit_artifact": emit_artifact,
+        "artifacts": artifacts,
     }}
 
     # Signal ready
@@ -452,6 +536,8 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         code = request.get("code", "")
         seq = request.get("seq", 0)  # Sequence number for request/response matching
         execution_count += 1
+
+        artifacts.clear()
         
         result = {{
             "status": "ok",
@@ -461,6 +547,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             "execution_count": execution_count,
             "seq": seq,  # Echo back sequence number for framework to verify
             "answer": namespace.get("answer", {{"ready": False, "content": ""}}),
+            "artifacts": [],
         }}
         
         stdout_buffer = io.StringIO()
@@ -491,6 +578,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         result["stdout"] = stdout_buffer.getvalue()
         result["stderr"] = stderr_buffer.getvalue()
         result["answer"] = namespace.get("answer", {{"ready": False, "content": ""}})
+        result["artifacts"] = list(artifacts)
         
         # Save answer to file for persistence
         with open(ANSWER_FILE, "w", encoding="utf-8") as f:
@@ -609,6 +697,7 @@ _RLM_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) en
 You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
+Use `emit_image(...)` inside the REPL when you want to surface an image to the main model.
 
 ## Input Data Metadata
 {metadata_summary}
@@ -692,6 +781,10 @@ class RLMEnv(SandboxEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
+        allow_multimodal_tool_output: If True, include image artifacts in tool output
+                   as multimodal content. If False (default), emit placeholders.
+        max_artifacts_per_call: Max artifacts to emit per REPL call (default: 4).
+        max_artifact_bytes: Max size per artifact in bytes (default: 2MB).
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -726,6 +819,9 @@ class RLMEnv(SandboxEnv):
         context_warning_threshold: float = 0.80,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
+        allow_multimodal_tool_output: bool = False,
+        max_artifacts_per_call: int = 4,
+        max_artifact_bytes: int = 2 * 1024 * 1024,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -758,6 +854,9 @@ class RLMEnv(SandboxEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
+        self.allow_multimodal_tool_output = allow_multimodal_tool_output
+        self.max_artifacts_per_call = max(0, int(max_artifacts_per_call))
+        self.max_artifact_bytes = max(0, int(max_artifact_bytes))
         # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
         # This ensures server responds before sandbox worker's HTTP request times out
         (
@@ -1870,7 +1969,7 @@ PY
     # REPL Tool
     # =========================================================================
 
-    async def call_python_repl(self, code: str, sandbox_id: str, state: Any) -> str:
+    async def call_python_repl(self, code: str, sandbox_id: str, state: Any) -> object:
         """
         Execute Python code in a persistent REPL environment.
 
@@ -1886,12 +1985,17 @@ PY
           - Takes a list of prompts, returns a list of answers (same order)
           - Useful for semantic understanding, summarization, complex reasoning
           - Prints metadata summary showing tokens and tool calls per sub-LLM
+        - `emit_image(data, mime=None, name=None, meta=None)`: Emit an image artifact
+          - data: bytes, base64 string, file path, PIL Image, or numpy array
+          - returns a short artifact handle you can print for logging
+        - `emit_artifact(dict)`: Emit a custom artifact (advanced)
 
         Args:
             code: Python code to execute in the persistent REPL
 
         Returns:
-            Execution output including stdout, stderr, and expression results
+            Execution output including stdout, stderr, and expression results.
+            When multimodal tool output is enabled, may return a structured tool message.
         """
         # Update current turn in rollout context for sub-LLM call tracking
         rollout_id = state.get("rollout_id")
@@ -1903,6 +2007,7 @@ PY
         result = await self._execute_code(sandbox_id, code, state)
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
+        artifacts = result.get("artifacts") or []
 
         # Track timing in state for metrics
         state.setdefault("tool_call_timings", []).append(
@@ -1915,6 +2020,35 @@ PY
 
         # Append execution time to output
         output += f"\n[Execution time: {execution_time:.2f}s]"
+
+        artifact_placeholders: list[str] = []
+        if artifacts:
+            if (
+                self.max_artifacts_per_call
+                and len(artifacts) > self.max_artifacts_per_call
+            ):
+                artifacts = artifacts[: self.max_artifacts_per_call]
+                artifact_placeholders.append(
+                    f"[artifacts truncated to {self.max_artifacts_per_call}]"
+                )
+            for artifact in artifacts:
+                artifact_type = artifact.get("type")
+                name = artifact.get("name")
+                mime = artifact.get("mime")
+                byte_size = artifact.get("byte_size")
+                label = name if name else "unnamed"
+                if (
+                    self.max_artifact_bytes
+                    and byte_size
+                    and byte_size > self.max_artifact_bytes
+                ):
+                    artifact_placeholders.append(
+                        f"[artifact skipped: {label} ({artifact_type}, {byte_size} bytes exceeds limit)]"
+                    )
+                else:
+                    artifact_placeholders.append(
+                        f"[artifact: {label} ({artifact_type}, {mime}, {byte_size} bytes)]"
+                    )
 
         # Check if answer is ready
         answer = result.get("answer", {})
@@ -1948,6 +2082,37 @@ PY
                     "soon by setting answer['ready'] = True."
                 )
 
+        if artifacts and self.allow_multimodal_tool_output:
+            content_parts: list[dict[str, Any]] = [{"type": "text", "text": output}]
+            for artifact in artifacts:
+                if artifact.get("type") != "image":
+                    continue
+                byte_size = artifact.get("byte_size")
+                if (
+                    self.max_artifact_bytes
+                    and byte_size
+                    and byte_size > self.max_artifact_bytes
+                ):
+                    continue
+                mime = artifact.get("mime") or "image/png"
+                data_b64 = artifact.get("data_b64") or ""
+                if not data_b64:
+                    continue
+                data_url = f"data:{mime};base64,{data_b64}"
+                content_parts.append(
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                )
+            if artifact_placeholders:
+                content_parts.append(
+                    {"type": "text", "text": "\n".join(artifact_placeholders)}
+                )
+            return {
+                "role": "tool",
+                "content": content_parts,
+            }
+
+        if artifact_placeholders:
+            output += "\n" + "\n".join(artifact_placeholders)
         return output
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
