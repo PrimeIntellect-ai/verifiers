@@ -157,11 +157,18 @@ class EnvGroup(vf.Environment):
         # concatenate datasets - override task column to use env_names for routing
         datasets = []
         eval_datasets = []
-        for env, name in zip(self.envs, self.env_names):
+
+        def make_add_task_fn(task_name: str):
+            """Factory function to avoid closure capturing loop variable by reference."""
 
             def add_task(example):
-                example["task"] = name
+                example["task"] = task_name
                 return example
+
+            return add_task
+
+        for env, name in zip(self.envs, self.env_names):
+            add_task = make_add_task_fn(name)
 
             env_dataset = env.get_dataset()
             if env_dataset is not None:
