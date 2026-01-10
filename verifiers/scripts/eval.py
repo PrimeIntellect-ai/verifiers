@@ -103,14 +103,14 @@ def main():
         "--api-key-var",
         "-k",
         type=str,
-        default="OPENAI_API_KEY",
+        default="PRIME_API_KEY",
         help="Environment variable name for API key",
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
-        default="https://api.openai.com/v1",
+        default="https://api.pinference.ai/api/v1",
         help="Base URL for API",
     )
     parser.add_argument(

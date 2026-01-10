@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich.console import Console
 from rich.markup import escape as safe_escape
 from rich.text import Text
-from rich.console import Console
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding

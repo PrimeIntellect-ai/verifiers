@@ -1,3 +1,3 @@
 # CLAUDE.md
 
-See `AGENTS.md` and follow all relevant guidelines. Treat all `AGENTS.md` files as equivalent to `CLAUDE.md` files.
+Before beginning any user tasks, please refer to `AGENTS.md` and follow all relevant guidelines, and view `environments/AGENTS.md` for information on building environments with `verifiers`. Treat all `AGENTS.md` files as equivalent to `CLAUDE.md` files.

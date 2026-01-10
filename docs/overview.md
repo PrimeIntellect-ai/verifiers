@@ -17,10 +17,10 @@ Ensure you have `uv` installed, as well as the `prime` CLI tool:
 ```bash
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# create a new project if needed
-uv init && uv venv --python 3.12
 # install the prime CLI
 uv tool install prime
+# create a new project if needed
+uv init
 ```
 
 Then, add `verifiers` to your project:
@@ -30,7 +30,7 @@ uv add verifiers
 
 To set up your workspace for developing environments, do:
 ```bash
-uv run vf-setup
+prime lab setup
 ```
 
 This creates the recommended workspace structure and downloads useful starter files:
@@ -46,7 +46,7 @@ CLAUDE.md               # Claude-specific pointer to AGENTS.md
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-uv run vf-init my-env # creates a new template in ./environments/my_env
+prime env init my-env # creates a new template in ./environments/my_env
 ```
 
 This will create a new module called `my_env` with a basic environment template.
@@ -74,12 +74,12 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 
 To install the environment module into your project, do:
 ```bash
-uv run vf-install my-env
+prime env install my-env
 ```
 
 To run a quick local evaluation with OpenAI-compatible models, do:
 ```bash
-uv run vf-eval my-env -m gpt-5-nano -s # run and save eval results locally
+prime eval run my-env -m gpt-5-nano # run and save eval results locally
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
@@ -89,7 +89,7 @@ prime env push --path ./environments/my_env
 
 To run an evaluation directly from the Environments Hub, do:
 ```bash
-prime eval primeintellect/math-python
+prime eval run primeintellect/math-python
 ``` 
 
 To install an environment from the Environments Hub into your project, do:
