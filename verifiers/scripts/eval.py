@@ -4,6 +4,7 @@ import importlib.resources
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 try:
@@ -19,6 +20,89 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
+DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_PRIME_TEAM_HEADER = "X-Prime-Team-ID"
+LEGACY_PRIME_TEAM_HEADERS = {"X-PI-TEAM-ID", "X-Prime-Team-ID"}
+DEFAULT_PRIME_CONFIG_PATH = Path.home() / ".prime" / "config.json"
+
+
+def _load_prime_config() -> dict[str, Any] | None:
+    config_path = Path(
+        os.getenv("PRIME_CONFIG_PATH", str(DEFAULT_PRIME_CONFIG_PATH))
+    ).expanduser()
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.debug(f"Failed to read Prime config at {config_path}: {exc}")
+        return None
+    if not isinstance(config, dict):
+        logger.debug(f"Prime config at {config_path} is not a JSON object")
+        return None
+    return config
+
+
+def _should_use_prime_team_header(
+    api_base_url: str,
+    api_key_var: str,
+    prime_config: dict[str, Any],
+) -> bool:
+    if api_key_var == "PRIME_API_KEY":
+        return True
+    if "pinference.ai" in api_base_url:
+        return True
+    inference_url = prime_config.get("inference_url")
+    if isinstance(inference_url, str) and inference_url:
+        return api_base_url.rstrip("/") == inference_url.rstrip("/")
+    return False
+
+
+def _get_prime_inference_url() -> str | None:
+    prime_config = _load_prime_config()
+    if not prime_config:
+        return None
+    inference_url = prime_config.get("inference_url")
+    if isinstance(inference_url, str) and inference_url.strip():
+        return inference_url.strip()
+    return None
+
+
+def _get_prime_team_id(api_base_url: str, api_key_var: str) -> str | None:
+    prime_config = _load_prime_config()
+    if not prime_config:
+        return None
+    if not _should_use_prime_team_header(api_base_url, api_key_var, prime_config):
+        return None
+    team_id = prime_config.get("team_id")
+    if isinstance(team_id, str) and team_id.strip():
+        return team_id.strip()
+    return None
+
+
+def _merge_headers(header_args: list[str] | None, api_base_url: str, api_key_var: str):
+    merged_headers: Dict[str, str] = {}
+    merged_header_keys = set()
+    for h in header_args or []:
+        if ":" not in h:
+            raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
+        k, v = h.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if not k:
+            raise ValueError("--header name cannot be empty")
+        merged_headers[k] = v
+        merged_header_keys.add(k.lower())
+
+    team_header = os.getenv("PRIME_TEAM_ID_HEADER", DEFAULT_PRIME_TEAM_HEADER)
+    known_team_headers = {team_header, *LEGACY_PRIME_TEAM_HEADERS}
+    if not any(h.lower() in merged_header_keys for h in known_team_headers):
+        team_id = _get_prime_team_id(api_base_url, api_key_var)
+        if team_id:
+            merged_headers[team_header] = team_id
+            logger.debug(f"Using Prime team header {team_header} from local config")
+
+    return merged_headers
 
 
 def get_env_eval_defaults(env_id: str) -> Dict[str, Any]:
@@ -110,8 +194,8 @@ def main():
         "--api-base-url",
         "-b",
         type=str,
-        default="https://api.pinference.ai/api/v1",
-        help="Base URL for API",
+        default=None,
+        help=f"Base URL for API (default: {DEFAULT_API_BASE_URL})",
     )
     parser.add_argument(
         "--header",
@@ -276,7 +360,9 @@ def main():
             f"Model '{args.model}' not found in endpoint registry, using command-line arguments"
         )
         api_key_var = args.api_key_var
-        api_base_url = args.api_base_url
+        api_base_url = (
+            args.api_base_url or _get_prime_inference_url() or DEFAULT_API_BASE_URL
+        )
 
     # merge sampling args with precedence to JSON payload over explicit flags
     merged_sampling_args: dict = {}
@@ -287,21 +373,13 @@ def main():
     if args.temperature is not None and "temperature" not in merged_sampling_args:
         merged_sampling_args["temperature"] = args.temperature
 
-    # Build headers from repeated --header flags
-    merged_headers: Dict[str, str] = {}
-    for h in args.header or []:
-        if ":" not in h:
-            raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
-        k, v = h.split(":", 1)
-        k, v = k.strip(), v.strip()
-        if not k:
-            raise ValueError("--header name cannot be empty")
-        merged_headers[k] = v
+    # Build headers from repeated --header flags, then augment from Prime config.
+    merged_headers = _merge_headers(args.header, api_base_url, api_key_var)
 
     client_config = ClientConfig(
         api_key_var=api_key_var,
         api_base_url=api_base_url,
-        extra_headers=merged_headers,
+        extra_headers=merged_headers or None,
     )
 
     # run evaluation

@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,6 +69,8 @@ def _run_cli(monkeypatch, overrides):
 
     async def fake_run_evaluation(config):
         captured["sampling_args"] = dict(config.sampling_args)
+        captured["extra_headers"] = config.client_config.extra_headers
+        captured["base_url"] = config.client_config.api_base_url
         metadata = _make_metadata(config)
         return GenerateOutputs(
             prompt=[[{"role": "user", "content": "p"}]],
@@ -128,3 +131,97 @@ def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch):
     assert sa["max_tokens"] == 55
     assert sa["temperature"] == 0.8
     assert sa["enable_thinking"] is True
+
+
+def test_cli_prime_team_header_from_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "team_id": "team-123",
+                "inference_url": "https://api.pinference.ai/api/v1",
+            }
+        )
+    )
+    monkeypatch.setenv("PRIME_CONFIG_PATH", str(config_path))
+
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "api_key_var": "PRIME_API_KEY",
+            "api_base_url": "https://api.pinference.ai/api/v1",
+        },
+    )
+
+    assert captured["extra_headers"] == {"X-Prime-Team-ID": "team-123"}
+
+
+def test_cli_prime_team_header_respects_explicit_header(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "team_id": "team-123",
+                "inference_url": "https://api.pinference.ai/api/v1",
+            }
+        )
+    )
+    monkeypatch.setenv("PRIME_CONFIG_PATH", str(config_path))
+
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "header": ["X-Prime-Team-ID: manual-team"],
+            "api_key_var": "PRIME_API_KEY",
+            "api_base_url": "https://api.pinference.ai/api/v1",
+        },
+    )
+
+    assert captured["extra_headers"] == {"X-Prime-Team-ID": "manual-team"}
+
+
+def test_cli_prime_team_header_respects_legacy_header(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "team_id": "team-123",
+                "inference_url": "https://api.pinference.ai/api/v1",
+            }
+        )
+    )
+    monkeypatch.setenv("PRIME_CONFIG_PATH", str(config_path))
+
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "header": ["X-PI-TEAM-ID: legacy-team"],
+            "api_key_var": "PRIME_API_KEY",
+            "api_base_url": "https://api.pinference.ai/api/v1",
+        },
+    )
+
+    assert captured["extra_headers"] == {"X-PI-TEAM-ID": "legacy-team"}
+
+
+def test_cli_prime_inference_url_fallback(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "team_id": "team-123",
+                "inference_url": "https://api.pinference.ai/api/v1",
+            }
+        )
+    )
+    monkeypatch.setenv("PRIME_CONFIG_PATH", str(config_path))
+
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "api_key_var": "PRIME_API_KEY",
+            "api_base_url": None,
+        },
+    )
+
+    assert captured["base_url"] == "https://api.pinference.ai/api/v1"

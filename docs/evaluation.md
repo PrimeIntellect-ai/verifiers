@@ -61,6 +61,8 @@ prime eval run my-env -x '{"max_turns": 20}'
 | `--endpoints-path` | `-e` | `./configs/endpoints.py` | Path to endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
+If you're using Prime Inference, `prime eval` will automatically read `team_id` from `~/.prime/config.json` and set the `X-Prime-Team-ID` header unless you already pass that header (or the legacy `X-PI-TEAM-ID`). If you omit `--api-base-url` and the endpoint registry doesn't apply, it will also use `inference_url` from the same config. You can override the config path with `PRIME_CONFIG_PATH` and the header name with `PRIME_TEAM_ID_HEADER`.
+
 For convenience, define model endpoints in `./configs/endpoints.py` to avoid repeating URL and key flags:
 
 ```python
@@ -150,4 +152,3 @@ rollouts_per_example = 5
 ```
 
 These defaults are used when flags aren't explicitly provided. Priority order: CLI flags → environment defaults → global defaults.
-
