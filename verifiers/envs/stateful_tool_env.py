@@ -174,10 +174,10 @@ class StatefulToolEnv(vf.ToolEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
             try:
-                tool_message: vf.Message = await self.call_tool(
-                    tool_name, tool_args, tool_call_id
+                tool_result = await self.call_tool(tool_name, tool_args, tool_call_id)
+                tool_messages.extend(
+                    self._normalize_tool_result(tool_result, tool_call_id)
                 )
-                tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e

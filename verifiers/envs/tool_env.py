@@ -4,7 +4,7 @@ from typing import Callable, cast
 from openai.types.chat import ChatCompletionAssistantMessageParam
 
 import verifiers as vf
-from verifiers.types import Messages
+from verifiers.types import ChatMessage, Messages
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 
@@ -99,6 +99,55 @@ class ToolEnv(vf.MultiTurnEnv):
         """Check if error is in stop_errors."""
         return any(isinstance(err, err_type) for err_type in self.stop_errors)
 
+    def _is_chat_message(self, value: object) -> bool:
+        return isinstance(value, dict) and "role" in value and "content" in value
+
+    def _content_is_valid(self, content: object) -> bool:
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return True
+        if isinstance(content, list):
+            return all(isinstance(part, (str, dict)) for part in content)
+        return False
+
+    def _stringify_tool_result(self, result: object, tool_call_id: str) -> ChatMessage:
+        return cast(
+            ChatMessage,
+            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+        )
+
+    def _normalize_tool_result(
+        self, result: object, tool_call_id: str
+    ) -> list[ChatMessage]:
+        """Normalize tool output into a list of tool messages."""
+        if self._is_chat_message(result):
+            message = dict(cast(dict, result))
+            content = message.get("content")
+            if not self._content_is_valid(content):
+                return [self._stringify_tool_result(result, tool_call_id)]
+            message["role"] = "tool"
+            message["tool_call_id"] = tool_call_id
+            return [cast(ChatMessage, message)]
+
+        if (
+            isinstance(result, list)
+            and result
+            and all(self._is_chat_message(item) for item in result)
+        ):
+            normalized: list[ChatMessage] = []
+            for item in result:
+                message = dict(cast(dict, item))
+                content = message.get("content")
+                if not self._content_is_valid(content):
+                    return [self._stringify_tool_result(result, tool_call_id)]
+                message["role"] = "tool"
+                message["tool_call_id"] = tool_call_id
+                normalized.append(cast(ChatMessage, message))
+            return normalized
+
+        return [self._stringify_tool_result(result, tool_call_id)]
+
     def add_tool(self, tool: Callable):
         self.tools.append(tool)
         if self.oai_tools is None:
@@ -129,14 +178,11 @@ class ToolEnv(vf.MultiTurnEnv):
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> vf.Message:
+    ) -> object:
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
-        return cast(
-            vf.Message,
-            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
-        )
+        return result
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
@@ -168,10 +214,10 @@ class ToolEnv(vf.MultiTurnEnv):
                 continue  # skip tool call below
 
             try:
-                tool_message: vf.Message = await self.call_tool(
-                    tool_name, tool_args, tool_call_id
+                tool_result = await self.call_tool(tool_name, tool_args, tool_call_id)
+                tool_messages.extend(
+                    self._normalize_tool_result(tool_result, tool_call_id)
                 )
-                tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e

@@ -72,6 +72,66 @@ class TestStatefulToolEnv:
         assert state["update_calls"] == 1
         assert state["last_tool_args"]["offset"] == 3
 
+    @pytest.mark.asyncio
+    async def test_stateful_tool_env_allows_multimodal_tool_message(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        def image_tool():
+            return {
+                "role": "tool",
+                "content": [
+                    {"type": "text", "text": "Here is the image."},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AA=="},
+                    },
+                ],
+            }
+
+        class ImageStatefulEnv(vf.StatefulToolEnv):
+            def __init__(self, **kwargs):
+                super().__init__(tools=[image_tool], **kwargs)
+
+            def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+                return tool_args
+
+        env = ImageStatefulEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=vf.Parser(),
+            rubric=vf.Rubric(),
+        )
+
+        tool_call = _build_tool_call("image_tool", {})
+        user_message = ChatCompletionUserMessageParam(content="Show image", role="user")
+
+        mock_openai_client.add_chat_response(
+            messages=[user_message],
+            response="Using tool",
+            tool_calls=[tool_call],
+        )
+
+        state = await env.rollout(
+            input=RolloutInput(
+                prompt=[user_message],
+                task="",
+                answer="",
+                example_id=0,
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        assert len(state["trajectory"]) == 2
+        prompt_messages = state["trajectory"][1]["prompt"]
+        tool_messages = [m for m in prompt_messages if m.get("role") == "tool"]
+        assert tool_messages
+        tool_msg = tool_messages[0]
+        assert tool_msg.get("tool_call_id") == "call_0"
+        assert isinstance(tool_msg.get("content"), list)
+        assert tool_msg["content"][1]["type"] == "image_url"
+
     def test_stateful_tool_env_add_tool_skips_args(self, mock_stateful_tool_env):
         mock_stateful_tool_env.add_tool(secret_tool, args_to_skip=["secret"])
 
