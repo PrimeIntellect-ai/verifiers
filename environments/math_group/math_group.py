@@ -9,6 +9,10 @@ from verifiers.utils.data_utils import (
 
 AdvantageMode = Literal["grpo", "gdpo"]
 
+# Length threshold for binary length reward (characters)
+# Responses shorter than this get reward=1, longer get reward=0
+LENGTH_THRESHOLD = 512
+
 
 def load_environment(
     advantage_mode: AdvantageMode = "grpo",
@@ -19,15 +23,32 @@ def load_environment(
         response = parser.parse_answer(completion) or ""
         return 1.0 if response == answer else 0.0
 
-    # GDPO: gate format_reward on correctness
-    # Format only counts if the answer is correct (harder gates easier)
+    def length_reward_func(completion, **kwargs):
+        """
+        Binary length reward: 1.0 if response is concise, 0.0 otherwise.
+        This creates tension with correctness - shorter is easier but often wrong.
+        """
+        if isinstance(completion, list):
+            text = completion[-1].get("content", "") if completion else ""
+        else:
+            text = str(completion)
+        return 1.0 if len(text) <= LENGTH_THRESHOLD else 0.0
+
+    # GDPO: gate format and length on correctness
+    # These rewards only count if the answer is correct (harder gates easier)
+    # This prevents reward hacking where model games easy rewards while being wrong
     gates: dict = (
         {
             "format_reward_func": {
                 "func": "math_answer_reward_func",
                 "op": ">=",
                 "value": 1.0,
-            }
+            },
+            "length_reward_func": {
+                "func": "math_answer_reward_func",
+                "op": ">=",
+                "value": 1.0,
+            },
         }
         if advantage_mode == "gdpo"
         else {}
@@ -35,8 +56,12 @@ def load_environment(
 
     rubric = vf.Rubric(
         parser=parser,
-        funcs=[math_answer_reward_func, parser.get_format_reward_func()],
-        weights=[1.0, 0.2],
+        funcs=[
+            math_answer_reward_func,
+            parser.get_format_reward_func(),
+            length_reward_func,
+        ],
+        weights=[1.0, 0.2, 0.3],
         advantage_mode=advantage_mode,
         gates=gates,
     )
