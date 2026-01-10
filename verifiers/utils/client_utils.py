@@ -61,6 +61,7 @@ def setup_client(
         api_key=api_key or "EMPTY",
         max_retries=config.max_retries,
         http_client=http_client,
+        default_headers=config.extra_headers,
     )
 
     return client
