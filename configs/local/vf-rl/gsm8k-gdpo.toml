@@ -1,0 +1,23 @@
+model = "Qwen/Qwen2.5-1.5B-Instruct"
+
+[env]
+id = "math_gdpo_exp"
+
+[env.args]
+advantage_mode = "gdpo"
+
+[inference]
+gpus = 1
+
+[trainer]
+gpus = 1
+gpu_offset = 1
+
+[trainer.args]
+lora_target_modules = "all-linear"
+run_name = "gsm8k-gdpo"
+micro_batch_size = 2
+rollouts_per_example = 16
+batch_size = 128
+max_steps = 500
+max_seq_len = 2048
