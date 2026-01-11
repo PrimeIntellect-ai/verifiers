@@ -23,6 +23,17 @@ def load_environment(
         response = parser.parse_answer(completion) or ""
         return 1.0 if response == answer else 0.0
 
+    def format_reward_func(completion, **kwargs):
+        """
+        Format reward: 1.0 if response contains \\boxed{...} format, 0.0 otherwise.
+        This checks if the model followed the expected output format.
+        """
+        if isinstance(completion, list):
+            text = completion[-1].get("content", "") if completion else ""
+        else:
+            text = str(completion)
+        return 1.0 if "\\boxed{" in text else 0.0
+
     def length_reward_func(completion, **kwargs):
         """
         Binary length reward: 1.0 if response is concise, 0.0 otherwise.
@@ -58,7 +69,7 @@ def load_environment(
         parser=parser,
         funcs=[
             math_answer_reward_func,
-            parser.get_format_reward_func(),
+            format_reward_func,
             length_reward_func,
         ],
         weights=[1.0, 0.2, 0.3],
