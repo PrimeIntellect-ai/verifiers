@@ -61,6 +61,8 @@ Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primei
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # install the prime CLI
 uv tool install prime
+# log in to the Prime Intellect platform
+prime login
 ```
 To set up a new workspace for developing environments, do:
 ```bash

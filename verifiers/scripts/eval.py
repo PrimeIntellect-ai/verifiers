@@ -98,7 +98,7 @@ def main():
         "--model",
         "-m",
         type=str,
-        default="gpt-4.1-mini",
+        default="openai/gpt-4.1-mini",
         help="Name of model to evaluate",
     )
     parser.add_argument(

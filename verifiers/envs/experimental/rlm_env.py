@@ -807,7 +807,7 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
-        # Logprobs support detection (None = not tested yet)
+        # Logprobs support detection (None = unknown, True/False = known)
         self._sub_llm_supports_logprobs: bool | None = None
 
         super().__init__(
@@ -943,21 +943,31 @@ class RLMEnv(SandboxEnv):
             getattr(usage, "completion_tokens", 0) or 0,
         )
 
-    async def _test_logprobs_support(self, client: Any, model: str) -> bool:
-        """Test if model supports logprobs with a minimal API call."""
-        try:
-            await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": "hi"}],
-                max_tokens=1,
-                logprobs=True,
-            )
-            return True
-        except Exception as e:
-            error_text = str(e).lower()
-            if "403" in error_text and "logprob" in error_text:
-                return False
-            raise  # Re-raise other errors
+    @staticmethod
+    def _is_logprobs_param_error(error: Exception) -> bool:
+        """Return True if the error indicates logprobs is an unsupported/invalid param."""
+        error_text = str(error).lower()
+        if "logprob" not in error_text:
+            return False
+        param_markers = (
+            "not supported",
+            "unsupported",
+            "not allowed",
+            "not permitted",
+            "forbidden",
+            "invalid",
+            "unknown",
+            "unexpected",
+            "additional properties",
+            "not a valid",
+            "unrecognized",
+            "extra fields",
+            "parameter",
+            "params",
+            "schema",
+            "403",
+        )
+        return any(marker in error_text for marker in param_markers)
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -1010,21 +1020,46 @@ class RLMEnv(SandboxEnv):
     ) -> Any | None:
         """Make a single sub-LLM API call with timeout. Returns None on timeout."""
         normalized_messages = self._normalize_message_content(messages)
-        try:
+        logprobs_support = self._sub_llm_supports_logprobs
+
+        async def _create_call(logprobs: bool | None) -> Any:
             return await asyncio.wait_for(
                 client.chat.completions.create(
                     model=model,
                     messages=normalized_messages,
                     tools=tools,
-                    logprobs=self._sub_llm_supports_logprobs or None,
+                    logprobs=logprobs,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
+
+        try:
+            if logprobs_support is False:
+                return await _create_call(None)
+            if logprobs_support is True:
+                return await _create_call(True)
+
+            # Unknown support: try logprobs=True once, then fallback on param errors.
+            response = await _create_call(True)
+            self._sub_llm_supports_logprobs = True
+            return response
         except asyncio.TimeoutError:
             logger.warning(
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
+        except Exception as e:
+            if logprobs_support is None and self._is_logprobs_param_error(e):
+                if self._sub_llm_supports_logprobs is None:
+                    self._sub_llm_supports_logprobs = False
+                try:
+                    return await _create_call(None)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
+                    )
+                    return None
+            raise
 
     def _make_timeout_result(
         self,
@@ -1523,16 +1558,7 @@ done
         # 2. Setup interception, tunnels, and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
 
-        # 3. Test logprobs support on first rollout
-        if self._sub_llm_supports_logprobs is None:
-            client = state.get("client")
-            sub_model = self.sub_model or state.get("model")
-            if client and sub_model:
-                self._sub_llm_supports_logprobs = await self._test_logprobs_support(
-                    client, sub_model
-                )
-
-        # 5. Build context
+        # 3. Build context
         info = state.get("info", {})
         context_data = info.get(self.context_key, None)
         disk_size_gb = getattr(self.sandbox_request, "disk_size_gb", None)
@@ -1570,7 +1596,7 @@ done
         state["rlm_packages_docs"] = packages_docs
         state["rlm_sub_tools_docs"] = sub_tools_docs
 
-        # 6. Prepare sandbox and start worker (with retry using fresh sandbox)
+        # 4. Prepare sandbox and start worker (with retry using fresh sandbox)
         max_sandbox_retries = 5
 
         for attempt in range(max_sandbox_retries):

@@ -414,7 +414,6 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
@@ -437,7 +436,6 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
@@ -459,7 +457,6 @@ class TestSetupState:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         context_data = {"key": "value"}
         state = {
@@ -1126,7 +1123,6 @@ class TestContextWarningSentInitialization:
         )
         rlm_env._write_json_to_sandbox = AsyncMock()
         rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
 
         state = {
             "info": {},
@@ -1315,7 +1311,80 @@ class TestRunSubLLMWithTools:
 
 
 # =============================================================================
-# 7. Interception Server
+# 7. Sub-LLM Logprobs Handling
+# =============================================================================
+
+
+class TestSubLLMLogprobs:
+    """Tests for lazy logprobs detection in sub-LLM calls."""
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_fallback_on_param_error(self, rlm_env):
+        """Retries without logprobs and marks support False on param error."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Invalid request: logprobs not supported for this model"),
+                mock_response,
+            ]
+        )
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        assert rlm_env._sub_llm_supports_logprobs is False
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["logprobs"] is True
+        assert calls[1].kwargs["logprobs"] is None
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_success_sets_true(self, rlm_env):
+        """Sets support True when the first logprobs call succeeds."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        assert rlm_env._sub_llm_supports_logprobs is True
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["logprobs"] is True
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_fallback_if_flag_flips(self, rlm_env):
+        """Retries without logprobs even if another call flips the flag."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        call_count = 0
+
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                rlm_env._sub_llm_supports_logprobs = False
+                raise Exception("logprobs not supported")
+            return mock_response
+
+        mock_client.chat.completions.create = AsyncMock(side_effect=side_effect)
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["logprobs"] is True
+        assert calls[1].kwargs["logprobs"] is None
+
+
+# =============================================================================
+# 8. Interception Server
 # =============================================================================
 
 
@@ -1477,7 +1546,7 @@ class TestPostRollout:
 
 
 # =============================================================================
-# 8. Sub-LLM Trajectory Steps (new implementation)
+# 9. Sub-LLM Trajectory Steps (new implementation)
 # =============================================================================
 
 

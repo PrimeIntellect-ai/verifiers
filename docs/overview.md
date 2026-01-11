@@ -13,12 +13,14 @@ Verifiers is tightly integrated with the [Environments Hub](https://app.primeint
 
 ## Getting Started
 
-Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction):
+Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction) tool:
 ```bash
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # install the prime CLI
 uv tool install prime
+# log in to the Prime Intellect platform
+prime login
 ```
 To set up a new workspace for developing environments, do:
 ```bash
