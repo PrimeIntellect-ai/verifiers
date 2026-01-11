@@ -416,7 +416,14 @@ class Rubric:
         # NOTE: Step 4 (batch-wise normalization) is NOT applied here.
         # The orchestrator/trainer must call zscore_normalize_batch() after
         # collecting advantages from ALL examples in the training batch.
-        return A_sum
+
+        # Store gated metrics for logging (only metrics that have gates)
+        gated_for_logging: dict[str, list[float]] = {}
+        for func_name in self.gates:
+            if func_name in gated_metrics:
+                gated_for_logging[f"gated_{func_name}"] = gated_metrics[func_name]
+
+        return A_sum, gated_for_logging
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""
@@ -520,9 +527,12 @@ class Rubric:
         scoring_ms = (end_time - start_time) * 1000
 
         # Compute advantages based on mode
+        gated_metrics_for_logging: dict[str, list[float]] = {}
         if self.advantage_mode == "gdpo":
             # GDPO: per-reward normalized, gated advantages (arXiv:2601.05242)
-            advantages = self._compute_gdpo_advantages(states, aggregated_metrics)
+            advantages, gated_metrics_for_logging = self._compute_gdpo_advantages(
+                states, aggregated_metrics
+            )
         else:
             # GRPO (default): simple mean subtraction
             avg_reward = sum(aggregated_rewards) / num_states
@@ -539,5 +549,8 @@ class Rubric:
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
+            # Add gated metrics for GDPO logging
+            for gated_name, gated_values in gated_metrics_for_logging.items():
+                state["metrics"][gated_name] = gated_values[i]
             state["timing"]["scoring_ms"] = scoring_ms
             state["timing"]["total_ms"] += state["timing"]["scoring_ms"]
