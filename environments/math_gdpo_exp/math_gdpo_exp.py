@@ -54,6 +54,14 @@ def load_environment(
             text = str(completion)
         return 1.0 if len(text) <= LENGTH_THRESHOLD else 0.0
 
+    def response_length(completion, **kwargs) -> float:
+        """Metric to track response length (not a reward, just for logging)."""
+        if isinstance(completion, list):
+            text = completion[-1].get("content", "") if completion else ""
+        else:
+            text = str(completion)
+        return float(len(text))
+
     # GDPO: gate length on correctness (per paper arXiv:2601.05242)
     # Length reward only counts if the answer is correct
     # This prevents reward hacking where model optimizes length while being wrong
@@ -80,6 +88,9 @@ def load_environment(
         advantage_mode=advantage_mode,
         gates=gates,
     )
+
+    # Add response_length as a metric (weight=0, tracked but not rewarded)
+    rubric.add_metric(response_length)
 
     # GSM8K: grade school math (easier than DeepScaleR)
     # Suitable for smaller models like Qwen 2.5 1.5B
