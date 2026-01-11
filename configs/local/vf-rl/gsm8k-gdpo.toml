@@ -1,4 +1,4 @@
-model = "Qwen/Qwen2.5-1.5B-Instruct"
+model = "Qwen/Qwen2.5-0.5B-Instruct"
 
 [env]
 id = "math_gdpo_exp"
@@ -10,14 +10,14 @@ advantage_mode = "gdpo"
 gpus = 1
 
 [trainer]
-gpus = 1
+gpus = 3
 gpu_offset = 1
 
 [trainer.args]
 lora_target_modules = "all-linear"
-run_name = "gsm8k-gdpo"
-micro_batch_size = 2
-rollouts_per_example = 16
-batch_size = 128
+run_name = "gsm8k-gdpo-0.5B"
+micro_batch_size = 16
+rollouts_per_example = 32
+batch_size = 512
 max_steps = 500
 max_seq_len = 2048
