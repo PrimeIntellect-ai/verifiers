@@ -10,8 +10,9 @@ from verifiers.utils.data_utils import (
 AdvantageMode = Literal["grpo", "gdpo"]
 
 # Length threshold for binary length reward (characters)
+# GDPO paper uses 4000 tokens; ~4 chars/token = ~16000 characters
 # Responses shorter than this get reward=1, longer get reward=0
-LENGTH_THRESHOLD = 512
+LENGTH_THRESHOLD = 16000
 
 
 def load_environment(
