@@ -517,8 +517,14 @@ class ClientConfig(BaseModel):
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] | None = None
+    extra_headers: dict[str, str] = {}
 ```
+
+When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
+- **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
+- **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
+
+This allows seamless use after running `prime login`.
 
 ### EvalConfig
 

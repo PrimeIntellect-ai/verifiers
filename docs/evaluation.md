@@ -55,9 +55,9 @@ prime eval run my-env -x '{"max_turns": 20}'
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--model` | `-m` | `gpt-4.1-mini` | Model name or endpoint alias |
-| `--api-base-url` | `-b` | `https://api.openai.com/v1` | API base URL |
-| `--api-key-var` | `-k` | `OPENAI_API_KEY` | Environment variable containing API key |
+| `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
+| `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
+| `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
 | `--endpoints-path` | `-e` | `./configs/endpoints.py` | Path to endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
@@ -84,7 +84,7 @@ Then use the alias directly:
 prime eval run my-env -m qwen3-235b-i
 ```
 
-If the model name isn't found in the registry, the `--api-base-url` and `--api-key-var` flags are used instead.
+If the model name is in the registry, those values are used by default, but you can override them with `--api-base-url` and/or `--api-key-var`. If the model name isn't found, the CLI flags are used (falling back to defaults when omitted).
 
 ### Sampling Parameters
 
@@ -150,4 +150,3 @@ rollouts_per_example = 5
 ```
 
 These defaults are used when flags aren't explicitly provided. Priority order: CLI flags → environment defaults → global defaults.
-
