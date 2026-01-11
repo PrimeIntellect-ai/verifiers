@@ -9,9 +9,9 @@ from verifiers.utils.data_utils import (
 
 AdvantageMode = Literal["grpo", "gdpo"]
 
-# GSM8K uses shorter solutions than competition math
-# ~500 tokens = ~2000 characters
-LENGTH_THRESHOLD = 2000
+# Tight length threshold to create tension
+# Model must be concise - forces tradeoff between reasoning and brevity
+LENGTH_THRESHOLD = 500
 
 
 def load_environment(

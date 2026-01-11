@@ -11,13 +11,12 @@ gpus = 1
 
 [trainer]
 gpus = 3
-gpu_offset = 1
 
 [trainer.args]
 lora_target_modules = "all-linear"
 run_name = "gsm8k-gdpo-0.5B"
-micro_batch_size = 16
-rollouts_per_example = 32
-batch_size = 512
+micro_batch_size = 64
+rollouts_per_example = 64
+batch_size = 1024
 max_steps = 500
 max_seq_len = 2048
