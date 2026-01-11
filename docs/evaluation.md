@@ -55,9 +55,9 @@ prime eval run my-env -x '{"max_turns": 20}'
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--model` | `-m` | `gpt-4.1-mini` | Model name or endpoint alias |
-| `--api-base-url` | `-b` | `https://api.openai.com/v1` | API base URL |
-| `--api-key-var` | `-k` | `OPENAI_API_KEY` | Environment variable containing API key |
+| `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
+| `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
+| `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
 | `--endpoints-path` | `-e` | `./configs/endpoints.py` | Path to endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
