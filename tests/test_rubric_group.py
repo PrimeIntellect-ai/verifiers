@@ -425,3 +425,257 @@ class TestRubricGroup:
 
         assert state["reward"] == 1.0
         assert recorded_parsers == [xml_parser]
+
+
+class TestRubricGroupGDPO:
+    """Test cases for RubricGroup GDPO (Group Reward-Decoupled Policy Optimization) support."""
+
+    def test_rubric_group_inherits_gdpo_mode(self):
+        """Test that RubricGroup inherits advantage_mode from first GDPO rubric."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        def func2(completion, **kwargs):
+            return 0.5
+
+        gates = {"func2": {"func": "func1", "op": ">=", "value": 1.0}}
+
+        # First rubric is GDPO
+        rubric_gdpo = Rubric(
+            funcs=[func1, func2],
+            weights=[1.0, 0.5],
+            advantage_mode="gdpo",
+            gates=gates,
+            epsilon=1e-6,
+        )
+        # Second rubric is default GRPO (like a monitor)
+        rubric_grpo = Rubric(funcs=[], weights=[])
+
+        group = RubricGroup(rubrics=[rubric_gdpo, rubric_grpo])
+
+        # RubricGroup should inherit GDPO settings from first GDPO rubric
+        assert group.advantage_mode == "gdpo"
+        assert group.gates == gates
+        assert group.epsilon == 1e-6
+
+    def test_rubric_group_stays_grpo_when_no_gdpo_rubrics(self):
+        """Test that RubricGroup stays GRPO when no GDPO rubrics are present."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[], weights=[])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2])
+
+        # Should remain GRPO (default)
+        assert group.advantage_mode == "grpo"
+        assert group.gates == {}
+
+    def test_rubric_group_finds_gdpo_in_second_position(self):
+        """Test that RubricGroup finds GDPO rubric even if not first."""
+
+        def func1(completion, **kwargs):
+            return 1.0
+
+        gates = {"func1": {"func": "func1", "op": ">=", "value": 0.5}}
+
+        # First rubric is GRPO
+        rubric_grpo = Rubric(funcs=[], weights=[])
+        # Second rubric is GDPO
+        rubric_gdpo = Rubric(
+            funcs=[func1],
+            weights=[1.0],
+            advantage_mode="gdpo",
+            gates=gates,
+        )
+
+        group = RubricGroup(rubrics=[rubric_grpo, rubric_gdpo])
+
+        # Should find and inherit from the GDPO rubric
+        assert group.advantage_mode == "gdpo"
+        assert group.gates == gates
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_preserves_gdpo_advantages(self):
+        """Test that RubricGroup preserves GDPO advantages and doesn't let monitors overwrite."""
+
+        def correct_answer(completion, answer, **kwargs):
+            return 1.0 if completion == answer else 0.0
+
+        def length_reward(completion, **kwargs):
+            # Short responses get reward even if wrong (the problem GDPO solves)
+            return 1.0 if len(str(completion)) < 10 else 0.0
+
+        gates = {
+            # length_reward only counts when correct_answer >= 1.0
+            "length_reward": {"func": "correct_answer", "op": ">=", "value": 1.0}
+        }
+
+        gdpo_rubric = Rubric(
+            funcs=[correct_answer, length_reward],
+            weights=[1.0, 0.5],
+            advantage_mode="gdpo",
+            gates=gates,
+        )
+
+        # Monitor rubric (like MultiTurnMonitorRubric) - GRPO mode, weight 0
+        def num_turns(state, **kwargs):
+            return 1.0
+
+        monitor_rubric = Rubric(funcs=[num_turns], weights=[0.0])
+
+        group = RubricGroup(rubrics=[gdpo_rubric, monitor_rubric])
+
+        # Create states: one correct, one wrong (but short, so would get length reward in GRPO)
+        states = [
+            State(
+                input=RolloutInput(
+                    prompt="test",
+                    answer="correct",
+                    task="test",
+                    example_id=0,
+                )
+            ),
+            State(
+                input=RolloutInput(
+                    prompt="test",
+                    answer="correct",
+                    task="test",
+                    example_id=0,
+                )
+            ),
+        ]
+        states[0]["completion"] = "correct"  # Correct answer
+        states[1]["completion"] = "wrong"  # Wrong but short
+
+        for state in states:
+            state["trajectory"] = [{"advantage": None, "reward": None}]
+            state["timing"] = RolloutTiming(
+                generation_ms=0.0, scoring_ms=0.0, total_ms=0.0, start_time=0.0
+            )
+
+        score_sem = NullAsyncContext()
+        await group.score_group(states, score_sem)
+
+        # GDPO should give correct answer much higher advantage than wrong answer
+        # because length_reward is gated on correctness
+        assert states[0]["advantage"] > states[1]["advantage"]
+
+        # The gap should be significant (not just the 0.5 from length reward)
+        # In GRPO without gating, the gap would be smaller
+        advantage_gap = states[0]["advantage"] - states[1]["advantage"]
+        assert advantage_gap > 1.0  # Significant gap due to gating
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_grpo_computes_advantages_from_aggregated_rewards(self):
+        """Test that GRPO mode computes advantages as reward - mean from aggregated rewards."""
+
+        def func1(completion, **kwargs):
+            return float(len(str(completion)))
+
+        def func2(completion, **kwargs):
+            return 1.0
+
+        rubric1 = Rubric(funcs=[func1], weights=[1.0])
+        rubric2 = Rubric(funcs=[func2], weights=[0.5])
+
+        group = RubricGroup(rubrics=[rubric1, rubric2])
+
+        # Verify it's GRPO mode
+        assert group.advantage_mode == "grpo"
+
+        states = []
+        for i, comp in enumerate(["a", "bb", "ccc"]):
+            state = State(
+                input=RolloutInput(
+                    prompt="test",
+                    answer="test",
+                    task="test",
+                    example_id=i,
+                )
+            )
+            state["completion"] = comp
+            state["trajectory"] = [{"advantage": None, "reward": None}]
+            state["timing"] = RolloutTiming(
+                generation_ms=0.0, scoring_ms=0.0, total_ms=0.0, start_time=0.0
+            )
+            states.append(state)
+
+        score_sem = NullAsyncContext()
+        await group.score_group(states, score_sem)
+
+        # Rewards from rubric1: [1.0, 2.0, 3.0] (len of completion)
+        # Rewards from rubric2: [1.0, 1.0, 1.0] * 0.5 = [0.5, 0.5, 0.5]
+        # Aggregated: [1.5, 2.5, 3.5], Mean = 2.5
+        # Advantages: [-1.0, 0.0, 1.0]
+        assert states[0]["advantage"] == pytest.approx(-1.0)
+        assert states[1]["advantage"] == pytest.approx(0.0)
+        assert states[2]["advantage"] == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_gdpo_vs_grpo_advantage_difference(self):
+        """Test that GDPO and GRPO produce different advantages for same inputs."""
+
+        def correct_answer(completion, answer, **kwargs):
+            return 1.0 if completion == answer else 0.0
+
+        def length_reward(completion, **kwargs):
+            return 1.0 if len(str(completion)) < 20 else 0.0
+
+        gates = {"length_reward": {"func": "correct_answer", "op": ">=", "value": 1.0}}
+
+        def make_states():
+            states = []
+            completions = ["4", "wrong"]  # One correct (short), one wrong (short)
+            for i, comp in enumerate(completions):
+                state = State(
+                    input=RolloutInput(
+                        prompt="What is 2+2?",
+                        answer="4",
+                        task="math",
+                        example_id=0,
+                    )
+                )
+                state["completion"] = comp
+                state["trajectory"] = [{"advantage": None, "reward": None}]
+                state["timing"] = RolloutTiming(
+                    generation_ms=0.0, scoring_ms=0.0, total_ms=0.0, start_time=0.0
+                )
+                states.append(state)
+            return states
+
+        # GDPO rubric
+        gdpo_rubric = Rubric(
+            funcs=[correct_answer, length_reward],
+            weights=[1.0, 0.5],
+            advantage_mode="gdpo",
+            gates=gates,
+        )
+        gdpo_group = RubricGroup(rubrics=[gdpo_rubric])
+
+        # GRPO rubric (same funcs, no gating)
+        grpo_rubric = Rubric(
+            funcs=[correct_answer, length_reward],
+            weights=[1.0, 0.5],
+            advantage_mode="grpo",
+        )
+        grpo_group = RubricGroup(rubrics=[grpo_rubric])
+
+        score_sem = NullAsyncContext()
+
+        # Score with GDPO
+        gdpo_states = make_states()
+        await gdpo_group.score_group(gdpo_states, score_sem)
+        gdpo_gap = gdpo_states[0]["advantage"] - gdpo_states[1]["advantage"]
+
+        # Score with GRPO
+        grpo_states = make_states()
+        await grpo_group.score_group(grpo_states, score_sem)
+        grpo_gap = grpo_states[0]["advantage"] - grpo_states[1]["advantage"]
+
+        # GDPO should have larger advantage gap due to gating
+        # (wrong answer doesn't get length reward in GDPO)
+        assert gdpo_gap > grpo_gap
