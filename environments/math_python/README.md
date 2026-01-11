@@ -23,13 +23,13 @@
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval math-python
+prime eval run math-python
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval math-python \
+prime eval run math-python \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"dataset_name": "math", "dataset_split": "train", "num_train_examples": -1}'

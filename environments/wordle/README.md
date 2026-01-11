@@ -23,13 +23,13 @@
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval wordle
+prime eval run wordle
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval wordle \
+prime eval run wordle \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"num_train_examples": 2000, "num_eval_examples": 20}'

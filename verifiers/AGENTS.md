@@ -108,8 +108,8 @@ uv add 'verifiers[all]'     # + training
 vf-init new-environment
 
 # Install + test
-vf-install new-environment
-vf-eval new-environment -n 5 -m gpt-4.1-mini
+prime env install new-environment
+prime eval run new-environment -n 5 -m gpt-4.1-mini
 ```
 
 ### Requirements
@@ -151,4 +151,4 @@ Only depend on keys your environment explicitly manages.
 
 ### Checklist
 - Guidelines here are followed
-- Environment works with `vf-eval -s` test run, outputs look sensible
+- Environment works with `prime eval run`, outputs look sensible

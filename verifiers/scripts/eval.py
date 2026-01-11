@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
+DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
+DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
 def get_env_eval_defaults(env_id: str) -> Dict[str, Any]:
@@ -103,15 +105,21 @@ def main():
         "--api-key-var",
         "-k",
         type=str,
-        default="PRIME_API_KEY",
-        help="Environment variable name for API key",
+        default=None,
+        help=(
+            "Environment variable name for API key "
+            "(defaults to PRIME_API_KEY when not set and not in registry)"
+        ),
     )
     parser.add_argument(
         "--api-base-url",
         "-b",
         type=str,
-        default="https://api.pinference.ai/api/v1",
-        help="Base URL for API",
+        default=None,
+        help=(
+            "Base URL for API "
+            "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
+        ),
     )
     parser.add_argument(
         "--header",
@@ -264,19 +272,34 @@ def main():
 
     # load endpoints and get model config
     endpoints = load_endpoints(args.endpoints_path)
+    api_key_override = args.api_key_var is not None
+    api_base_url_override = args.api_base_url is not None
+
     if args.model in endpoints:
-        api_key_var = endpoints[args.model]["key"]
-        api_base_url = endpoints[args.model]["url"]
-        args.model = endpoints[args.model]["model"]
-        logger.debug(
-            f"Using endpoint configuration for model '{args.model}' from registry"
-        )
+        endpoint = endpoints[args.model]
+        api_key_var = args.api_key_var if api_key_override else endpoint["key"]
+        api_base_url = args.api_base_url if api_base_url_override else endpoint["url"]
+        args.model = endpoint["model"]
+        if api_key_override or api_base_url_override:
+            logger.debug(
+                "Using endpoint registry for model '%s' with CLI overrides (key: %s, url: %s)",
+                args.model,
+                "cli" if api_key_override else "registry",
+                "cli" if api_base_url_override else "registry",
+            )
+        else:
+            logger.debug(
+                "Using endpoint configuration for model '%s' from registry", args.model
+            )
     else:
         logger.debug(
-            f"Model '{args.model}' not found in endpoint registry, using command-line arguments"
+            "Model '%s' not found in endpoint registry, using command-line arguments",
+            args.model,
         )
-        api_key_var = args.api_key_var
-        api_base_url = args.api_base_url
+        api_key_var = args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+        api_base_url = (
+            args.api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+        )
 
     # merge sampling args with precedence to JSON payload over explicit flags
     merged_sampling_args: dict = {}

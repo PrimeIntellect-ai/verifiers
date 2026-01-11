@@ -17,11 +17,11 @@ serializers from a single entrypoint:
 Run:
 
 ```bash
-vf-eval rlm-arbitrary-data-demo -n 1
+prime eval run rlm-arbitrary-data-demo -n 1
 ```
 
 To pick a dtype explicitly:
 
 ```bash
-vf-eval rlm-arbitrary-data-demo -n 1 --env-arg context_dtype=polars
+prime eval run rlm-arbitrary-data-demo -n 1 --env-arg context_dtype=polars
 ```

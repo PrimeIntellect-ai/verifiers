@@ -23,13 +23,13 @@
 Run an evaluation with default settings (example):
 
 ```bash
-uv run vf-eval self-reward -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B"}'
+prime eval run self-reward -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B"}'
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval self-reward \
+prime eval run self-reward \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B", "base_url": "http://0.0.0.0:8000/v1", "api_key_var": "JUDGE_API_KEY"}'
@@ -51,10 +51,3 @@ Notes:
 | Metric | Meaning |
 | ------ | ------- |
 | `reward` | Judge-produced score, normalized to 0–1 |
-
-## Evaluation Reports
-
-<!-- Do not edit below this line. Content is auto-generated. -->
-<!-- vf:begin:reports -->
-<p>No reports found. Run <code>uv run vf-eval self-reward -a '{"key": "value"}'</code> to generate one.</p>
-<!-- vf:end:reports -->

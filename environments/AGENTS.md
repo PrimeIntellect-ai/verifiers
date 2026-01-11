@@ -690,11 +690,11 @@ dependencies = [
 
 ### Installation
 
-Install a local environment with `vf-install`:
+Install a local environment with `prime env install`:
 
 ```bash
-vf-install my-env                    # from ./environments/my_env
-vf-install my-env -p /path/to/environments   # custom path
+prime env install my-env                    # from ./environments/my_env
+prime env install my-env -p /path/to/environments   # custom path
 ```
 
 This runs `uv pip install -e` for local environments, making them importable by `prime eval run` and other integrations.

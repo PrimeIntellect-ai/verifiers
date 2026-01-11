@@ -17,27 +17,20 @@ Verifiers is tightly integrated with the [Environments Hub](https://app.primeint
 
 ## Getting Started
 
-Ensure you have `uv` installed, as well as the `prime` CLI tool:
+Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction):
 ```bash
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # install the prime CLI
 uv tool install prime
-# create a new project if needed
-uv init
 ```
-
-Then, add `verifiers` to your project:
+To set up a new workspace for developing environments, do:
 ```bash
-uv add verifiers
+# ~/dev/my-lab
+prime lab setup 
 ```
 
-To set up your workspace for developing environments, do:
-```bash
-prime lab setup
-```
-
-This creates the recommended workspace structure and downloads useful starter files:
+This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
 ```
 configs/
 ├── endpoints.py        # OpenAI-compatible API endpoint configuration
@@ -46,6 +39,11 @@ environments/
 └── AGENTS.md           # Documentation for AI coding agents
 AGENTS.md               # Top-level documentation for AI coding agents
 CLAUDE.md               # Claude-specific pointer to AGENTS.md
+```
+
+Alternatively, add `verifiers` to an existing project:
+```bash
+uv add verifiers && prime lab setup --skip-install
 ```
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
@@ -78,12 +76,23 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 
 To install the environment module into your project, do:
 ```bash
-prime env install my-env
+prime env install my-env # installs from ./environments/my_env
 ```
 
-To run a quick local evaluation with OpenAI-compatible models, do:
+To install an environment from the Environments Hub into your project, do:
+```bash
+prime env install primeintellect/math-python
+```
+
+To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
 prime eval run my-env -m gpt-5-nano # run and save eval results locally
+```
+Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.py`.
+
+View local evaluation results in the terminal UI:
+```bash
+prime eval tui
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
@@ -94,11 +103,6 @@ prime env push --path ./environments/my_env
 To run an evaluation directly from the Environments Hub, do:
 ```bash
 prime eval run primeintellect/math-python
-``` 
-
-To install an environment from the Environments Hub into your project, do:
-```bash
-prime env install primeintellect/math-python
 ```
 
 ## Documentation
@@ -109,7 +113,7 @@ prime env install primeintellect/math-python
 
 **[Training](training.md)** — Train models in your environments with reinforcement learning.
 
-**[Contributing](development.md)** — Contributing to verifiers
+**[Development](development.md)** — Contributing to verifiers
 
 **[API Reference](reference.md)** — Understanding the API and data structures
 

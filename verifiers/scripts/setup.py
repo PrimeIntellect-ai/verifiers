@@ -226,6 +226,19 @@ def ensure_uv_project():
         if result.returncode != 0:
             print("Error: Failed to initialize uv project", file=sys.stderr)
             sys.exit(1)
+
+        if os.path.exists("main.py"):
+            os.remove("main.py")
+        if os.path.exists(".python-version"):
+            os.remove(".python-version")
+
+        gitignore_section = """
+# outputs from `prime eval run`
+./outputs
+./environments/*/outputs
+"""
+        with open(".gitignore", "a") as f:
+            f.write(gitignore_section)
     else:
         print("Found existing pyproject.toml")
 
