@@ -1,7 +1,10 @@
 import re
+from typing import Literal
 
 import verifiers as vf
 from verifiers.envs.integrations.textarena_env import TextArenaEnv
+
+AdvantageMode = Literal["grpo", "gdpo"]
 
 DEFAULT_SYSTEM_PROMPT = """You are a competitive game player. \
 Make sure you read the game instructions carefully, and always follow the required format.
@@ -26,7 +29,7 @@ def correct_answer(parser, completion, answer, **kwargs) -> float:
 
 
 def length_bonus(parser, completion, answer, **kwargs) -> float:
-    """Bonus for shorter correct solutions."""
+    """Bonus for shorter correct solutions. Already naturally gated on correctness."""
     assistant_messages = parser.get_assistant_messages(completion)
     guesses = [
         x for x in assistant_messages if re.search(r"<guess>.*</guess>", x["content"])
@@ -36,7 +39,7 @@ def length_bonus(parser, completion, answer, **kwargs) -> float:
 
 
 def partial_answer(parser, completion, answer, **kwargs) -> float:
-    """Partial credit for the latest guess."""
+    """Partial credit for the latest guess. Only awarded when incorrect."""
     if correct_answer(parser, completion, answer, **kwargs):
         return 0.0
     user_messages = parser.get_user_messages(completion)
@@ -58,11 +61,31 @@ def load_environment(
     num_eval_examples: int = 20,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     seed: int = 0,
+    advantage_mode: AdvantageMode = "grpo",
     **kwargs,
 ):
     parser = vf.XMLParser(fields=["guess"], answer_field="guess")
 
-    rubric = vf.Rubric(parser=parser)
+    # GDPO: gate format_reward on correctness
+    # This prevents reward hacking where model games format while failing at task
+    # Note: length_bonus is already naturally gated in the function itself
+    gates: dict = (
+        {
+            "format_reward": {
+                "func": "correct_answer",
+                "op": ">=",
+                "value": 1.0,
+            },
+        }
+        if advantage_mode == "gdpo"
+        else {}
+    )
+
+    rubric = vf.Rubric(
+        parser=parser,
+        advantage_mode=advantage_mode,
+        gates=gates,
+    )
     rubric.add_reward_func(correct_answer)
     rubric.add_reward_func(partial_answer)
     rubric.add_reward_func(length_bonus)
