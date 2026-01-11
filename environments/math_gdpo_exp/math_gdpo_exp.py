@@ -1,27 +1,30 @@
 from typing import Literal
 
-from datasets import load_dataset
-
 import verifiers as vf
 from verifiers.utils.data_utils import (
     BOXED_SYSTEM_PROMPT,
     extract_boxed_answer,
+    load_example_dataset,
 )
 
 AdvantageMode = Literal["grpo", "gdpo"]
 
-# Length threshold for binary length reward (characters)
-# GDPO paper uses 4000 tokens; ~4 chars/token = ~16000 characters
-# Responses shorter than this get reward=1, longer get reward=0
-LENGTH_THRESHOLD = 16000
+# GSM8K uses shorter solutions than competition math
+# ~500 tokens = ~2000 characters
+LENGTH_THRESHOLD = 2000
 
 
 def load_environment(
     advantage_mode: AdvantageMode = "grpo",
-    num_examples: int = -1,
+    num_train_examples: int = -1,
+    num_eval_examples: int = -1,
 ):
     """
-    Load the math_group environment using DeepScaleR-Preview dataset.
+    GSM8K environment with GDPO support (correctness + length rewards).
+
+    Uses grade-school math problems which are suitable for smaller models
+    like Qwen 2.5 1.5B, while still providing GDPO-testable multi-reward
+    optimization with natural tension.
 
     This environment implements GDPO (arXiv:2601.05242) with 2 rewards:
     - correctness: binary, whether answer matches
@@ -29,7 +32,8 @@ def load_environment(
 
     Args:
         advantage_mode: "grpo" or "gdpo"
-        num_examples: Number of examples to use (-1 for all ~40k)
+        num_train_examples: Number of training examples (-1 for all)
+        num_eval_examples: Number of eval examples (-1 for all)
     """
     parser = vf.Parser(extract_fn=extract_boxed_answer)
 
@@ -77,26 +81,22 @@ def load_environment(
         gates=gates,
     )
 
-    # DeepScaleR-Preview: 40k competition-level math problems
-    # Same dataset used in GDPO paper (arXiv:2601.05242)
-    dataset = load_dataset("agentica-org/DeepScaleR-Preview-Dataset", split="train")
+    # GSM8K: grade school math (easier than DeepScaleR)
+    # Suitable for smaller models like Qwen 2.5 1.5B
+    dataset = load_example_dataset("gsm8k", split="train")
+    if num_train_examples > 0:
+        dataset = dataset.select(range(min(num_train_examples, len(dataset))))
 
-    # Preprocess to match verifiers format (question -> prompt conversion handled by env)
-    def preprocess(example):
-        return {
-            "question": example["problem"],
-            "answer": example["answer"],
-        }
+    eval_dataset = load_example_dataset("gsm8k", split="test")
+    if num_eval_examples > 0:
+        eval_dataset = eval_dataset.select(
+            range(min(num_eval_examples, len(eval_dataset)))
+        )
 
-    dataset = dataset.map(preprocess, remove_columns=dataset.column_names)
-
-    if num_examples > 0:
-        dataset = dataset.select(range(min(num_examples, len(dataset))))
-
-    vf_env = vf.SingleTurnEnv(
+    return vf.SingleTurnEnv(
         dataset=dataset,
+        eval_dataset=eval_dataset,
         system_prompt=BOXED_SYSTEM_PROMPT,
         parser=parser,
         rubric=rubric,
     )
-    return vf_env

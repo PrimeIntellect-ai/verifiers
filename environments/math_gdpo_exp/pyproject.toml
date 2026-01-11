@@ -1,8 +1,8 @@
 [project]
-name = "math-group"
+name = "math-gdpo-exp"
 version = "0.1.1"
-description = "Math group environment"
-tags = ["math", "gsm8k", "train"]
+description = "GSM8K environment with GDPO support for testing multi-reward optimization"
+tags = ["math", "gsm8k", "gdpo", "train"]
 dependencies = [
     "verifiers>=0.1.8",
     "math-verify>=0.8.0",
@@ -13,4 +13,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["math_group.py"]
+include = ["math_gdpo_exp.py"]
