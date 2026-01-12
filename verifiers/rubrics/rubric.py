@@ -255,13 +255,13 @@ class Rubric:
             return op_func(metrics[func_name], threshold)
 
         elif "AND" in expr:
-            return all(self._evaluate_gate(sub, metrics) for sub in expr["AND"])
+            return all(self._evaluate_gate(sub, metrics) for sub in expr["AND"])  # type: ignore[typeddict-item]
 
         elif "OR" in expr:
-            return any(self._evaluate_gate(sub, metrics) for sub in expr["OR"])
+            return any(self._evaluate_gate(sub, metrics) for sub in expr["OR"])  # type: ignore[typeddict-item]
 
         elif "NOT" in expr:
-            return not self._evaluate_gate(expr["NOT"], metrics)
+            return not self._evaluate_gate(expr["NOT"], metrics)  # type: ignore[typeddict-item]
 
         else:
             self.logger.warning(
