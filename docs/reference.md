@@ -449,10 +449,15 @@ class Rubric:
         funcs: list[RewardFunc] | None = None,
         weights: list[float] | None = None,
         parser: Parser | None = None,
+        advantage_mode: Literal["grpo", "gdpo"] = "grpo",
+        gates: dict[str, GateExpr] | None = None,
+        epsilon: float = 1e-8,
     ): ...
 ```
 
 Combines multiple reward functions with weights. Default weight is `1.0`. Functions with `weight=0.0` are tracked as metrics only.
+
+Set `advantage_mode="gdpo"` for per-reward normalization with optional gating (arXiv:2601.05242).
 
 **Methods:**
 
