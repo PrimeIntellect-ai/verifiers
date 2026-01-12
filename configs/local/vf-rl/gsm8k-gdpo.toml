@@ -4,7 +4,7 @@ model = "Qwen/Qwen2.5-0.5B-Instruct"
 id = "math_gdpo_exp"
 
 [env.args]
-?
+advantage_mode = "gdpo"
 
 [inference]
 gpus = 1
