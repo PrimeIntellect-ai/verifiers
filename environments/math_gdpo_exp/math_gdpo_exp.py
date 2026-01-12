@@ -9,8 +9,6 @@ from verifiers.utils.data_utils import (
 
 AdvantageMode = Literal["grpo", "gdpo"]
 
-# Tight length threshold to create tension
-# Model must be concise - forces tradeoff between reasoning and brevity
 LENGTH_THRESHOLD = 500
 
 
@@ -20,20 +18,9 @@ def load_environment(
     num_eval_examples: int = -1,
 ):
     """
-    GSM8K environment with GDPO support (correctness + length rewards).
+    GSM8K environment with GDPO support (arXiv:2601.05242).
 
-    Uses grade-school math problems which are suitable for smaller models
-    like Qwen 2.5 1.5B, while still providing GDPO-testable multi-reward
-    optimization with natural tension.
-
-    This environment implements GDPO (arXiv:2601.05242) with 2 rewards:
-    - correctness: binary, whether answer matches
-    - length: binary, gated on correctness (only counts if correct)
-
-    Args:
-        advantage_mode: "grpo" or "gdpo"
-        num_train_examples: Number of training examples (-1 for all)
-        num_eval_examples: Number of eval examples (-1 for all)
+    Two rewards: correctness (binary) and length (gated on correctness).
     """
     parser = vf.Parser(extract_fn=extract_boxed_answer)
 
@@ -43,11 +30,7 @@ def load_environment(
         return 1.0 if response == answer else 0.0
 
     def length_reward_func(completion, **kwargs):
-        """
-        Binary length reward: 1.0 if response is concise, 0.0 otherwise.
-        Creates tension with correctness - longer reasoning helps accuracy,
-        but if correct, shorter is better.
-        """
+        """Binary length reward: 1.0 if under LENGTH_THRESHOLD, 0.0 otherwise."""
         if isinstance(completion, list):
             text = completion[-1].get("content", "") if completion else ""
         else:
@@ -55,16 +38,14 @@ def load_environment(
         return 1.0 if len(text) <= LENGTH_THRESHOLD else 0.0
 
     def response_length(completion, **kwargs) -> float:
-        """Metric to track response length (not a reward, just for logging)."""
+        """Track response length for logging."""
         if isinstance(completion, list):
             text = completion[-1].get("content", "") if completion else ""
         else:
             text = str(completion)
         return float(len(text))
 
-    # GDPO: gate length on correctness (per paper arXiv:2601.05242)
-    # Length reward only counts if the answer is correct
-    # This prevents reward hacking where model optimizes length while being wrong
+    # Gate length reward on correctness (prevents reward hacking)
     gates: dict = (
         {
             "length_reward_func": {
@@ -77,23 +58,15 @@ def load_environment(
         else {}
     )
 
-    # 2 rewards per GDPO paper: correctness + length (gated)
     rubric = vf.Rubric(
         parser=parser,
-        funcs=[
-            math_answer_reward_func,
-            length_reward_func,
-        ],
-        weights=[1.0, 1.0],  # Equal weights per paper
+        funcs=[math_answer_reward_func, length_reward_func],
+        weights=[1.0, 1.0],
         advantage_mode=advantage_mode,
         gates=gates,
     )
-
-    # Add response_length as a metric (weight=0, tracked but not rewarded)
     rubric.add_metric(response_length)
 
-    # GSM8K: grade school math (easier than DeepScaleR)
-    # Suitable for smaller models like Qwen 2.5 1.5B
     dataset = load_example_dataset("gsm8k", split="train")
     if num_train_examples > 0:
         dataset = dataset.select(range(min(num_train_examples, len(dataset))))

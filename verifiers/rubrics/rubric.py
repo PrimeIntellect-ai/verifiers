@@ -64,7 +64,6 @@ class Rubric:
 
         self.parser = parser or vf.Parser()
 
-        # GDPO parameters (arXiv:2601.05242)
         self.advantage_mode: AdvantageMode = advantage_mode
         self.gates = gates or {}
         self.epsilon = epsilon
@@ -233,20 +232,9 @@ class Rubric:
         async with score_sem:
             return await _call()
 
-    # GDPO helper methods (arXiv:2601.05242)
     def _evaluate_gate(self, expr: GateExpr, metrics: dict[str, float]) -> bool:
-        """
-        Recursively evaluate a gate expression (AND/OR/NOT with arbitrary nesting).
-
-        Args:
-            expr: A GateCondition or nested boolean expression
-            metrics: Dictionary of reward function scores for the current sample
-
-        Returns:
-            True if the gate condition passes, False otherwise
-        """
+        """Evaluate a gate expression (supports AND/OR/NOT nesting)."""
         if "func" in expr:
-            # Base condition: compare metrics[func] with threshold
             func_name = expr["func"]
             op_str = expr.get("op", ">=")
             threshold = expr.get("value", 0.0)
@@ -282,18 +270,7 @@ class Rubric:
             return False
 
     def _zscore_normalize_group(self, values: list[float]) -> list[float]:
-        """
-        Z-score normalize values WITHOUT epsilon (per-reward group normalization).
-
-        Per paper Equation 4: A_k = (r_k - μ) / σ
-        If σ = 0 (all values identical), returns zeros (no gradient signal).
-
-        Args:
-            values: List of values to normalize within a group
-
-        Returns:
-            List of z-score normalized values
-        """
+        """Z-score normalize within a group. Returns zeros if std=0."""
         n = len(values)
         if n == 0:
             return []
@@ -302,28 +279,13 @@ class Rubric:
         variance = sum((v - mean) ** 2 for v in values) / n
         std = variance**0.5
 
-        # If std ≈ 0, all values are identical -> no signal, return zeros
         if std < 1e-12:
             return [0.0] * n
 
         return [(v - mean) / std for v in values]
 
     def zscore_normalize_batch(self, values: list[float]) -> list[float]:
-        """
-        Z-score normalize values WITH epsilon (batch-wise normalization).
-
-        Per paper Equation 6: Â_sum = (A_sum - μ) / (σ + ε)
-        Epsilon provides numerical stability for batch normalization.
-
-        This method is public so it can be called by the orchestrator/trainer
-        after collecting advantages from ALL examples in the training batch.
-
-        Args:
-            values: List of values to normalize across batch
-
-        Returns:
-            List of z-score normalized values
-        """
+        """Z-score normalize across batch with epsilon for stability."""
         n = len(values)
         if n == 0:
             return []
@@ -338,48 +300,31 @@ class Rubric:
         self,
         states: list[State],
         aggregated_metrics: dict[str, list[float]],
-    ) -> list[float]:
+    ) -> tuple[list[float], dict[str, list[float]]]:
         """
-        Compute GDPO advantages per paper (arXiv:2601.05242).
+        Compute GDPO advantages (arXiv:2601.05242).
 
-        NOTE: This method performs steps 1-3 only (gating, group normalization, weighted sum).
-        Step 4 (batch-wise normalization) must be applied separately by the caller
-        after collecting advantages across ALL examples in the batch.
-
-        Algorithm:
-        1. Apply reward conditioning/gating (Eq. 8)
-        2. Per-reward GROUP-wise z-score normalization (Eq. 4) - within each question's rollouts
-        3. Sum normalized advantages with weights (Eq. 5)
-
-        Args:
-            states: List of states (needed to group by example_id)
-            aggregated_metrics: Raw scores per reward function {func_name: [scores]}
-
-        Returns:
-            List of pre-batch-normalized advantages (A_sum) for each state
+        Applies gating, per-reward group normalization, and weighted sum.
+        Batch-wise normalization must be applied separately by the caller.
         """
         num_states = len(states)
         if num_states == 0:
-            return []
+            return [], {}
 
-        # Build index mapping: example_id -> list of state indices
+        # Group states by example_id
         example_groups: dict[int, list[int]] = {}
         for idx, state in enumerate(states):
-            example_id = state.get(
-                "example_id", idx
-            )  # fallback to idx if no example_id
+            example_id = state.get("example_id", idx)
             if example_id not in example_groups:
                 example_groups[example_id] = []
             example_groups[example_id].append(idx)
 
-        # Step 1: Apply gating conditions (Eq. 8)
-        # r̃_k = r_k if r_l >= t else 0
+        # Apply gating conditions
         gated_metrics: dict[str, list[float]] = {}
         for func_name, scores in aggregated_metrics.items():
-            gated = list(scores)  # copy
+            gated = list(scores)
             if func_name in self.gates:
                 for i in range(num_states):
-                    # Evaluate gate on RAW metrics (not gated)
                     sample_metrics = {
                         fn: vals[i] for fn, vals in aggregated_metrics.items()
                     }
@@ -387,25 +332,18 @@ class Rubric:
                         gated[i] = 0.0
             gated_metrics[func_name] = gated
 
-        # Step 2: Per-reward GROUP-wise z-score normalization (Eq. 4)
-        # A_k^(i,j) = (r_k^(i,j) - μ_k^i) / σ_k^i
-        # where μ_k^i and σ_k^i are computed within question i's G rollouts
+        # Per-reward group-wise z-score normalization
         normalized: dict[str, list[float]] = {
             func_name: [0.0] * num_states for func_name in gated_metrics
         }
-
         for func_name, scores in gated_metrics.items():
             for group_indices in example_groups.values():
-                # Extract scores for this group
                 group_scores = [scores[i] for i in group_indices]
-                # Normalize within group (no epsilon per Eq. 4)
                 group_normalized = self._zscore_normalize_group(group_scores)
-                # Write back to normalized array
                 for local_idx, global_idx in enumerate(group_indices):
                     normalized[func_name][global_idx] = group_normalized[local_idx]
 
-        # Step 3: Sum normalized advantages with weights (Eq. 5)
-        # A_sum^(i,j) = Σ_k w_k · A_k^(i,j)
+        # Weighted sum of normalized advantages
         func_weights = {f.__name__: w for f, w in zip(self.funcs, self.weights)}
         A_sum = [0.0] * num_states
         for func_name, norm_scores in normalized.items():
@@ -413,11 +351,7 @@ class Rubric:
             for i in range(num_states):
                 A_sum[i] += norm_scores[i] * weight
 
-        # NOTE: Step 4 (batch-wise normalization) is NOT applied here.
-        # The orchestrator/trainer must call zscore_normalize_batch() after
-        # collecting advantages from ALL examples in the training batch.
-
-        # Store gated metrics for logging (only metrics that have gates)
+        # Log gated metrics
         gated_for_logging: dict[str, list[float]] = {}
         for func_name in self.gates:
             if func_name in gated_metrics:
@@ -526,15 +460,12 @@ class Rubric:
         end_time = time.time()
         scoring_ms = (end_time - start_time) * 1000
 
-        # Compute advantages based on mode
         gated_metrics_for_logging: dict[str, list[float]] = {}
         if self.advantage_mode == "gdpo":
-            # GDPO: per-reward normalized, gated advantages (arXiv:2601.05242)
             advantages, gated_metrics_for_logging = self._compute_gdpo_advantages(
                 states, aggregated_metrics
             )
         else:
-            # GRPO (default): simple mean subtraction
             avg_reward = sum(aggregated_rewards) / num_states
             advantages = [r - avg_reward for r in aggregated_rewards]
 
@@ -549,7 +480,6 @@ class Rubric:
             state["metrics"] = {
                 func_name: values[i] for func_name, values in aggregated_metrics.items()
             }
-            # Add gated metrics for GDPO logging
             for gated_name, gated_values in gated_metrics_for_logging.items():
                 state["metrics"][gated_name] = gated_values[i]
             state["timing"]["scoring_ms"] = scoring_ms

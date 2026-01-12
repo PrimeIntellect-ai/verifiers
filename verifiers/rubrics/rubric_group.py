@@ -18,8 +18,7 @@ class RubricGroup(Rubric):
         super().__init__(**kwargs)
         self.rubrics = rubrics
 
-        # Inherit GDPO settings from first rubric with non-default advantage_mode
-        # This ensures GDPO mode propagates through RubricGroup
+        # Inherit GDPO settings from first GDPO rubric
         for rubric in rubrics:
             if rubric.advantage_mode == "gdpo":
                 self.advantage_mode = rubric.advantage_mode
@@ -88,12 +87,7 @@ class RubricGroup(Rubric):
         state["metrics"] = aggregated_metrics
 
     async def score_group(self, states: list[State], score_sem: AsyncContextManager):
-        """
-        Evaluate all reward functions in-place for a group of rollouts.
-
-        In GDPO mode, preserves advantages from the GDPO rubric rather than
-        letting subsequent rubrics (like monitors) overwrite them.
-        """
+        """Evaluate all reward functions in-place for a group of rollouts."""
         aggregated_rewards = [0.0] * len(states)
         aggregated_metrics: dict[str, list[float]] = {}
         original_rewards = [state.get("reward", 0.0) for state in states]
@@ -102,7 +96,6 @@ class RubricGroup(Rubric):
             for state in states
         ]
 
-        # GDPO: capture advantages from the GDPO rubric
         gdpo_advantages: list[float] | None = None
 
         for rubric in self.rubrics:
@@ -120,7 +113,6 @@ class RubricGroup(Rubric):
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
 
-            # GDPO: capture advantages from the first GDPO rubric
             if rubric.advantage_mode == "gdpo" and gdpo_advantages is None:
                 gdpo_advantages = [state.get("advantage", 0.0) for state in states]
 
@@ -133,7 +125,6 @@ class RubricGroup(Rubric):
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
 
-        # GDPO: use preserved GDPO advantages instead of recomputing
         if self.advantage_mode == "gdpo" and gdpo_advantages is not None:
             for i, state in enumerate(states):
                 state["advantage"] = gdpo_advantages[i]
@@ -143,7 +134,6 @@ class RubricGroup(Rubric):
                     if t.get("reward") is None:
                         t["reward"] = aggregated_rewards[i]
         else:
-            # GRPO: compute advantages from aggregated rewards (original behavior)
             avg_reward = sum(aggregated_rewards) / len(states) if states else 0.0
             for i, state in enumerate(states):
                 state["advantage"] = aggregated_rewards[i] - avg_reward

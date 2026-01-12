@@ -232,7 +232,7 @@ class ClientConfig(BaseModel):
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] = {}
+    extra_headers: dict[str, str] | None = None
 
 
 class EvalConfig(BaseModel):
