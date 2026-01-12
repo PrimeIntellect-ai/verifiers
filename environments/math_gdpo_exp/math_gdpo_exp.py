@@ -9,11 +9,10 @@ from verifiers.utils.data_utils import (
 
 AdvantageMode = Literal["grpo", "gdpo"]
 
-LENGTH_THRESHOLD = 500
-
 
 def load_environment(
     advantage_mode: AdvantageMode = "grpo",
+    length_threshold: int = 500,
     num_train_examples: int = -1,
     num_eval_examples: int = -1,
 ):
@@ -30,12 +29,12 @@ def load_environment(
         return 1.0 if response == answer else 0.0
 
     def length_reward_func(completion, **kwargs):
-        """Binary length reward: 1.0 if under LENGTH_THRESHOLD, 0.0 otherwise."""
+        """Binary length reward: 1.0 if under threshold, 0.0 otherwise."""
         if isinstance(completion, list):
             text = completion[-1].get("content", "") if completion else ""
         else:
             text = str(completion)
-        return 1.0 if len(text) <= LENGTH_THRESHOLD else 0.0
+        return 1.0 if len(text) <= length_threshold else 0.0
 
     def response_length(completion, **kwargs) -> float:
         """Track response length for logging."""
