@@ -43,7 +43,7 @@ This folder contains installable example environments that showcase common usage
 
 ### Composition
 - **EnvGroup**
-  - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
+  - **math_gdpo_exp**: GSM8K environment with GDPO support (per-reward normalization and gating).
 
 - **RubricGroup**
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
@@ -70,7 +70,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `doublecheck`, `sentence_repeater`, `wordle`
 - **XML tools without native function-calling**: `xml_tool_env`, `xlam_function_calling`
-- **Environment and rubric composition**: `math_group`, `math_python`, `gpqa`, `wiki_search`
+- **Environment and rubric composition**: `math_gdpo_exp`, `math_python`, `gpqa`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`
 

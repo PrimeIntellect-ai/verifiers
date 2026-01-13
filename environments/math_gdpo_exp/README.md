@@ -26,7 +26,7 @@ This environment is designed to test GDPO (Group reward-Decoupled Policy Optimiz
 | Reward | Description | GDPO Gating |
 | ------ | ----------- | ----------- |
 | `math_answer_reward_func` | 1.0 if answer matches, 0.0 otherwise | None (primary) |
-| `length_reward_func` | 1.0 if response ≤ 2000 chars, 0.0 otherwise | Gated on correctness |
+| `length_reward_func` | 1.0 if response ≤ `length_threshold` (default 500), 0.0 otherwise | Gated on correctness |
 
 ### Quickstart
 
