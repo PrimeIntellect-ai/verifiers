@@ -310,7 +310,9 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     import io
     import json
     import os
+    import random
     import sys
+    import time
     import traceback
     from pathlib import Path
     from concurrent.futures import ThreadPoolExecutor
@@ -328,6 +330,10 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
     SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
+    SUB_LLM_STAGGER_MS = int(os.environ.get("RLM_SUB_LLM_STAGGER_MS", "0"))
+    SUB_LLM_STAGGER_JITTER_MS = int(
+        os.environ.get("RLM_SUB_LLM_STAGGER_JITTER_MS", "0")
+    )
     if SANDBOX_TIMEOUT > 0:
         SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)
 
@@ -509,7 +515,23 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
         with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
-            futures = [executor.submit(_single_llm_call, p, batch_id, **kwargs) for p in prompts]
+            futures = []
+            for i, prompt in enumerate(prompts):
+                jitter_ms = (
+                    random.random() * SUB_LLM_STAGGER_JITTER_MS
+                    if SUB_LLM_STAGGER_JITTER_MS > 0
+                    else 0.0
+                )
+                delay_s = max(0.0, (i * SUB_LLM_STAGGER_MS + jitter_ms) / 1000.0)
+
+                def _call_with_delay(
+                    p=prompt, d=delay_s, b=batch_id, kw=kwargs
+                ):
+                    if d:
+                        time.sleep(d)
+                    return _single_llm_call(p, b, **kw)
+
+                futures.append(executor.submit(_call_with_delay))
             results = [f.result() for f in futures]
         batch_elapsed = perf_counter() - batch_start
         
@@ -1051,6 +1073,8 @@ PY
 export RLM_INTERCEPTION_URL="{interception_url}"
 export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
+export RLM_SUB_LLM_STAGGER_MS="{self.env.sub_llm_stagger_ms}"
+export RLM_SUB_LLM_STAGGER_JITTER_MS="{self.env.sub_llm_stagger_jitter_ms}"
 export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
 export RLM_SANDBOX_TIMEOUT="{self.env.code_execution_timeout}"
 export RLM_DISALLOWED_MODULES={disallowed_modules}
@@ -1351,6 +1375,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 "RLM_INTERCEPTION_URL": state["interception_url"],
                 "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
                 "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
+                "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
+                "RLM_SUB_LLM_STAGGER_JITTER_MS": str(
+                    self.env.sub_llm_stagger_jitter_ms
+                ),
                 "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
                 "RLM_SANDBOX_TIMEOUT": str(self.env.code_execution_timeout),
                 "RLM_DISALLOWED_MODULES": self.env.disallowed_modules,
@@ -1430,6 +1458,8 @@ class RLMEnv(SandboxEnv):
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
+        sub_llm_stagger_ms: Optional fixed per-call stagger delay (ms) within llm_batch.
+        sub_llm_stagger_jitter_ms: Optional random jitter (ms) added to stagger delay.
         context_key: Key in info containing optional input data (default: "context")
         context_dtype: Optional dtype override for input data serialization.
                    If set, must match a supported serializer dtype.
@@ -1485,6 +1515,8 @@ class RLMEnv(SandboxEnv):
         max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
+        sub_llm_stagger_ms: int = 30,
+        sub_llm_stagger_jitter_ms: int = 10,
         context_key: str = "context",
         context_dtype: str | None = None,
         data_serializers: list[DataSerializer] | None = None,
@@ -1511,6 +1543,8 @@ class RLMEnv(SandboxEnv):
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
         self.max_sub_llm_parallelism = max_sub_llm_parallelism
+        self.sub_llm_stagger_ms = sub_llm_stagger_ms
+        self.sub_llm_stagger_jitter_ms = sub_llm_stagger_jitter_ms
         self.context_key = context_key
         self.context_dtype = context_dtype
         if serializer_registry is not None and data_serializers is not None:
