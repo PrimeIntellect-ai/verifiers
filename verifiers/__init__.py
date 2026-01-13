@@ -73,6 +73,37 @@ def setup_logging(
     logger.propagate = False
 
 
+class log_level:
+    """
+    Context manager to temporarily set the verifiers logger to a new log level.
+    Useful for temporarily silencing verifiers logging.
+
+    with log_level("DEBUG"):
+        # verifiers logs at DEBUG level here
+        ...
+    # reverts to previous level
+    """
+
+    def __init__(self, log_level: str | int):
+        self.log_level = (
+            log_level
+            if isinstance(log_level, int)
+            else getattr(logging, log_level.upper())
+        )
+        self.logger = logging.getLogger("verifiers")
+        self.previous_level: int | None = None
+
+    def __enter__(self):
+        self.previous_level = self.logger.level
+        self.logger.setLevel(self.log_level)
+        return self
+
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
+        if self.previous_level is not None:
+            self.logger.setLevel(self.previous_level)
+        return False
+
+
 setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
@@ -102,6 +133,7 @@ __all__ = [
     "extract_hash_answer",
     "load_example_dataset",
     "setup_logging",
+    "log_level",
     "load_environment",
     "print_prompt_completions_sample",
     "get_model",
