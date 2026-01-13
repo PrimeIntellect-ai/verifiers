@@ -67,10 +67,6 @@ def load_environment(
     parser = vf.XMLParser(fields=["guess"], answer_field="guess")
 
     # GDPO: no explicit gates needed for Wordle
-    # - length_bonus is already naturally gated (returns is_correct / len(guesses))
-    # - format_reward should NOT be gated (it's a prerequisite for correctness)
-    # - partial_answer is naturally mutually exclusive with correct_answer
-    # GDPO's per-reward normalization is still applied
     gates: dict = {}
 
     rubric = vf.Rubric(
