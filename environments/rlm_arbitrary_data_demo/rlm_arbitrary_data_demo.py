@@ -68,7 +68,7 @@ def build_dataframe(rng: random.Random, num_rows: int = 200):
 
 
 class ArbitraryDataRLMEnv(RLMEnv):
-    def __init__(self, context_data, **kwargs):
+    def __init__(self, context_data=None, **kwargs):
         super().__init__(**kwargs)
         self._context_data = context_data
 
@@ -77,50 +77,58 @@ class ArbitraryDataRLMEnv(RLMEnv):
         if not isinstance(info, dict):
             info = {}
         info = dict(info)
-        info[self.context_key] = self._context_data
+        if self._context_data is not None and self.context_key not in info:
+            info[self.context_key] = self._context_data
+        if self.context_dtype == "polars" and self.context_key in info:
+            context_data = info[self.context_key]
+            if not hasattr(context_data, "__dataframe__"):
+                import polars as pl
+
+                info[self.context_key] = pl.DataFrame(context_data)
         state["info"] = info
         return await super().setup_state(state, **kwargs)
 
 
-def _build_dataset(question: str, answer: str) -> Dataset:
-    return Dataset.from_list(
-        [
-            {
-                "question": question,
-                "answer": answer,
-                "info": {},
-            }
-        ]
-    )
+def _build_dataset(examples: list[dict]) -> Dataset:
+    return Dataset.from_list(examples)
 
 
-def load_environment(context_dtype: ContextDType = "text", **kwargs) -> vf.Environment:
-    rng_seed = kwargs.pop("rng_seed", None)
-    rng = random.Random(rng_seed)
-    serializers: list[DataSerializer] = []
-    serializer_dtype = context_dtype
+def _resolve_serializer_dtype(context_dtype: ContextDType) -> str:
+    if context_dtype == "text":
+        return "text"
+    if context_dtype in {
+        "list",
+        "tuple",
+        "nested_list",
+        "nested_dict",
+        "mixed",
+        "large_list",
+    }:
+        return "builtin"
+    if context_dtype == "polars":
+        return "polars"
+    raise ValueError(f"Unsupported context_dtype: {context_dtype}")
 
+
+def _generate_example(
+    rng: random.Random, context_dtype: ContextDType
+) -> tuple[object, str, str]:
     if context_dtype == "text":
         values = [rng.randint(-50, 50) for _ in range(rng.randint(4, 10))]
         values_text = ", ".join(str(value) for value in values)
         context_data = f"Numbers: {values_text}"
         question = "Sum the numbers in extra_data and reply with the integer."
         answer = str(sum(values))
-        pip_install_packages = ""
     elif context_dtype == "list":
         values = [rng.randint(-50, 50) for _ in range(rng.randint(4, 12))]
         context_data = values
-        serializer_dtype = "builtin"
         question = "Sum the numbers in extra_data and reply with the integer."
         answer = str(sum(values))
-        pip_install_packages = ""
     elif context_dtype == "tuple":
         values = tuple(rng.randint(-50, 50) for _ in range(rng.randint(4, 12)))
         context_data = values
-        serializer_dtype = "builtin"
         question = "Sum the numbers in extra_data and reply with the integer."
         answer = str(sum(values))
-        pip_install_packages = ""
     elif context_dtype == "nested_list":
         outer_size = rng.randint(2, 5)
         inner_min = 3
@@ -134,12 +142,10 @@ def load_environment(context_dtype: ContextDType = "text", **kwargs) -> vf.Envir
             nested_values.append(inner)
             total += sum(inner)
         context_data = nested_values
-        serializer_dtype = "builtin"
         question = (
             "Sum all numbers in the nested list extra_data and reply with the integer."
         )
         answer = str(total)
-        pip_install_packages = ""
     elif context_dtype == "nested_dict":
         group_count = rng.randint(2, 4)
         nested_dict: dict[str, object] = {}
@@ -153,10 +159,8 @@ def load_environment(context_dtype: ContextDType = "text", **kwargs) -> vf.Envir
             else:
                 nested_dict[key] = {"values": values}
         context_data = nested_dict
-        serializer_dtype = "builtin"
         question = "Sum all integers contained anywhere in extra_data and reply with the integer."
         answer = str(total)
-        pip_install_packages = ""
     elif context_dtype == "mixed":
         list_values = [rng.randint(-50, 50) for _ in range(rng.randint(3, 7))]
         tuple_values = tuple(rng.randint(-50, 50) for _ in range(rng.randint(3, 7)))
@@ -168,32 +172,62 @@ def load_environment(context_dtype: ContextDType = "text", **kwargs) -> vf.Envir
             "set": set_values,
             "dict": {"inner": inner_values},
         }
-        serializer_dtype = "builtin"
         question = "Sum all integers contained anywhere in extra_data and reply with the integer."
         answer = str(
             sum(list_values) + sum(tuple_values) + sum(set_values) + sum(inner_values)
         )
-        pip_install_packages = ""
     elif context_dtype == "large_list":
         values = [rng.randint(-100, 100) for _ in range(rng.randint(200, 500))]
         context_data = values
-        serializer_dtype = "builtin"
         question = "Sum the numbers in extra_data and reply with the integer."
         answer = str(sum(values))
-        pip_install_packages = ""
     elif context_dtype == "polars":
         num_rows = rng.randint(80, 220)
-        dataframe = build_dataframe(rng, num_rows=num_rows)
-        context_data = dataframe
-        serializers.append(build_polars_serializer())
-        total = int((dataframe["a"] + dataframe["b"]).sum())
+        col_a = [rng.randint(-100, 100) for _ in range(num_rows)]
+        col_b = [rng.randint(-100, 100) for _ in range(num_rows)]
+        context_data = {"a": col_a, "b": col_b}
+        total = sum(col_a) + sum(col_b)
         question = "Compute the sum of columns a and b in extra_data and reply with the integer."
         answer = str(total)
-        pip_install_packages = "polars>=0.20.0"
     else:
         raise ValueError(f"Unsupported context_dtype: {context_dtype}")
 
-    dataset = _build_dataset(question, answer)
+    return context_data, question, answer
+
+
+def load_environment(
+    context_dtype: ContextDType = "text",
+    num_samples: int = 100,
+    **kwargs,
+) -> vf.Environment:
+    rng_seed = kwargs.pop("rng_seed", None)
+    rng = random.Random(rng_seed)
+    serializers: list[DataSerializer] = []
+    serializer_dtype = _resolve_serializer_dtype(context_dtype)
+
+    if context_dtype == "polars":
+        serializers.append(build_polars_serializer())
+        pip_install_packages = "polars>=0.20.0"
+    else:
+        pip_install_packages = ""
+
+    if num_samples < 1:
+        raise ValueError("num_samples must be at least 1")
+
+    context_key = kwargs.get("context_key", "context")
+    examples = []
+    for _ in range(num_samples):
+        context_data, question, answer = _generate_example(rng, context_dtype)
+        examples.append(
+            {
+                "question": question,
+                "answer": answer,
+                "info": {context_key: context_data},
+            }
+        )
+
+    dataset = _build_dataset(examples)
+    fallback_context = examples[0]["info"][context_key] if num_samples == 1 else None
 
     async def exact_answer(state, answer, **_kwargs) -> float:
         final_answer = (state.get("final_answer") or "").strip()
@@ -206,7 +240,7 @@ def load_environment(context_dtype: ContextDType = "text", **kwargs) -> vf.Envir
         rubric=rubric,
         context_dtype=serializer_dtype,
         data_serializers=serializers,
-        context_data=context_data,
+        context_data=fallback_context,
         pip_install_packages=pip_install_packages,
         **kwargs,
     )
