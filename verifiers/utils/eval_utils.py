@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import importlib.util
 import json
 import logging
@@ -167,7 +169,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
-    event_loop_lag_monitor.run_in_background()
+    lag_task = event_loop_lag_monitor.run_in_background()
 
     # set extra environment kwargs
     if config.extra_env_kwargs:
@@ -181,31 +183,51 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
     start_time = time.time()
-    results = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        independent_scoring=config.independent_scoring,
-    )
-    end_time = time.time()
-    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+    try:
+        results = await vf_env.evaluate(
+            client=client,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=config.max_concurrent,
+            max_concurrent_generation=config.max_concurrent_generation,
+            max_concurrent_scoring=config.max_concurrent_scoring,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            save_every=config.save_every,
+            independent_scoring=config.independent_scoring,
+        )
+        end_time = time.time()
+        logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
-    event_loop_lags = event_loop_lag_monitor.get_lags()
+        event_loop_lags = event_loop_lag_monitor.get_lags()
 
-    if config.print_results:
-        print_results(results, event_loop_lags)
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-    return results
+        if config.print_results:
+            print_results(results, event_loop_lags)
+        if config.save_results:
+            save_rollout_results(
+                results, config.save_to_hf_hub, config.hf_hub_dataset_name
+            )
+        return results
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(vf_env._teardown(), timeout=10.0)
+        if lag_task is not None:
+            lag_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lag_task
+        with contextlib.suppress(Exception):
+            await client.close()
+        pending = [
+            task for task in asyncio.all_tasks() if task is not asyncio.current_task()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*pending, return_exceptions=True)
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
