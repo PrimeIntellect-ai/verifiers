@@ -89,16 +89,16 @@ from .{env_id} import load_environment
 __all__ = ["load_environment"]
 """
 
-ENVIRONMENT_TEMPLATE = """\
+ENVIRONMENT_TEMPLATE = '''\
 import verifiers as vf
 
 
 def load_environment(**kwargs) -> vf.Environment:
-    '''
+    """
     Loads a custom environment.
-    '''
+    """
     raise NotImplementedError("Implement your custom environment here.")
-"""
+'''
 
 
 def init_environment(
