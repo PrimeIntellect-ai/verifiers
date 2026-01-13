@@ -648,7 +648,7 @@ vf.print_prompt_completions_sample(outputs: GenerateOutputs, n: int = 3)
 Pretty-print sample rollouts.
 
 ```python
-vf.setup_logging(level: str = "INFO")
+vf.setup_logging(level: str = "INFO", log_file: str | None = None)
 ```
 
-Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default.
+Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default. If `log_file` is provided, logs to that file instead of stderr.
