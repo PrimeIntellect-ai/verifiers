@@ -4,6 +4,7 @@ import base64
 import inspect
 import json
 import math
+import os
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -263,6 +264,7 @@ def prepare_context_data(
     dtype: str | None,
     serializers: SerializerRegistry | list[DataSerializer],
     max_payload_bytes: int | None,
+    payload_dir: str | None = None,
 ) -> PreparedContextData:
     if data is None:
         metadata = build_base_metadata(data)
@@ -298,7 +300,8 @@ def prepare_context_data(
     payload_name = validate_file_name(
         serialized.file_name or default_payload_file_name(serialized)
     )
-    payload_path = f"/tmp/{payload_name}"
+    payload_root = payload_dir or "/tmp"
+    payload_path = os.path.join(payload_root, payload_name)
     payload_size = len(payload_bytes)
     ensure_payload_size(payload_size, max_payload_bytes)
 

@@ -99,6 +99,24 @@ def rlm_env_with_sub_tools(mock_sandbox_client, mock_dataset):
         env.active_sandboxes.clear()
 
 
+@pytest.fixture
+def rlm_env_local(mock_sandbox_client, mock_dataset):
+    """Create an RLMEnv instance with local execution backend."""
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(
+            dataset=mock_dataset,
+            execution_backend="local",
+            interception_port=1234,
+        )
+        env.sandbox_client = mock_sandbox_client
+        yield env
+        env.active_sandboxes.clear()
+
+
 # =============================================================================
 # 1. Pure Utility Functions
 # =============================================================================
@@ -259,8 +277,9 @@ async def test_execute_code_timeout_restarts_sandbox(rlm_env):
     rlm_env.sandbox_client.execute_command = AsyncMock(
         side_effect=CommandTimeoutError("sandbox_123", "command", 1)
     )
-    rlm_env._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
-    rlm_env._prepare_sandbox_and_start_worker = AsyncMock()
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
+    sandbox_executor._prepare_sandbox_and_start_worker = AsyncMock()
 
     state = {
         "sandbox_id": "sandbox_123",
@@ -270,8 +289,8 @@ async def test_execute_code_timeout_restarts_sandbox(rlm_env):
 
     assert result["status"] == "error"
     assert "sandbox was restarted" in result["result"].lower()
-    rlm_env._recreate_sandbox.assert_awaited_once()
-    rlm_env._prepare_sandbox_and_start_worker.assert_awaited_once()
+    sandbox_executor._recreate_sandbox.assert_awaited_once()
+    sandbox_executor._prepare_sandbox_and_start_worker.assert_awaited_once()
     assert state["_exec_seq"] == 0
 
 
@@ -304,16 +323,17 @@ def test_install_wait_scales_with_packages(mock_sandbox_client, mock_dataset):
 
 @pytest.mark.asyncio
 async def test_start_worker_waits_for_install_done(rlm_env):
-    rlm_env._execute_command_with_retry = AsyncMock(
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._execute_command_with_retry = AsyncMock(
         return_value=MagicMock(stdout="", stderr="")
     )
-    rlm_env._wait_for_install_done = AsyncMock()
-    rlm_env._wait_for_worker_ready = AsyncMock()
+    sandbox_executor._wait_for_install_done = AsyncMock()
+    sandbox_executor._wait_for_worker_ready = AsyncMock()
 
     state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
-    await rlm_env._start_worker(state)
+    await sandbox_executor._start_worker(state)
 
-    rlm_env._wait_for_install_done.assert_awaited_once()
+    sandbox_executor._wait_for_install_done.assert_awaited_once()
 
 
 def test_worker_timeout_clamped_to_sandbox_timeout():
@@ -395,6 +415,21 @@ class TestRLMEnvInitialization:
         # RLMEnv should not have bash in its tool_map
         assert "bash" not in rlm_env.tool_map
 
+    def test_local_backend_defaults(self, mock_sandbox_client, mock_dataset):
+        """Local backend sets host default and skips tunnel pool."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(dataset=mock_dataset, execution_backend="local")
+
+            assert env.execution_backend == "local"
+            assert env.interception_host == "127.0.0.1"
+            assert env._tunnel_pool is None
+
+            env.active_sandboxes.clear()
+
 
 # =============================================================================
 # 3. State Management
@@ -412,8 +447,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -434,8 +468,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -455,8 +488,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
 
         context_data = {"key": "value"}
         state = {
@@ -474,24 +506,66 @@ class TestSetupState:
         assert input_spec["payload_path"] is not None
 
 
+class TestLocalBackendSetup:
+    """Tests for local execution backend setup."""
+
+    @pytest.mark.asyncio
+    async def test_local_setup_skips_sandbox_and_sets_url(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+        rlm_env_local.sandbox_client.create = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+
+        assert "sandbox_id" not in result
+        assert result["interception_url"].startswith("http://127.0.0.1:1234")
+        rlm_env_local.sandbox_client.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_local_payload_path_uses_temp_dir(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+
+        context_data = {"key": "value"}
+        state = {
+            "info": {"context": context_data},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+        payload_path = result["rlm_payload_path"]
+        base_dir = result["rlm_paths"]["base_dir"]
+
+        assert payload_path.startswith(base_dir)
+
+
 class TestInstallPackages:
     """Tests for sandbox package installation behavior."""
 
     @pytest.mark.asyncio
     async def test_wait_for_install_done_ignores_non_int_exit_code(self, rlm_env):
         """Non-int exit_code from mocks should not raise."""
-        rlm_env._execute_command_with_retry = AsyncMock(
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
             return_value=MagicMock(exit_code=MagicMock(), stdout="", stderr="")
         )
 
-        await rlm_env._wait_for_install_done("sandbox_123")
+        await sandbox_executor._wait_for_install_done("sandbox_123")
 
-        rlm_env._execute_command_with_retry.assert_called_once()
+        sandbox_executor._execute_command_with_retry.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_wait_for_install_done_raises_on_nonzero_exit_code(self, rlm_env):
         """Non-zero integer exit_code should raise SandboxError."""
-        rlm_env._execute_command_with_retry = AsyncMock(
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
             side_effect=[
                 MagicMock(exit_code=1, stdout="", stderr=""),
                 MagicMock(stdout="log", stderr=""),
@@ -499,21 +573,22 @@ class TestInstallPackages:
         )
 
         with pytest.raises(vf.SandboxError):
-            await rlm_env._wait_for_install_done("sandbox_123")
+            await sandbox_executor._wait_for_install_done("sandbox_123")
 
-        assert rlm_env._execute_command_with_retry.call_count == 2
+        assert sandbox_executor._execute_command_with_retry.call_count == 2
 
     @pytest.mark.asyncio
     async def test_wait_for_install_done_includes_requests_and_extras(self, rlm_env):
         """Install command should include requests plus extra packages."""
         rlm_env.pip_install_packages = "polars>=0.20.0 numpy"
-        rlm_env._execute_command_with_retry = AsyncMock(
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
             return_value=MagicMock(exit_code=0, stdout="", stderr="")
         )
 
-        await rlm_env._wait_for_install_done("sandbox_123")
+        await sandbox_executor._wait_for_install_done("sandbox_123")
 
-        install_script = rlm_env._execute_command_with_retry.call_args.args[1]
+        install_script = sandbox_executor._execute_command_with_retry.call_args.args[1]
         assert "pip install -q requests polars>=0.20.0 numpy" in install_script
 
 
@@ -1069,8 +1144,8 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_reads_answer_from_sandbox(self, rlm_env):
         """Reads partial answer from sandbox when stopping."""
-        rlm_env._execute_command_with_retry = AsyncMock(
-            return_value=MagicMock(stdout='{"content": "partial answer from sandbox"}')
+        rlm_env._executor.read_answer = AsyncMock(
+            return_value="partial answer from sandbox"
         )
 
         state = {
@@ -1086,9 +1161,7 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_handles_sandbox_read_error(self, rlm_env):
         """Handles errors when reading answer from sandbox."""
-        rlm_env._execute_command_with_retry = AsyncMock(
-            return_value=MagicMock(stdout="invalid json")
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="")
 
         state = {
             "prompt_too_long": True,
@@ -1121,8 +1194,7 @@ class TestContextWarningSentInitialization:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -1512,11 +1584,7 @@ class TestPostRollout:
     @pytest.mark.asyncio
     async def test_reads_answer_from_sandbox(self, rlm_env):
         """Reads answer from sandbox if not set."""
-        rlm_env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(
-                stdout='{"content": "read from sandbox", "ready": true}'
-            )
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="read from sandbox")
         state = {"sandbox_id": "sandbox_123"}
 
         await rlm_env.post_rollout(state)
@@ -1535,9 +1603,7 @@ class TestPostRollout:
     @pytest.mark.asyncio
     async def test_handles_read_error(self, rlm_env):
         """Handles errors when reading from sandbox."""
-        rlm_env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(stdout="invalid json")
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="")
         state = {"sandbox_id": "sandbox_123"}
 
         await rlm_env.post_rollout(state)

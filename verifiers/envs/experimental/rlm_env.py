@@ -8,8 +8,8 @@ Based on: https://www.alexzhang.dev/blog/recursive-language-models
 
 Architecture:
 - REPL loop runs in the framework (MultiTurnEnv pattern)
-- Sandbox is used only for code execution (persistent Python worker)
-- Sub-LLM calls from sandbox code are intercepted via HTTP proxy
+- Code execution backend can be sandboxed or local (persistent Python worker)
+- Sub-LLM calls from worker code are intercepted via HTTP proxy
 
 Key features:
 - Works with any dataset that has a normal prompt
@@ -23,12 +23,18 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -56,6 +62,7 @@ from verifiers.utils.response_utils import (
 )
 from verifiers.utils.rlm_data_serialization_utils import (
     DataSerializer,
+    PreparedContextData,
     SerializerRegistry,
     build_default_serializer_registry,
     prepare_context_data,
@@ -64,6 +71,54 @@ from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
+
+
+class RLMCodeExecutionTimeout(Exception):
+    """Raised when code execution exceeds the configured timeout."""
+
+
+@dataclass(frozen=True)
+class RLMWorkerPaths:
+    base_dir: str
+    command_fifo: str
+    response_fifo: str
+    ready_flag: str
+    install_done_flag: str
+    worker_path: str
+    worker_pid_file: str
+    context_file: str
+    answer_file: str
+    log_file: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "base_dir": self.base_dir,
+            "command_fifo": self.command_fifo,
+            "response_fifo": self.response_fifo,
+            "ready_flag": self.ready_flag,
+            "install_done_flag": self.install_done_flag,
+            "worker_path": self.worker_path,
+            "worker_pid_file": self.worker_pid_file,
+            "context_file": self.context_file,
+            "answer_file": self.answer_file,
+            "log_file": self.log_file,
+        }
+
+
+@dataclass
+class LocalRLMReplSession:
+    rollout_id: str
+    temp_dir: tempfile.TemporaryDirectory
+    paths: RLMWorkerPaths
+    worker_process: subprocess.Popen | None = None
+    venv_path: str | None = None
+
+
+@dataclass(frozen=True)
+class RLMExecResult:
+    stdout: str
+    stderr: str | None = None
+    exit_code: int | None = None
 
 
 def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
@@ -594,6 +649,32 @@ def _make_worker_ready_wait_script(
     )
 
 
+def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
+    base_dir = base_dir.rstrip("/") or base_dir
+    return RLMWorkerPaths(
+        base_dir=base_dir,
+        command_fifo=os.path.join(base_dir, "rlm_cmd"),
+        response_fifo=os.path.join(base_dir, "rlm_res"),
+        ready_flag=os.path.join(base_dir, "rlm_ready"),
+        install_done_flag=os.path.join(base_dir, "rlm_install_done"),
+        worker_path=os.path.join(base_dir, "rlm_worker.py"),
+        worker_pid_file=os.path.join(base_dir, "rlm_worker.pid"),
+        context_file=os.path.join(base_dir, "rlm_context.json"),
+        answer_file=os.path.join(base_dir, "rlm_answer.json"),
+        log_file=os.path.join(base_dir, "rlm_worker.log"),
+    )
+
+
+def _render_worker_script(paths: RLMWorkerPaths) -> str:
+    return _RLM_WORKER_SCRIPT.format(
+        command_fifo=paths.command_fifo,
+        response_fifo=paths.response_fifo,
+        ready_flag=paths.ready_flag,
+        context_file=paths.context_file,
+        answer_file=paths.answer_file,
+    )
+
+
 # System prompt for sub-LLMs (called via llm_batch)
 _SUB_LLM_SYSTEM_PROMPT = """You are a sub-agent being called by a parent model to help with a specific task.
 Answer the query directly and concisely. Put your final answer inside \\boxed{}.
@@ -641,6 +722,632 @@ answer["ready"] = True
 """
 
 
+class BaseRLMExecutor:
+    def __init__(self, env: "RLMEnv") -> None:
+        self.env = env
+
+    async def get_payload_dir(self, state: State) -> str | None:
+        return None
+
+    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+        raise NotImplementedError
+
+    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+        raise NotImplementedError
+
+    async def read_answer(self, state: State) -> str:
+        return ""
+
+    async def recover_from_timeout(self, state: State) -> bool:
+        return False
+
+    async def cleanup(self, state: State) -> None:
+        return None
+
+    async def teardown(self) -> None:
+        return None
+
+
+class SandboxRLMExecutor(BaseRLMExecutor):
+    def __init__(self, env: "RLMEnv") -> None:
+        super().__init__(env)
+        self._paths = env._sandbox_paths
+
+    async def get_payload_dir(self, state: State) -> str | None:
+        return self._paths.base_dir
+
+    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+        state["rlm_paths"] = self._paths.to_dict()
+        max_sandbox_retries = 5
+        for attempt in range(max_sandbox_retries):
+            try:
+                await self._prepare_sandbox_and_start_worker(state, prepared)
+                return
+            except vf.SandboxError as e:
+                cause_text = str(e.__cause__ or e)
+                lower_cause = cause_text.lower()
+                retryable = (
+                    isinstance(e, SandboxNotReadyError)
+                    or "worker failed to start" in lower_cause
+                    or "sandbox_not_ready" in lower_cause
+                    or "timeout during sandbox creation" in lower_cause
+                )
+                if retryable and attempt < max_sandbox_retries - 1:
+                    logger.warning(
+                        "Sandbox startup failed (attempt %s/%s): %s. Recreating sandbox...",
+                        attempt + 1,
+                        max_sandbox_retries,
+                        cause_text,
+                    )
+                    state = await self._recreate_sandbox(state)
+                else:
+                    raise
+
+    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox ID not set")
+        payload_json = json.dumps(payload)
+        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+        command = textwrap.dedent(
+            f"""
+            python3 - <<'PY'
+import base64
+import json
+import sys
+
+data = base64.b64decode('{payload_b64}').decode('utf-8')
+with open('{self._paths.command_fifo}', 'w', encoding='utf-8') as command_file:
+    command_file.write(data)
+with open('{self._paths.response_fifo}', 'r', encoding='utf-8') as response_file:
+    sys.stdout.write(response_file.read())
+PY
+            """
+        )
+        try:
+            result = await self.env.sandbox_client.execute_command(
+                sandbox_id, command, timeout=self.env.code_execution_timeout
+            )
+        except CommandTimeoutError as e:
+            logger.warning(
+                "Code execution timed out after %ss", self.env.code_execution_timeout
+            )
+            raise RLMCodeExecutionTimeout from e
+        except Exception as e:
+            logger.error(f"Sandbox error during code execution: {e}")
+            raise vf.SandboxError() from e
+        return RLMExecResult(
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            exit_code=getattr(result, "exit_code", None),
+        )
+
+    async def read_answer(self, state: State) -> str:
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            return ""
+        try:
+            result = await self._execute_command_with_retry(
+                sandbox_id,
+                f'cat {self._paths.answer_file} 2>/dev/null || echo \'{{"content": ""}}\'',
+            )
+            return json.loads(result.stdout.strip()).get("content", "")
+        except Exception:
+            return ""
+
+    async def recover_from_timeout(self, state: State) -> bool:
+        context_dict = state.get("rlm_context")
+        if not context_dict:
+            logger.error("Cannot recover from timeout: missing rlm_context in state")
+            return False
+        try:
+            state = await self._recreate_sandbox(state)
+            prepared = PreparedContextData(
+                context_dict=context_dict,
+                payload_bytes=state.get("rlm_payload_bytes"),
+                payload_path=state.get("rlm_payload_path"),
+                payload_name=state.get("rlm_payload_name"),
+            )
+            await self._prepare_sandbox_and_start_worker(state, prepared)
+        except Exception as e:
+            logger.error(f"Failed to recover from code timeout: {e}")
+            return False
+        state["rlm_worker_ready"] = True
+        state["_exec_seq"] = 0
+        return True
+
+    async def cleanup(self, state: State) -> None:
+        return None
+
+    async def _execute_command_with_retry(
+        self, sandbox_id: str, command: str, timeout: int | None = None
+    ):
+        """Execute command with retry logic for transient sandbox errors."""
+        effective_timeout = timeout or self.env.timeout_per_command_seconds
+        start = perf_counter()
+        logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
+        try:
+            result = await self.env.with_retry(self.env.sandbox_client.execute_command)(
+                sandbox_id, command, timeout=effective_timeout
+            )
+        except CommandTimeoutError as e:
+            logger.debug(
+                f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
+            )
+            raise vf.SandboxError() from e
+        except Exception as e:
+            raise vf.SandboxError() from e
+        elapsed = perf_counter() - start
+        logger.debug(f"Command completed in {elapsed:.1f}s")
+        return result
+
+    async def _write_json_to_sandbox(
+        self, sandbox_id: str, data: dict, file_path: str, filename: str
+    ) -> None:
+        data_bytes = json.dumps(data).encode("utf-8")
+        await self.env.with_retry(self.env.sandbox_client.upload_bytes)(
+            sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
+        )
+
+    async def upload_file_to_sandbox(
+        self, sandbox_id: str, data: bytes, file_path: str, filename: str | None
+    ) -> None:
+        import tempfile
+
+        tmp_path = None
+        try:
+            suffix = f"-{filename}" if filename else ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+                tmp_file.write(data)
+            await self.env.with_retry(self.env.sandbox_client.upload_file)(
+                sandbox_id, file_path, str(tmp_path)
+            )
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+    async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
+        wait_script = _make_worker_ready_wait_script(
+            self._paths.ready_flag,
+            self._paths.worker_pid_file,
+            self._paths.log_file,
+            self.env.max_startup_wait_seconds,
+        )
+        timeout = self.env.max_startup_wait_seconds + 10
+        result = await self._execute_command_with_retry(
+            sandbox_id, wait_script, timeout=timeout
+        )
+        stderr = result.stderr or ""
+        stdout = result.stdout or ""
+        if (
+            "RLM worker failed to start" in stdout
+            or "RLM worker failed to start" in stderr
+            or "RLM worker exited" in stdout
+            or "RLM worker exited" in stderr
+        ):
+            debug_result = await self._execute_command_with_retry(
+                sandbox_id,
+                (
+                    f"ls -la {self._paths.base_dir}/rlm* 2>&1; echo '---PID---'; "
+                    f"cat {self._paths.worker_pid_file} 2>&1 || echo 'no pid'; "
+                    "echo '---LOG---'; "
+                    f"cat {self._paths.log_file} 2>&1 || echo 'no log'; "
+                    "echo '---PS---'; ps aux 2>&1"
+                ),
+            )
+            logger.error(
+                f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
+            )
+            raise vf.SandboxError() from Exception(
+                f"RLM worker failed to start: {debug_result.stdout[:500]}"
+            )
+
+    async def _wait_for_install_done(self, sandbox_id: str) -> None:
+        install_wait_seconds = self.env._compute_install_wait_seconds()
+        packages = ["requests"]
+        extra_packages = [
+            p.strip() for p in self.env.pip_install_packages.split() if p.strip()
+        ]
+        packages.extend(extra_packages)
+        if not packages:
+            return
+        install_cmd = " ".join(packages)
+        timeout = install_wait_seconds + 10
+        install_script = textwrap.dedent(
+            f"""
+            bash -lc '
+            set -euo pipefail
+            rm -f "{self._paths.install_done_flag}"
+            pip install -q {install_cmd} 2>&1 | tee /tmp/rlm_pip.log
+            touch "{self._paths.install_done_flag}"
+            '
+            """
+        )
+        result = await self._execute_command_with_retry(
+            sandbox_id, install_script, timeout=timeout
+        )
+        exit_code = getattr(result, "exit_code", 0)
+        if (
+            isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and exit_code != 0
+        ):
+            debug_result = await self._execute_command_with_retry(
+                sandbox_id,
+                (
+                    "echo '---PIP LOG---'; tail -n 200 /tmp/rlm_pip.log 2>&1 || "
+                    "echo 'no pip log'"
+                ),
+            )
+            logger.error(
+                "RLM pip install failed (exit_code=%s). Log tail:\n%s",
+                exit_code,
+                debug_result.stdout,
+            )
+            raise vf.SandboxError() from Exception("RLM pip install failed")
+
+    async def _start_worker(self, state: State) -> None:
+        sandbox_id = state["sandbox_id"]
+        interception_url = state["interception_url"]
+
+        sub_llm_timeout = self.env.sub_llm_timeout
+        script_wait_iterations = max(1, int(self.env.max_startup_wait_seconds / 0.1))
+        await self._wait_for_install_done(sandbox_id)
+        start_worker_cmd = f"""
+export RLM_INTERCEPTION_URL="{interception_url}"
+export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
+export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
+export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
+export RLM_SANDBOX_TIMEOUT="{self.env.code_execution_timeout}"
+
+sync 2>/dev/null || true
+for i in $(seq 1 {script_wait_iterations}); do
+    if [ -f "{self._paths.worker_path}" ]; then
+        break
+    fi
+    sleep 0.1
+done
+
+        if [ ! -f "{self._paths.worker_path}" ]; then
+            echo "Worker script not found - pip install may have failed or timed out" >&2
+            exit 1
+        fi
+
+        sleep 0.2
+
+        nohup python -u {self._paths.worker_path} >> {self._paths.log_file} 2>&1 &
+        echo $! > {self._paths.worker_pid_file}
+"""
+        start_worker_timeout = self.env.max_startup_wait_seconds + 30
+        await self._execute_command_with_retry(
+            sandbox_id, start_worker_cmd, timeout=start_worker_timeout
+        )
+        await self._wait_for_worker_ready(sandbox_id)
+
+    async def _prepare_sandbox_and_start_worker(
+        self, state: State, prepared: "PreparedContextData"
+    ) -> None:
+        sandbox_id = state["sandbox_id"]
+        try:
+            await self.env.sandbox_client.wait_for_creation(sandbox_id)
+        except Exception as e:
+            raise SandboxNotReadyError(e)
+        if prepared.payload_bytes is not None and prepared.payload_path:
+            await self.upload_file_to_sandbox(
+                sandbox_id,
+                prepared.payload_bytes,
+                prepared.payload_path,
+                prepared.payload_name,
+            )
+        await self._write_json_to_sandbox(
+            sandbox_id,
+            prepared.context_dict,
+            self._paths.context_file,
+            "rlm_context.json",
+        )
+        await self._write_json_to_sandbox(
+            sandbox_id,
+            {"ready": False, "content": ""},
+            self._paths.answer_file,
+            "rlm_answer.json",
+        )
+        await self._start_worker(state)
+
+    async def _recreate_sandbox(self, state: State) -> State:
+        old_sandbox_id = state.get("sandbox_id")
+        if old_sandbox_id:
+            self.env.active_sandboxes.discard(old_sandbox_id)
+            try:
+                await self.env.sandbox_client.delete(old_sandbox_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
+
+        await asyncio.sleep(1)
+
+        request = self.env.get_sandbox_request(state)
+        try:
+            sandbox = await self.env.with_retry(self.env.sandbox_client.create)(request)
+        except Exception as e:
+            raise SandboxCreationError(e)
+        self.env.active_sandboxes.add(sandbox.id)
+        logger.debug(f"Created replacement sandbox {sandbox.id}")
+        state["sandbox_id"] = sandbox.id
+        return state
+
+
+class LocalRLMExecutor(BaseRLMExecutor):
+    def __init__(self, env: "RLMEnv") -> None:
+        super().__init__(env)
+        self._sessions: dict[str, LocalRLMReplSession] = {}
+        self._venv_lock = asyncio.Lock()
+        self._instance_venv_path: str | None = None
+        self._instance_venv_ready = False
+
+    async def get_payload_dir(self, state: State) -> str | None:
+        session = self._get_or_create_session(state)
+        return session.paths.base_dir
+
+    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+        session = self._get_or_create_session(state)
+        venv_path = await self._ensure_venv(session)
+        session.venv_path = venv_path
+
+        await self._write_local_files(session, prepared)
+        await self._start_worker(state, session)
+
+    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+        session = self._get_session(state)
+        if session.worker_process and session.worker_process.poll() is not None:
+            raise vf.SandboxError() from Exception("RLM worker process not running")
+
+        def _do_io() -> str:
+            payload_json = json.dumps(payload)
+            with open(
+                session.paths.command_fifo, "w", encoding="utf-8"
+            ) as command_file:
+                command_file.write(payload_json)
+            with open(
+                session.paths.response_fifo, "r", encoding="utf-8"
+            ) as response_file:
+                return response_file.read()
+
+        try:
+            raw = await asyncio.wait_for(
+                asyncio.to_thread(_do_io),
+                timeout=self.env.code_execution_timeout,
+            )
+        except asyncio.TimeoutError as e:
+            logger.warning(
+                "Code execution timed out after %ss", self.env.code_execution_timeout
+            )
+            raise RLMCodeExecutionTimeout from e
+        except Exception as e:
+            raise vf.SandboxError() from e
+
+        return RLMExecResult(stdout=raw, stderr="")
+
+    async def read_answer(self, state: State) -> str:
+        session = self._sessions.get(state.get("rollout_id", ""))
+        if not session:
+            return ""
+        try:
+            content = Path(session.paths.answer_file).read_text(encoding="utf-8")
+            return json.loads(content).get("content", "")
+        except Exception:
+            return ""
+
+    async def recover_from_timeout(self, state: State) -> bool:
+        session = self._sessions.get(state.get("rollout_id", ""))
+        if not session:
+            logger.error("Cannot recover from timeout: missing local session")
+            return False
+        try:
+            self._stop_worker(session)
+            prepared = PreparedContextData(
+                context_dict=state.get("rlm_context", {}),
+                payload_bytes=state.get("rlm_payload_bytes"),
+                payload_path=state.get("rlm_payload_path"),
+                payload_name=state.get("rlm_payload_name"),
+            )
+            await self._write_local_files(session, prepared)
+            await self._start_worker(state, session)
+        except Exception as e:
+            logger.error(f"Failed to recover from code timeout: {e}")
+            return False
+        state["rlm_worker_ready"] = True
+        state["_exec_seq"] = 0
+        return True
+
+    async def cleanup(self, state: State) -> None:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id:
+            return
+        session = self._sessions.pop(rollout_id, None)
+        if not session:
+            return
+        self._stop_worker(session)
+        session.temp_dir.cleanup()
+
+    async def teardown(self) -> None:
+        if self.env.execution_backend != "local":
+            return
+        if self.env.local_venv_scope != "instance":
+            return
+        if self._instance_venv_path:
+            await asyncio.to_thread(shutil.rmtree, self._instance_venv_path, True)
+            self._instance_venv_path = None
+            self._instance_venv_ready = False
+
+    def _get_or_create_session(self, state: State) -> LocalRLMReplSession:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id:
+            raise ValueError("rollout_id must be set before creating local session")
+        session = self._sessions.get(rollout_id)
+        if session:
+            return session
+        temp_dir = tempfile.TemporaryDirectory(prefix=f"rlm_{rollout_id}_")
+        paths = _build_worker_paths(temp_dir.name)
+        session = LocalRLMReplSession(
+            rollout_id=rollout_id,
+            temp_dir=temp_dir,
+            paths=paths,
+        )
+        self._sessions[rollout_id] = session
+        state["rlm_paths"] = paths.to_dict()
+        return session
+
+    def _get_session(self, state: State) -> LocalRLMReplSession:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id or rollout_id not in self._sessions:
+            raise vf.SandboxError() from Exception("Local session not initialized")
+        return self._sessions[rollout_id]
+
+    async def _ensure_venv(self, session: LocalRLMReplSession) -> str:
+        if self.env.local_venv_scope == "rollout":
+            venv_path = os.path.join(session.paths.base_dir, ".venv")
+            await self._create_venv(venv_path, force=True)
+            await self._install_packages(venv_path)
+            return venv_path
+
+        async with self._venv_lock:
+            if self._instance_venv_ready and self._instance_venv_path:
+                return self._instance_venv_path
+            venv_path = self._instance_venv_path or tempfile.mkdtemp(prefix="rlm_venv_")
+            await self._create_venv(venv_path, force=not self._instance_venv_ready)
+            await self._install_packages(venv_path)
+            self._instance_venv_path = venv_path
+            self._instance_venv_ready = True
+            return venv_path
+
+    async def _create_venv(self, venv_path: str, force: bool) -> None:
+        if force and os.path.exists(venv_path):
+            await asyncio.to_thread(shutil.rmtree, venv_path, True)
+        args = ["uv", "venv", venv_path]
+        await self._run_uv_command(args, self.env._compute_install_wait_seconds())
+
+    async def _install_packages(self, venv_path: str) -> None:
+        packages = ["requests"]
+        extras = [p.strip() for p in self.env.pip_install_packages.split() if p.strip()]
+        packages.extend(extras)
+        if not packages:
+            return
+        python_path = self._venv_python(venv_path)
+        args = ["uv", "pip", "install", "-q", "--python", python_path]
+        args.extend(packages)
+        await self._run_uv_command(args, self.env._compute_install_wait_seconds())
+
+    async def _run_uv_command(self, args: list[str], timeout: int) -> None:
+        def _run() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                args,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+
+        try:
+            result = await asyncio.to_thread(_run)
+        except FileNotFoundError as e:
+            raise vf.SandboxError() from RuntimeError(
+                "uv not found on PATH; local execution requires uv installed"
+            )
+        except subprocess.TimeoutExpired as e:
+            raise vf.SandboxError() from RuntimeError(
+                f"uv command timed out after {timeout} seconds"
+            )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            raise vf.SandboxError() from Exception(
+                f"uv command failed: {' '.join(args)}\nstdout: {stdout}\nstderr: {stderr}"
+            )
+
+    def _venv_python(self, venv_path: str) -> str:
+        if os.name == "nt":
+            return os.path.join(venv_path, "Scripts", "python.exe")
+        return os.path.join(venv_path, "bin", "python")
+
+    async def _write_local_files(
+        self, session: LocalRLMReplSession, prepared: "PreparedContextData"
+    ) -> None:
+        Path(session.paths.base_dir).mkdir(parents=True, exist_ok=True)
+        if prepared.payload_bytes is not None and prepared.payload_path:
+            payload_path = Path(prepared.payload_path)
+            payload_path.parent.mkdir(parents=True, exist_ok=True)
+            payload_path.write_bytes(prepared.payload_bytes)
+        Path(session.paths.context_file).write_text(
+            json.dumps(prepared.context_dict), encoding="utf-8"
+        )
+        Path(session.paths.answer_file).write_text(
+            json.dumps({"ready": False, "content": ""}), encoding="utf-8"
+        )
+
+    async def _start_worker(self, state: State, session: LocalRLMReplSession) -> None:
+        if not session.venv_path:
+            raise vf.SandboxError() from Exception("Local venv not initialized")
+        worker_script = _render_worker_script(session.paths)
+        Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
+
+        env_vars = os.environ.copy()
+        env_vars.update(
+            {
+                "RLM_INTERCEPTION_URL": state["interception_url"],
+                "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
+                "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
+                "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
+                "RLM_SANDBOX_TIMEOUT": str(self.env.code_execution_timeout),
+            }
+        )
+
+        python_path = self._venv_python(session.venv_path)
+        with open(session.paths.log_file, "a", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                [python_path, "-u", session.paths.worker_path],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env_vars,
+            )
+        session.worker_process = process
+
+        await self._wait_for_ready(session)
+
+    async def _wait_for_ready(self, session: LocalRLMReplSession) -> None:
+        max_wait_seconds = self.env.max_startup_wait_seconds
+        start = perf_counter()
+        while True:
+            if Path(session.paths.ready_flag).exists():
+                return
+            if session.worker_process and session.worker_process.poll() is not None:
+                log_tail = ""
+                try:
+                    log_tail = Path(session.paths.log_file).read_text(encoding="utf-8")[
+                        -2000:
+                    ]
+                except Exception:
+                    pass
+                raise vf.SandboxError() from Exception(
+                    f"RLM worker exited before ready. Log tail:\n{log_tail}"
+                )
+            if perf_counter() - start > max_wait_seconds:
+                raise vf.SandboxError() from Exception("RLM worker failed to start")
+            await asyncio.sleep(0.1)
+
+    def _stop_worker(self, session: LocalRLMReplSession) -> None:
+        if not session.worker_process:
+            return
+        try:
+            session.worker_process.terminate()
+            session.worker_process.wait(timeout=5)
+        except Exception:
+            try:
+                session.worker_process.kill()
+            except Exception:
+                pass
+        session.worker_process = None
+
+
 class RLMEnv(SandboxEnv):
     """
     Recursive Language Model Environment.
@@ -652,8 +1359,8 @@ class RLMEnv(SandboxEnv):
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
-    - Sandbox is used only for code execution (persistent Python worker)
-    - Sub-LLM calls from sandbox code are intercepted via HTTP proxy
+    - Code execution runs in a sandbox or locally (persistent Python worker)
+    - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
     Works with any dataset that has a normal prompt. Input data can optionally
     be provided in info[context_key] for large data that shouldn't be in the prompt.
@@ -692,6 +1399,10 @@ class RLMEnv(SandboxEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
+        execution_backend: Where code execution runs. "sandbox" (default) preserves
+                   existing behavior; "local" runs on the host without tunnels.
+        local_venv_scope: For local execution, whether to create one uv venv per
+                   env instance ("instance", default) or per rollout ("rollout").
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -726,6 +1437,8 @@ class RLMEnv(SandboxEnv):
         context_warning_threshold: float = 0.80,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
+        execution_backend: Literal["sandbox", "local"] = "sandbox",
+        local_venv_scope: Literal["instance", "rollout"] = "instance",
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -750,6 +1463,8 @@ class RLMEnv(SandboxEnv):
             self.serializer_registry = registry
         self.data_serializers = self.serializer_registry.all()
         self.custom_system_prompt = system_prompt
+        if execution_backend == "local" and interception_host is None:
+            interception_host = "127.0.0.1"
         self.interception_host = interception_host
         self.interception_port = interception_port
         self.pip_install_packages = pip_install_packages
@@ -758,6 +1473,15 @@ class RLMEnv(SandboxEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
+        self.execution_backend = execution_backend
+        self.local_venv_scope = local_venv_scope
+        if self.execution_backend not in ("sandbox", "local"):
+            raise ValueError("execution_backend must be 'sandbox' or 'local'.")
+        if self.local_venv_scope not in ("instance", "rollout"):
+            raise ValueError("local_venv_scope must be 'instance' or 'rollout'.")
+        self._interception_bind_host = (
+            "127.0.0.1" if execution_backend == "local" else "0.0.0.0"
+        )
         # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
         # This ensures server responds before sandbox worker's HTTP request times out
         (
@@ -772,23 +1496,17 @@ class RLMEnv(SandboxEnv):
             for tool in self.sub_tools
         }
 
-        # Build worker script
-        worker_script = _RLM_WORKER_SCRIPT.format(
-            command_fifo=self._COMMAND_FIFO,
-            response_fifo=self._RESPONSE_FIFO,
-            ready_flag=self._READY_FLAG,
-            context_file=self._CONTEXT_FILE,
-            answer_file=self._ANSWER_FILE,
-        )
+        self._sandbox_paths = _build_worker_paths("/tmp")
+        worker_script = _render_worker_script(self._sandbox_paths)
         worker_b64 = base64.b64encode(worker_script.encode("utf-8")).decode("utf-8")
 
         start_command = _RLM_START_COMMAND_TEMPLATE.format(
-            command_fifo=self._COMMAND_FIFO,
-            response_fifo=self._RESPONSE_FIFO,
-            ready_flag=self._READY_FLAG,
-            install_done_flag=self._INSTALL_DONE_FLAG,
-            worker_path=self._WORKER_PATH,
-            worker_pid_file=self._WORKER_PID_FILE,
+            command_fifo=self._sandbox_paths.command_fifo,
+            response_fifo=self._sandbox_paths.response_fifo,
+            ready_flag=self._sandbox_paths.ready_flag,
+            install_done_flag=self._sandbox_paths.install_done_flag,
+            worker_path=self._sandbox_paths.worker_path,
+            worker_pid_file=self._sandbox_paths.worker_pid_file,
             worker_b64=worker_b64,
             pip_install_packages=pip_install_packages,
         )
@@ -801,7 +1519,9 @@ class RLMEnv(SandboxEnv):
 
         # Tunnel pool for exposing interception server to sandboxes
         self._tunnel_pool: TunnelPool | None = (
-            TunnelPool(port=interception_port) if interception_host is None else None
+            TunnelPool(port=interception_port)
+            if execution_backend == "sandbox" and interception_host is None
+            else None
         )
 
         # Active rollout tracking for sub-LLM request routing
@@ -818,6 +1538,11 @@ class RLMEnv(SandboxEnv):
             **kwargs,
         )
         self.add_rubric(RLMMonitorRubric())
+        self._executor = (
+            LocalRLMExecutor(self)
+            if self.execution_backend == "local"
+            else SandboxRLMExecutor(self)
+        )
 
         # Remove bash tool from parent - we use our own REPL tool
         if hasattr(self, "tool_map") and "bash" in self.tool_map:
@@ -1229,12 +1954,20 @@ class RLMEnv(SandboxEnv):
 
             runner = web.AppRunner(app)
             await runner.setup()
-            site = web.TCPSite(runner, "0.0.0.0", self.interception_port)
+            site = web.TCPSite(
+                runner, self._interception_bind_host, self.interception_port
+            )
             await site.start()
 
             self._interception_server = app
             self._server_runner = runner
             self._server_site = site
+
+            if self.interception_port == 0:
+                server = getattr(site, "_server", None)
+                sockets = getattr(server, "sockets", None) if server else None
+                if sockets:
+                    self.interception_port = sockets[0].getsockname()[1]
 
             logger.debug(
                 f"Started RLM interception server on port {self.interception_port}"
@@ -1372,31 +2105,14 @@ class RLMEnv(SandboxEnv):
         if self._tunnel_pool:
             self._tunnel_pool.teardown()
 
+    @vf.teardown
+    async def teardown_executor(self):
+        """Cleanup executor-level resources (e.g., local venv)."""
+        await self._executor.teardown()
+
     # =========================================================================
     # State Management
     # =========================================================================
-
-    async def _execute_command_with_retry(
-        self, sandbox_id: str, command: str, timeout: int | None = None
-    ):
-        """Execute command with retry logic for transient sandbox errors."""
-        effective_timeout = timeout or self.timeout_per_command_seconds
-        start = perf_counter()
-        logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
-        try:
-            result = await self.with_retry(self.sandbox_client.execute_command)(
-                sandbox_id, command, timeout=effective_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.debug(
-                f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
-            )
-            raise vf.SandboxError() from e
-        except Exception as e:
-            raise vf.SandboxError() from e
-        elapsed = perf_counter() - start
-        logger.debug(f"Command completed in {elapsed:.1f}s")
-        return result
 
     def update_tool_args(
         self,
@@ -1409,7 +2125,7 @@ class RLMEnv(SandboxEnv):
         """Inject sandbox_id and state into call_python_repl tool args."""
         if tool_name == "call_python_repl":
             updated_args = dict(tool_args)
-            updated_args["sandbox_id"] = state["sandbox_id"]
+            updated_args["sandbox_id"] = state.get("sandbox_id")
             updated_args["state"] = state
             return updated_args
         else:
@@ -1443,114 +2159,16 @@ class RLMEnv(SandboxEnv):
         }
         return state
 
-    async def _start_worker(self, state: State) -> None:
-        """Start the Python worker process in the sandbox and wait for ready signal."""
-        sandbox_id = state["sandbox_id"]
-        interception_url = state["interception_url"]
-
-        sub_llm_timeout = self.sub_llm_timeout
-        # Calculate max wait iterations for worker script creation
-        script_wait_iterations = max(1, int(self.max_startup_wait_seconds / 0.1))
-        await self._wait_for_install_done(sandbox_id)
-        start_worker_cmd = f"""
-export RLM_INTERCEPTION_URL="{interception_url}"
-export RLM_SUB_MODEL="{self.sub_model or state.get("model", "")}"
-export RLM_MAX_SUB_LLM_PARALLELISM="{self.max_sub_llm_parallelism}"
-export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
-export RLM_SANDBOX_TIMEOUT="{self.code_execution_timeout}"
-
-# Wait for worker script to exist (written AFTER pip install completes in start_command)
-# This can take 30-60+ seconds for heavy packages like numpy, sympy, scipy
-sync 2>/dev/null || true
-for i in $(seq 1 {script_wait_iterations}); do
-    if [ -f "{self._WORKER_PATH}" ]; then
-        break
-    fi
-    sleep 0.1
-done
-
-        if [ ! -f "{self._WORKER_PATH}" ]; then
-            echo "Worker script not found - pip install may have failed or timed out" >&2
-            exit 1
-        fi
-
-        # Small delay to ensure filesystem is fully synced before reading script
-        sleep 0.2
-
-        # Start the worker
-        nohup python -u {self._WORKER_PATH} >> /tmp/rlm_worker.log 2>&1 &
-        echo $! > {self._WORKER_PID_FILE}
-"""
-        # Timeout needs to account for pip install wait + worker startup
-        start_worker_timeout = self.max_startup_wait_seconds + 30
-        await self._execute_command_with_retry(
-            sandbox_id, start_worker_cmd, timeout=start_worker_timeout
-        )
-        await self._wait_for_worker_ready(sandbox_id)
-
-    async def _prepare_sandbox_and_start_worker(
-        self, state: State, context_dict: dict[str, Any]
-    ) -> None:
-        """Write files to sandbox and start the worker process."""
-        sandbox_id = state["sandbox_id"]
-        try:
-            await self.sandbox_client.wait_for_creation(sandbox_id)
-        except Exception as e:
-            raise SandboxNotReadyError(e)
-        payload_bytes = state.get("rlm_payload_bytes")
-        payload_path = state.get("rlm_payload_path")
-        payload_name = state.get("rlm_payload_name")
-        if payload_bytes is not None and payload_path:
-            await self.upload_file_to_sandbox(
-                sandbox_id,
-                payload_bytes,
-                payload_path,
-                payload_name,
-            )
-        await self._write_json_to_sandbox(
-            sandbox_id, context_dict, self._CONTEXT_FILE, "rlm_context.json"
-        )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            {"ready": False, "content": ""},
-            self._ANSWER_FILE,
-            "rlm_answer.json",
-        )
-        await self._start_worker(state)
-
-    async def _recreate_sandbox(self, state: State) -> State:
-        """Delete the current sandbox and create a fresh one."""
-        old_sandbox_id = state.get("sandbox_id")
-        if old_sandbox_id:
-            # Remove from active sandboxes and delete
-            self.active_sandboxes.discard(old_sandbox_id)
-            try:
-                await self.sandbox_client.delete(old_sandbox_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
-
-        # Wait a second to make absolutely sure that the sandbox is deleted
-        await asyncio.sleep(1)
-
-        # Create new sandbox via parent's parent (SandboxEnv.setup_state)
-        # We need to call the grandparent to avoid re-running RLM setup
-        request = self.get_sandbox_request(state)
-        try:
-            sandbox = await self.with_retry(self.sandbox_client.create)(request)
-        except Exception as e:
-            raise SandboxCreationError(e)
-        self.active_sandboxes.add(sandbox.id)
-        logger.debug(f"Created replacement sandbox {sandbox.id}")
-        state["sandbox_id"] = sandbox.id
-        return state
-
     async def setup_state(self, state: State, **kwargs) -> State:
         """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
-        # 1. Create sandbox via parent
-        state = await super().setup_state(state, **kwargs)
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox ID not set")
+        # 1. Create sandbox via parent (sandbox backend only)
+        if self.execution_backend == "sandbox":
+            state = await super().setup_state(state, **kwargs)
+            sandbox_id = state.get("sandbox_id")
+            if not sandbox_id:
+                raise vf.SandboxError() from Exception("Sandbox ID not set")
+        else:
+            state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -1566,11 +2184,13 @@ done
         if isinstance(disk_size_gb, (int, float)) and disk_size_gb > 0:
             max_payload_bytes = int(disk_size_gb * 1024**3)
 
+        payload_dir = await self._executor.get_payload_dir(state)
         prepared_context = prepare_context_data(
             context_data,
             self.context_dtype,
             self.serializer_registry,
             max_payload_bytes,
+            payload_dir=payload_dir,
         )
         context_dict = prepared_context.context_dict
         state["rlm_context"] = context_dict
@@ -1596,32 +2216,8 @@ done
         state["rlm_packages_docs"] = packages_docs
         state["rlm_sub_tools_docs"] = sub_tools_docs
 
-        # 4. Prepare sandbox and start worker (with retry using fresh sandbox)
-        max_sandbox_retries = 5
-
-        for attempt in range(max_sandbox_retries):
-            try:
-                await self._prepare_sandbox_and_start_worker(state, context_dict)
-                break  # Success
-            except vf.SandboxError as e:
-                cause_text = str(e.__cause__ or e)
-                lower_cause = cause_text.lower()
-                retryable = (
-                    isinstance(e, SandboxNotReadyError)
-                    or "worker failed to start" in lower_cause
-                    or "sandbox_not_ready" in lower_cause
-                    or "timeout during sandbox creation" in lower_cause
-                )
-                if retryable and attempt < max_sandbox_retries - 1:
-                    logger.warning(
-                        "Sandbox startup failed (attempt %s/%s): %s. Recreating sandbox...",
-                        attempt + 1,
-                        max_sandbox_retries,
-                        cause_text,
-                    )
-                    state = await self._recreate_sandbox(state)
-                else:
-                    raise
+        # 4. Prepare backend and start worker
+        await self._executor.setup(state, prepared_context)
 
         state["rlm_worker_ready"] = True
 
@@ -1635,166 +2231,28 @@ done
 
         return state
 
-    async def _write_json_to_sandbox(
-        self, sandbox_id: str, data: dict, file_path: str, filename: str
-    ) -> None:
-        """Write JSON data to sandbox file using direct file upload."""
-        data_bytes = json.dumps(data).encode("utf-8")
-        await self.with_retry(self.sandbox_client.upload_bytes)(
-            sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
-        )
-
-    async def upload_file_to_sandbox(
-        self, sandbox_id: str, data: bytes, file_path: str, filename: str | None
-    ) -> None:
-        """Write raw bytes to sandbox file via a temporary file upload."""
-        import tempfile
-        from pathlib import Path
-
-        tmp_path = None
-        try:
-            suffix = f"-{filename}" if filename else ""
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                tmp_path = Path(tmp_file.name)
-                tmp_file.write(data)
-            await self.with_retry(self.sandbox_client.upload_file)(
-                sandbox_id, file_path, str(tmp_path)
-            )
-        finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
-
-    async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
-        """Wait for worker to signal ready."""
-        wait_script = _make_worker_ready_wait_script(
-            self._READY_FLAG,
-            self._WORKER_PID_FILE,
-            "/tmp/rlm_worker.log",
-            self.max_startup_wait_seconds,
-        )
-        # Use max_startup_wait_seconds as timeout (+ buffer for script overhead)
-        timeout = self.max_startup_wait_seconds + 10
-        result = await self._execute_command_with_retry(
-            sandbox_id, wait_script, timeout=timeout
-        )
-        stderr = result.stderr or ""
-        stdout = result.stdout or ""
-        if (
-            "RLM worker failed to start" in stdout
-            or "RLM worker failed to start" in stderr
-            or "RLM worker exited" in stdout
-            or "RLM worker exited" in stderr
-        ):
-            # Debug: get more info about why it failed
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                "ls -la /tmp/rlm* 2>&1; echo '---PID---'; cat /tmp/rlm_worker.pid 2>&1 || echo 'no pid'; echo '---LOG---'; cat /tmp/rlm_worker.log 2>&1 || echo 'no log'; echo '---PS---'; ps aux 2>&1",
-            )
-            logger.error(
-                f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
-            )
-            raise vf.SandboxError() from Exception(
-                f"RLM worker failed to start: {debug_result.stdout[:500]}"
-            )
-
-    async def _wait_for_install_done(self, sandbox_id: str) -> None:
-        """Install required packages inside the sandbox before starting the worker."""
-        install_wait_seconds = self._compute_install_wait_seconds()
-        packages = ["requests"]
-        extra_packages = [
-            p.strip() for p in self.pip_install_packages.split() if p.strip()
-        ]
-        packages.extend(extra_packages)
-        if not packages:
-            return
-        install_cmd = " ".join(packages)
-        timeout = install_wait_seconds + 10
-        install_script = textwrap.dedent(
-            f"""
-            bash -lc '
-            set -euo pipefail
-            rm -f "{self._INSTALL_DONE_FLAG}"
-            pip install -q {install_cmd} 2>&1 | tee /tmp/rlm_pip.log
-            touch "{self._INSTALL_DONE_FLAG}"
-            '
-            """
-        )
-        result = await self._execute_command_with_retry(
-            sandbox_id, install_script, timeout=timeout
-        )
-        exit_code = getattr(result, "exit_code", 0)
-        if (
-            isinstance(exit_code, int)
-            and not isinstance(exit_code, bool)
-            and exit_code != 0
-        ):
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                "echo '---PIP LOG---'; tail -n 200 /tmp/rlm_pip.log 2>&1 || echo 'no pip log'",
-            )
-            logger.error(
-                "RLM pip install failed (exit_code=%s). Log tail:\n%s",
-                exit_code,
-                debug_result.stdout,
-            )
-            raise vf.SandboxError() from Exception("RLM pip install failed")
-
     # =========================================================================
     # Code Execution
     # =========================================================================
 
     async def _recover_from_code_timeout(self, state: State) -> bool:
-        """Attempt to recover from a code execution timeout by recreating the sandbox."""
-        context_dict = state.get("rlm_context")
-        if not context_dict:
-            logger.error("Cannot recover from timeout: missing rlm_context in state")
-            return False
-        try:
-            state = await self._recreate_sandbox(state)
-            await self._prepare_sandbox_and_start_worker(state, context_dict)
-        except Exception as e:
-            logger.error(f"Failed to recover from code timeout: {e}")
-            return False
-        state["rlm_worker_ready"] = True
-        state["_exec_seq"] = 0
-        return True
+        """Attempt to recover from a code execution timeout via the active backend."""
+        return await self._executor.recover_from_timeout(state)
 
     async def _execute_code(
-        self, sandbox_id: str, code: str, state: State
+        self, sandbox_id: str | None, code: str, state: State
     ) -> dict[str, Any]:
-        """Execute code in sandbox worker and return result."""
+        """Execute code in worker and return result."""
         # Increment and track sequence number for this execution
         seq = state.get("_exec_seq", 0) + 1
         state["_exec_seq"] = seq
 
         payload = {"code": code, "seq": seq}
-        payload_json = json.dumps(payload)
-        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
-
-        command = textwrap.dedent(
-            f"""
-            python3 - <<'PY'
-import base64
-import json
-import sys
-
-data = base64.b64decode('{payload_b64}').decode('utf-8')
-with open('{self._COMMAND_FIFO}', 'w', encoding='utf-8') as command_file:
-    command_file.write(data)
-with open('{self._RESPONSE_FIFO}', 'r', encoding='utf-8') as response_file:
-    sys.stdout.write(response_file.read())
-PY
-            """
-        )
-
         try:
-            # No retry for code execution - if code times out or fails, return error to model
-            result = await self.sandbox_client.execute_command(
-                sandbox_id, command, timeout=self.code_execution_timeout
-            )
-        except CommandTimeoutError as e:
+            result = await self._executor.execute(payload, state)
+        except RLMCodeExecutionTimeout as e:
             logger.warning(
-                f"Code execution timed out after {self.code_execution_timeout}s"
+                "Code execution timed out after %ss", self.code_execution_timeout
             )
             if self.abort_on_code_timeout:
                 # Abort rollout immediately on timeout
@@ -1817,10 +2275,6 @@ PY
                 ),
                 "answer": {"ready": False, "content": ""},
             }
-        except Exception as e:
-            # Other errors - abort the rollout
-            logger.error(f"Sandbox error during code execution: {e}")
-            raise vf.SandboxError() from e
 
         if not result.stdout:
             return {
@@ -1896,7 +2350,9 @@ PY
     # REPL Tool
     # =========================================================================
 
-    async def call_python_repl(self, code: str, sandbox_id: str, state: Any) -> str:
+    async def call_python_repl(
+        self, code: str, sandbox_id: str | None, state: Any
+    ) -> str:
         """
         Execute Python code in a persistent REPL environment.
 
@@ -2020,19 +2476,7 @@ PY
         """Read final answer from sandbox if not already set."""
         if "final_answer" in state:
             return
-        state["final_answer"] = ""
-        sandbox_id = state.get("sandbox_id")
-        if sandbox_id:
-            try:
-                result = await self._execute_command_with_retry(
-                    sandbox_id,
-                    f'cat {self._ANSWER_FILE} 2>/dev/null || echo \'{{"content": ""}}\'',
-                )
-                state["final_answer"] = json.loads(result.stdout.strip()).get(
-                    "content", ""
-                )
-            except Exception:
-                pass
+        state["final_answer"] = await self._executor.read_answer(state)
 
     @vf.stop
     async def answer_ready(self, state: State) -> bool:
@@ -2063,6 +2507,8 @@ PY
         # Release tunnel
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
+
+        await self._executor.cleanup(state)
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
