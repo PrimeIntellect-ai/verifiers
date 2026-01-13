@@ -343,6 +343,11 @@ def test_worker_timeout_clamped_to_sandbox_timeout():
     )
 
 
+def test_worker_script_includes_disallowed_imports():
+    assert "RLM_DISALLOWED_MODULES" in rlm_module._RLM_WORKER_SCRIPT
+    assert "RLM_DISALLOWED_BUILTINS" in rlm_module._RLM_WORKER_SCRIPT
+
+
 # =============================================================================
 # 2. Initialization and Configuration
 # =============================================================================
@@ -366,6 +371,8 @@ class TestRLMEnvInitialization:
             assert env.max_output_length == 8192
             assert env.max_sub_llm_parallelism == 5
             assert env.context_key == "context"
+            assert "os" in env.disallowed_modules
+            assert env.disallowed_builtins == "open"
 
     def test_custom_configuration(self, mock_sandbox_client, mock_dataset):
         """Custom sub_model, sub_tools, max_iterations, max_output_length."""

@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -330,6 +331,53 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     if SANDBOX_TIMEOUT > 0:
         SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)
 
+    # Guardrails for user code execution (best-effort, not a sandbox)
+    def _parse_disallowed(raw: str) -> list[str]:
+        if not raw:
+            return []
+        raw = raw.replace(",", " ")
+        return [item.strip() for item in raw.split() if item.strip()]
+
+    DISALLOWED_MODULES = set(
+        _parse_disallowed(os.environ.get("RLM_DISALLOWED_MODULES", ""))
+    )
+    DISALLOWED_BUILTINS = set(
+        _parse_disallowed(os.environ.get("RLM_DISALLOWED_BUILTINS", ""))
+    )
+
+    def _is_disallowed_module(name: str) -> bool:
+        for blocked in DISALLOWED_MODULES:
+            if name == blocked or name.startswith(blocked + "."):
+                return True
+        return False
+
+    def _build_restricted_builtins() -> dict:
+        builtins_obj = __builtins__
+        if not isinstance(builtins_obj, dict):
+            builtins_obj = builtins_obj.__dict__
+        restricted = dict(builtins_obj)
+
+        if DISALLOWED_MODULES:
+            original_import = restricted.get("__import__")
+
+            def _restricted_import(
+                name, globals=None, locals=None, fromlist=(), level=0
+            ):
+                if _is_disallowed_module(name):
+                    raise ImportError(
+                        f"Import of '{{name}}' is blocked by RLM policy"
+                    )
+                if original_import is None:
+                    raise ImportError("Import mechanism unavailable")
+                return original_import(name, globals, locals, fromlist, level)
+
+            restricted["__import__"] = _restricted_import
+
+        for builtin_name in DISALLOWED_BUILTINS:
+            restricted.pop(builtin_name, None)
+
+        return restricted
+
     def ensure_fifo(path: str) -> None:
         if os.path.exists(path):
             os.remove(path)
@@ -482,9 +530,12 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         # Return just the content
         return [r.get("content", "") for r in results]
 
+    restricted_builtins = _build_restricted_builtins()
+
     # Persistent execution namespace
     namespace: dict[str, object] = {{
         "__name__": "__main__",
+        "__builtins__": restricted_builtins,
         "extra_data": extra_data,
         "answer": answer,
         "llm_batch": llm_batch,
@@ -992,6 +1043,8 @@ PY
         interception_url = state["interception_url"]
 
         sub_llm_timeout = self.env.sub_llm_timeout
+        disallowed_modules = shlex.quote(self.env.disallowed_modules)
+        disallowed_builtins = shlex.quote(self.env.disallowed_builtins)
         script_wait_iterations = max(1, int(self.env.max_startup_wait_seconds / 0.1))
         await self._wait_for_install_done(sandbox_id)
         start_worker_cmd = f"""
@@ -1000,6 +1053,8 @@ export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
 export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
 export RLM_SANDBOX_TIMEOUT="{self.env.code_execution_timeout}"
+export RLM_DISALLOWED_MODULES={disallowed_modules}
+export RLM_DISALLOWED_BUILTINS={disallowed_builtins}
 
 sync 2>/dev/null || true
 for i in $(seq 1 {script_wait_iterations}); do
@@ -1298,6 +1353,8 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
                 "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
                 "RLM_SANDBOX_TIMEOUT": str(self.env.code_execution_timeout),
+                "RLM_DISALLOWED_MODULES": self.env.disallowed_modules,
+                "RLM_DISALLOWED_BUILTINS": self.env.disallowed_builtins,
             }
         )
 
@@ -1403,6 +1460,10 @@ class RLMEnv(SandboxEnv):
                    existing behavior; "local" runs on the host without tunnels.
         local_venv_scope: For local execution, whether to create one uv venv per
                    env instance ("instance", default) or per rollout ("rollout").
+        disallowed_modules: Space-separated module names that user code may not import
+                   (best-effort guardrail). Defaults to blocking common filesystem modules.
+        disallowed_builtins: Space-separated builtin names removed from user code
+                   execution (best-effort guardrail). Defaults to "open".
         **kwargs: Additional arguments passed to SandboxEnv
     """
 
@@ -1439,6 +1500,8 @@ class RLMEnv(SandboxEnv):
         abort_on_code_timeout: bool = False,
         execution_backend: Literal["sandbox", "local"] = "sandbox",
         local_venv_scope: Literal["instance", "rollout"] = "instance",
+        disallowed_modules: str = ("os sys pathlib shutil glob tempfile io builtins"),
+        disallowed_builtins: str = "open",
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -1475,6 +1538,8 @@ class RLMEnv(SandboxEnv):
         self.abort_on_code_timeout = abort_on_code_timeout
         self.execution_backend = execution_backend
         self.local_venv_scope = local_venv_scope
+        self.disallowed_modules = disallowed_modules
+        self.disallowed_builtins = disallowed_builtins
         if self.execution_backend not in ("sandbox", "local"):
             raise ValueError("execution_backend must be 'sandbox' or 'local'.")
         if self.local_venv_scope not in ("instance", "rollout"):
