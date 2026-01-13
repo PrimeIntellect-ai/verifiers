@@ -582,6 +582,29 @@ class TestLocalBackendSetup:
         assert result["sandbox_state"]["command_execution_times"] == []
 
 
+@pytest.mark.asyncio
+async def test_local_teardown_uses_sync_cleanup_on_shutdown(rlm_env_local, tmp_path):
+    executor = rlm_env_local._executor
+    venv_path = tmp_path / "venv"
+    venv_path.mkdir()
+    executor._instance_venv_path = str(venv_path)
+    executor._instance_venv_ready = True
+
+    with (
+        patch(
+            "verifiers.envs.experimental.rlm_env.sys.is_finalizing", return_value=True
+        ),
+        patch("verifiers.envs.experimental.rlm_env.shutil.rmtree") as mock_rmtree,
+        patch(
+            "verifiers.envs.experimental.rlm_env.asyncio.to_thread"
+        ) as mock_to_thread,
+    ):
+        await executor.teardown()
+
+    mock_rmtree.assert_called_once()
+    mock_to_thread.assert_not_called()
+
+
 class TestInstallPackages:
     """Tests for sandbox package installation behavior."""
 

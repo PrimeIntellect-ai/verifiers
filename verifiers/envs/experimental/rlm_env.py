@@ -1254,7 +1254,18 @@ class LocalRLMExecutor(BaseRLMExecutor):
         if self.env.local_venv_scope != "instance":
             return
         if self._instance_venv_path:
-            await asyncio.to_thread(shutil.rmtree, self._instance_venv_path, True)
+            if sys.is_finalizing():
+                shutil.rmtree(self._instance_venv_path, True)
+            else:
+                try:
+                    await asyncio.to_thread(
+                        shutil.rmtree, self._instance_venv_path, True
+                    )
+                except RuntimeError as e:
+                    if "cannot schedule new futures" in str(e).lower():
+                        shutil.rmtree(self._instance_venv_path, True)
+                    else:
+                        raise
             self._instance_venv_path = None
             self._instance_venv_ready = False
 
