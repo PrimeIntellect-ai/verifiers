@@ -348,6 +348,11 @@ def test_worker_script_includes_disallowed_imports():
     assert "RLM_DISALLOWED_BUILTINS" in rlm_module._RLM_WORKER_SCRIPT
 
 
+def test_worker_script_includes_stagger_env_vars():
+    assert "RLM_SUB_LLM_STAGGER_MS" in rlm_module._RLM_WORKER_SCRIPT
+    assert "RLM_SUB_LLM_STAGGER_JITTER_MS" in rlm_module._RLM_WORKER_SCRIPT
+
+
 # =============================================================================
 # 2. Initialization and Configuration
 # =============================================================================
@@ -370,6 +375,8 @@ class TestRLMEnvInitialization:
             assert env.max_iterations == 50
             assert env.max_output_length == 8192
             assert env.max_sub_llm_parallelism == 5
+            assert env.sub_llm_stagger_ms == 30
+            assert env.sub_llm_stagger_jitter_ms == 10
             assert env.context_key == "context"
             assert "os" in env.disallowed_modules
             assert env.disallowed_builtins == "open"
@@ -392,6 +399,8 @@ class TestRLMEnvInitialization:
                 max_iterations=20,
                 max_output_length=4096,
                 max_sub_llm_parallelism=10,
+                sub_llm_stagger_ms=15,
+                sub_llm_stagger_jitter_ms=5,
                 context_key="custom_context",
             )
 
@@ -400,6 +409,8 @@ class TestRLMEnvInitialization:
             assert env.max_iterations == 20
             assert env.max_output_length == 4096
             assert env.max_sub_llm_parallelism == 10
+            assert env.sub_llm_stagger_ms == 15
+            assert env.sub_llm_stagger_jitter_ms == 5
             assert env.context_key == "custom_context"
 
     def test_system_prompt_customization(self, mock_sandbox_client, mock_dataset):
@@ -552,6 +563,24 @@ class TestLocalBackendSetup:
 
         assert payload_path.startswith(base_dir)
 
+    @pytest.mark.asyncio
+    async def test_local_setup_initializes_sandbox_state(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+
+        assert "sandbox_state" in result
+        assert result["sandbox_state"]["ready"] is False
+        assert result["sandbox_state"]["ready_wait_time"] == 0.0
+        assert result["sandbox_state"]["command_execution_times"] == []
+
 
 class TestInstallPackages:
     """Tests for sandbox package installation behavior."""
@@ -597,6 +626,54 @@ class TestInstallPackages:
 
         install_script = sandbox_executor._execute_command_with_retry.call_args.args[1]
         assert "pip install -q requests polars>=0.20.0 numpy" in install_script
+
+
+@pytest.mark.asyncio
+async def test_start_worker_exports_stagger_env_vars(rlm_env):
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._execute_command_with_retry = AsyncMock(
+        return_value=MagicMock(stdout="", stderr="")
+    )
+    sandbox_executor._wait_for_install_done = AsyncMock()
+    sandbox_executor._wait_for_worker_ready = AsyncMock()
+
+    rlm_env.sub_llm_stagger_ms = 25
+    rlm_env.sub_llm_stagger_jitter_ms = 7
+
+    state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
+    await sandbox_executor._start_worker(state)
+
+    start_cmd = sandbox_executor._execute_command_with_retry.call_args.args[1]
+    assert 'RLM_SUB_LLM_STAGGER_MS="25"' in start_cmd
+    assert 'RLM_SUB_LLM_STAGGER_JITTER_MS="7"' in start_cmd
+
+
+@pytest.mark.asyncio
+async def test_local_worker_exports_stagger_env_vars(rlm_env_local, tmp_path):
+    executor = rlm_env_local._executor
+    state = {
+        "rollout_id": "rlm_test123",
+        "interception_url": "http://test",
+        "model": "test-model",
+    }
+    session = executor._get_or_create_session(state)
+    session.venv_path = str(tmp_path / "venv")
+
+    rlm_env_local.sub_llm_stagger_ms = 18
+    rlm_env_local.sub_llm_stagger_jitter_ms = 9
+
+    with (
+        patch.object(executor, "_venv_python", return_value="python"),
+        patch.object(executor, "_wait_for_ready", new=AsyncMock()),
+        patch("verifiers.envs.experimental.rlm_env.subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        await executor._start_worker(state, session)
+
+    _, kwargs = mock_popen.call_args
+    env = kwargs["env"]
+    assert env["RLM_SUB_LLM_STAGGER_MS"] == "18"
+    assert env["RLM_SUB_LLM_STAGGER_JITTER_MS"] == "9"
 
 
 # =============================================================================
