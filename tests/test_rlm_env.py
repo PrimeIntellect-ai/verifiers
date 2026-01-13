@@ -375,8 +375,8 @@ class TestRLMEnvInitialization:
             assert env.max_iterations == 50
             assert env.max_output_length == 8192
             assert env.max_sub_llm_parallelism == 5
-            assert env.sub_llm_stagger_ms == 30
-            assert env.sub_llm_stagger_jitter_ms == 10
+            assert env.sub_llm_stagger_ms == 200
+            assert env.sub_llm_stagger_jitter_ms == 50
             assert env.context_key == "context"
             assert "os" in env.disallowed_modules
             assert env.disallowed_builtins == "open"
