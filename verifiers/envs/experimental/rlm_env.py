@@ -2234,6 +2234,11 @@ class RLMEnv(SandboxEnv):
                 raise vf.SandboxError() from Exception("Sandbox ID not set")
         else:
             state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+            state["sandbox_state"] = {
+                "ready": False,
+                "ready_wait_time": 0.0,
+                "command_execution_times": [],
+            }
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
