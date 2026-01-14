@@ -3,6 +3,43 @@ import logging
 import verifiers as vf
 
 
+class TestSetupLogging:
+    """Tests for the vf.setup_logging function."""
+
+    def test_setup_logging_sets_level(self):
+        """Verify that setup_logging sets the log level."""
+        logger = logging.getLogger("verifiers")
+
+        vf.setup_logging("DEBUG")
+        assert logger.level == logging.DEBUG
+
+        vf.setup_logging("WARNING")
+        assert logger.level == logging.WARNING
+
+    def test_setup_logging_overrides_on_multiple_calls(self):
+        """Verify that calling setup_logging multiple times overrides the config."""
+        logger = logging.getLogger("verifiers")
+
+        vf.setup_logging("INFO")
+        assert logger.level == logging.INFO
+        assert len(logger.handlers) == 1
+
+        vf.setup_logging("DEBUG")
+        assert logger.level == logging.DEBUG
+        # Should still have exactly one handler, not two
+        assert len(logger.handlers) == 1
+
+    def test_setup_logging_case_insensitive(self):
+        """Test that level names are case-insensitive."""
+        logger = logging.getLogger("verifiers")
+
+        vf.setup_logging("debug")
+        assert logger.level == logging.DEBUG
+
+        vf.setup_logging("Warning")
+        assert logger.level == logging.WARNING
+
+
 class TestLogLevel:
     """Tests for the vf.log_level context manager."""
 

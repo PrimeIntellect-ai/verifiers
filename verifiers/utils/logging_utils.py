@@ -12,6 +12,8 @@ from verifiers.errors import Error
 from verifiers.types import Messages
 from verifiers.utils.error_utils import ErrorChain
 
+LOGGER_NAME = "verifiers"
+
 
 def setup_logging(
     level: str = "INFO",
@@ -34,7 +36,9 @@ def setup_logging(
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
 
-    logger = logging.getLogger("verifiers")
+    logger = logging.getLogger(LOGGER_NAME)
+    # Remove any existing handlers to avoid duplicates
+    logger.handlers.clear()
     logger.setLevel(level.upper())
     logger.addHandler(handler)
 
@@ -59,7 +63,7 @@ class log_level:
             if isinstance(log_level, int)
             else getattr(logging, log_level.upper())
         )
-        self.logger = logging.getLogger("verifiers")
+        self.logger = logging.getLogger(LOGGER_NAME)
         self.previous_level: int | None = None
 
     def __enter__(self):

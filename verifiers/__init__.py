@@ -1,10 +1,8 @@
 __version__ = "0.1.9.post3"
 
 import importlib
-import logging
 import os
-import sys
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
@@ -35,44 +33,13 @@ from .utils.data_utils import (
     load_example_dataset,
 )
 from .utils.env_utils import load_environment
-from .utils.logging_utils import log_level, print_prompt_completions_sample
-
+from .utils.logging_utils import (
+    log_level,
+    print_prompt_completions_sample,
+    setup_logging,
+)
 
 # Setup default logging configuration
-def setup_logging(
-    level: str = "INFO",
-    log_format: Optional[str] = None,
-    date_format: Optional[str] = None,
-) -> None:
-    """
-    Setup basic logging configuration for the verifiers package.
-
-    Args:
-        level: The logging level to use. Defaults to "INFO".
-        log_format: Custom log format string. If None, uses default format.
-        date_format: Custom date format string. If None, uses default format.
-    """
-    if log_format is None:
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    if date_format is None:
-        date_format = "%Y-%m-%d %H:%M:%S"
-
-    # Create a StreamHandler that writes to stderr
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
-
-    # Get the root logger for the verifiers package
-    logger = logging.getLogger("verifiers")
-    # Remove any existing handlers to avoid duplicates
-    logger.handlers.clear()
-    # Add a new handler with desired log level
-    logger.setLevel(level.upper())
-    logger.addHandler(handler)
-
-    # Prevent the logger from propagating messages to the root logger
-    logger.propagate = False
-
-
 setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
