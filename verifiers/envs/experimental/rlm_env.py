@@ -1177,7 +1177,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
         session = self._get_session(state)
-        if session.worker_process and session.worker_process.poll() is not None:
+        if session.worker_process is None:
+            raise vf.SandboxError() from Exception("RLM worker process not running")
+        if session.worker_process.poll() is not None:
             raise vf.SandboxError() from Exception("RLM worker process not running")
 
         def _do_io() -> str:
