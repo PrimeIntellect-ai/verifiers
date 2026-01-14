@@ -159,7 +159,6 @@ class Environment(ABC):
         self._stop_conditions: list[StopCondition] = []
         self._cleanup_handlers: list[RolloutCleanup] = []
         self._teardown_handlers: list[EnvironmentTeardown] = []
-        self._teardown_called = False
 
         self.__post_init__()
 
@@ -192,8 +191,6 @@ class Environment(ABC):
         )
 
         def _sync_teardown():
-            if self._teardown_called:
-                return
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
@@ -656,9 +653,6 @@ class Environment(ABC):
         """
         Tear down environment resources.
         """
-        if self._teardown_called:
-            return
-        self._teardown_called = True
         for handler in self._teardown_handlers:
             await handler()
 
