@@ -101,3 +101,31 @@ class TestLogLevel:
             assert logger.level == logging.DEBUG
 
         assert logger.level == original_level
+
+
+class TestQuietVerifiers:
+    """Tests for the vf.quiet_verifiers context manager."""
+
+    def test_quiet_verifiers_sets_warning_level(self):
+        """Verify that quiet_verifiers sets the log level to WARNING."""
+        logger = logging.getLogger("verifiers")
+        original_level = logger.level
+
+        with vf.quiet_verifiers():
+            assert logger.level == logging.WARNING
+
+        assert logger.level == original_level
+
+    def test_quiet_verifiers_restores_on_exception(self):
+        """Verify the log level is restored even when an exception occurs."""
+        logger = logging.getLogger("verifiers")
+        original_level = logger.level
+
+        try:
+            with vf.quiet_verifiers():
+                assert logger.level == logging.WARNING
+                raise ValueError("Test exception")
+        except ValueError:
+            pass
+
+        assert logger.level == original_level

@@ -36,6 +36,7 @@ from .utils.env_utils import load_environment
 from .utils.logging_utils import (
     log_level,
     print_prompt_completions_sample,
+    quiet_verifiers,
     setup_logging,
 )
 
@@ -70,6 +71,7 @@ __all__ = [
     "load_example_dataset",
     "setup_logging",
     "log_level",
+    "quiet_verifiers",
     "load_environment",
     "print_prompt_completions_sample",
     "get_model",
