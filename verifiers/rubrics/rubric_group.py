@@ -17,7 +17,7 @@ class RubricGroup(Rubric):
             raise ValueError("RubricGroup must have at least one rubric")
         super().__init__(**kwargs)
         self.rubrics = rubrics
-        self.logger.info(f"Initialized RubricGroup with {len(rubrics)} rubrics")
+        self.logger.debug(f"Initialized RubricGroup with {len(rubrics)} rubrics")
 
     def _get_reward_func_names(self) -> list[str]:
         names = []
