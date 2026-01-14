@@ -164,7 +164,6 @@ def test_run_rollouts_with_max_concurrent(mock_openai_client):
         RolloutInput(
             prompt=[{"role": "user", "content": "hi"}],
             answer="",
-            task="default",
             example_id=i,
         )
         for i in range(3)
@@ -186,7 +185,6 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
         RolloutInput(
             prompt=[{"role": "user", "content": "hi"}],
             answer="",
-            task="default",
             example_id=i,
         )
         for i in range(3)
@@ -228,7 +226,6 @@ async def test_generate_inside_running_loop(mock_openai_client):
         RolloutInput(
             prompt=[{"role": "user", "content": "Hi"}],
             answer="",
-            task="default",
             example_id=0,
         )
     ]
@@ -265,7 +262,6 @@ def test_make_dataset_basic_without_tools(mock_openai_client):
         prompt=[[{"role": "user", "content": "Hi"}]],
         completion=[[{"role": "assistant", "content": "Hello"}]],
         answer=[""],
-        task=["default"],
         state=[
             {
                 "timing": {
@@ -276,6 +272,7 @@ def test_make_dataset_basic_without_tools(mock_openai_client):
             }
         ],
         info=[{}],
+        task=["default"],
         reward=[1.0],
         metrics={"foo": [0.1]},
         example_id=[0],
