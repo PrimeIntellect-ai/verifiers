@@ -945,15 +945,14 @@ class Environment(ABC):
                     if reward_count > 0:
                         avg_reward = reward_sum / reward_count
                         postfix = {"reward": f"{avg_reward:.3f}"}
-                        if len(unique_tasks) > 1:
-                            for task in unique_tasks:
-                                if per_task_count[task] > 0:
-                                    avg_task_reward = (
-                                        per_task_sum[task] / per_task_count[task]
-                                    )
-                                    postfix[task] = f"{avg_task_reward:.3f}"
-                                else:
-                                    postfix[task] = "?"
+                        for task in unique_tasks:
+                            if per_task_count[task] > 0:
+                                avg_task_reward = (
+                                    per_task_sum[task] / per_task_count[task]
+                                )
+                                postfix[task] = f"{avg_task_reward:.3f}"
+                            else:
+                                postfix[task] = "?"
                         pbar.set_postfix(postfix)
 
                 # save intermediate results
