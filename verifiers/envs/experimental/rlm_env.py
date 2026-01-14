@@ -1251,6 +1251,14 @@ class LocalRLMExecutor(BaseRLMExecutor):
     async def teardown(self) -> None:
         if self.env.execution_backend != "local":
             return
+        if self._sessions:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            for session in sessions:
+                try:
+                    self._stop_worker(session)
+                finally:
+                    session.temp_dir.cleanup()
         if self.env.local_venv_scope != "instance":
             return
         if self._instance_venv_path:
@@ -2638,7 +2646,13 @@ class RLMEnv(SandboxEnv):
         if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
             await self._tunnel_pool.release_tunnel(tunnel_url)
 
-        await self._executor.cleanup(state)
+        try:
+            await self._executor.cleanup(state)
+        finally:
+            if not self.active_rollouts:
+                await self.teardown_interception_server()
+                if self._tunnel_pool:
+                    self._tunnel_pool.teardown()
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
