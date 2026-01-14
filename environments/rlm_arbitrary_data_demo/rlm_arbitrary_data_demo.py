@@ -198,10 +198,10 @@ def _generate_example(
 def load_environment(
     context_dtype: ContextDType = "text",
     num_samples: int = 100,
+    seed: int | None = None,
     **kwargs,
 ) -> vf.Environment:
-    rng_seed = kwargs.pop("rng_seed", None)
-    rng = random.Random(rng_seed)
+    rng = random.Random(seed)
     serializers: list[DataSerializer] = []
     serializer_dtype = _resolve_serializer_dtype(context_dtype)
 
