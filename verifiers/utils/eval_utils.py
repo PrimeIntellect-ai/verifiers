@@ -192,7 +192,7 @@ def print_results(
     if num_tasks > 1:
         task_results = get_results_by_task(results)
         for task, task_results in task_results.items():
-            print(f"Task: {task}")
+            print(f"\n--- {task} ---")
             print_rewards(task_results)
             print_info(task_results)
             print_timing(task_results)
