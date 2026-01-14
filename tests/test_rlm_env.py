@@ -605,6 +605,23 @@ async def test_local_teardown_uses_sync_cleanup_on_shutdown(rlm_env_local, tmp_p
     mock_to_thread.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_local_teardown_stops_remaining_sessions(rlm_env_local):
+    executor = rlm_env_local._executor
+    state = {"rollout_id": "rlm_test123"}
+    session = executor._get_or_create_session(state)
+
+    with (
+        patch.object(executor, "_stop_worker") as stop_worker,
+        patch.object(session.temp_dir, "cleanup") as cleanup,
+    ):
+        await executor.teardown()
+
+    stop_worker.assert_called_once_with(session)
+    cleanup.assert_called_once()
+    assert executor._sessions == {}
+
+
 class TestInstallPackages:
     """Tests for sandbox package installation behavior."""
 
@@ -900,6 +917,18 @@ class TestCleanupRLMState:
         state = {"rollout_id": "nonexistent"}
         # Should not raise
         await rlm_env.cleanup_rlm_state(state)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stops_interception_server_when_idle(self, rlm_env):
+        rollout_id = "rlm_test123"
+        rlm_env.active_rollouts[rollout_id] = {"client": MagicMock()}
+        rlm_env._executor.cleanup = AsyncMock()
+        rlm_env.teardown_interception_server = AsyncMock()
+
+        state = {"rollout_id": rollout_id}
+        await rlm_env.cleanup_rlm_state(state)
+
+        rlm_env.teardown_interception_server.assert_awaited_once()
 
 
 # =============================================================================
