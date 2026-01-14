@@ -59,7 +59,42 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
+def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
+    """Group results by task name.
+
+    Args:
+        results: The GenerateOutputs from an evaluation run.
+
+    Returns:
+        A dictionary mapping task names to their corresponding GenerateOutputs.
+    """
+    task_indices: dict[str, list[int]] = {}
+    for i, task in enumerate(results["task"]):
+        if task not in task_indices:
+            task_indices[task] = []
+        task_indices[task].append(i)
+
+    task_results: dict[str, GenerateOutputs] = {}
+    for task, indices in task_indices.items():
+        task_results[task] = GenerateOutputs(
+            prompt=[results["prompt"][i] for i in indices],
+            completion=[results["completion"][i] for i in indices],
+            answer=[results["answer"][i] for i in indices],
+            state=[results["state"][i] for i in indices],
+            task=[results["task"][i] for i in indices],
+            info=[results["info"][i] for i in indices],
+            example_id=[results["example_id"][i] for i in indices],
+            reward=[results["reward"][i] for i in indices],
+            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
+            stop_conditions=[results["stop_conditions"][i] for i in indices],
+            is_truncated=[results["is_truncated"][i] for i in indices],
+            metadata=results["metadata"],
+        )
+    return task_results
+
+
 def print_rewards(results: GenerateOutputs):
+    print("Rewards:")
     print(
         f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
     )
@@ -80,6 +115,7 @@ def print_rewards(results: GenerateOutputs):
 
 
 def print_info(results: GenerateOutputs):
+    print("Info:")
     print(
         f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
     )
@@ -101,6 +137,7 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
+    print("Timing:")
     generation_ms_arr = np.array(
         [s["timing"]["generation_ms"] for s in results["state"]]
     )
@@ -147,18 +184,18 @@ def print_results(
         num_samples=num_samples,
     )
     print("--- All ---")
-    print("Rewards:")
     print_rewards(results)
-
-    print("Info:")
     print_info(results)
-
-    print("Timing:")
     print_timing(results)
 
     num_tasks = len(set(results["task"]))
     if num_tasks > 1:
-        pass
+        task_results = get_results_by_task(results)
+        for task, task_results in task_results.items():
+            print(f"Task: {task}")
+            print_rewards(task_results)
+            print_info(task_results)
+            print_timing(task_results)
 
     if event_loop_lags:
         print("Performance:")
