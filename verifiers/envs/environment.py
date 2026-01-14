@@ -8,7 +8,6 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
@@ -905,22 +904,13 @@ class Environment(ABC):
 
         # set up progress bar
         pbar = None
-        unique_tasks = set([i["task"] for i in inputs_list])  # type: ignore
         if use_tqdm:
             from tqdm import tqdm
 
-            postfix = {"reward": "?"}
-            if len(unique_tasks) > 1:
-                postfix.update({f"{task}": "?" for task in unique_tasks})
-            pbar = tqdm(
-                total=pbar_total,
-                desc=pbar_desc,
-                postfix=postfix,
-            )
+            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         # process tasks as they complete
         reward_sum, reward_count = 0, 0
-        per_task_sum, per_task_count = defaultdict(float), defaultdict(int)
         groups_or_rollouts_completed = 0
         all_states: list[State] = []
         try:
@@ -937,23 +927,11 @@ class Environment(ABC):
                     if r is not None:
                         reward_sum += r
                         reward_count += 1
-                        per_task_sum[s["task"]] += r
-                        per_task_count[s["task"]] += 1
 
                 if pbar is not None:
                     pbar.update(1)
                     if reward_count > 0:
-                        avg_reward = reward_sum / reward_count
-                        postfix = {"reward": f"{avg_reward:.3f}"}
-                        for task in unique_tasks:
-                            if per_task_count[task] > 0:
-                                avg_task_reward = (
-                                    per_task_sum[task] / per_task_count[task]
-                                )
-                                postfix[task] = f"{avg_task_reward:.3f}"
-                            else:
-                                postfix[task] = "?"
-                        pbar.set_postfix(postfix)
+                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
 
                 # save intermediate results
                 if (
