@@ -1347,11 +1347,11 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         try:
             result = await asyncio.to_thread(_run)
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             raise vf.SandboxError() from RuntimeError(
                 "uv not found on PATH; local execution requires uv installed"
             )
-        except subprocess.TimeoutExpired as e:
+        except subprocess.TimeoutExpired:
             raise vf.SandboxError() from RuntimeError(
                 f"uv command timed out after {timeout} seconds"
             )
