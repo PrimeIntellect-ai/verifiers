@@ -221,6 +221,7 @@ def sample_chat_dataset():
                 [{"role": "user", "content": "What is the capital of France?"}],
             ],
             "answer": ["4", "Paris"],
+            "task": ["default", "default"],
             "example_id": [0, 1],
         }
     )

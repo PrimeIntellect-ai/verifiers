@@ -276,6 +276,7 @@ class TestEnvironmentBase:
             RolloutInput(
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="Hi",
+                task="default",
                 example_id=0,
             )
         ]
@@ -311,6 +312,7 @@ class TestEnvironmentBase:
             RolloutInput(
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="Hi",
+                task="default",
                 info={},
                 example_id=0,
             )
@@ -332,8 +334,8 @@ class TestEnvironmentBase:
             prompt=[[{"role": "user", "content": "Hello"}]],
             completion=[[{"role": "assistant", "content": "Hi"}]],
             answer=["Hi"],
-            reward=[1.0],
             task=["default"],
+            reward=[1.0],
             state=[
                 {
                     "custom_field": "value",
@@ -348,6 +350,8 @@ class TestEnvironmentBase:
             example_id=[0],
             metrics={},
             metadata=_make_metadata(num_examples=1),
+            stop_conditions=[None],
+            is_truncated=[False],
         )
 
         dataset = build_dataset(results)
@@ -380,6 +384,7 @@ class TestEnvironmentBase:
             RolloutInput(
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="Hi",
+                task="default",
                 info={"key": "value"},
                 example_id=0,
             )
@@ -490,6 +495,7 @@ class TestRenderStopErrorHandling:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "test"}],
                 answer="test",
+                task="default",
                 example_id=0,
             ),
             client=mock_openai_client,
@@ -528,6 +534,7 @@ class TestRenderStopErrorHandling:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "test"}],
                 answer="test",
+                task="default",
                 example_id=0,
             ),
             client=mock_openai_client,

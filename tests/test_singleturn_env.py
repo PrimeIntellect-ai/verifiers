@@ -111,6 +111,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt=prompt,
                 answer=answer,
+                task="default",
                 example_id=0,
             ),
             client=mock_singleturn_env.client,
@@ -142,6 +143,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt=prompt,
                 answer=answer,
+                task="default",
                 example_id=0,
             ),
             client=mock_singleturn_env_completion.client,
@@ -171,6 +173,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt=prompt,
                 answer=answer,
+                task="default",
                 example_id=0,
             ),
             client=mock_singleturn_env.client,
@@ -229,6 +232,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt=prompt,
                 answer=answer,
+                task="default",
                 example_id=0,
             ),
             client=mock_singleturn_env.client,
@@ -421,6 +425,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="Hi",
+                task="default",
                 example_id=0,
             ),
             client=mock_openai_client,
@@ -434,6 +439,7 @@ class TestSingleTurnEnv:
             input=RolloutInput(
                 prompt="Complete this:",
                 answer="Done",
+                task="default",
                 example_id=0,
             ),
             client=mock_openai_client,
