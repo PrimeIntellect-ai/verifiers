@@ -902,12 +902,63 @@ class Environment(ABC):
             pbar_total = len(group_list)
             pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
 
+        # precompute per-task totals for multi-env progress
+        task_rollouts: dict[str, int] = {}
+        task_group_ids: dict[str, set[int]] = {}
+        for item in inputs_list:
+            task = item.get("task", "default")
+            task_rollouts[task] = task_rollouts.get(task, 0) + 1
+            task_group_ids.setdefault(task, set()).add(item.get("example_id", 0))
+        if independent_scoring:
+            task_totals = task_rollouts
+        else:
+            task_totals = {task: len(ids) for task, ids in task_group_ids.items()}
+        task_names = sorted(task_totals.keys())
+
+        metric_names_by_task: dict[str, list[str]] = {}
+        if hasattr(self, "env_map") and isinstance(self.env_map, dict):
+            for task in task_names:
+                env = self.env_map.get(task)
+                if env is not None:
+                    metric_names_by_task[task] = env.rubric._get_reward_func_names()
+        fallback_metric_names = self.rubric._get_reward_func_names()
+        for task in task_names:
+            metric_names_by_task.setdefault(task, fallback_metric_names)
+
         # set up progress bar
         pbar = None
+        rich_progress = None
         if use_tqdm:
-            from tqdm import tqdm
+            try:
+                from verifiers.utils.progress_utils import (
+                    MultiEnvProgress,
+                    RolloutProgress,
+                    can_render_rich_progress,
+                )
 
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
+                if can_render_rich_progress():
+                    if len(task_names) > 1:
+                        rich_progress = MultiEnvProgress(
+                            env_totals=task_totals,
+                            metric_names_by_env=metric_names_by_task,
+                        )
+                    else:
+                        metric_names = None
+                        if task_names:
+                            metric_names = metric_names_by_task.get(task_names[0])
+                        rich_progress = RolloutProgress(
+                            total=pbar_total,
+                            desc=pbar_desc,
+                            metric_names=metric_names,
+                        )
+                    rich_progress.start()
+            except Exception:
+                rich_progress = None
+
+            if rich_progress is None:
+                from tqdm import tqdm
+
+                pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         # process tasks as they complete
         reward_sum, reward_count = 0, 0
@@ -928,7 +979,9 @@ class Environment(ABC):
                         reward_sum += r
                         reward_count += 1
 
-                if pbar is not None:
+                if rich_progress is not None:
+                    rich_progress.update(states)
+                elif pbar is not None:
                     pbar.update(1)
                     if reward_count > 0:
                         pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
@@ -953,6 +1006,8 @@ class Environment(ABC):
                     )
                     save_rollout_results(temp_results)
         finally:
+            if rich_progress is not None:
+                rich_progress.stop()
             if pbar is not None:
                 pbar.close()
 
