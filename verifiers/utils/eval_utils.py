@@ -198,7 +198,7 @@ def print_results(
             print_timing(task_results)
 
     if event_loop_lags:
-        print("Performance:")
+        print("\nPerformance:")
         event_loop_lags_arr = np.array(event_loop_lags)
         med_lag, p90_lag, max_lag = (
             np.median(event_loop_lags_arr),
