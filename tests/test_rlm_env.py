@@ -923,12 +923,12 @@ class TestCleanupRLMState:
         rollout_id = "rlm_test123"
         rlm_env.active_rollouts[rollout_id] = {"client": MagicMock()}
         rlm_env._executor.cleanup = AsyncMock()
-        rlm_env.teardown_interception_server = AsyncMock()
+        rlm_env._teardown_interception_server = AsyncMock()
 
         state = {"rollout_id": rollout_id}
         await rlm_env.cleanup_rlm_state(state)
 
-        rlm_env.teardown_interception_server.assert_awaited_once()
+        rlm_env._teardown_interception_server.assert_awaited_once()
 
 
 # =============================================================================

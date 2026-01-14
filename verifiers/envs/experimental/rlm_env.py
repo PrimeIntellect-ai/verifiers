@@ -2223,8 +2223,7 @@ class RLMEnv(SandboxEnv):
         if self._tunnel_pool:
             self._tunnel_pool.teardown()
 
-    @vf.teardown
-    async def teardown_interception_server(self):
+    async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
         if self._server_site is not None:
             try:
@@ -2237,6 +2236,11 @@ class RLMEnv(SandboxEnv):
             finally:
                 self._server_runner = None
                 self._interception_server = None
+
+    @vf.teardown
+    async def teardown_interception_server(self):
+        """Stop the interception server if it was started."""
+        await self._teardown_interception_server()
 
     @vf.teardown
     async def teardown_executor(self):
@@ -2650,7 +2654,7 @@ class RLMEnv(SandboxEnv):
             await self._executor.cleanup(state)
         finally:
             if not self.active_rollouts:
-                await self.teardown_interception_server()
+                await self._teardown_interception_server()
                 if self._tunnel_pool:
                     self._tunnel_pool.teardown()
 
