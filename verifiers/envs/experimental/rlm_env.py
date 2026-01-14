@@ -2225,17 +2225,18 @@ class RLMEnv(SandboxEnv):
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
-        if self._server_site is not None:
-            try:
-                await self._server_site.stop()
-            finally:
-                self._server_site = None
-        if self._server_runner is not None:
-            try:
-                await self._server_runner.cleanup()
-            finally:
-                self._server_runner = None
-                self._interception_server = None
+        async with self._server_lock:
+            if self._server_site is not None:
+                try:
+                    await self._server_site.stop()
+                finally:
+                    self._server_site = None
+            if self._server_runner is not None:
+                try:
+                    await self._server_runner.cleanup()
+                finally:
+                    self._server_runner = None
+                    self._interception_server = None
 
     @vf.teardown
     async def teardown_interception_server(self):
