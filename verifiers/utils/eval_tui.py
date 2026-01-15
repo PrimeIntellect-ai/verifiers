@@ -276,6 +276,8 @@ class EvalTUI:
         content_items = [config_line, space, progress]
         if metrics_content:
             content_items.append(metrics_content)
+        else:
+            content_items.append(space)
         if error_content:
             content_items.append(error_content)
 
