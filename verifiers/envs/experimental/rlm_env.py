@@ -1914,13 +1914,16 @@ class RLMEnv(SandboxEnv):
         logprobs_support = self._sub_llm_supports_logprobs
 
         async def _create_call(logprobs: bool | None) -> Any:
+            payload = {
+                "model": model,
+                "messages": normalized_messages,
+            }
+            if tools is not None:
+                payload["tools"] = tools
+            if logprobs is not None:
+                payload["logprobs"] = logprobs
             return await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model,
-                    messages=normalized_messages,
-                    tools=tools,
-                    logprobs=logprobs,
-                ),
+                client.chat.completions.create(**payload),
                 timeout=self.sub_llm_api_timeout,
             )
 
