@@ -370,28 +370,21 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
         )
 
 
-async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutputs]:
+async def run_multi_evaluation_tui(config: MultiEvalConfig) -> None:
     """Run multi-environment evaluation with a TUI display."""
 
     from verifiers.utils.eval_tui import EvalTUI, is_tty
 
-    # Fall back to non-TUI mode if not a TTY
+    # fall back to non-tui mode if not a tty
     if not is_tty():
         logger.info("Not a TTY, falling back to standard output")
         await run_multi_evaluation(config)
-        return []
 
-    # critical level to suppress loggin
+    # critical level to suppress logging
     with vf.log_level(logging.CRITICAL):
-        # Create modified configs with tqdm disabled (TUI handles progress display)
-        tui_configs = [
-            env_config.model_copy(update={"use_tqdm": False})
-            for env_config in config.env
-        ]
-
         tui = EvalTUI(config.env)
 
-        async def run_with_updates(env_config: EvalConfig) -> GenerateOutputs:
+        async def run_with_progress(env_config: EvalConfig) -> GenerateOutputs:
             """Run a single evaluation with TUI progress updates."""
             env_id = env_config.env_id
 
@@ -446,40 +439,16 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     on_log=on_log,
                 )
 
-                # Update final state from results with all metrics
-                rewards = result["reward"]
-                final_metrics: dict[str, float] = {}
-                if rewards:
-                    final_metrics["reward"] = sum(rewards) / len(rewards)
-                # Add all other metrics from result
-                for name, values in result["metrics"].items():
-                    if values:
-                        final_metrics[name] = sum(values) / len(values)
-                # Compute final error_rate
-                errors = [s.get("error") for s in result["state"]]
-                has_errors = [e is not None for e in errors]
-                if has_errors:
-                    final_metrics["error_rate"] = sum(has_errors) / len(has_errors)
-
-                # Get save path if results were saved
+                # get save path if results were saved
                 save_path = (
                     result["metadata"]["path_to_save"]
                     if env_config.save_results
                     else None
                 )
 
-                # Calculate actual total from result metadata
-                actual_total = (
-                    result["metadata"]["num_examples"]
-                    * result["metadata"]["rollouts_per_example"]
-                )
-
                 tui.update_env_state(
                     env_id,
                     status="completed",
-                    total=actual_total,
-                    progress=actual_total,
-                    metrics=final_metrics,
                     save_path=save_path,
                 )
 
@@ -488,37 +457,28 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                 tui.update_env_state(env_id, status="failed", error=str(e))
                 raise
 
-        # Run evaluations with TUI
         all_results: list[GenerateOutputs] = []
         try:
             async with tui:
-                # Run all evaluations concurrently (using tui_configs with tqdm disabled)
                 results = await asyncio.gather(
-                    *[run_with_updates(env_config) for env_config in tui_configs],
+                    *[run_with_progress(env_config) for env_config in config.env],
                     return_exceptions=True,
                 )
 
-                # Process results (silently, errors shown in TUI)
-                for i, result in enumerate(results):
+                for result in results:
                     if isinstance(result, Exception):
-                        # Error already shown in TUI via update_env_state
-                        pass
+                        pass  # error already shown via update_env_state, so skip here
                     else:
                         all_results.append(cast(GenerateOutputs, result))
 
-                # Refresh to show completion state
                 tui.refresh()
-
-                # Wait for user to exit
                 await tui.wait_for_exit()
 
         except KeyboardInterrupt:
-            pass  # Silent exit on interrupt
+            pass  # exit on interrupt
 
-        # Print final summary after TUI exits
+        # print final summary after exit
         tui.print_final_summary()
-
-        return all_results
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
