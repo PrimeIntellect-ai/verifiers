@@ -393,7 +393,10 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> None:
             error_accum = 0
 
             def on_start(total: int) -> None:
-                tui.update_env_state(env_id, total=total)
+                # total is num_examples * rollouts_per_example
+                # compute actual num_examples (resolves -1 to actual count)
+                num_examples = total // env_config.rollouts_per_example
+                tui.update_env_state(env_id, total=total, num_examples=num_examples)
 
             def on_progress(all_states: list[State], new_states: list[State]) -> None:
                 nonlocal error_accum, reward_accum, metrics_accum

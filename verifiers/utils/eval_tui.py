@@ -42,6 +42,8 @@ class EnvEvalState:
     # updated by on_progress callback
     progress: int = 0  # completed rollouts
     total: int = 0  # total rollouts
+    num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
+    rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     error_rate: float = 0.0  # error rate (rolling avg)
@@ -86,7 +88,11 @@ class EvalTUI:
         # initialize env states
         for config in configs:
             total = config.num_examples * config.rollouts_per_example
-            self.state.envs[config.env_id] = EnvEvalState(total=total)
+            self.state.envs[config.env_id] = EnvEvalState(
+                total=total,
+                num_examples=config.num_examples,
+                rollouts_per_example=config.rollouts_per_example,
+            )
 
     def update_env_state(
         self,
@@ -94,6 +100,7 @@ class EvalTUI:
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
         total: int | None = None,
+        num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
         error_rate: float | None = None,
@@ -118,6 +125,9 @@ class EvalTUI:
         if total is not None:
             env_state.total = total
 
+        if num_examples is not None:
+            env_state.num_examples = num_examples
+
         if reward is not None:
             env_state.reward = reward
 
@@ -139,13 +149,10 @@ class EvalTUI:
         self.refresh()
 
     def _get_error_rate_color(self, error_rate: float) -> str:
-        """Get color for error rate: green at 0.0, red at 1.0."""
-        # clamp to [0, 1]
-        error_rate = max(0.0, min(1.0, error_rate))
-        # interpolate from green (0, 255, 0) to red (255, 0, 0)
-        red = int(255 * error_rate)
-        green = int(255 * (1 - error_rate))
-        return f"rgb({red},{green},0)"
+        """Get color for error rate: red if > 10%, otherwise default."""
+        if error_rate > 0.10:
+            return "red"
+        return "white"
 
     def _make_metrics_row(
         self, reward: float, metrics: dict[str, float], error_rate: float
@@ -208,17 +215,10 @@ class EvalTUI:
         config_line.append(" via ", style="dim")
         config_line.append(config.client_config.api_base_url, style="white")
         config_line.append("  |  ", style="dim")
-        if config.num_examples == -1:
-            config_line.append("all", style="white")
-            config_line.append(" examples", style="dim")
-            config_line.append(" and ", style="dim")
-            config_line.append(str(config.rollouts_per_example), style="white")
-            config_line.append(" rollouts", style="dim")
-        else:
-            config_line.append(str(config.num_examples), style="white")
-            config_line.append("x", style="white")
-            config_line.append(str(config.rollouts_per_example), style="white")
-            config_line.append(" rollouts", style="dim")
+        config_line.append(str(env_state.num_examples), style="white")
+        config_line.append("x", style="white")
+        config_line.append(str(env_state.rollouts_per_example), style="white")
+        config_line.append(" rollouts", style="dim")
 
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
