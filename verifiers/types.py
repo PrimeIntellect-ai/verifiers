@@ -244,3 +244,9 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+
+
+class MultiEvalConfig(BaseModel):
+    """Pydantic model for multi-environment evaluation configuration."""
+
+    env: list[EvalConfig]

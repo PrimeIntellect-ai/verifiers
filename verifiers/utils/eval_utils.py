@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import logging
@@ -7,12 +8,23 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ImportError:
+    import tomli as tomllib  # type: ignore[import-not-found]
+
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    MultiEvalConfig,
+)
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
@@ -57,6 +69,37 @@ def load_endpoints(endpoints_path: str):
         logger.debug("Using default empty endpoints registry")
         endpoints: Endpoints = {}
     return endpoints
+
+
+def is_toml_config(path: str) -> bool:
+    """Checks if a path is a valid TOML config file."""
+    return Path(path).is_file() and Path(path).suffix == ".toml"
+
+
+def load_toml_config(path: Path) -> list[dict]:
+    """Loads and validates a TOML config file."""
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    with open(path, "rb") as f:
+        raw_config = tomllib.load(f)
+
+    # validate schema
+    if "env" not in raw_config:
+        raise ValueError(
+            f"Config file must contain at least one [[env]] section: {path}"
+        )
+
+    env_list: list[dict] = raw_config.get("env", [])
+    if not env_list:
+        raise ValueError(
+            f"Config file must contain at least one [[env]] section: {path}"
+        )
+
+    if not all("id" in e for e in env_list):
+        raise ValueError(f"All [[env]] sections must contain an 'id' field: {path}")
+
+    return env_list
 
 
 def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
@@ -212,9 +255,7 @@ def print_results(
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(
-        config.client_config,
-    )
+    client = setup_client(config.client_config)
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
@@ -263,6 +304,10 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     if config.save_results:
         save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
     return results
+
+
+async def run_multi_evaluation(config: MultiEvalConfig):
+    await asyncio.gather(*[run_evaluation(env_config) for env_config in config.env])
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
