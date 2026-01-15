@@ -1,8 +1,8 @@
 [project]
 name = "browser-test"
 version = "0.1.0"
-description = "Browser smoke test environment using Browserbase"
-tags = ["browser", "browserbase", "smoke-test", "web-automation", "eval"]
+description = "Simple browser smoke test to verify Browserbase setup"
+tags = ["browser", "browserbase", "smoke-test", "eval"]
 requires-python = ">=3.10"
 dependencies = [
     "verifiers[browser]>=0.1.8",

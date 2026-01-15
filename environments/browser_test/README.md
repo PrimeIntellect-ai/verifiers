@@ -1,6 +1,8 @@
 # Browser Test Environment
 
-A simple browser smoke test environment for evaluating LLM browser automation capabilities using [Browserbase](https://browserbase.com).
+A simple browser smoke test environment for verifying LLM browser automation setup using [Browserbase](https://browserbase.com).
+
+The smoke test navigates to the Prime Intellect homepage and verifies the agent can read page content.
 
 ## Installation
 
@@ -49,28 +51,13 @@ prime eval run browser-test -m gpt-4o-mini
 prime eval run browser-test -m gpt-4o-mini --mode cua --server-url http://localhost:3000
 ```
 
-### Benchmarks
-
-The environment supports multiple benchmarks:
-- `smoke_test` (default): Single task to verify setup
-- `gaia`: GAIA web tasks requiring reasoning
-- `webvoyager`: Web navigation tasks
-- `onlineMind2Web`: Mind2Web online tasks
-
-```bash
-# Run with GAIA benchmark
-prime eval run browser-test -m gpt-4o-mini --benchmark gaia --num-examples 5
-```
-
 ## Environment Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `mode` | `"dom"` | Browser control mode (`"dom"` or `"cua"`) |
-| `benchmark` | `"smoke_test"` | Benchmark to use |
 | `max_turns` | `10` | Maximum conversation turns |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
-| `num_examples` | `-1` | Number of examples (-1 for all) |
 
 ## Requirements
 
