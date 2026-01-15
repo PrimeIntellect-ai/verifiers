@@ -85,19 +85,14 @@ def load_toml_config(path: Path) -> list[dict]:
         raw_config = tomllib.load(f)
 
     # validate schema
-    if "env" not in raw_config:
-        raise ValueError(
-            f"Config file must contain at least one [[env]] section: {path}"
-        )
-
     env_list: list[dict] = raw_config.get("env", [])
     if not env_list:
         raise ValueError(
             f"Config file must contain at least one [[env]] section: {path}"
         )
 
-    if not all("id" in e for e in env_list):
-        raise ValueError(f"All [[env]] sections must contain an 'id' field: {path}")
+    if not all("env_id" in e for e in env_list):
+        raise ValueError(f"All [[env]] sections must contain an env_id field: {path}")
 
     valid_fields = set(EvalConfig.model_fields.keys())
     for env in env_list:
