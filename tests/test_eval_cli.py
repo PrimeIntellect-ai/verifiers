@@ -121,6 +121,7 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
         "extra_env_kwargs": {},
+        "tui": False,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)
@@ -135,7 +136,7 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
     monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
     monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: {})
 
-    async def fake_run_evaluation(config):
+    async def fake_run_evaluation(config, **kwargs):
         captured["sampling_args"] = dict(config.sampling_args)
         captured["configs"].append(config)
         metadata = _make_metadata(config)
