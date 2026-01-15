@@ -9,8 +9,6 @@ from rich.table import Table
 from rich.text import Text
 
 
-
-
 def _range_bar(
     value: float | None, min_v: float | None, max_v: float | None, width: int
 ) -> str:
@@ -89,7 +87,9 @@ class RollingMetric:
         return self.total / self.count
 
 
-def _select_scale(name: str, metric: RollingMetric) -> tuple[float | None, float | None]:
+def _select_scale(
+    name: str, metric: RollingMetric
+) -> tuple[float | None, float | None]:
     avg = metric.avg
     if avg is None:
         return None, None
@@ -281,7 +281,9 @@ class RolloutProgress:
             if elapsed >= 0:
                 progress_text += f" elapsed {_format_seconds(elapsed)}"
             if self.completed > 0 and self.total > 0:
-                eta = max((elapsed / self.completed) * (self.total - self.completed), 0.0)
+                eta = max(
+                    (elapsed / self.completed) * (self.total - self.completed), 0.0
+                )
                 progress_text += f" eta {_format_seconds(eta)}"
 
         progress = Text(progress_text, style="bold")
@@ -369,11 +371,14 @@ class MultiEnvProgress:
     def _render(self) -> Group:
         elapsed = time.time() - self.start_time
         ncols = max(self.console.size.width - 1, 20)
-        renderables: list[Text] = []
+        renderables: list[Text | Table] = []
 
         for idx, name in enumerate(self.env_order):
             env_state = self.envs[name]
-            reward_avg = env_state.metrics.get("reward").avg if env_state.metrics else None
+            reward_metric = (
+                env_state.metrics.get("reward") if env_state.metrics else None
+            )
+            reward_avg = reward_metric.avg if reward_metric else None
             postfix = None
             if reward_avg is not None:
                 postfix = f"reward={reward_avg:.3f}"
