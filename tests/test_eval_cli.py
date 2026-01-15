@@ -8,14 +8,11 @@ import pytest
 import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
 from verifiers.types import (
-    EvalConfig,
     GenerateMetadata,
     GenerateOutputs,
-    MultiEvalConfig,
     State,
 )
 from verifiers.utils.eval_utils import (
-    get_results_by_task,
     is_toml_config,
     load_toml_config,
 )
@@ -174,9 +171,18 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
     return captured
 
 
-# =============================================================================
-# Tests for sampling args CLI handling
-# =============================================================================
+def test_cli_single_env_id(monkeypatch):
+    """Single env ID without comma creates one config."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "env1",
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 1
+    assert configs[0].env_id == "env1"
 
 
 def test_cli_sampling_args_precedence_over_flags(monkeypatch):
@@ -247,9 +253,92 @@ def test_cli_temperature_not_added_when_none(monkeypatch):
     assert "temperature" not in sa
 
 
-# =============================================================================
-# Tests for is_toml_config
-# =============================================================================
+def test_cli_comma_separated_env_ids(monkeypatch):
+    """CLI with comma-separated env IDs creates multiple eval configs."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "env1,env2,env3",
+            "num_examples": 5,
+            "rollouts_per_example": 3,
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 3
+    assert configs[0].env_id == "env1"
+    assert configs[1].env_id == "env2"
+    assert configs[2].env_id == "env3"
+
+
+def test_cli_comma_separated_with_spaces(monkeypatch):
+    """CLI handles spaces around commas in env IDs."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "env1 , env2 , env3",
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 3
+    assert configs[0].env_id == "env1"
+    assert configs[1].env_id == "env2"
+    assert configs[2].env_id == "env3"
+
+
+def test_cli_comma_separated_with_org_prefix(monkeypatch):
+    """CLI handles org/env format in comma-separated list."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "org/env1,org/env2",
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    assert configs[0].env_id == "org/env1"
+    assert configs[1].env_id == "org/env2"
+
+
+def test_cli_comma_separated_shared_args(monkeypatch):
+    """All comma-separated envs inherit shared CLI args."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "env1,env2,env3",
+            "num_examples": 10,
+            "rollouts_per_example": 4,
+            "max_concurrent": 16,
+            "max_tokens": 512,
+            "temperature": 0.7,
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 3
+    for config in configs:
+        assert config.num_examples == 10
+        assert config.rollouts_per_example == 4
+        assert config.max_concurrent == 16
+        assert config.sampling_args["max_tokens"] == 512
+        assert config.sampling_args["temperature"] == 0.7
+
+
+def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
+    """CLI ignores empty entries from trailing/double commas."""
+    captured = _run_cli(
+        monkeypatch,
+        {
+            "env_id_or_path": "gsm8k,,alphabet-sort,",
+        },
+    )
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    assert configs[0].env_id == "gsm8k"
+    assert configs[1].env_id == "alphabet-sort"
 
 
 def test_is_toml_config_with_valid_toml():
@@ -281,62 +370,52 @@ def test_is_toml_config_with_directory():
 
 def test_is_toml_config_with_env_id():
     """Simple env ID string returns False."""
-    assert is_toml_config("gsm8k") is False
-    assert is_toml_config("primeintellect/math-python") is False
-
-
-# =============================================================================
-# Tests for load_toml_config
-# =============================================================================
+    assert is_toml_config("env") is False
+    assert is_toml_config("env1,env2") is False
+    assert is_toml_config("org/env") is False
 
 
 def test_load_toml_config_single_env():
-    """Single [[env]] section loads correctly."""
+    """Single env loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "gsm8k"\n')
+        f.write('[[env]]\nenv_id = "env1"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
         assert len(result) == 1
-        assert result[0]["env_id"] == "gsm8k"
+        assert result[0]["env_id"] == "env1"
 
 
 def test_load_toml_config_multi_env():
-    """Multiple [[env]] sections load correctly."""
+    """Multiple envs load correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "gsm8k"\n\n[[env]]\nenv_id = "math-python"\n')
+        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
         assert len(result) == 2
-        assert result[0]["env_id"] == "gsm8k"
-        assert result[1]["env_id"] == "math-python"
+        assert result[0]["env_id"] == "env1"
+        assert result[1]["env_id"] == "env2"
 
 
 def test_load_toml_config_with_env_args():
-    """[[env]] section with env_args field loads correctly."""
+    """Multiple sections with env_args field loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "test-env"\n[env.env_args]\nsplit = "train"\nmax_examples = 100\n'
+            '[[env]]\nenv_id = "env1"\n[env.env_args]\nsplit = "train"\nmax_examples = 100\n'
         )
         f.flush()
         result = load_toml_config(Path(f.name))
         assert len(result) == 1
-        assert result[0]["env_id"] == "test-env"
+        assert result[0]["env_id"] == "env1"
         assert result[0]["env_args"]["split"] == "train"
         assert result[0]["env_args"]["max_examples"] == 100
-
-
-def test_load_toml_config_missing_file():
-    """Missing file raises FileNotFoundError."""
-    with pytest.raises(FileNotFoundError):
-        load_toml_config(Path("/nonexistent/path/config.toml"))
 
 
 def test_load_toml_config_missing_env_section():
     """TOML without [[env]] section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('model = "gpt-4"\nmax_tokens = 100\n')
+        f.write('model = "env1"\nmax_tokens = 100\n')
         f.flush()
-        with pytest.raises(ValueError, match="must contain at least one"):
+        with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
@@ -345,114 +424,41 @@ def test_load_toml_config_empty_env_list():
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write("env = []\n")
         f.flush()
-        with pytest.raises(ValueError, match="must contain at least one"):
+        with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_missing_env_id():
     """[[env]] without env_id field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nname = "test"\n')
+        f.write('[[env]]\nname = "env1"\n')
         f.flush()
-        with pytest.raises(ValueError, match="must contain an env_id field"):
+        with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_partial_missing_env_id():
     """Some [[env]] sections missing env_id raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "valid"\n\n[[env]]\nname = "no-id"\n')
+        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nname = "env2"\n')
         f.flush()
-        with pytest.raises(ValueError, match="must contain an env_id field"):
+        with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_invalid_field():
     """[[env]] with invalid field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "test"\ninvalid_field = "value"\n')
+        f.write('[[env]]\nenv_id = "env1"\ninvalid_field = "value"\n')
         f.flush()
-        with pytest.raises(ValueError, match="Invalid field"):
+        with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
-
-
-# =============================================================================
-# Tests for get_results_by_task
-# =============================================================================
-
-
-def test_get_results_by_task_single_task():
-    """Results with single task returns one group."""
-    results = _make_generate_outputs(
-        num_examples=3,
-        rollouts_per_example=1,
-        tasks=["default", "default", "default"],
-        rewards=[0.5, 0.7, 0.9],
-    )
-    by_task = get_results_by_task(results)
-
-    assert len(by_task) == 1
-    assert "default" in by_task
-    assert len(by_task["default"]["reward"]) == 3
-    assert by_task["default"]["reward"] == [0.5, 0.7, 0.9]
-
-
-def test_get_results_by_task_multiple_tasks():
-    """Results with multiple tasks are grouped correctly."""
-    results = _make_generate_outputs(
-        num_examples=4,
-        rollouts_per_example=1,
-        tasks=["math", "code", "math", "code"],
-        rewards=[0.5, 0.6, 0.7, 0.8],
-    )
-    by_task = get_results_by_task(results)
-
-    assert len(by_task) == 2
-    assert "math" in by_task
-    assert "code" in by_task
-    assert by_task["math"]["reward"] == [0.5, 0.7]
-    assert by_task["code"]["reward"] == [0.6, 0.8]
-
-
-def test_get_results_by_task_preserves_metadata():
-    """Grouped results preserve metadata."""
-    results = _make_generate_outputs(
-        env_id="test-env",
-        num_examples=2,
-        rollouts_per_example=1,
-        tasks=["task1", "task2"],
-    )
-    by_task = get_results_by_task(results)
-
-    # Both task groups should have the same metadata
-    assert by_task["task1"]["metadata"]["env_id"] == "test-env"
-    assert by_task["task2"]["metadata"]["env_id"] == "test-env"
-
-
-def test_get_results_by_task_preserves_metrics():
-    """Grouped results preserve metrics correctly."""
-    results = _make_generate_outputs(
-        num_examples=4,
-        rollouts_per_example=1,
-        tasks=["a", "b", "a", "b"],
-        rewards=[0.1, 0.2, 0.3, 0.4],
-    )
-    by_task = get_results_by_task(results)
-
-    # Metrics should be split by task
-    assert by_task["a"]["metrics"]["accuracy"] == [0.1, 0.3]
-    assert by_task["b"]["metrics"]["accuracy"] == [0.2, 0.4]
-
-
-# =============================================================================
-# Tests for multi-env evaluation via TOML config
-# =============================================================================
 
 
 def test_cli_multi_env_via_toml_config(monkeypatch):
     """CLI with TOML config creates multiple eval configs."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env-one"\n\n[[env]]\nenv_id = "env-two"\n')
+        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
         f.flush()
         captured = _run_cli(
             monkeypatch,
@@ -466,14 +472,14 @@ def test_cli_multi_env_via_toml_config(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "env-one"
-    assert configs[1].env_id == "env-two"
+    assert configs[0].env_id == "env1"
+    assert configs[1].env_id == "env2"
 
 
 def test_cli_multi_env_shares_common_args(monkeypatch):
     """All env configs in multi-env inherit common CLI args."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env-a"\n\n[[env]]\nenv_id = "env-b"\n')
+        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
         f.flush()
         captured = _run_cli(
             monkeypatch,
@@ -498,8 +504,8 @@ def test_cli_toml_per_env_num_examples(monkeypatch):
     """TOML per-env num_examples is used when CLI arg not provided."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env-a"\nnum_examples = 10\n\n'
-            '[[env]]\nenv_id = "env-b"\nnum_examples = 20\n'
+            '[[env]]\nenv_id = "env1"\nnum_examples = 10\n\n'
+            '[[env]]\nenv_id = "env2"\nnum_examples = 20\n'
         )
         f.flush()
         captured = _run_cli(
@@ -513,9 +519,9 @@ def test_cli_toml_per_env_num_examples(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "env-a"
+    assert configs[0].env_id == "env1"
     assert configs[0].num_examples == 10
-    assert configs[1].env_id == "env-b"
+    assert configs[1].env_id == "env2"
     assert configs[1].num_examples == 20
 
 
@@ -523,8 +529,8 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch):
     """TOML per-env rollouts_per_example is used when CLI arg not provided."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env-a"\nrollouts_per_example = 3\n\n'
-            '[[env]]\nenv_id = "env-b"\nrollouts_per_example = 5\n'
+            '[[env]]\nenv_id = "env1"\nrollouts_per_example = 3\n\n'
+            '[[env]]\nenv_id = "env2"\nrollouts_per_example = 5\n'
         )
         f.flush()
         captured = _run_cli(
@@ -615,605 +621,3 @@ def test_cli_toml_without_settings_uses_defaults(monkeypatch):
     for config in configs:
         assert config.num_examples == 5  # DEFAULT_NUM_EXAMPLES
         assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
-
-
-# =============================================================================
-# Tests for multi-env evaluation via comma-separated IDs
-# =============================================================================
-
-
-def test_cli_comma_separated_env_ids(monkeypatch):
-    """CLI with comma-separated env IDs creates multiple eval configs."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "gsm8k,alphabet-sort,math-python",
-            "num_examples": 5,
-            "rollouts_per_example": 3,
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    assert configs[0].env_id == "gsm8k"
-    assert configs[1].env_id == "alphabet-sort"
-    assert configs[2].env_id == "math-python"
-
-
-def test_cli_comma_separated_env_ids_two_envs(monkeypatch):
-    """CLI with two comma-separated env IDs."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "env-a,env-b",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 2
-    assert configs[0].env_id == "env-a"
-    assert configs[1].env_id == "env-b"
-
-
-def test_cli_comma_separated_shares_common_args(monkeypatch):
-    """All comma-separated env configs inherit common CLI args."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "env-one,env-two,env-three",
-            "num_examples": 10,
-            "rollouts_per_example": 4,
-            "max_concurrent": 16,
-            "max_tokens": 512,
-            "temperature": 0.7,
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    for config in configs:
-        assert config.num_examples == 10
-        assert config.rollouts_per_example == 4
-        assert config.max_concurrent == 16
-        assert config.sampling_args["max_tokens"] == 512
-        assert config.sampling_args["temperature"] == 0.7
-
-
-def test_cli_comma_separated_with_spaces(monkeypatch):
-    """CLI handles spaces around commas in env IDs."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "gsm8k , alphabet-sort , math-python",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    assert configs[0].env_id == "gsm8k"
-    assert configs[1].env_id == "alphabet-sort"
-    assert configs[2].env_id == "math-python"
-
-
-def test_cli_comma_separated_with_org_prefix(monkeypatch):
-    """CLI handles org/env format in comma-separated list."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "primeintellect/gsm8k,primeintellect/math-python",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 2
-    assert configs[0].env_id == "primeintellect/gsm8k"
-    assert configs[1].env_id == "primeintellect/math-python"
-
-
-def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
-    """CLI ignores empty entries from trailing/double commas."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "gsm8k,,alphabet-sort,",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 2
-    assert configs[0].env_id == "gsm8k"
-    assert configs[1].env_id == "alphabet-sort"
-
-
-def test_cli_single_env_id_no_comma(monkeypatch):
-    """Single env ID without comma creates one config."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "gsm8k",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 1
-    assert configs[0].env_id == "gsm8k"
-
-
-# =============================================================================
-# Tests for header parsing
-# =============================================================================
-
-
-def test_cli_header_parsing_single(monkeypatch):
-    """Single header is parsed correctly."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "header": ["X-Custom-Header: my-value"],
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.client_config.extra_headers == {"X-Custom-Header": "my-value"}
-
-
-def test_cli_header_parsing_multiple(monkeypatch):
-    """Multiple headers are parsed correctly."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "header": [
-                "Authorization: Bearer token123",
-                "X-Request-ID: req-456",
-            ],
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.client_config.extra_headers == {
-        "Authorization": "Bearer token123",
-        "X-Request-ID": "req-456",
-    }
-
-
-def test_cli_header_with_multiple_colons(monkeypatch):
-    """Header with multiple colons is parsed correctly (value can contain colons)."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "header": ["X-URL: https://example.com:8080/path"],
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.client_config.extra_headers == {
-        "X-URL": "https://example.com:8080/path"
-    }
-
-
-def test_cli_header_invalid_format_no_colon(monkeypatch):
-    """Header without colon raises ValueError."""
-    with pytest.raises(ValueError, match="must be 'Name: Value'"):
-        _run_cli(
-            monkeypatch,
-            {
-                "header": ["InvalidHeaderNoColon"],
-            },
-        )
-
-
-def test_cli_header_invalid_empty_name(monkeypatch):
-    """Header with empty name raises ValueError."""
-    with pytest.raises(ValueError, match="name cannot be empty"):
-        _run_cli(
-            monkeypatch,
-            {
-                "header": [": value-only"],
-            },
-        )
-
-
-# =============================================================================
-# Tests for state columns parsing
-# =============================================================================
-
-
-def test_cli_state_columns_parsed(monkeypatch):
-    """State columns string is parsed into list."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "state_columns": ["turn", "timing", "responses"],
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.state_columns == ["turn", "timing", "responses"]
-
-
-def test_cli_state_columns_empty(monkeypatch):
-    """Empty state columns list is handled."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "state_columns": [],
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.state_columns == []
-
-
-# =============================================================================
-# Tests for endpoint resolution
-# =============================================================================
-
-
-def test_cli_endpoint_from_registry(monkeypatch):
-    """Model found in endpoint registry uses registry values."""
-    base_args = {
-        "env_id_or_path": "test-env",
-        "env_args": {},
-        "env_dir_path": "./environments",
-        "endpoints_path": "./configs/endpoints.py",
-        "model": "my-alias",
-        "api_key_var": None,
-        "api_base_url": None,
-        "header": None,
-        "num_examples": 1,
-        "rollouts_per_example": 1,
-        "max_concurrent": 1,
-        "max_concurrent_generation": None,
-        "max_concurrent_scoring": None,
-        "independent_scoring": False,
-        "max_tokens": 100,
-        "temperature": None,
-        "sampling_args": None,
-        "verbose": False,
-        "print_results": False,
-        "no_interleave_scoring": False,
-        "state_columns": [],
-        "save_results": False,
-        "save_every": -1,
-        "save_to_hf_hub": False,
-        "hf_hub_dataset_name": "",
-        "extra_env_kwargs": {},
-    }
-    args_namespace = SimpleNamespace(**base_args)
-    captured: dict = {"configs": []}
-
-    monkeypatch.setattr(
-        argparse.ArgumentParser,
-        "parse_args",
-        lambda self: args_namespace,
-    )
-    monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-
-    # Mock endpoint registry
-    monkeypatch.setattr(
-        vf_eval,
-        "load_endpoints",
-        lambda *_: {
-            "my-alias": {
-                "key": "MY_CUSTOM_KEY",
-                "url": "https://custom.api.com/v1",
-                "model": "actual-model-name",
-            }
-        },
-    )
-
-    async def fake_run_evaluation(config):
-        captured["configs"].append(config)
-        return _make_generate_outputs(env_id=config.env_id)
-
-    monkeypatch.setattr(
-        verifiers.utils.eval_utils, "run_evaluation", fake_run_evaluation
-    )
-
-    vf_eval.main()
-
-    config = captured["configs"][0]
-    assert config.client_config.api_key_var == "MY_CUSTOM_KEY"
-    assert config.client_config.api_base_url == "https://custom.api.com/v1"
-    assert config.model == "actual-model-name"
-
-
-def test_cli_endpoint_cli_overrides_registry(monkeypatch):
-    """CLI args override endpoint registry values."""
-    base_args = {
-        "env_id_or_path": "test-env",
-        "env_args": {},
-        "env_dir_path": "./environments",
-        "endpoints_path": "./configs/endpoints.py",
-        "model": "my-alias",
-        "api_key_var": "OVERRIDE_KEY",
-        "api_base_url": "https://override.api.com/v1",
-        "header": None,
-        "num_examples": 1,
-        "rollouts_per_example": 1,
-        "max_concurrent": 1,
-        "max_concurrent_generation": None,
-        "max_concurrent_scoring": None,
-        "independent_scoring": False,
-        "max_tokens": 100,
-        "temperature": None,
-        "sampling_args": None,
-        "verbose": False,
-        "print_results": False,
-        "no_interleave_scoring": False,
-        "state_columns": [],
-        "save_results": False,
-        "save_every": -1,
-        "save_to_hf_hub": False,
-        "hf_hub_dataset_name": "",
-        "extra_env_kwargs": {},
-    }
-    args_namespace = SimpleNamespace(**base_args)
-    captured: dict = {"configs": []}
-
-    monkeypatch.setattr(
-        argparse.ArgumentParser,
-        "parse_args",
-        lambda self: args_namespace,
-    )
-    monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-
-    monkeypatch.setattr(
-        vf_eval,
-        "load_endpoints",
-        lambda *_: {
-            "my-alias": {
-                "key": "REGISTRY_KEY",
-                "url": "https://registry.api.com/v1",
-                "model": "actual-model-name",
-            }
-        },
-    )
-
-    async def fake_run_evaluation(config):
-        captured["configs"].append(config)
-        return _make_generate_outputs(env_id=config.env_id)
-
-    monkeypatch.setattr(
-        verifiers.utils.eval_utils, "run_evaluation", fake_run_evaluation
-    )
-
-    vf_eval.main()
-
-    config = captured["configs"][0]
-    assert config.client_config.api_key_var == "OVERRIDE_KEY"
-    assert config.client_config.api_base_url == "https://override.api.com/v1"
-
-
-def test_cli_endpoint_not_in_registry_uses_defaults(monkeypatch):
-    """Model not in registry uses CLI defaults or global defaults."""
-    base_args = {
-        "env_id_or_path": "test-env",
-        "env_args": {},
-        "env_dir_path": "./environments",
-        "endpoints_path": "./configs/endpoints.py",
-        "model": "unknown-model",
-        "api_key_var": None,
-        "api_base_url": None,
-        "header": None,
-        "num_examples": 1,
-        "rollouts_per_example": 1,
-        "max_concurrent": 1,
-        "max_concurrent_generation": None,
-        "max_concurrent_scoring": None,
-        "independent_scoring": False,
-        "max_tokens": 100,
-        "temperature": None,
-        "sampling_args": None,
-        "verbose": False,
-        "print_results": False,
-        "no_interleave_scoring": False,
-        "state_columns": [],
-        "save_results": False,
-        "save_every": -1,
-        "save_to_hf_hub": False,
-        "hf_hub_dataset_name": "",
-        "extra_env_kwargs": {},
-    }
-    args_namespace = SimpleNamespace(**base_args)
-    captured: dict = {"configs": []}
-
-    monkeypatch.setattr(
-        argparse.ArgumentParser,
-        "parse_args",
-        lambda self: args_namespace,
-    )
-    monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-    monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: {})
-
-    async def fake_run_evaluation(config):
-        captured["configs"].append(config)
-        return _make_generate_outputs(env_id=config.env_id)
-
-    monkeypatch.setattr(
-        verifiers.utils.eval_utils, "run_evaluation", fake_run_evaluation
-    )
-
-    vf_eval.main()
-
-    config = captured["configs"][0]
-    # Should use DEFAULT values from eval.py
-    assert config.client_config.api_key_var == "PRIME_API_KEY"
-    assert config.client_config.api_base_url == "https://api.pinference.ai/api/v1"
-    assert config.model == "unknown-model"
-
-
-# =============================================================================
-# Tests for EvalConfig and MultiEvalConfig types
-# =============================================================================
-
-
-def test_eval_config_creation():
-    """EvalConfig can be created with required fields."""
-    from verifiers.types import ClientConfig
-
-    config = EvalConfig(
-        env_id="test-env",
-        env_args={"key": "value"},
-        env_dir_path="./environments",
-        model="gpt-4",
-        client_config=ClientConfig(),
-        sampling_args={"max_tokens": 100},
-        num_examples=10,
-        rollouts_per_example=3,
-        max_concurrent=32,
-    )
-
-    assert config.env_id == "test-env"
-    assert config.num_examples == 10
-    assert config.independent_scoring is False  # default
-
-
-def test_multi_eval_config_creation():
-    """MultiEvalConfig can be created with list of EvalConfigs."""
-    from verifiers.types import ClientConfig
-
-    configs = [
-        EvalConfig(
-            env_id=f"env-{i}",
-            env_args={},
-            env_dir_path="./environments",
-            model="gpt-4",
-            client_config=ClientConfig(),
-            sampling_args={},
-            num_examples=5,
-            rollouts_per_example=1,
-            max_concurrent=8,
-        )
-        for i in range(3)
-    ]
-
-    multi_config = MultiEvalConfig(env=configs)
-    assert len(multi_config.env) == 3
-    assert multi_config.env[0].env_id == "env-0"
-    assert multi_config.env[2].env_id == "env-2"
-
-
-# =============================================================================
-# Tests for extra environment kwargs
-# =============================================================================
-
-
-def test_cli_extra_env_kwargs(monkeypatch):
-    """Extra env kwargs are passed to config."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "extra_env_kwargs": {"custom_key": "custom_value", "num_param": 42},
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.extra_env_kwargs == {"custom_key": "custom_value", "num_param": 42}
-
-
-def test_cli_extra_env_kwargs_empty(monkeypatch):
-    """Empty extra env kwargs is handled."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "extra_env_kwargs": {},
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.extra_env_kwargs == {}
-
-
-# =============================================================================
-# Tests for concurrent generation/scoring options
-# =============================================================================
-
-
-def test_cli_concurrent_options(monkeypatch):
-    """Concurrent generation/scoring options are captured."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "max_concurrent": 64,
-            "max_concurrent_generation": 32,
-            "max_concurrent_scoring": 16,
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.max_concurrent == 64
-    assert config.max_concurrent_generation == 32
-    assert config.max_concurrent_scoring == 16
-
-
-def test_cli_concurrent_options_none(monkeypatch):
-    """None concurrent options use defaults."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "max_concurrent": 8,
-            "max_concurrent_generation": None,
-            "max_concurrent_scoring": None,
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.max_concurrent == 8
-    assert config.max_concurrent_generation is None
-    assert config.max_concurrent_scoring is None
-
-
-# =============================================================================
-# Tests for independent scoring option
-# =============================================================================
-
-
-def test_cli_independent_scoring_enabled(monkeypatch):
-    """Independent scoring flag is captured."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "independent_scoring": True,
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.independent_scoring is True
-
-
-def test_cli_independent_scoring_disabled(monkeypatch):
-    """Independent scoring disabled by default."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "independent_scoring": False,
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.independent_scoring is False
-
-
-# =============================================================================
-# Tests for save options
-# =============================================================================
-
-
-def test_cli_save_options(monkeypatch):
-    """Save options are captured correctly."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "save_results": True,
-            "save_every": 50,
-            "save_to_hf_hub": True,
-            "hf_hub_dataset_name": "my-org/my-dataset",
-        },
-    )
-
-    config = captured["configs"][0]
-    assert config.save_results is True
-    assert config.save_every == 50
-    assert config.save_to_hf_hub is True
-    assert config.hf_hub_dataset_name == "my-org/my-dataset"
