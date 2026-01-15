@@ -180,17 +180,32 @@ class EvalTUI:
 
         return Panel(progress, border_style="green")
 
-    def _make_metrics_display(self, metrics: dict[str, float]) -> Text | None:
-        """Create an inline metrics display that wraps naturally."""
+    def _get_error_rate_color(self, error_rate: float) -> str:
+        """Get color for error rate: green at 0.0, red at 1.0."""
+        # Clamp to [0, 1]
+        error_rate = max(0.0, min(1.0, error_rate))
+        # Interpolate from green (0, 255, 0) to red (255, 0, 0)
+        red = int(255 * error_rate)
+        green = int(255 * (1 - error_rate))
+        return f"rgb({red},{green},0)"
+
+    def _make_metrics_row(self, metrics: dict[str, float]) -> Table | None:
+        """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
         if not metrics:
             return None
 
-        # Sort metrics with 'reward' first, then alphabetically
-        sorted_names = sorted(metrics.keys(), key=lambda x: (x != "reward", x))
+        # Extract error_rate for special handling
+        error_rate = metrics.get("error_rate")
 
-        # Build a single text line with arrow and all metrics
-        result = Text()
-        result.append("╰─ ", style="dim")
+        # Sort metrics with 'reward' first, then alphabetically, excluding error_rate
+        sorted_names = sorted(
+            [k for k in metrics.keys() if k != "error_rate"],
+            key=lambda x: (x != "reward", x),
+        )
+
+        # Build the left-aligned metrics text
+        metrics_text = Text()
+        metrics_text.append("╰─ ", style="dim")
 
         for i, name in enumerate(sorted_names):
             value = metrics[name]
@@ -206,15 +221,29 @@ class EvalTUI:
                 value_str = str(value)
 
             # Add metric with dotted leader
-            result.append(name, style="dim")
-            result.append(" ", style="dim")
-            result.append(value_str, style="bold")
+            metrics_text.append(name, style="dim")
+            metrics_text.append(" ", style="dim")
+            metrics_text.append(value_str, style="bold")
 
             # Add separator between metrics
             if i < len(sorted_names) - 1:
-                result.append("   ")  # 3 spaces between metrics
+                metrics_text.append("   ")  # 3 spaces between metrics
 
-        return result
+        # Build the right-aligned error_rate text
+        error_text = Text()
+        if error_rate is not None:
+            error_rate_str = f"{error_rate:.3f}"
+            error_color = self._get_error_rate_color(error_rate)
+            error_text.append("errors ", style="dim")
+            error_text.append(error_rate_str, style=f"bold {error_color}")
+
+        # Create a table with two columns for left/right alignment
+        table = Table.grid(expand=True)
+        table.add_column(justify="left", ratio=1)
+        table.add_column(justify="right")
+        table.add_row(metrics_text, error_text)
+
+        return table
 
     def _make_env_panel(self, env_id: str) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
@@ -303,7 +332,7 @@ class EvalTUI:
         progress.update(task, completed=completed_rollouts)
 
         # Metrics display
-        metrics_content = self._make_metrics_display(env_state.metrics)
+        metrics_content = self._make_metrics_row(env_state.metrics)
 
         # Log message for special events
         log_content = Text()
@@ -520,6 +549,8 @@ class EvalTUI:
                 self.console.print()
                 self.console.print(f"[red]Error in {env_id}:[/red]")
                 self.console.print(f"  {env_state.error}")
+
+        self.console.print()
 
 
 def is_tty() -> bool:

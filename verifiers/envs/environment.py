@@ -913,6 +913,8 @@ class Environment(ABC):
         # process tasks as they complete
         metrics_sums: dict[str, float] = defaultdict(float)
         metrics_counts: dict[str, int] = defaultdict(int)
+        error_count = 0
+        total_rollouts_seen = 0
         groups_or_rollouts_completed = 0
         total_groups_or_rollouts = len(tasks)
         all_states: list[State] = []
@@ -925,6 +927,10 @@ class Environment(ABC):
 
             # compute rolling averages of metrics
             for s in states:
+                total_rollouts_seen += 1
+                # Track errors
+                if s.get("error") is not None:
+                    error_count += 1
                 # Track top-level reward
                 reward = s.get("reward")
                 if reward is not None:
@@ -944,6 +950,9 @@ class Environment(ABC):
                     count = metrics_counts.get(name, 0)
                     if count > 0:
                         avg_metrics[name] = total / count
+                # Add error rate as a special metric
+                if total_rollouts_seen > 0:
+                    avg_metrics["error_rate"] = error_count / total_rollouts_seen
                 on_progress(groups_or_rollouts_completed, avg_metrics)
 
             # save intermediate results

@@ -386,7 +386,12 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             """Run a single evaluation with TUI progress updates."""
             env_id = env_config.env_id
 
-            def on_start(total: int) -> None:
+            def on_start(total_rollouts: int) -> None:
+                # TUI expects total to be groups when independent_scoring=False
+                if env_config.independent_scoring:
+                    total = total_rollouts
+                else:
+                    total = total_rollouts // env_config.rollouts_per_example
                 tui.update_env_state(env_id, total=total)
 
             def on_progress(completed: int, metrics: dict[str, float]) -> None:
@@ -417,6 +422,11 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                 for name, values in result["metrics"].items():
                     if values:
                         final_metrics[name] = sum(values) / len(values)
+                # Compute final error_rate
+                errors = [s.get("error") for s in result["state"]]
+                has_errors = [e is not None for e in errors]
+                if has_errors:
+                    final_metrics["error_rate"] = sum(has_errors) / len(has_errors)
 
                 # Get save path if results were saved
                 save_path = (
