@@ -1635,7 +1635,7 @@ class RLMEnv(SandboxEnv):
         ) = self._compute_sub_llm_timeouts()
 
         # Convert sub_tools to OAI format (reusing existing infrastructure)
-        self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
+        self.sub_oai_tools = self._build_sub_oai_tools()
         self.sub_tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.sub_tools
@@ -1884,6 +1884,37 @@ class RLMEnv(SandboxEnv):
                     msg_copy["content"] = [content]
             normalized.append(msg_copy)
         return normalized
+
+    @staticmethod
+    def _sanitize_tool_schema(oai_tool: dict[str, Any]) -> None:
+        function = oai_tool.get("function", {})
+        params = function.get("parameters")
+        if params is None:
+            params = {"type": "object", "properties": {}}
+            function["parameters"] = params
+        if params.get("properties") is None:
+            params["properties"] = {}
+        properties = params.get("properties")
+        if "required" in params and isinstance(params["required"], list):
+            if isinstance(properties, dict):
+                params["required"] = [
+                    item for item in params["required"] if item in properties
+                ]
+            else:
+                params["required"] = []
+            if not params["required"]:
+                params.pop("required")
+        if "$defs" in params and not params["$defs"]:
+            params.pop("$defs")
+        oai_tool["function"] = function
+
+    def _build_sub_oai_tools(self) -> list[dict[str, Any]]:
+        tools: list[dict[str, Any]] = []
+        for tool in self.sub_tools:
+            oai_tool = convert_func_to_oai_tool(tool)
+            self._sanitize_tool_schema(oai_tool)
+            tools.append(oai_tool)
+        return tools
 
     @staticmethod
     def _truncate_for_log(text: str, limit: int = 2000) -> str:
