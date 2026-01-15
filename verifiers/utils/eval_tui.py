@@ -455,17 +455,8 @@ class EvalTUI:
 
             # use env_state.total for actual resolved values
             total_rollouts = env_state.total
-            if config.independent_scoring:
-                actual_num_examples = (
-                    total_rollouts // config.rollouts_per_example
-                    if total_rollouts > 0
-                    else config.num_examples
-                )
-            else:
-                actual_num_examples = (
-                    total_rollouts if total_rollouts > 0 else config.num_examples
-                )
-            n = f"{actual_num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
+            num_examples = total_rollouts // config.rollouts_per_example
+            n = f"{num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
 
             reward = (
                 f"{env_state.metrics.get('reward', 0):.3f}"
