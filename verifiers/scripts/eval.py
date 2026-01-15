@@ -80,7 +80,7 @@ def main():
         "env_id_or_path",
         type=str,
         default="gsm8k",
-        help="Environment module name or path to TOML config file",
+        help="Environment module name(s) (comma-separated) or path to TOML config.",
     )
     parser.add_argument(
         "--env-args",
@@ -257,6 +257,10 @@ def main():
     if is_toml_config(args.env_id_or_path):
         path = Path(args.env_id_or_path)
         raw_multi_env_config = load_toml_config(path)
+    elif "," in args.env_id_or_path:
+        # comma-separated list of env IDs: "gsm8k,alphabet-sort,math-python"
+        env_ids = [env_id.strip() for env_id in args.env_id_or_path.split(",")]
+        raw_multi_env_config = [{"id": env_id} for env_id in env_ids if env_id]
     else:
         raw_multi_env_config = [{"id": args.env_id_or_path}]
 
