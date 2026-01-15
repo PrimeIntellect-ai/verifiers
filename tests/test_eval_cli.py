@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import verifiers.scripts.eval as vf_eval
+import verifiers.utils.eval_utils
 from verifiers.types import GenerateMetadata, GenerateOutputs
 
 
@@ -26,7 +27,7 @@ def _make_metadata(config) -> GenerateMetadata:
 
 def _run_cli(monkeypatch, overrides):
     base_args = {
-        "env_id": "dummy-env",
+        "env_id_or_path": "dummy-env",
         "env_args": {},
         "env_dir_path": "./environments",
         "endpoints_path": "./configs/endpoints.py",
@@ -87,10 +88,14 @@ def _run_cli(monkeypatch, overrides):
             example_id=[0],
             reward=[1.0],
             metrics={},
+            stop_conditions=[None],
+            is_truncated=[False],
             metadata=metadata,
         )
 
-    monkeypatch.setattr(vf_eval, "run_evaluation", fake_run_evaluation)
+    monkeypatch.setattr(
+        verifiers.utils.eval_utils, "run_evaluation", fake_run_evaluation
+    )
 
     vf_eval.main()
     return captured
