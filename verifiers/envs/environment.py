@@ -877,7 +877,7 @@ class Environment(ABC):
                 )
                 tasks[task] = i
             pbar_total = len(inputs_list)
-            pbar_desc = f"Processing {len(inputs_list)} rollouts"
+            pbar_desc = f"Processing {len(inputs_list)} {self.env_id} rollouts"
         else:
             input_groups: dict[int, list[RolloutInput]] = {}
             for input_item in inputs_list:
@@ -900,7 +900,7 @@ class Environment(ABC):
                 )
                 tasks[task] = i
             pbar_total = len(group_list)
-            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
+            pbar_desc = f"Processing {len(group_list)} {self.env_id} groups ({len(inputs_list)} total rollouts)"
 
         # set up progress bar
         pbar = None

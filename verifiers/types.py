@@ -236,7 +236,6 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     # logging
-    print_results: bool = False
     verbose: bool = False
     # saving
     state_columns: list[str] | None = None

@@ -203,7 +203,6 @@ def print_timing(results: GenerateOutputs):
 
 def print_results(
     results: GenerateOutputs,
-    event_loop_lags: list[float] | None = None,
     num_samples: int = 1,
 ):
     assert results["metadata"] is not None
@@ -240,18 +239,6 @@ def print_results(
             print_info(task_results)
             print_timing(task_results)
 
-    if event_loop_lags:
-        print("\nPerformance:")
-        event_loop_lags_arr = np.array(event_loop_lags)
-        med_lag, p90_lag, max_lag = (
-            np.median(event_loop_lags_arr),
-            np.percentile(event_loop_lags_arr, 90),
-            np.max(event_loop_lags_arr),
-        )
-        print(
-            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
-        )
-
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
@@ -262,10 +249,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
-
-    # load event loop lag monitor
-    event_loop_lag_monitor = EventLoopLagMonitor()
-    event_loop_lag_monitor.run_in_background()
 
     # set extra environment kwargs
     if config.extra_env_kwargs:
@@ -278,7 +261,6 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
-    start_time = time.time()
     results = await vf_env.evaluate(
         client=client,
         model=config.model,
@@ -294,20 +276,39 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
     )
-    end_time = time.time()
-    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
-    event_loop_lags = event_loop_lag_monitor.get_lags()
-
-    if config.print_results:
-        print_results(results, event_loop_lags)
     if config.save_results:
         save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
     return results
 
 
-async def run_multi_evaluation(config: MultiEvalConfig):
-    await asyncio.gather(*[run_evaluation(env_config) for env_config in config.env])
+async def run_multi_evaluation(config: MultiEvalConfig) -> None:
+    # load event loop lag monitor
+    event_loop_lag_monitor = EventLoopLagMonitor()
+    event_loop_lag_monitor.run_in_background()
+
+    start_time = time.time()
+    all_results = await asyncio.gather(
+        *[run_evaluation(env_config) for env_config in config.env]
+    )
+    end_time = time.time()
+    event_loop_lags = event_loop_lag_monitor.get_lags()
+    logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+
+    for results in all_results:
+        print_results(results)
+
+    if event_loop_lags:
+        print("\nPerformance:")
+        event_loop_lags_arr = np.array(event_loop_lags)
+        med_lag, p90_lag, max_lag = (
+            np.median(event_loop_lags_arr),
+            np.percentile(event_loop_lags_arr, 90),
+            np.max(event_loop_lags_arr),
+        )
+        print(
+            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
+        )
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
