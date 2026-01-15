@@ -36,18 +36,11 @@ class EnvEvalState:
     status: Literal["pending", "running", "completed", "failed"] = "pending"
     progress: int = 0  # completed groups (not rollouts)
     total: int = 0  # total groups
-    reward_sum: float = 0.0
-    reward_count: int = 0
+    metrics: dict[str, float] = field(default_factory=dict)  # running avg metrics
     last_log: str = ""
     error: str | None = None
     start_time: float | None = None
     end_time: float | None = None
-
-    @property
-    def avg_reward(self) -> float | None:
-        if self.reward_count == 0:
-            return None
-        return self.reward_sum / self.reward_count
 
     @property
     def elapsed_time(self) -> float:
@@ -95,8 +88,7 @@ class EvalTUI:
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
         total: int | None = None,
-        avg_reward: float | None = None,
-        reward_count: int | None = None,
+        metrics: dict[str, float] | None = None,
         last_log: str | None = None,
         error: str | None = None,
     ) -> None:
@@ -119,14 +111,8 @@ class EvalTUI:
         if total is not None:
             env_state.total = total
 
-        # Handle avg_reward by converting to sum/count
-        if avg_reward is not None and reward_count is not None:
-            env_state.reward_sum = avg_reward * reward_count
-            env_state.reward_count = reward_count
-        elif avg_reward is not None and env_state.progress > 0:
-            # Estimate count from progress if not provided
-            env_state.reward_sum = avg_reward * env_state.progress
-            env_state.reward_count = env_state.progress
+        if metrics is not None:
+            env_state.metrics = metrics
 
         if last_log is not None:
             env_state.last_log = last_log
@@ -195,62 +181,72 @@ class EvalTUI:
 
         return Panel(progress, border_style="green")
 
+    def _make_metrics_display(self, metrics: dict[str, float]) -> Table | None:
+        """Create a dotted-leader style metrics display."""
+        if not metrics:
+            return None
+
+        # Sort metrics with 'reward' first, then alphabetically
+        sorted_names = sorted(metrics.keys(), key=lambda x: (x != "reward", x))
+
+        # Create a grid with 3 columns for metrics
+        num_cols = 3
+        table = Table.grid(expand=True, padding=(0, 2))
+        for _ in range(num_cols):
+            table.add_column(ratio=1)
+
+        # Build metric cells with dotted leaders
+        cells = []
+        for name in sorted_names:
+            value = metrics[name]
+            # Format value
+            if isinstance(value, float):
+                if value == int(value):
+                    value_str = str(int(value))
+                elif abs(value) < 0.01:
+                    value_str = f"{value:.4f}"
+                else:
+                    value_str = f"{value:.3f}"
+            else:
+                value_str = str(value)
+
+            # Create dotted leader text
+            cell = Text()
+            cell.append(name, style="dim")
+            # Calculate dots needed (aim for ~20 chars total per cell)
+            dots_needed = max(2, 18 - len(name) - len(value_str))
+            cell.append(" " + "." * dots_needed + " ", style="dim")
+            cell.append(value_str, style="bold")
+            cells.append(cell)
+
+        # Add rows (3 metrics per row)
+        for i in range(0, len(cells), num_cols):
+            row = cells[i : i + num_cols]
+            # Pad row if needed
+            while len(row) < num_cols:
+                row.append(Text(""))
+            table.add_row(*row)
+
+        return table
+
     def _make_env_panel(self, env_id: str) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs_by_id[env_id]
         env_state = self.state.envs[env_id]
 
-        # Build the content table with two columns: config info and status/progress
-        table = Table.grid(expand=True, padding=(0, 2))
-        table.add_column("config", ratio=2)
-        table.add_column("status", ratio=1)
-
-        # Left column: Config info
-        config_lines = []
-
-        # Config details line 1: model, examples, rollouts
-        config_line1 = Text()
-        config_line1.append("model: ", style="dim")
-        config_line1.append(config.model, style="white")
-        config_line1.append("  |  ", style="dim")
-        config_line1.append("examples: ", style="dim")
-        config_line1.append(str(config.num_examples), style="white")
-        config_line1.append("  |  ", style="dim")
-        config_line1.append("rollouts: ", style="dim")
-        config_line1.append(str(config.rollouts_per_example), style="white")
-        config_lines.append(config_line1)
-
-        # Config details line 2: max_tokens, temperature, concurrency
-        config_line2 = Text()
-        max_tokens = config.sampling_args.get("max_tokens", "default")
-        temperature = config.sampling_args.get("temperature", "default")
-        config_line2.append("max_tokens: ", style="dim")
-        config_line2.append(str(max_tokens), style="white")
-        config_line2.append("  |  ", style="dim")
-        config_line2.append("temperature: ", style="dim")
-        config_line2.append(str(temperature), style="white")
-        config_line2.append("  |  ", style="dim")
-        config_line2.append("concurrency: ", style="dim")
-        config_line2.append(str(config.max_concurrent), style="white")
-        config_lines.append(config_line2)
-
-        # Right column: Reward only (timing moved to progress bar)
-        status_lines = []
-
-        # Reward
-        reward_text = Text()
-        reward_text.append("reward: ", style="dim")
-        if env_state.avg_reward is not None:
-            reward_text.append(f"{env_state.avg_reward:.3f}", style="bold green")
-        else:
-            reward_text.append("-", style="dim")
-        status_lines.append(reward_text)
-
-        # Add the config and status columns
-        table.add_row(
-            Group(*config_lines),
-            Group(*status_lines),
-        )
+        # Config info line
+        config_line = Text()
+        config_line.append("model: ", style="dim")
+        config_line.append(config.model, style="white")
+        config_line.append("  |  ", style="dim")
+        config_line.append("examples: ", style="dim")
+        config_line.append(str(config.num_examples), style="white")
+        config_line.append("  |  ", style="dim")
+        config_line.append("rollouts: ", style="dim")
+        config_line.append(str(config.rollouts_per_example), style="white")
+        config_line.append("  |  ", style="dim")
+        config_line.append("concurrency: ", style="dim")
+        config_line.append(str(config.max_concurrent), style="white")
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
@@ -276,6 +272,9 @@ class EvalTUI:
         )
         progress.update(task, completed=completed_rollouts)
 
+        # Metrics display (below progress bar)
+        metrics_content = self._make_metrics_display(env_state.metrics)
+
         # Error message if failed
         error_content = None
         if env_state.error:
@@ -285,7 +284,9 @@ class EvalTUI:
             error_content = error_text
 
         # Combine all content
-        content_items = [table, progress]
+        content_items = [config_line, progress]
+        if metrics_content:
+            content_items.append(metrics_content)
         if error_content:
             content_items.append(error_content)
 
@@ -445,8 +446,8 @@ class EvalTUI:
             progress = f"{env_state.progress}/{env_state.total}"
 
             reward = (
-                f"{env_state.avg_reward:.3f}"
-                if env_state.avg_reward is not None
+                f"{env_state.metrics.get('reward', 0):.3f}"
+                if "reward" in env_state.metrics
                 else "-"
             )
 

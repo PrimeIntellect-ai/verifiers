@@ -346,29 +346,33 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
         """Run a single evaluation with TUI progress updates."""
         env_id = env_config.env_id
 
-        def on_progress(completed: int, total: int, avg_reward: float | None) -> None:
+        def on_progress(completed: int, total: int, metrics: dict[str, float]) -> None:
             tui.update_env_state(
                 env_id,
                 progress=completed,
                 total=total,
-                avg_reward=avg_reward,
-                reward_count=completed if avg_reward is not None else None,
+                metrics=metrics,
             )
 
         tui.update_env_state(env_id, status="running")
         try:
             result = await run_evaluation(env_config, on_progress=on_progress)
 
-            # Update final state from results
-            total_reward = sum(result["reward"])
-            count = len(result["reward"])
-            final_avg = total_reward / count if count > 0 else None
+            # Update final state from results with all metrics
+            rewards = result["reward"]
+            final_metrics: dict[str, float] = {}
+            if rewards:
+                final_metrics["reward"] = sum(rewards) / len(rewards)
+            # Add all other metrics from result
+            for name, values in result["metrics"].items():
+                if values:
+                    final_metrics[name] = sum(values) / len(values)
+
             tui.update_env_state(
                 env_id,
                 status="completed",
                 progress=tui.state.envs[env_id].total,  # Mark as fully complete
-                avg_reward=final_avg,
-                reward_count=count,
+                metrics=final_metrics,
             )
 
             return result
