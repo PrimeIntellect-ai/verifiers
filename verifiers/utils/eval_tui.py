@@ -2,10 +2,21 @@
 Rich-based TUI for live multi-environment evaluation display.
 """
 
+import asyncio
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Literal
+
+# Check for Unix-specific terminal control modules
+try:
+    import select  # noqa: F401
+    import termios  # noqa: F401
+    import tty  # noqa: F401
+
+    HAS_TERMINAL_CONTROL = True
+except ImportError:
+    HAS_TERMINAL_CONTROL = False
 
 from rich.console import Console, Group
 from rich.layout import Layout
@@ -144,6 +155,15 @@ class EvalTUI:
         header_text.append(model_str, style="cyan")
         header_text.append(" | ")
         header_text.append(f"{len(self.configs)} environment(s)", style="green")
+
+        # Show status
+        if self.state.all_completed:
+            header_text.append(" | ")
+            failed = sum(1 for e in self.state.envs.values() if e.status == "failed")
+            if failed > 0:
+                header_text.append(f"COMPLETE ({failed} failed)", style="bold red")
+            else:
+                header_text.append("COMPLETE", style="bold green")
 
         return Panel(header_text, border_style="blue")
 
@@ -288,6 +308,23 @@ class EvalTUI:
 
         return Panel(table, title="Environments", border_style="blue")
 
+    def _make_footer(self) -> Panel:
+        """Create the footer panel with instructions."""
+        if self.state.all_completed:
+            footer_text = Text()
+            footer_text.append("Press ", style="dim")
+            footer_text.append("q", style="bold cyan")
+            footer_text.append(" or ", style="dim")
+            footer_text.append("Enter", style="bold cyan")
+            footer_text.append(" to exit", style="dim")
+            return Panel(footer_text, border_style="dim")
+        else:
+            footer_text = Text()
+            footer_text.append("Press ", style="dim")
+            footer_text.append("Ctrl+C", style="bold yellow")
+            footer_text.append(" to interrupt", style="dim")
+            return Panel(footer_text, border_style="dim")
+
     def _make_layout(self) -> Layout:
         """Create the full TUI layout."""
         layout = Layout()
@@ -296,11 +333,13 @@ class EvalTUI:
             Layout(name="header", size=3),
             Layout(name="progress", size=3),
             Layout(name="envs", ratio=1),
+            Layout(name="footer", size=3),
         )
 
         layout["header"].update(self._make_header())
         layout["progress"].update(self._make_global_progress())
         layout["envs"].update(self._make_env_grid())
+        layout["footer"].update(self._make_footer())
 
         return layout
 
@@ -308,6 +347,41 @@ class EvalTUI:
         """Refresh the display."""
         if self._live:
             self._live.update(self._make_layout())
+
+    async def wait_for_exit(self) -> None:
+        """Wait for user to press a key to exit."""
+        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
+            # On Windows or non-TTY, just wait for a simple input
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            return
+
+        # These imports are guaranteed to exist when HAS_TERMINAL_CONTROL is True
+        import select as select_module
+        import termios as termios_module
+        import tty as tty_module
+
+        # Save terminal settings
+        fd = sys.stdin.fileno()
+        old_settings = termios_module.tcgetattr(fd)
+
+        try:
+            # Set terminal to raw mode to capture single key presses
+            tty_module.setraw(fd)
+
+            # Wait for key press in a non-blocking way
+            while True:
+                # Check if input is available
+                await asyncio.sleep(0.1)  # Small delay to allow refresh
+
+                # Use select to check for input without blocking
+                if select_module.select([sys.stdin], [], [], 0)[0]:
+                    char = sys.stdin.read(1)
+                    # Exit on q, Q, Enter, or Escape
+                    if char in ("q", "Q", "\r", "\n", "\x1b"):
+                        break
+        finally:
+            # Restore terminal settings
+            termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     async def __aenter__(self) -> "EvalTUI":
         """Start the Live display."""

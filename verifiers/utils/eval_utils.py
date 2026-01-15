@@ -391,15 +391,14 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                 else:
                     all_results.append(result)
 
+            # Refresh to show completion state
+            tui.refresh()
+
+            # Wait for user to exit
+            await tui.wait_for_exit()
+
     except KeyboardInterrupt:
         logger.info("Evaluation interrupted by user")
-    finally:
-        # Print summary after TUI closes
-        tui.print_final_summary()
-
-    # Print detailed results for successful evaluations
-    for result in all_results:
-        print_results(result)
 
     return all_results
 
