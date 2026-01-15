@@ -31,16 +31,17 @@ from verifiers.types import EvalConfig
 
 @dataclass
 class EnvEvalState:
-    """Dynamic state for a single environment evaluation (no static config)."""
+    """Dynamic eval state for a single env."""
 
     status: Literal["pending", "running", "completed", "failed"] = "pending"
-    progress: int = 0  # completed groups (not rollouts)
-    total: int = 0  # total groups
-    metrics: dict[str, float] = field(default_factory=dict)  # running avg metrics
-    last_log: str = ""
     error: str | None = None
     start_time: float | None = None
     end_time: float | None = None
+
+    # updated by on_progress callback
+    progress: int = 0  # completed groups/ rollouts
+    total: int = 0  # total groups/ rollouts
+    metrics: dict[str, float] = field(default_factory=dict)
 
     @property
     def elapsed_time(self) -> float:
@@ -52,7 +53,7 @@ class EnvEvalState:
 
 @dataclass
 class EvalTUIState:
-    """Global state for the evaluation TUI."""
+    """Dynamic eval state for multiple envs."""
 
     envs: dict[str, EnvEvalState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
@@ -67,20 +68,20 @@ class EvalTUIState:
 
 
 class EvalTUI:
-    """Rich Live TUI for multi-environment evaluation."""
-
     def __init__(self, configs: list[EvalConfig]):
-        self.configs = configs
-        self.configs_by_id: dict[str, EvalConfig] = {c.env_id: c for c in configs}
+        self.configs: dict[str, EvalConfig] = {c.env_id: c for c in configs}
         self.state = EvalTUIState()
         self.console = Console()
         self._live: Live | None = None
 
-        # Initialize env states (dynamic only, no static config)
+        # Initialize env states
         for config in configs:
-            self.state.envs[config.env_id] = EnvEvalState(
-                total=config.num_examples,  # Groups, not rollouts
+            total = (
+                config.num_examples * config.rollouts_per_example
+                if config.independent_scoring
+                else config.num_examples
             )
+            self.state.envs[config.env_id] = EnvEvalState(total=total)
 
     def update_env_state(
         self,
@@ -89,13 +90,10 @@ class EvalTUI:
         progress: int | None = None,
         total: int | None = None,
         metrics: dict[str, float] | None = None,
-        last_log: str | None = None,
         error: str | None = None,
     ) -> None:
         """Update the state of a specific environment evaluation."""
-        if env_id not in self.state.envs:
-            return
-
+        assert env_id in self.state.envs
         env_state = self.state.envs[env_id]
 
         if status is not None:
@@ -114,42 +112,22 @@ class EvalTUI:
         if metrics is not None:
             env_state.metrics = metrics
 
-        if last_log is not None:
-            env_state.last_log = last_log
-
         if error is not None:
             env_state.error = error
 
-        # Trigger a refresh of the live display
         self.refresh()
-
-    def _make_header(self) -> Panel:
-        """Create the header panel with config info."""
-        header_text = Text()
-        header_text.append("vf-eval", style="bold magenta")
-        header_text.append(" | ")
-        header_text.append(f"{len(self.configs)} environment(s)", style="green")
-
-        # Show status
-        if self.state.all_completed:
-            header_text.append(" | ")
-            failed = sum(1 for e in self.state.envs.values() if e.status == "failed")
-            if failed > 0:
-                header_text.append(f"COMPLETE ({failed} failed)", style="bold red")
-            else:
-                header_text.append("COMPLETE", style="bold green")
-
-        return Panel(header_text, border_style="blue")
 
     def _get_total_rollouts(self) -> int:
         """Get total rollouts across all environments."""
-        return sum(c.num_examples * c.rollouts_per_example for c in self.configs)
+        return sum(
+            c.num_examples * c.rollouts_per_example for c in self.configs.values()
+        )
 
     def _get_completed_rollouts(self) -> int:
         """Get completed rollouts across all environments."""
         total = 0
         for env_id, env_state in self.state.envs.items():
-            config = self.configs_by_id.get(env_id)
+            config = self.configs.get(env_id)
             if config:
                 total += env_state.progress * config.rollouts_per_example
         return total
@@ -183,23 +161,19 @@ class EvalTUI:
 
         return Panel(progress, border_style="green")
 
-    def _make_metrics_display(self, metrics: dict[str, float]) -> Table | None:
-        """Create a dotted-leader style metrics display."""
+    def _make_metrics_display(self, metrics: dict[str, float]) -> Text | None:
+        """Create an inline metrics display that wraps naturally."""
         if not metrics:
             return None
 
         # Sort metrics with 'reward' first, then alphabetically
         sorted_names = sorted(metrics.keys(), key=lambda x: (x != "reward", x))
 
-        # Create a grid with 3 columns for metrics
-        num_cols = 3
-        table = Table.grid(expand=True, padding=(0, 2))
-        for _ in range(num_cols):
-            table.add_column(ratio=1)
+        # Build a single text line with arrow and all metrics
+        result = Text()
+        result.append("╰─ ", style="dim")
 
-        # Build metric cells with dotted leaders
-        cells = []
-        for name in sorted_names:
+        for i, name in enumerate(sorted_names):
             value = metrics[name]
             # Format value
             if isinstance(value, float):
@@ -212,43 +186,45 @@ class EvalTUI:
             else:
                 value_str = str(value)
 
-            # Create dotted leader text
-            cell = Text()
-            cell.append(name, style="dim")
-            # Calculate dots needed (aim for ~20 chars total per cell)
-            dots_needed = max(2, 18 - len(name) - len(value_str))
-            cell.append(" " + "." * dots_needed + " ", style="dim")
-            cell.append(value_str, style="bold")
-            cells.append(cell)
+            # Add metric with dotted leader
+            result.append(name, style="dim")
+            result.append(" ", style="dim")
+            result.append(value_str, style="bold")
 
-        # Add rows (3 metrics per row)
-        for i in range(0, len(cells), num_cols):
-            row = cells[i : i + num_cols]
-            # Pad row if needed
-            while len(row) < num_cols:
-                row.append(Text(""))
-            table.add_row(*row)
+            # Add separator between metrics
+            if i < len(sorted_names) - 1:
+                result.append("   ")  # 3 spaces between metrics
 
-        return table
+        return result
 
     def _make_env_panel(self, env_id: str) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
-        config = self.configs_by_id[env_id]
+        config = self.configs[env_id]
         env_state = self.state.envs[env_id]
 
         # Config info line
         config_line = Text()
-        config_line.append("model: ", style="dim")
         config_line.append(config.model, style="white")
+        config_line.append(" via ", style="dim")
+        config_line.append(config.client_config.api_base_url, style="white")
         config_line.append("  |  ", style="dim")
-        config_line.append("examples: ", style="dim")
         config_line.append(str(config.num_examples), style="white")
-        config_line.append("  |  ", style="dim")
-        config_line.append("rollouts: ", style="dim")
+        config_line.append("x", style="white")
         config_line.append(str(config.rollouts_per_example), style="white")
+        config_line.append(" rollouts", style="dim")
         config_line.append("  |  ", style="dim")
-        config_line.append("concurrency: ", style="dim")
         config_line.append(str(config.max_concurrent), style="white")
+        config_line.append(" concurrency", style="dim")
+        if config.max_concurrent_generation or config.max_concurrent_scoring:
+            config_line.append(" (", style="dim")
+        if config.max_concurrent_generation:
+            config_line.append("gen=", style="dim")
+            config_line.append(str(config.max_concurrent_generation), style="white")
+        if config.max_concurrent_scoring:
+            config_line.append("sem=", style="dim")
+            config_line.append(str(config.max_concurrent_scoring), style="white")
+        if config.max_concurrent_generation or config.max_concurrent_scoring:
+            config_line.append(") ", style="dim")
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
@@ -274,7 +250,7 @@ class EvalTUI:
         )
         progress.update(task, completed=completed_rollouts)
 
-        # Metrics display (below progress bar)
+        # Metrics display
         metrics_content = self._make_metrics_display(env_state.metrics)
 
         # Error message if failed
@@ -286,7 +262,8 @@ class EvalTUI:
             error_content = error_text
 
         # Combine all content
-        content_items = [config_line, progress]
+        space = Text("  ")
+        content_items = [config_line, space, progress]
         if metrics_content:
             content_items.append(metrics_content)
         if error_content:
@@ -301,7 +278,7 @@ class EvalTUI:
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # Build title with env name only (status shown via border color)
+        # Build title with env name only
         title = Text()
         title.append(env_id, style="bold cyan")
 
