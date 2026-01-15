@@ -917,8 +917,9 @@ class Environment(ABC):
 
         metric_names_by_task: dict[str, list[str]] = {}
         if hasattr(self, "env_map") and isinstance(self.env_map, dict):
+            env_map = cast(dict[str, "Environment"], self.env_map)
             for task in task_names:
-                env = self.env_map.get(task)
+                env = env_map.get(task)
                 if env is not None:
                     metric_names_by_task[task] = env.rubric._get_reward_func_names()
         fallback_metric_names = self.rubric._get_reward_func_names()
