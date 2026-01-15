@@ -39,6 +39,7 @@ from verifiers.types import (
     Messages,
     MessageType,
     ModelResponse,
+    ProgressCallback,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
@@ -832,6 +833,7 @@ class Environment(ABC):
         save_every: int = -1,
         use_tqdm: bool = True,
         independent_scoring: bool = False,
+        on_progress: "ProgressCallback | None" = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -932,6 +934,11 @@ class Environment(ABC):
                     pbar.update(1)
                     if reward_count > 0:
                         pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
+
+                # Call progress callback for TUI updates
+                if on_progress is not None:
+                    avg_reward = reward_sum / reward_count if reward_count > 0 else None
+                    on_progress(groups_or_rollouts_completed, pbar_total, avg_reward)
 
                 # save intermediate results
                 if (
@@ -1041,6 +1048,8 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        on_progress: ProgressCallback | None = None,
+        use_tqdm: bool = True,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1060,6 +1069,8 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            on_progress=on_progress,
+            use_tqdm=use_tqdm,
             **kwargs,
         )
 

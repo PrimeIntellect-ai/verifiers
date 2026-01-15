@@ -24,6 +24,7 @@ from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
     MultiEvalConfig,
+    ProgressCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
@@ -244,7 +245,10 @@ def print_results(
             print_timing(task_results)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+async def run_evaluation(
+    config: EvalConfig,
+    on_progress: "ProgressCallback | None" = None,
+) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
     client = setup_client(config.client_config)
     logger.debug(
@@ -279,6 +283,8 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         save_results=config.save_results,
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
+        on_progress=on_progress,
+        use_tqdm=config.use_tqdm,
     )
 
     if config.save_results:
@@ -313,6 +319,89 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
         print(
             f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
         )
+
+
+async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutputs]:
+    """Run multi-environment evaluation with a TUI display."""
+    from verifiers.utils.eval_tui import EvalTUI, is_tty
+
+    # Fall back to non-TUI mode if not a TTY
+    if not is_tty():
+        logger.info("Not a TTY, falling back to standard output")
+        await run_multi_evaluation(config)
+        return []
+
+    # Create modified configs with tqdm disabled (TUI handles progress display)
+    tui_configs = [
+        env_config.model_copy(update={"use_tqdm": False, "print_results": False})
+        for env_config in config.env
+    ]
+
+    tui = EvalTUI(config.env)
+
+    async def run_with_updates(env_config: EvalConfig) -> GenerateOutputs:
+        """Run a single evaluation with TUI progress updates."""
+        env_id = env_config.env_id
+
+        def on_progress(completed: int, total: int, avg_reward: float | None) -> None:
+            tui.update_env_state(
+                env_id,
+                progress=completed,
+                avg_reward=avg_reward,
+                reward_count=completed if avg_reward is not None else None,
+            )
+
+        tui.update_env_state(env_id, status="running")
+        try:
+            result = await run_evaluation(env_config, on_progress=on_progress)
+
+            # Update final state from results
+            total_reward = sum(result["reward"])
+            count = len(result["reward"])
+            final_avg = total_reward / count if count > 0 else None
+            tui.update_env_state(
+                env_id,
+                status="completed",
+                progress=count,
+                avg_reward=final_avg,
+                reward_count=count,
+            )
+
+            return result
+        except Exception as e:
+            tui.update_env_state(env_id, status="failed", error=str(e))
+            raise
+
+    # Run evaluations with TUI
+    all_results: list[GenerateOutputs] = []
+    try:
+        async with tui:
+            # Run all evaluations concurrently (using tui_configs with tqdm disabled)
+            results = await asyncio.gather(
+                *[run_with_updates(env_config) for env_config in tui_configs],
+                return_exceptions=True,
+            )
+
+            # Process results
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(
+                        f"Evaluation failed for {config.env[i].env_id}: {result}"
+                    )
+                else:
+                    all_results.append(result)
+
+    except KeyboardInterrupt:
+        logger.info("Evaluation interrupted by user")
+    finally:
+        # Print summary after TUI closes
+        tui.print_final_summary()
+
+    # Print detailed results for successful evaluations
+    for result in all_results:
+        print_results(result)
+
+    return all_results
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:

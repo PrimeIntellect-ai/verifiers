@@ -49,6 +49,9 @@ IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
+# Progress callback for TUI updates: (completed, total, reward) -> None
+ProgressCallback = Callable[[int, int, float | None], None]
+
 
 class TrajectoryStepTokens(TypedDict):
     prompt_ids: list[int]
@@ -237,6 +240,8 @@ class EvalConfig(BaseModel):
     extra_env_kwargs: dict = {}
     # logging
     verbose: bool = False
+    print_results: bool = True
+    use_tqdm: bool = True
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
