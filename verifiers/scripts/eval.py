@@ -261,15 +261,15 @@ def main():
     elif "," in args.env_id_or_path:
         # multi-env eval via comma-separated list
         env_ids = [env_id.strip() for env_id in args.env_id_or_path.split(",")]
-        raw_multi_env_config = [{"id": env_id} for env_id in env_ids if env_id]
+        raw_multi_env_config = [{"env_id": env_id} for env_id in env_ids if env_id]
     else:
         # single-eval env
-        raw_multi_env_config = [{"id": args.env_id_or_path}]
+        raw_multi_env_config = [{"env_id": args.env_id_or_path}]
 
     def resolve_eval_config(raw_env_config: dict) -> EvalConfig:
         """Resolve per-env eval config. TOML > CLI > Env Defaults > Global Defaults"""
-        assert "id" in raw_env_config
-        env_id = raw_env_config["id"]
+        assert "env_id" in raw_env_config
+        env_id = raw_env_config["env_id"]
         env_defaults = get_env_eval_defaults(env_id)
         num_examples = (
             args.num_examples
