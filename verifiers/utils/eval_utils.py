@@ -323,7 +323,6 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
 async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutputs]:
     """Run multi-environment evaluation with a TUI display."""
-    import logging as logging_module
 
     from verifiers.utils.eval_tui import EvalTUI, is_tty
 
@@ -333,88 +332,87 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
         await run_multi_evaluation(config)
         return []
 
-    # Suppress all logging during TUI mode (TUI handles display)
-    root_logger = logging_module.getLogger()
-    original_level = root_logger.level
-    root_logger.setLevel(logging_module.CRITICAL + 1)  # Suppress all logs
+    # critical level to suppress loggin
+    with vf.log_level(logging.CRITICAL):
+        # Create modified configs with tqdm disabled (TUI handles progress display)
+        tui_configs = [
+            env_config.model_copy(update={"use_tqdm": False, "print_results": False})
+            for env_config in config.env
+        ]
 
-    # Create modified configs with tqdm disabled (TUI handles progress display)
-    tui_configs = [
-        env_config.model_copy(update={"use_tqdm": False, "print_results": False})
-        for env_config in config.env
-    ]
+        tui = EvalTUI(config.env)
 
-    tui = EvalTUI(config.env)
+        async def run_with_updates(env_config: EvalConfig) -> GenerateOutputs:
+            """Run a single evaluation with TUI progress updates."""
+            env_id = env_config.env_id
 
-    async def run_with_updates(env_config: EvalConfig) -> GenerateOutputs:
-        """Run a single evaluation with TUI progress updates."""
-        env_id = env_config.env_id
+            def on_progress(
+                completed: int, total: int, metrics: dict[str, float]
+            ) -> None:
+                tui.update_env_state(
+                    env_id,
+                    progress=completed,
+                    total=total,
+                    metrics=metrics,
+                )
 
-        def on_progress(completed: int, total: int, metrics: dict[str, float]) -> None:
-            tui.update_env_state(
-                env_id,
-                progress=completed,
-                total=total,
-                metrics=metrics,
-            )
+            tui.update_env_state(env_id, status="running")
+            try:
+                result = await run_evaluation(env_config, on_progress=on_progress)
 
-        tui.update_env_state(env_id, status="running")
+                # Update final state from results with all metrics
+                rewards = result["reward"]
+                final_metrics: dict[str, float] = {}
+                if rewards:
+                    final_metrics["reward"] = sum(rewards) / len(rewards)
+                # Add all other metrics from result
+                for name, values in result["metrics"].items():
+                    if values:
+                        final_metrics[name] = sum(values) / len(values)
+
+                tui.update_env_state(
+                    env_id,
+                    status="completed",
+                    progress=tui.state.envs[env_id].total,  # Mark as fully complete
+                    metrics=final_metrics,
+                )
+
+                return result
+            except Exception as e:
+                tui.update_env_state(env_id, status="failed", error=str(e))
+                raise
+
+        # Run evaluations with TUI
+        all_results: list[GenerateOutputs] = []
         try:
-            result = await run_evaluation(env_config, on_progress=on_progress)
+            async with tui:
+                # Run all evaluations concurrently (using tui_configs with tqdm disabled)
+                results = await asyncio.gather(
+                    *[run_with_updates(env_config) for env_config in tui_configs],
+                    return_exceptions=True,
+                )
 
-            # Update final state from results with all metrics
-            rewards = result["reward"]
-            final_metrics: dict[str, float] = {}
-            if rewards:
-                final_metrics["reward"] = sum(rewards) / len(rewards)
-            # Add all other metrics from result
-            for name, values in result["metrics"].items():
-                if values:
-                    final_metrics[name] = sum(values) / len(values)
+                # Process results (silently, errors shown in TUI)
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        # Error already shown in TUI via update_env_state
+                        pass
+                    else:
+                        all_results.append(result)
 
-            tui.update_env_state(
-                env_id,
-                status="completed",
-                progress=tui.state.envs[env_id].total,  # Mark as fully complete
-                metrics=final_metrics,
-            )
+                # Refresh to show completion state
+                tui.refresh()
 
-            return result
-        except Exception as e:
-            tui.update_env_state(env_id, status="failed", error=str(e))
-            raise
+                # Wait for user to exit
+                await tui.wait_for_exit()
 
-    # Run evaluations with TUI
-    all_results: list[GenerateOutputs] = []
-    try:
-        async with tui:
-            # Run all evaluations concurrently (using tui_configs with tqdm disabled)
-            results = await asyncio.gather(
-                *[run_with_updates(env_config) for env_config in tui_configs],
-                return_exceptions=True,
-            )
+        except KeyboardInterrupt:
+            pass  # Silent exit on interrupt
 
-            # Process results (silently, errors shown in TUI)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    # Error already shown in TUI via update_env_state
-                    pass
-                else:
-                    all_results.append(result)
+        # Print final summary after TUI exits
+        tui.print_final_summary()
 
-            # Refresh to show completion state
-            tui.refresh()
-
-            # Wait for user to exit
-            await tui.wait_for_exit()
-
-    except KeyboardInterrupt:
-        pass  # Silent exit on interrupt
-    finally:
-        # Restore logging level
-        root_logger.setLevel(original_level)
-
-    return all_results
+        return all_results
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:

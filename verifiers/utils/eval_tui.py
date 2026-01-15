@@ -167,11 +167,13 @@ class EvalTUI:
         # Calculate percentage
         pct = (completed / total * 100) if total > 0 else 0
 
+        # Use same styling as env progress bars
+        is_running = not self.state.all_completed
         progress = Progress(
-            SpinnerColumn(),
-            BarColumn(bar_width=40),
+            SpinnerColumn() if is_running else TextColumn(""),
+            BarColumn(bar_width=None),
             TextColumn(f"[bold]{pct:.0f}%"),
-            TextColumn(f"({completed}/{total})"),
+            TextColumn(f"({completed}/{total} rollouts)"),
             TextColumn(f"| {time_str}"),
             console=self.console,
             expand=True,
@@ -308,12 +310,25 @@ class EvalTUI:
             title=title,
             title_align="left",
             border_style=border_style,
+            padding=(1, 1),
         )
 
-    def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels."""
-        panels = [self._make_env_panel(env_id) for env_id in self.state.envs]
-        return Group(*panels)
+    def _make_env_stack(self) -> Layout:
+        """Create a vertical stack of environment panels that fill available height."""
+        env_ids = list(self.state.envs.keys())
+
+        if not env_ids:
+            return Layout()
+
+        # Create a layout that splits evenly among all environments
+        layout = Layout()
+        layout.split_column(*[Layout(name=env_id, ratio=1) for env_id in env_ids])
+
+        # Update each section with its panel
+        for env_id in env_ids:
+            layout[env_id].update(self._make_env_panel(env_id))
+
+        return layout
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
