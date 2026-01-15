@@ -260,8 +260,16 @@ def main():
         raw_multi_env_config = load_toml_config(path)
     elif "," in args.env_id_or_path:
         # multi-env eval via comma-separated list
-        env_ids = [env_id.strip() for env_id in args.env_id_or_path.split(",")]
-        raw_multi_env_config = [{"env_id": env_id} for env_id in env_ids if env_id]
+        env_ids = [
+            env_id.strip()
+            for env_id in args.env_id_or_path.split(",")
+            if env_id.strip()
+        ]
+        if not env_ids:
+            raise ValueError(
+                f"No valid env_ids found in comma-separated list {args.env_id_or_path!r}"
+            )
+        raw_multi_env_config = [{"env_id": env_id} for env_id in env_ids]
     else:
         # single-eval env
         raw_multi_env_config = [{"env_id": args.env_id_or_path}]
