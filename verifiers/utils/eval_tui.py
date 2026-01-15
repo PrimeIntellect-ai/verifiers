@@ -208,24 +208,22 @@ class EvalTUI:
         config_line.append(" via ", style="dim")
         config_line.append(config.client_config.api_base_url, style="white")
         config_line.append("  |  ", style="dim")
-        # derive actual num_examples from total (handles num_examples=-1 case)
-        if config.num_examples == -1 and env_state.total > 0:
-            if config.independent_scoring:
-                actual_num_examples = env_state.total // config.rollouts_per_example
-            else:
-                actual_num_examples = env_state.total
-            config_line.append(str(actual_num_examples), style="white")
+        if config.num_examples == -1:
+            config_line.append("all", style="white")
+            config_line.append(" examples", style="dim")
+            config_line.append(" and ", style="dim")
+            config_line.append(str(config.rollouts_per_example), style="white")
+            config_line.append(" rollouts", style="dim")
         else:
-            num_str = "all" if config.num_examples == -1 else str(config.num_examples)
-            config_line.append(num_str, style="white")
-        config_line.append("x", style="white")
-        config_line.append(str(config.rollouts_per_example), style="white")
-        config_line.append(" rollouts", style="dim")
-        config_line.append("  |  ", style="dim")
+            config_line.append(str(config.num_examples), style="white")
+            config_line.append("x", style="white")
+            config_line.append(str(config.rollouts_per_example), style="white")
+            config_line.append(" rollouts", style="dim")
 
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
+        config_line.append("  |  ", style="dim")
         if config.max_concurrent_generation or config.max_concurrent_scoring:
             gen_concurrency = config.max_concurrent_generation or config.max_concurrent
             sem_concurrency = config.max_concurrent_scoring or config.max_concurrent
@@ -237,6 +235,7 @@ class EvalTUI:
         else:
             config_line.append(fmt_concurrency(config.max_concurrent), style="white")
             config_line.append(" concurrent rollouts", style="dim")
+
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")
             config_line.append("custom sampling ", style="white")

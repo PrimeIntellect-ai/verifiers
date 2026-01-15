@@ -8,7 +8,6 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
@@ -849,7 +848,7 @@ class Environment(ABC):
         elif isinstance(inputs, list):
             inputs_list = inputs
 
-        # Notify caller of actual total count (useful when num_examples=-1)
+        # notify caller of actual total count (useful when num_examples=-1)
         if on_start is not None:
             on_start(len(inputs_list))
 
@@ -911,49 +910,19 @@ class Environment(ABC):
                 tasks[task] = i
 
         # process tasks as they complete
-        metrics_sums: dict[str, float] = defaultdict(float)
-        metrics_counts: dict[str, int] = defaultdict(int)
-        error_count = 0
-        total_rollouts_seen = 0
         groups_or_rollouts_completed = 0
         total_groups_or_rollouts = len(tasks)
         all_states: list[State] = []
         for coro in asyncio.as_completed(tasks.keys()):
             result = await coro
             # normalize: independent_scoring returns State, group returns list[State]
-            states = [result] if independent_scoring else result
-            all_states.extend(states)
+            new_states = [result] if independent_scoring else result
+            all_states.extend(new_states)
             groups_or_rollouts_completed += 1
 
-            # compute rolling averages of metrics
-            for s in states:
-                total_rollouts_seen += 1
-                # Track errors
-                if s.get("error") is not None:
-                    error_count += 1
-                # Track top-level reward
-                reward = s.get("reward")
-                if reward is not None:
-                    metrics_sums["reward"] += reward
-                    metrics_counts["reward"] += 1
-                # Track all other metrics
-                state_metrics = s.get("metrics", {})
-                for name, value in state_metrics.items():
-                    if value is not None:
-                        metrics_sums[name] += value
-                        metrics_counts[name] += 1
-
-            # call progress callback
+            # call progress callback with all finished states and new states
             if on_progress is not None:
-                avg_metrics: dict[str, float] = defaultdict(float)
-                for name, total in metrics_sums.items():
-                    count = metrics_counts.get(name, 0)
-                    if count > 0:
-                        avg_metrics[name] = total / count
-                # Add error rate as a special metric
-                if total_rollouts_seen > 0:
-                    avg_metrics["error_rate"] = error_count / total_rollouts_seen
-                on_progress(groups_or_rollouts_completed, avg_metrics)
+                on_progress(all_states, new_states)
 
             # save intermediate results
             if (

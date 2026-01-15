@@ -27,6 +27,7 @@ from verifiers.types import (
     MultiEvalConfig,
     ProgressCallback,
     StartCallback,
+    State,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
@@ -297,6 +298,52 @@ async def run_evaluation(
     return results
 
 
+def compute_metrics_from_states(states: list[State]) -> dict[str, float]:
+    """Compute aggregated metrics from a list of states.
+
+    Args:
+        states: List of State objects from completed rollouts.
+
+    Returns:
+        Dictionary of metric names to their average values.
+    """
+    if not states:
+        return {}
+
+    metrics_sums: dict[str, float] = {}
+    metrics_counts: dict[str, int] = {}
+    error_count = 0
+
+    for s in states:
+        # Track errors
+        if s.get("error") is not None:
+            error_count += 1
+        # Track top-level reward
+        reward = s.get("reward")
+        if reward is not None:
+            metrics_sums["reward"] = metrics_sums.get("reward", 0.0) + reward
+            metrics_counts["reward"] = metrics_counts.get("reward", 0) + 1
+        # Track all other metrics
+        state_metrics = s.get("metrics", {})
+        for name, value in state_metrics.items():
+            if value is not None:
+                metrics_sums[name] = metrics_sums.get(name, 0.0) + value
+                metrics_counts[name] = metrics_counts.get(name, 0) + 1
+
+    # Compute averages
+    avg_metrics: dict[str, float] = {}
+    for name, total in metrics_sums.items():
+        count = metrics_counts.get(name, 0)
+        if count > 0:
+            avg_metrics[name] = total / count
+
+    # Add error rate as a special metric
+    if states:
+        avg_metrics["error_rate"] = error_count / len(states)
+
+    return avg_metrics
+
+
 async def run_multi_evaluation(config: MultiEvalConfig) -> None:
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -309,7 +356,7 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
             # Delay pbar creation until first callback (when generate actually starts)
             pbar: tqdm | None = None
 
-            def tqdm_callback(_progress: int, metrics: dict[str, float]) -> None:
+            def tqdm_callback(all_states: list[State], new_states: list[State]) -> None:
                 nonlocal pbar
                 if pbar is None:
                     # Create pbar on first callback
@@ -327,6 +374,8 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
                         total=pbar_total, desc=pbar_desc, postfix=dict(reward="?")
                     )
                 pbar.update()
+                # Compute metrics from all_states
+                metrics = compute_metrics_from_states(all_states)
                 reward = metrics.get("reward")
                 if reward:
                     pbar.set_postfix(reward=f"{reward:.3f}")
@@ -394,7 +443,15 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     total = total_rollouts // env_config.rollouts_per_example
                 tui.update_env_state(env_id, total=total)
 
-            def on_progress(completed: int, metrics: dict[str, float]) -> None:
+            def on_progress(all_states: list[State], new_states: list[State]) -> None:
+                # Compute progress as number of groups or rollouts completed
+                if env_config.independent_scoring:
+                    completed = len(all_states)
+                else:
+                    # Count unique example_ids to get number of groups
+                    completed = len(set(s.get("example_id", 0) for s in all_states))
+                # Compute metrics from all states
+                metrics = compute_metrics_from_states(all_states)
                 tui.update_env_state(
                     env_id,
                     progress=completed,

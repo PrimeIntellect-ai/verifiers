@@ -51,7 +51,8 @@ RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
 # callbacks for evals
 StartCallback = Callable[[int], None]  # receives actual total count
-ProgressCallback = Callable[[int, dict[str, float]], None]
+# ProgressCallback receives (all_states_finished, new_states_from_await)
+ProgressCallback = Callable[["list[State]", "list[State]"], None]
 LogCallback = Callable[[str], None]
 
 
