@@ -3,6 +3,7 @@ env_id = "gsm8k"
 num_examples = 1
 rollouts_per_example = 1
 max_concurrent_generation = 1
+sampling_args = { max_tokens = 512 }
 
 [[env]]
 env_id = "alphabet-sort"

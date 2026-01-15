@@ -233,11 +233,18 @@ class EvalTUI:
         else:
             config_line.append(str(config.max_concurrent), style="white")
             config_line.append(" concurrent rollouts", style="dim")
-        config_line.append("  |  ", style="dim")
-        if not config.save_results:
-            config_line.append("not ", style="white")
-        config_line.append("saving", style="white")
-        config_line.append(" results", style="dim")
+        if config.sampling_args and any(config.sampling_args.values()):
+            config_line.append("  |  ", style="dim")
+            config_line.append("custom sampling ", style="white")
+            config_line.append("(", style="dim")
+            for key, value in config.sampling_args.items():
+                if value is not None:
+                    config_line.append(f"{key}={value}", style="dim")
+            config_line.append(")", style="dim")
+        if config.save_results:
+            config_line.append("  |  ", style="dim")
+            config_line.append("saving", style="white")
+            config_line.append(" results", style="dim")
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
