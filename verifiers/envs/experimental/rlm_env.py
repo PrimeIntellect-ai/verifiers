@@ -2336,9 +2336,13 @@ class RLMEnv(SandboxEnv):
 
                 if self.include_sub_llm_in_trajectory:
                     # Parse tokens from response
-                    tokens = await parse_response_tokens(
-                        turn["response"], "chat", self.max_seq_len
-                    )
+                    tokens = None
+                    try:
+                        tokens = await parse_response_tokens(
+                            turn["response"], "chat", self.max_seq_len
+                        )
+                    except Exception as e:
+                        logger.warning("Sub-LLM token parsing failed: %s", e)
                     # Parse completion messages
                     completion_messages = await parse_response_messages(
                         turn["response"], "chat"
