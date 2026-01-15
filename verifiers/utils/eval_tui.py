@@ -168,15 +168,8 @@ class EvalTUI:
 
     def _make_header(self) -> Panel:
         """Create the header panel with config info."""
-        # Get unique models
-        models = list(set(c.model for c in self.configs))
-        model_str = models[0] if len(models) == 1 else f"{len(models)} models"
-
         header_text = Text()
         header_text.append("vf-eval", style="bold magenta")
-        header_text.append(" | ")
-        header_text.append("Model: ", style="dim")
-        header_text.append(model_str, style="cyan")
         header_text.append(" | ")
         header_text.append(f"{len(self.configs)} environment(s)", style="green")
 
@@ -239,13 +232,6 @@ class EvalTUI:
 
         # Left column: Config info
         config_lines = []
-
-        # Environment name and model
-        env_header = Text()
-        env_header.append(env_state.env_id, style="bold cyan")
-        env_header.append("  ")
-        env_header.append(f"[{label}]", style=style)
-        config_lines.append(env_header)
 
         # Config details line 1: model, examples, rollouts
         config_line1 = Text()
@@ -348,8 +334,15 @@ class EvalTUI:
         }
         border_style = border_styles.get(env_state.status, "dim")
 
+        # Build title with env name and status
+        title = Text()
+        title.append(env_state.env_id, style="bold cyan")
+        title.append(f" [{label}]", style=style)
+
         return Panel(
             Group(*content_items),
+            title=title,
+            title_align="left",
             border_style=border_style,
         )
 
