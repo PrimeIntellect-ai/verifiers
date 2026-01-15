@@ -3,7 +3,7 @@ import importlib.util
 import json
 import logging
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -355,9 +355,13 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
             # Delay pbar creation until first callback (when generate actually starts)
             pbar: tqdm | None = None
+            reward_accum = 0
 
             def tqdm_callback(all_states: list[State], new_states: list[State]) -> None:
+                nonlocal reward_accum
                 nonlocal pbar
+
+                completed = len(all_states)
                 if pbar is None:
                     # Create pbar on first callback
                     if env_config.independent_scoring:
@@ -374,11 +378,13 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
                         total=pbar_total, desc=pbar_desc, postfix=dict(reward="?")
                     )
                 pbar.update()
-                # Compute metrics from all_states
-                metrics = compute_metrics_from_states(all_states)
-                reward = metrics.get("reward")
-                if reward:
-                    pbar.set_postfix(reward=f"{reward:.3f}")
+
+                for s in new_states:
+                    reward = s.get("reward")
+                    if reward is not None:
+                        reward_accum += reward
+
+                pbar.set_postfix(reward=f"{reward_accum / completed:.3f}")
 
             on_progress = tqdm_callback
         else:
@@ -435,27 +441,46 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             """Run a single evaluation with TUI progress updates."""
             env_id = env_config.env_id
 
-            def on_start(total_rollouts: int) -> None:
-                # TUI expects total to be groups when independent_scoring=False
-                if env_config.independent_scoring:
-                    total = total_rollouts
-                else:
-                    total = total_rollouts // env_config.rollouts_per_example
+            reward_accum = 0
+            metrics_accum = defaultdict(float)
+            error_accum = 0
+
+            def on_start(total: int) -> None:
                 tui.update_env_state(env_id, total=total)
 
             def on_progress(all_states: list[State], new_states: list[State]) -> None:
+                nonlocal error_accum, reward_accum, metrics_accum
+
                 # Compute progress as number of groups or rollouts completed
                 if env_config.independent_scoring:
                     completed = len(all_states)
                 else:
                     # Count unique example_ids to get number of groups
                     completed = len(set(s.get("example_id", 0) for s in all_states))
-                # Compute metrics from all states
-                metrics = compute_metrics_from_states(all_states)
+
+                for s in new_states:
+                    if s.get("error") is not None:
+                        error_accum += 1
+                    reward = s.get("reward")
+                    if reward is not None:
+                        reward_accum += reward
+                    state_metrics = s.get("metrics", {})
+                    for name, value in state_metrics.items():
+                        if value is not None:
+                            metrics_accum[name] += value
+
+                reward = reward_accum / completed
+                metrics = {
+                    name: metrics_accum[name] / completed for name in metrics_accum
+                }
+                error_rate = error_accum / completed
+
                 tui.update_env_state(
                     env_id,
                     progress=completed,
+                    reward=reward,
                     metrics=metrics,
+                    error_rate=error_rate,
                 )
 
             def on_log(message: str) -> None:

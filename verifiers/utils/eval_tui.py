@@ -42,7 +42,9 @@ class EnvEvalState:
     # updated by on_progress callback
     progress: int = 0  # completed groups/rollouts
     total: int = 0  # total groups/rollouts
-    metrics: dict[str, float] = field(default_factory=dict)
+    reward: float = 0.0  # reward (rolling avg)
+    metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
+    error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
     save_path: Path | None = None
@@ -96,7 +98,9 @@ class EvalTUI:
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
         total: int | None = None,
+        reward: float | None = None,
         metrics: dict[str, float] | None = None,
+        error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
         log_message: str | None = None,
@@ -118,8 +122,14 @@ class EvalTUI:
         if total is not None:
             env_state.total = total
 
+        if reward is not None:
+            env_state.reward = reward
+
         if metrics is not None:
             env_state.metrics = metrics
+
+        if error_rate is not None:
+            env_state.error_rate = error_rate
 
         if error is not None:
             env_state.error = error
@@ -141,26 +151,20 @@ class EvalTUI:
         green = int(255 * (1 - error_rate))
         return f"rgb({red},{green},0)"
 
-    def _make_metrics_row(self, metrics: dict[str, float]) -> Table | None:
+    def _make_metrics_row(
+        self, reward: float, metrics: dict[str, float], error_rate: float
+    ) -> Table | None:
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
         if not metrics:
             return None
 
-        # extract error_rate for special handling
-        error_rate = metrics.get("error_rate")
-
-        # sort metrics with 'reward' first, then alphabetically, excluding error_rate
-        sorted_names = sorted(
-            [k for k in metrics.keys() if k != "error_rate"],
-            key=lambda x: (x != "reward", x),
-        )
+        metrics = {"reward": reward, **metrics}
 
         # build the left-aligned metrics text
         metrics_text = Text()
         metrics_text.append("╰─ ", style="dim")
 
-        for i, name in enumerate(sorted_names):
-            value = metrics[name]
+        for i, (name, value) in enumerate(metrics.items()):
             # format value
             if isinstance(value, float):
                 if value == int(value):
@@ -178,7 +182,7 @@ class EvalTUI:
             metrics_text.append(value_str, style="bold")
 
             # add separator between metrics
-            if i < len(sorted_names) - 1:
+            if i < len(metrics) - 1:
                 metrics_text.append("   ")  # 3 spaces between metrics
 
         # build the right-aligned error_rate text
@@ -283,7 +287,9 @@ class EvalTUI:
         progress.update(task, completed=completed_rollouts)
 
         # metrics display
-        metrics_content = self._make_metrics_row(env_state.metrics)
+        metrics_content = self._make_metrics_row(
+            env_state.reward, env_state.metrics, env_state.error_rate
+        )
 
         # log message for special events
         log_content = Text()
