@@ -1,0 +1,180 @@
+"""Unified Browser Environment with DOM and CUA modes."""
+
+from typing import Any, Literal
+import verifiers as vf
+from verifiers.utils.async_utils import maybe_await
+
+from .modes.dom_mode import DOMMode
+from .modes.cua_mode import CUAMode
+
+ModeType = Literal["dom", "cua"]
+
+
+class BrowserEnv(vf.StatefulToolEnv):
+    """
+    Unified browser environment supporting both DOM-based and CUA-based modes.
+
+    Modes:
+        - "dom": Natural language operations via Stagehand SDK (act, observe, extract)
+        - "cua": Vision-based primitives via CUA server (click, scroll, type_text)
+    """
+
+    def __init__(
+        self,
+        mode: ModeType = "dom",
+        # Shared config
+        browserbase_api_key: str | None = None,
+        browserbase_project_id: str | None = None,
+        # DOM mode specific
+        model_api_key: str | None = None,
+        stagehand_model: str = "openai/gpt-4o-mini",
+        proxy_model_to_stagehand: bool = False,
+        # CUA mode specific
+        server_url: str = "http://localhost:3000",
+        env: Literal["LOCAL", "BROWSERBASE"] = "LOCAL",
+        viewport_width: int = 1024,
+        viewport_height: int = 768,
+        save_screenshots: bool = True,
+        keep_recent_screenshots: int | None = 2,
+        proxies: bool = False,
+        # Common
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.mode = mode
+
+        # Initialize the appropriate mode strategy
+        if mode == "dom":
+            self._mode_impl = DOMMode(
+                project_id=browserbase_project_id,
+                model_api_key=model_api_key,
+                stagehand_model=stagehand_model,
+                proxy_model_to_stagehand=proxy_model_to_stagehand,
+            )
+        elif mode == "cua":
+            self._mode_impl = CUAMode(
+                server_url=server_url,
+                env=env,
+                browserbase_api_key=browserbase_api_key,
+                browserbase_project_id=browserbase_project_id,
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
+                save_screenshots=save_screenshots,
+                keep_recent_screenshots=keep_recent_screenshots,
+                proxies=proxies,
+            )
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Must be 'dom' or 'cua'")
+
+        # Register mode-specific tools
+        self._mode_impl.register_tools(self)
+
+    async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
+        """Delegate session creation to the mode strategy."""
+        state = await self._mode_impl.setup_state(state, **kwargs)
+        return await super().setup_state(state, **kwargs)
+
+    def update_tool_args(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        messages: vf.Messages,
+        state: vf.State,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Delegate tool arg injection to the mode strategy."""
+        return self._mode_impl.update_tool_args(
+            tool_name, tool_args, messages, state, **kwargs
+        )
+
+    @vf.cleanup
+    async def cleanup_session(self, state: vf.State) -> None:
+        """Clean up session after rollout."""
+        await self._mode_impl.cleanup_session(state)
+
+    @vf.teardown
+    async def teardown(self) -> None:
+        """Clean up resources on environment teardown."""
+        if hasattr(self, "_mode_impl") and self._mode_impl is not None:
+            await self._mode_impl.teardown()
+
+    # ==================== CUA Mode Specific Overrides ====================
+
+    async def call_tool(
+        self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
+    ) -> vf.Message | list[vf.Message]:
+        """
+        Call a tool, preserving multipart content for CUA mode images.
+
+        In CUA mode, tools return list[dict] with text and image_url content.
+        This override ensures the multipart structure is preserved.
+        """
+        if self.mode == "dom":
+            # DOM mode uses default string handling
+            return await super().call_tool(tool_name, tool_args, tool_call_id, **kwargs)
+
+        # CUA mode: preserve multipart content
+        try:
+            tool_func = self.tool_map[tool_name]
+            tool_args_with_id = {**tool_args, "tool_call_id": tool_call_id}
+            result = await maybe_await(tool_func, **tool_args_with_id)
+
+            if isinstance(result, list):
+                # Extract text parts for tool response
+                text_parts = [
+                    str(item.get("text", ""))
+                    for item in result
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ]
+                text_content = "\n".join([t for t in text_parts if t]) or "[no text]"
+                tool_messages: list[vf.Message] = [
+                    {
+                        "role": "tool",
+                        "content": text_content,
+                        "tool_call_id": tool_call_id,
+                    },
+                    {
+                        "role": "user",
+                        "content": result,
+                    },
+                ]
+            else:
+                tool_messages = [
+                    {
+                        "role": "tool",
+                        "content": str(result),
+                        "tool_call_id": tool_call_id,
+                    }
+                ]
+
+            return tool_messages
+
+        except Exception as e:
+            return {
+                "role": "tool",
+                "content": self.error_formatter(e),
+                "tool_call_id": tool_call_id,
+            }
+
+    async def env_response(
+        self, messages: vf.Messages, state: vf.State, **kwargs
+    ) -> vf.Messages:
+        """
+        Handle environment response, filtering screenshots in CUA mode.
+        """
+        if self.mode == "cua":
+            # Filter screenshots to manage context size
+            messages = self._mode_impl.filter_screenshots_in_messages(list(messages))
+
+        tool_messages = await super().env_response(messages, state, **kwargs)
+        if not isinstance(tool_messages, list):
+            return tool_messages
+
+        # Flatten nested message lists
+        flattened: list[vf.Message] = []
+        for msg in tool_messages:
+            if isinstance(msg, list):
+                flattened.extend(msg)
+            else:
+                flattened.append(msg)
+        return flattened
