@@ -1030,7 +1030,9 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        on_start: StartCallback | None = None,
         on_progress: ProgressCallback | None = None,
+        on_log: LogCallback | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1050,7 +1052,9 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            on_start=on_start,
             on_progress=on_progress,
+            on_log=on_log,
             **kwargs,
         )
 

@@ -49,12 +49,6 @@ IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
-# callbacks for evals
-StartCallback = Callable[[int], None]  # receives actual total count
-# ProgressCallback receives (all_states_finished, new_states_from_await)
-ProgressCallback = Callable[["list[State]", "list[State]"], None]
-LogCallback = Callable[[str], None]
-
 
 class TrajectoryStepTokens(TypedDict):
     prompt_ids: list[int]
@@ -144,6 +138,11 @@ class State(dict):
 
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
+
+# callbacks
+StartCallback = Callable[[int], None]  # total rollouts
+ProgressCallback = Callable[[list[State], list[State]], None]  # all_states, new_states
+LogCallback = Callable[[str], None]  # log messages
 
 
 class GenerateMetadata(TypedDict):
