@@ -8,6 +8,7 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
@@ -831,9 +832,8 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
-        use_tqdm: bool = True,
         independent_scoring: bool = False,
-        on_progress: "ProgressCallback | None" = None,
+        on_progress: ProgressCallback | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -878,8 +878,6 @@ class Environment(ABC):
                     )
                 )
                 tasks[task] = i
-            pbar_total = len(inputs_list)
-            pbar_desc = f"Processing {len(inputs_list)} {self.env_id} rollouts"
         else:
             input_groups: dict[int, list[RolloutInput]] = {}
             for input_item in inputs_list:
@@ -901,83 +899,61 @@ class Environment(ABC):
                     )
                 )
                 tasks[task] = i
-            pbar_total = len(group_list)
-            pbar_desc = f"Processing {len(group_list)} {self.env_id} groups ({len(inputs_list)} total rollouts)"
-
-        # set up progress bar
-        pbar = None
-        if use_tqdm:
-            from tqdm import tqdm
-
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         # process tasks as they complete
-        reward_sum, reward_count = 0, 0
-        metrics_sums: dict[str, float] = {}
-        metrics_counts: dict[str, int] = {}
+        metrics_sums: dict[str, float] = defaultdict(float)
+        metrics_counts: dict[str, int] = defaultdict(int)
         groups_or_rollouts_completed = 0
         all_states: list[State] = []
-        try:
-            for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
-                # normalize: independent_scoring returns State, group returns list[State]
-                states = [result] if independent_scoring else result
-                all_states.extend(states)
-                groups_or_rollouts_completed += 1
+        for coro in asyncio.as_completed(tasks.keys()):
+            result = await coro
+            # normalize: independent_scoring returns State, group returns list[State]
+            states = [result] if independent_scoring else result
+            all_states.extend(states)
+            groups_or_rollouts_completed += 1
 
-                # track reward and all metrics for rolling averages
-                for s in states:
-                    r = s.get("reward")
-                    if r is not None:
-                        reward_sum += r
-                        reward_count += 1
+            # compute rolling averages of metrics
+            for s in states:
+                # Track top-level reward
+                reward = s.get("reward")
+                if reward is not None:
+                    metrics_sums["reward"] += reward
+                    metrics_counts["reward"] += 1
+                # Track all other metrics
+                state_metrics = s.get("metrics", {})
+                for name, value in state_metrics.items():
+                    if value is not None:
+                        metrics_sums[name] += value
+                        metrics_counts[name] += 1
 
-                    # track all metrics from state
-                    state_metrics = s.get("metrics")
-                    if state_metrics:
-                        for name, value in state_metrics.items():
-                            if value is not None:
-                                metrics_sums[name] = metrics_sums.get(name, 0.0) + value
-                                metrics_counts[name] = metrics_counts.get(name, 0) + 1
+            # call progress callback
+            if on_progress is not None:
+                avg_metrics: dict[str, float] = defaultdict(float)
+                for name, total in metrics_sums.items():
+                    count = metrics_counts.get(name, 0)
+                    if count > 0:
+                        avg_metrics[name] = total / count
+                on_progress(groups_or_rollouts_completed, avg_metrics)
 
-                if pbar is not None:
-                    pbar.update(1)
-                    if reward_count > 0:
-                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
-
-                # Call progress callback for TUI updates
-                if on_progress is not None:
-                    avg_metrics: dict[str, float] = {}
-                    if reward_count > 0:
-                        avg_metrics["reward"] = reward_sum / reward_count
-                    for name, total in metrics_sums.items():
-                        count = metrics_counts.get(name, 0)
-                        if count > 0:
-                            avg_metrics[name] = total / count
-                    on_progress(groups_or_rollouts_completed, pbar_total, avg_metrics)
-
-                # save intermediate results
-                if (
-                    save_results
-                    and save_every > 0
-                    and groups_or_rollouts_completed % save_every == 0
-                ):
-                    temp_results = self._prepare_rollout_results(
-                        all_states,
-                        model,
-                        client,
-                        state_columns,
-                        results_path,
-                        gen_sampling_args,
-                        start_time,
-                    )
-                    self.logger.debug(
-                        f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
-                    )
-                    save_rollout_results(temp_results)
-        finally:
-            if pbar is not None:
-                pbar.close()
+            # save intermediate results
+            if (
+                save_results
+                and save_every > 0
+                and groups_or_rollouts_completed % save_every == 0
+            ):
+                temp_results = self._prepare_rollout_results(
+                    all_states,
+                    model,
+                    client,
+                    state_columns,
+                    results_path,
+                    gen_sampling_args,
+                    start_time,
+                )
+                self.logger.debug(
+                    f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                )
+                save_rollout_results(temp_results)
 
         # sort by example_id to ensure deterministic ordering regardless of completion order
         all_states.sort(key=lambda s: s.get("example_id", 0))
@@ -1065,7 +1041,6 @@ class Environment(ABC):
         save_every: int = -1,
         independent_scoring: bool = False,
         on_progress: ProgressCallback | None = None,
-        use_tqdm: bool = True,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1086,7 +1061,6 @@ class Environment(ABC):
             save_every=save_every,
             independent_scoring=independent_scoring,
             on_progress=on_progress,
-            use_tqdm=use_tqdm,
             **kwargs,
         )
 
