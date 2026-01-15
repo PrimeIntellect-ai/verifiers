@@ -298,52 +298,6 @@ async def run_evaluation(
     return results
 
 
-def compute_metrics_from_states(states: list[State]) -> dict[str, float]:
-    """Compute aggregated metrics from a list of states.
-
-    Args:
-        states: List of State objects from completed rollouts.
-
-    Returns:
-        Dictionary of metric names to their average values.
-    """
-    if not states:
-        return {}
-
-    metrics_sums: dict[str, float] = {}
-    metrics_counts: dict[str, int] = {}
-    error_count = 0
-
-    for s in states:
-        # Track errors
-        if s.get("error") is not None:
-            error_count += 1
-        # Track top-level reward
-        reward = s.get("reward")
-        if reward is not None:
-            metrics_sums["reward"] = metrics_sums.get("reward", 0.0) + reward
-            metrics_counts["reward"] = metrics_counts.get("reward", 0) + 1
-        # Track all other metrics
-        state_metrics = s.get("metrics", {})
-        for name, value in state_metrics.items():
-            if value is not None:
-                metrics_sums[name] = metrics_sums.get(name, 0.0) + value
-                metrics_counts[name] = metrics_counts.get(name, 0) + 1
-
-    # Compute averages
-    avg_metrics: dict[str, float] = {}
-    for name, total in metrics_sums.items():
-        count = metrics_counts.get(name, 0)
-        if count > 0:
-            avg_metrics[name] = total / count
-
-    # Add error rate as a special metric
-    if states:
-        avg_metrics["error_rate"] = error_count / len(states)
-
-    return avg_metrics
-
-
 async def run_multi_evaluation(config: MultiEvalConfig) -> None:
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
