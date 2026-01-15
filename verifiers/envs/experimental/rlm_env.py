@@ -26,6 +26,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1426,6 +1427,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env_vars,
+                start_new_session=True,
             )
         session.worker_process = process
 
@@ -1455,12 +1457,23 @@ class LocalRLMExecutor(BaseRLMExecutor):
     def _stop_worker(self, session: LocalRLMReplSession) -> None:
         if not session.worker_process:
             return
+        process = session.worker_process
         try:
-            session.worker_process.terminate()
-            session.worker_process.wait(timeout=5)
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+            process.wait(timeout=5)
         except Exception:
             try:
-                session.worker_process.kill()
+                if os.name != "nt":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
             except Exception:
                 pass
         session.worker_process = None
