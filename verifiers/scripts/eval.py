@@ -302,29 +302,31 @@ def main():
         api_key_override = args.api_key_var is not None
         api_base_url_override = args.api_base_url is not None
 
+        # use local variable to avoid mutating args.model across loop iterations
+        model = args.model
         if args.model in endpoints:
             endpoint = endpoints[args.model]
             api_key_var = args.api_key_var if api_key_override else endpoint["key"]
             api_base_url = (
                 args.api_base_url if api_base_url_override else endpoint["url"]
             )
-            args.model = endpoint["model"]
+            model = endpoint["model"]
             if api_key_override or api_base_url_override:
                 logger.debug(
                     "Using endpoint registry for model '%s' with CLI overrides (key: %s, url: %s)",
-                    args.model,
+                    model,
                     "cli" if api_key_override else "registry",
                     "cli" if api_base_url_override else "registry",
                 )
             else:
                 logger.debug(
                     "Using endpoint configuration for model '%s' from registry",
-                    args.model,
+                    model,
                 )
         else:
             logger.debug(
                 "Model '%s' not found in endpoint registry, using command-line arguments",
-                args.model,
+                model,
             )
             api_key_var = args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
             api_base_url = (
@@ -365,7 +367,7 @@ def main():
             env_dir_path=args.env_dir_path,
             extra_env_kwargs=args.extra_env_kwargs,
             # evaluation
-            model=args.model,
+            model=model,
             client_config=client_config,
             sampling_args=merged_sampling_args,
             num_examples=num_examples,
