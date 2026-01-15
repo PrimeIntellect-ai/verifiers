@@ -129,7 +129,12 @@ class EvalTUI:
         for env_id, env_state in self.state.envs.items():
             config = self.configs.get(env_id)
             if config:
-                total += env_state.progress * config.rollouts_per_example
+                if config.independent_scoring:
+                    # In independent scoring mode, progress already represents rollouts
+                    total += env_state.progress
+                else:
+                    # In group scoring mode, progress represents groups
+                    total += env_state.progress * config.rollouts_per_example
         return total
 
     def _make_global_progress(self) -> Panel:
@@ -228,7 +233,12 @@ class EvalTUI:
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
-        completed_rollouts = env_state.progress * config.rollouts_per_example
+        if config.independent_scoring:
+            # In independent scoring mode, progress already represents rollouts
+            completed_rollouts = env_state.progress
+        else:
+            # In group scoring mode, progress represents groups
+            completed_rollouts = env_state.progress * config.rollouts_per_example
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
         # Format elapsed time
