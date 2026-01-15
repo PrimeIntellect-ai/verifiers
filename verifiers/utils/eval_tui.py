@@ -31,11 +31,8 @@ from verifiers.types import EvalConfig
 
 @dataclass
 class EnvEvalState:
-    """State for a single environment evaluation."""
+    """Dynamic state for a single environment evaluation (no static config)."""
 
-    env_id: str
-    model: str
-    config: "EvalConfig"  # Store full config for display
     status: Literal["pending", "running", "completed", "failed"] = "pending"
     progress: int = 0  # completed groups (not rollouts)
     total: int = 0  # total groups
@@ -59,19 +56,6 @@ class EnvEvalState:
         end = self.end_time or time.time()
         return end - self.start_time
 
-    @property
-    def total_rollouts(self) -> int:
-        """Total rollouts = num_examples * rollouts_per_example."""
-        return self.config.num_examples * self.config.rollouts_per_example
-
-    @property
-    def completed_rollouts(self) -> int:
-        """Estimate completed rollouts from progress (groups completed)."""
-        if self.total == 0:
-            return 0
-        # progress is in groups, convert to rollouts
-        return int(self.progress * self.config.rollouts_per_example)
-
 
 @dataclass
 class EvalTUIState:
@@ -79,16 +63,6 @@ class EvalTUIState:
 
     envs: dict[str, EnvEvalState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
-
-    @property
-    def total_progress(self) -> int:
-        """Total completed rollouts across all environments."""
-        return sum(env.completed_rollouts for env in self.envs.values())
-
-    @property
-    def total_count(self) -> int:
-        """Total rollouts across all environments."""
-        return sum(env.total_rollouts for env in self.envs.values())
 
     @property
     def elapsed_time(self) -> float:
@@ -104,17 +78,14 @@ class EvalTUI:
 
     def __init__(self, configs: list[EvalConfig]):
         self.configs = configs
+        self.configs_by_id: dict[str, EvalConfig] = {c.env_id: c for c in configs}
         self.state = EvalTUIState()
         self.console = Console()
         self._live: Live | None = None
 
-        # Initialize env states with full config
+        # Initialize env states (dynamic only, no static config)
         for config in configs:
-            # Total is in groups (num_examples), not rollouts
             self.state.envs[config.env_id] = EnvEvalState(
-                env_id=config.env_id,
-                model=config.model,
-                config=config,
                 total=config.num_examples,  # Groups, not rollouts
             )
 
@@ -184,10 +155,23 @@ class EvalTUI:
 
         return Panel(header_text, border_style="blue")
 
+    def _get_total_rollouts(self) -> int:
+        """Get total rollouts across all environments."""
+        return sum(c.num_examples * c.rollouts_per_example for c in self.configs)
+
+    def _get_completed_rollouts(self) -> int:
+        """Get completed rollouts across all environments."""
+        total = 0
+        for env_id, env_state in self.state.envs.items():
+            config = self.configs_by_id.get(env_id)
+            if config:
+                total += env_state.progress * config.rollouts_per_example
+        return total
+
     def _make_global_progress(self) -> Panel:
         """Create the global progress bar panel."""
-        total = self.state.total_count
-        completed = self.state.total_progress
+        total = self._get_total_rollouts()
+        completed = self._get_completed_rollouts()
         elapsed = self.state.elapsed_time
 
         # Format elapsed time
@@ -199,7 +183,6 @@ class EvalTUI:
 
         progress = Progress(
             SpinnerColumn(),
-            TextColumn("[bold blue]Overall Progress"),
             BarColumn(bar_width=40),
             TextColumn(f"[bold]{pct:.0f}%"),
             TextColumn(f"({completed}/{total})"),
@@ -212,9 +195,10 @@ class EvalTUI:
 
         return Panel(progress, border_style="green")
 
-    def _make_env_panel(self, env_state: EnvEvalState) -> Panel:
+    def _make_env_panel(self, env_id: str) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
-        config = env_state.config
+        config = self.configs_by_id[env_id]
+        env_state = self.state.envs[env_id]
 
         # Status indicator
         status_styles = {
@@ -236,7 +220,7 @@ class EvalTUI:
         # Config details line 1: model, examples, rollouts
         config_line1 = Text()
         config_line1.append("model: ", style="dim")
-        config_line1.append(env_state.model, style="white")
+        config_line1.append(config.model, style="white")
         config_line1.append("  |  ", style="dim")
         config_line1.append("examples: ", style="dim")
         config_line1.append(str(config.num_examples), style="white")
@@ -295,8 +279,8 @@ class EvalTUI:
         )
 
         # Create progress bar
-        total_rollouts = env_state.total_rollouts
-        completed_rollouts = env_state.completed_rollouts
+        total_rollouts = config.num_examples * config.rollouts_per_example
+        completed_rollouts = env_state.progress * config.rollouts_per_example
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
         progress = Progress(
@@ -336,7 +320,7 @@ class EvalTUI:
 
         # Build title with env name and status
         title = Text()
-        title.append(env_state.env_id, style="bold cyan")
+        title.append(env_id, style="bold cyan")
         title.append(f" [{label}]", style=style)
 
         return Panel(
@@ -348,8 +332,7 @@ class EvalTUI:
 
     def _make_env_stack(self) -> Group:
         """Create a vertical stack of environment panels."""
-        env_states = list(self.state.envs.values())
-        panels = [self._make_env_panel(env_state) for env_state in env_states]
+        panels = [self._make_env_panel(env_id) for env_id in self.state.envs]
         return Group(*panels)
 
     def _make_footer(self) -> Panel:
@@ -471,7 +454,7 @@ class EvalTUI:
         table.add_column("Avg Reward", justify="right")
         table.add_column("Time", justify="right")
 
-        for env_state in self.state.envs.values():
+        for env_id, env_state in self.state.envs.items():
             status_styles = {
                 "completed": "[green]DONE[/green]",
                 "failed": "[red]FAILED[/red]",
@@ -492,15 +475,15 @@ class EvalTUI:
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            table.add_row(env_state.env_id, status, progress, reward, time_str)
+            table.add_row(env_id, status, progress, reward, time_str)
 
         self.console.print(table)
 
         # Print errors if any
-        for env_state in self.state.envs.values():
+        for env_id, env_state in self.state.envs.items():
             if env_state.error:
                 self.console.print()
-                self.console.print(f"[red]Error in {env_state.env_id}:[/red]")
+                self.console.print(f"[red]Error in {env_id}:[/red]")
                 self.console.print(f"  {env_state.error}")
 
 
