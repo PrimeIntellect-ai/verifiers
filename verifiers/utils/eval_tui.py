@@ -231,12 +231,8 @@ class EvalTUI:
             return "∞" if val == -1 else str(val)
 
         if config.max_concurrent_generation or config.max_concurrent_scoring:
-            gen_concurrency = (
-                config.max_concurrent_generation or config.max_concurrent_scoring
-            )
-            sem_concurrency = (
-                config.max_concurrent_scoring or config.max_concurrent_generation
-            )
+            gen_concurrency = config.max_concurrent_generation or config.max_concurrent
+            sem_concurrency = config.max_concurrent_scoring or config.max_concurrent
             config_line.append(fmt_concurrency(gen_concurrency), style="white")
             config_line.append(" concurrent generation", style="dim")
             config_line.append(" and ", style="dim")
