@@ -35,9 +35,10 @@ class EnvEvalState:
 
     env_id: str
     model: str
+    config: "EvalConfig"  # Store full config for display
     status: Literal["pending", "running", "completed", "failed"] = "pending"
-    progress: int = 0  # completed rollouts
-    total: int = 0  # total rollouts
+    progress: int = 0  # completed groups (not rollouts)
+    total: int = 0  # total groups
     reward_sum: float = 0.0
     reward_count: int = 0
     last_log: str = ""
@@ -58,6 +59,19 @@ class EnvEvalState:
         end = self.end_time or time.time()
         return end - self.start_time
 
+    @property
+    def total_rollouts(self) -> int:
+        """Total rollouts = num_examples * rollouts_per_example."""
+        return self.config.num_examples * self.config.rollouts_per_example
+
+    @property
+    def completed_rollouts(self) -> int:
+        """Estimate completed rollouts from progress (groups completed)."""
+        if self.total == 0:
+            return 0
+        # progress is in groups, convert to rollouts
+        return int(self.progress * self.config.rollouts_per_example)
+
 
 @dataclass
 class EvalTUIState:
@@ -68,11 +82,13 @@ class EvalTUIState:
 
     @property
     def total_progress(self) -> int:
-        return sum(env.progress for env in self.envs.values())
+        """Total completed rollouts across all environments."""
+        return sum(env.completed_rollouts for env in self.envs.values())
 
     @property
     def total_count(self) -> int:
-        return sum(env.total for env in self.envs.values())
+        """Total rollouts across all environments."""
+        return sum(env.total_rollouts for env in self.envs.values())
 
     @property
     def elapsed_time(self) -> float:
@@ -92,13 +108,14 @@ class EvalTUI:
         self.console = Console()
         self._live: Live | None = None
 
-        # Initialize env states
+        # Initialize env states with full config
         for config in configs:
-            total_rollouts = config.num_examples * config.rollouts_per_example
+            # Total is in groups (num_examples), not rollouts
             self.state.envs[config.env_id] = EnvEvalState(
                 env_id=config.env_id,
                 model=config.model,
-                total=total_rollouts,
+                config=config,
+                total=config.num_examples,  # Groups, not rollouts
             )
 
     def update_env_state(
@@ -203,8 +220,8 @@ class EvalTUI:
         return Panel(progress, border_style="green")
 
     def _make_env_panel(self, env_state: EnvEvalState) -> Panel:
-        """Create a panel for a single environment."""
-        content = []
+        """Create a full-width panel for a single environment with config and progress."""
+        config = env_state.config
 
         # Status indicator
         status_styles = {
@@ -215,60 +232,112 @@ class EvalTUI:
         }
         style, label = status_styles.get(env_state.status, ("dim", "?"))
 
-        # Header with status
-        header = Text()
-        header.append(env_state.env_id, style="bold")
-        header.append(" [", style="dim")
-        header.append(label, style=style)
-        header.append("]", style="dim")
-        content.append(header)
+        # Build the content table with two columns: config info and status/progress
+        table = Table.grid(expand=True, padding=(0, 2))
+        table.add_column("config", ratio=2)
+        table.add_column("status", ratio=1)
 
-        # Progress bar for running/completed
-        if env_state.status in ("running", "completed", "failed"):
-            pct = (
-                (env_state.progress / env_state.total * 100)
-                if env_state.total > 0
-                else 0
-            )
-            progress_text = Text()
-            progress_text.append(
-                f"{env_state.progress}/{env_state.total}", style="cyan"
-            )
-            progress_text.append(f" ({pct:.0f}%)")
-            content.append(progress_text)
+        # Left column: Config info
+        config_lines = []
 
-            # Reward info
-            if env_state.avg_reward is not None:
-                reward_text = Text()
-                reward_text.append("reward: ", style="dim")
-                reward_text.append(f"{env_state.avg_reward:.3f}", style="bold green")
-                content.append(reward_text)
+        # Environment name and model
+        env_header = Text()
+        env_header.append(env_state.env_id, style="bold cyan")
+        env_header.append("  ")
+        env_header.append(f"[{label}]", style=style)
+        config_lines.append(env_header)
 
-            # Elapsed time
-            elapsed = env_state.elapsed_time
-            mins, secs = divmod(int(elapsed), 60)
-            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
-            time_text = Text()
-            time_text.append("time: ", style="dim")
-            time_text.append(time_str)
-            content.append(time_text)
+        # Config details line 1: model, examples, rollouts
+        config_line1 = Text()
+        config_line1.append("model: ", style="dim")
+        config_line1.append(env_state.model, style="white")
+        config_line1.append("  |  ", style="dim")
+        config_line1.append("examples: ", style="dim")
+        config_line1.append(str(config.num_examples), style="white")
+        config_line1.append("  |  ", style="dim")
+        config_line1.append("rollouts: ", style="dim")
+        config_line1.append(str(config.rollouts_per_example), style="white")
+        config_lines.append(config_line1)
+
+        # Config details line 2: max_tokens, temperature, concurrency
+        config_line2 = Text()
+        max_tokens = config.sampling_args.get("max_tokens", "default")
+        temperature = config.sampling_args.get("temperature", "default")
+        config_line2.append("max_tokens: ", style="dim")
+        config_line2.append(str(max_tokens), style="white")
+        config_line2.append("  |  ", style="dim")
+        config_line2.append("temperature: ", style="dim")
+        config_line2.append(str(temperature), style="white")
+        config_line2.append("  |  ", style="dim")
+        config_line2.append("concurrency: ", style="dim")
+        config_line2.append(str(config.max_concurrent), style="white")
+        config_lines.append(config_line2)
+
+        # Right column: Status, timing, reward
+        status_lines = []
+
+        # Timing
+        elapsed = env_state.elapsed_time
+        mins, secs = divmod(int(elapsed), 60)
+        time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+        time_text = Text()
+        time_text.append("time: ", style="dim")
+        time_text.append(time_str, style="bold")
+        status_lines.append(time_text)
+
+        # Reward
+        reward_text = Text()
+        reward_text.append("reward: ", style="dim")
+        if env_state.avg_reward is not None:
+            reward_text.append(f"{env_state.avg_reward:.3f}", style="bold green")
+        else:
+            reward_text.append("-", style="dim")
+        status_lines.append(reward_text)
+
+        # Progress (groups completed)
+        progress_text = Text()
+        progress_text.append("progress: ", style="dim")
+        progress_text.append(
+            f"{env_state.progress}/{env_state.total} groups", style="white"
+        )
+        status_lines.append(progress_text)
+
+        # Add the config and status columns
+        table.add_row(
+            Group(*config_lines),
+            Group(*status_lines),
+        )
+
+        # Create progress bar
+        total_rollouts = env_state.total_rollouts
+        completed_rollouts = env_state.completed_rollouts
+        pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
+
+        progress = Progress(
+            SpinnerColumn() if env_state.status == "running" else TextColumn(""),
+            BarColumn(bar_width=None),
+            TextColumn(f"[bold]{pct:.0f}%"),
+            TextColumn(f"({completed_rollouts}/{total_rollouts} rollouts)"),
+            console=self.console,
+            expand=True,
+        )
+        task = progress.add_task(
+            "env", total=total_rollouts, completed=completed_rollouts
+        )
+        progress.update(task, completed=completed_rollouts)
 
         # Error message if failed
+        error_content = None
         if env_state.error:
             error_text = Text()
-            error_text.append("error: ", style="bold red")
-            error_text.append(env_state.error[:50], style="red")
-            if len(env_state.error) > 50:
-                error_text.append("...", style="red")
-            content.append(error_text)
+            error_text.append("ERROR: ", style="bold red")
+            error_text.append(env_state.error, style="red")
+            error_content = error_text
 
-        # Last log message
-        if env_state.last_log and env_state.status == "running":
-            log_text = Text()
-            log_text.append(env_state.last_log[:40], style="dim italic")
-            if len(env_state.last_log) > 40:
-                log_text.append("...", style="dim italic")
-            content.append(log_text)
+        # Combine all content
+        content_items = [table, progress]
+        if error_content:
+            content_items.append(error_content)
 
         # Border style based on status
         border_styles = {
@@ -280,40 +349,15 @@ class EvalTUI:
         border_style = border_styles.get(env_state.status, "dim")
 
         return Panel(
-            Group(*content),
+            Group(*content_items),
             border_style=border_style,
-            title=env_state.model[:20]
-            if len(env_state.model) > 20
-            else env_state.model,
-            title_align="right",
         )
 
-    def _make_env_grid(self) -> Panel:
-        """Create a grid of environment panels."""
+    def _make_env_stack(self) -> Group:
+        """Create a vertical stack of environment panels."""
         env_states = list(self.state.envs.values())
-
-        if len(env_states) == 1:
-            # Single environment - full width
-            return self._make_env_panel(env_states[0])
-
-        # Create a table to hold environment panels
-        # Use 2-3 columns depending on count
-        num_cols = min(3, len(env_states))
-        table = Table.grid(expand=True, padding=(0, 1))
-        for _ in range(num_cols):
-            table.add_column(ratio=1)
-
-        # Add rows
-        for i in range(0, len(env_states), num_cols):
-            row = []
-            for j in range(num_cols):
-                if i + j < len(env_states):
-                    row.append(self._make_env_panel(env_states[i + j]))
-                else:
-                    row.append("")
-            table.add_row(*row)
-
-        return Panel(table, title="Environments", border_style="blue")
+        panels = [self._make_env_panel(env_state) for env_state in env_states]
+        return Group(*panels)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""
@@ -345,7 +389,7 @@ class EvalTUI:
 
         layout["header"].update(self._make_header())
         layout["progress"].update(self._make_global_progress())
-        layout["envs"].update(self._make_env_grid())
+        layout["envs"].update(self._make_env_stack())
         layout["footer"].update(self._make_footer())
 
         return layout
