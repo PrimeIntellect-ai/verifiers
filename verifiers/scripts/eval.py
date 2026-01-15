@@ -4,6 +4,7 @@ import importlib.resources
 import json
 import logging
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 
@@ -277,25 +278,31 @@ def main():
     def resolve_eval_config(raw_env_config: dict) -> EvalConfig:
         """Resolve per-env eval config. TOML > CLI > Env Defaults > Global Defaults"""
         assert "env_id" in raw_env_config
-        env_id = raw_env_config["env_id"]
+        env_id = raw_env_config.pop("env_id")
+
+        # toml > cli overrides
+        env_args = deepcopy(args)
+        for key, val in raw_env_config.items():
+            setattr(env_args, key, val)
+
         env_defaults = get_env_eval_defaults(env_id)
         num_examples = (
-            args.num_examples
-            if args.num_examples is not None
+            env_args.num_examples
+            if env_args.num_examples is not None
             else env_defaults.get("num_examples", DEFAULT_NUM_EXAMPLES)
         )
         rollouts_per_example = (
-            args.rollouts_per_example
-            if args.rollouts_per_example is not None
+            env_args.rollouts_per_example
+            if env_args.rollouts_per_example is not None
             else env_defaults.get("rollouts_per_example", DEFAULT_ROLLOUTS_PER_EXAMPLE)
         )
 
-        if args.num_examples is None:
+        if env_args.num_examples is None:
             source = (
                 "pyproject.toml" if "num_examples" in env_defaults else "global default"
             )
             logger.debug(f"Using num_examples={num_examples} from {source}")
-        if args.rollouts_per_example is None:
+        if env_args.rollouts_per_example is None:
             source = (
                 "pyproject.toml"
                 if "rollouts_per_example" in env_defaults
@@ -306,17 +313,17 @@ def main():
             )
 
         # load endpoints and get model config
-        endpoints = load_endpoints(args.endpoints_path)
-        api_key_override = args.api_key_var is not None
-        api_base_url_override = args.api_base_url is not None
+        endpoints = load_endpoints(env_args.endpoints_path)
+        api_key_override = env_args.api_key_var is not None
+        api_base_url_override = env_args.api_base_url is not None
 
         # use local variable to avoid mutating args.model across loop iterations
-        model = args.model
-        if args.model in endpoints:
-            endpoint = endpoints[args.model]
-            api_key_var = args.api_key_var if api_key_override else endpoint["key"]
+        model = env_args.model
+        if env_args.model in endpoints:
+            endpoint = endpoints[env_args.model]
+            api_key_var = env_args.api_key_var if api_key_override else endpoint["key"]
             api_base_url = (
-                args.api_base_url if api_base_url_override else endpoint["url"]
+                env_args.api_base_url if api_base_url_override else endpoint["url"]
             )
             model = endpoint["model"]
             if api_key_override or api_base_url_override:
@@ -336,23 +343,28 @@ def main():
                 "Model '%s' not found in endpoint registry, using command-line arguments",
                 model,
             )
-            api_key_var = args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+            api_key_var = (
+                env_args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
+            )
             api_base_url = (
-                args.api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+                env_args.api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
             )
 
         # merge sampling args with precedence to JSON payload over explicit flags
         merged_sampling_args: dict = {}
-        if args.sampling_args is not None:
-            merged_sampling_args.update(args.sampling_args)
+        if env_args.sampling_args is not None:
+            merged_sampling_args.update(env_args.sampling_args)
         if "max_tokens" not in merged_sampling_args:
-            merged_sampling_args["max_tokens"] = args.max_tokens
-        if args.temperature is not None and "temperature" not in merged_sampling_args:
-            merged_sampling_args["temperature"] = args.temperature
+            merged_sampling_args["max_tokens"] = env_args.max_tokens
+        if (
+            env_args.temperature is not None
+            and "temperature" not in merged_sampling_args
+        ):
+            merged_sampling_args["temperature"] = env_args.temperature
 
         # Build headers from repeated --header flags
         merged_headers: Dict[str, str] = {}
-        for h in args.header or []:
+        for h in env_args.header or []:
             if ":" not in h:
                 raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
             k, v = h.split(":", 1)
@@ -371,31 +383,28 @@ def main():
         eval_config = EvalConfig(
             # environment
             env_id=env_id,
-            env_args=args.env_args,
-            env_dir_path=args.env_dir_path,
-            extra_env_kwargs=args.extra_env_kwargs,
+            env_args=env_args.env_args,
+            env_dir_path=env_args.env_dir_path,
+            extra_env_kwargs=env_args.extra_env_kwargs,
             # evaluation
             model=model,
             client_config=client_config,
             sampling_args=merged_sampling_args,
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
-            max_concurrent=args.max_concurrent,
-            max_concurrent_generation=args.max_concurrent_generation,
-            max_concurrent_scoring=args.max_concurrent_scoring,
+            max_concurrent=env_args.max_concurrent,
+            max_concurrent_generation=env_args.max_concurrent_generation,
+            max_concurrent_scoring=env_args.max_concurrent_scoring,
             # logging
-            verbose=args.verbose,
+            verbose=env_args.verbose,
             # saving
-            state_columns=args.state_columns,
-            save_results=args.save_results,
-            save_every=args.save_every,
-            independent_scoring=args.independent_scoring,
-            save_to_hf_hub=args.save_to_hf_hub,
-            hf_hub_dataset_name=args.hf_hub_dataset_name,
+            state_columns=env_args.state_columns,
+            save_results=env_args.save_results,
+            save_every=env_args.save_every,
+            independent_scoring=env_args.independent_scoring,
+            save_to_hf_hub=env_args.save_to_hf_hub,
+            hf_hub_dataset_name=env_args.hf_hub_dataset_name,
         )
-
-        # override all fields with TOML per-env config (highest priority)
-        eval_config = eval_config.model_copy(update=raw_env_config)
 
         return eval_config
 
