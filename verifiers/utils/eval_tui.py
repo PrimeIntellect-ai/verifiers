@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-# Check for Unix-specific terminal control modules
+# check for unix-specific terminal control modules
 try:
     import select  # noqa: F401
     import termios  # noqa: F401
@@ -40,11 +40,11 @@ class EnvEvalState:
     end_time: float | None = None
 
     # updated by on_progress callback
-    progress: int = 0  # completed groups/ rollouts
-    total: int = 0  # total groups/ rollouts
+    progress: int = 0  # completed groups/rollouts
+    total: int = 0  # total groups/rollouts
     metrics: dict[str, float] = field(default_factory=dict)
 
-    # path where results were saved (if save_results=True)
+    # path where results were saved (if save_results=true)
     save_path: Path | None = None
 
     # log message for special events (updated by on_log callback)
@@ -81,7 +81,7 @@ class EvalTUI:
         self.console = Console()
         self._live: Live | None = None
 
-        # Initialize env states
+        # initialize env states
         for config in configs:
             total = (
                 config.num_examples * config.rollouts_per_example
@@ -134,7 +134,7 @@ class EvalTUI:
 
     def _get_total_rollouts(self) -> int:
         """Get total rollouts across all environments."""
-        # Use env_state.total which gets updated by on_start callback
+        # use env_state.total which gets updated by on_start callback
         return sum(env_state.total for env_state in self.state.envs.values())
 
     def _get_completed_rollouts(self) -> int:
@@ -144,10 +144,10 @@ class EvalTUI:
             config = self.configs.get(env_id)
             if config:
                 if config.independent_scoring:
-                    # In independent scoring mode, progress already represents rollouts
+                    # in independent scoring mode, progress already represents rollouts
                     total += env_state.progress
                 else:
-                    # In group scoring mode, progress represents groups
+                    # in group scoring mode, progress represents groups
                     total += env_state.progress * config.rollouts_per_example
         return total
 
@@ -157,14 +157,14 @@ class EvalTUI:
         completed = self._get_completed_rollouts()
         elapsed = self.state.elapsed_time
 
-        # Format elapsed time
+        # format elapsed time
         mins, secs = divmod(int(elapsed), 60)
         time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-        # Calculate percentage
+        # calculate percentage
         pct = (completed / total * 100) if total > 0 else 0
 
-        # Use same styling as env progress bars
+        # use same styling as env progress bars
         is_running = not self.state.all_completed
         progress = Progress(
             SpinnerColumn() if is_running else TextColumn(""),
@@ -182,9 +182,9 @@ class EvalTUI:
 
     def _get_error_rate_color(self, error_rate: float) -> str:
         """Get color for error rate: green at 0.0, red at 1.0."""
-        # Clamp to [0, 1]
+        # clamp to [0, 1]
         error_rate = max(0.0, min(1.0, error_rate))
-        # Interpolate from green (0, 255, 0) to red (255, 0, 0)
+        # interpolate from green (0, 255, 0) to red (255, 0, 0)
         red = int(255 * error_rate)
         green = int(255 * (1 - error_rate))
         return f"rgb({red},{green},0)"
@@ -194,22 +194,22 @@ class EvalTUI:
         if not metrics:
             return None
 
-        # Extract error_rate for special handling
+        # extract error_rate for special handling
         error_rate = metrics.get("error_rate")
 
-        # Sort metrics with 'reward' first, then alphabetically, excluding error_rate
+        # sort metrics with 'reward' first, then alphabetically, excluding error_rate
         sorted_names = sorted(
             [k for k in metrics.keys() if k != "error_rate"],
             key=lambda x: (x != "reward", x),
         )
 
-        # Build the left-aligned metrics text
+        # build the left-aligned metrics text
         metrics_text = Text()
         metrics_text.append("╰─ ", style="dim")
 
         for i, name in enumerate(sorted_names):
             value = metrics[name]
-            # Format value
+            # format value
             if isinstance(value, float):
                 if value == int(value):
                     value_str = str(int(value))
@@ -220,24 +220,24 @@ class EvalTUI:
             else:
                 value_str = str(value)
 
-            # Add metric with dotted leader
+            # add metric with dotted leader
             metrics_text.append(name, style="dim")
             metrics_text.append(" ", style="dim")
             metrics_text.append(value_str, style="bold")
 
-            # Add separator between metrics
+            # add separator between metrics
             if i < len(sorted_names) - 1:
                 metrics_text.append("   ")  # 3 spaces between metrics
 
-        # Build the right-aligned error_rate text
+        # build the right-aligned error_rate text
         error_text = Text()
         if error_rate is not None:
             error_rate_str = f"{error_rate:.3f}"
             error_color = self._get_error_rate_color(error_rate)
-            error_text.append("errors ", style="dim")
+            error_text.append("error rate ", style="dim")
             error_text.append(error_rate_str, style=f"bold {error_color}")
 
-        # Create a table with two columns for left/right alignment
+        # create a table with two columns for left/right alignment
         table = Table.grid(expand=True)
         table.add_column(justify="left", ratio=1)
         table.add_column(justify="right")
@@ -250,13 +250,13 @@ class EvalTUI:
         config = self.configs[env_id]
         env_state = self.state.envs[env_id]
 
-        # Config info line
+        # config info line
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
         config_line.append(config.client_config.api_base_url, style="white")
         config_line.append("  |  ", style="dim")
-        # Derive actual num_examples from total (handles num_examples=-1 case)
+        # derive actual num_examples from total (handles num_examples=-1 case)
         if config.num_examples == -1 and env_state.total > 0:
             if config.independent_scoring:
                 actual_num_examples = env_state.total // config.rollouts_per_example
@@ -301,8 +301,8 @@ class EvalTUI:
                 config_line.append(str(config.save_every), style="white")
                 config_line.append(" steps", style="dim")
 
-        # Create progress bar with timing
-        # Use env_state.total which gets updated by on_start callback
+        # create progress bar with timing
+        # use env_state.total which gets updated by on_start callback
         total_rollouts = env_state.total
         if config.independent_scoring:
             completed_rollouts = env_state.progress
@@ -310,12 +310,12 @@ class EvalTUI:
             completed_rollouts = env_state.progress * config.rollouts_per_example
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
-        # Format elapsed time
+        # format elapsed time
         elapsed = env_state.elapsed_time
         mins, secs = divmod(int(elapsed), 60)
         time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-        # Show "..." for total if not yet known
+        # show "..." for total if not yet known
         total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
@@ -331,16 +331,16 @@ class EvalTUI:
         )
         progress.update(task, completed=completed_rollouts)
 
-        # Metrics display
+        # metrics display
         metrics_content = self._make_metrics_row(env_state.metrics)
 
-        # Log message for special events
+        # log message for special events
         log_content = Text()
         if env_state.log_message:
             log_content.append("› ", style="dim cyan")
             log_content.append(env_state.log_message, style="dim")
 
-        # Error message if failed
+        # error message if failed
         error_content = None
         if env_state.error:
             error_text = Text()
@@ -348,7 +348,7 @@ class EvalTUI:
             error_text.append(env_state.error, style="red")
             error_content = error_text
 
-        # Combine all content
+        # combine all content
         space = Text("  ")
         content_items = [config_line, space, progress]
         if metrics_content:
@@ -360,7 +360,7 @@ class EvalTUI:
         if error_content:
             content_items.append(error_content)
 
-        # Border style based on status
+        # border style based on status
         border_styles = {
             "pending": "dim",
             "running": "yellow",
@@ -369,7 +369,7 @@ class EvalTUI:
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # Build title with env name only
+        # build title with env name only
         title = Text()
         title.append(env_id, style="bold cyan")
 
@@ -388,7 +388,7 @@ class EvalTUI:
         if not env_ids:
             return Group()
 
-        # Create panels for each environment
+        # create panels for each environment
         panels = [self._make_env_panel(env_id) for env_id in env_ids]
 
         return Group(*panels)
@@ -432,36 +432,36 @@ class EvalTUI:
     async def wait_for_exit(self) -> None:
         """Wait for user to press a key to exit."""
         if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
-            # On Windows or non-TTY, just wait for a simple input
+            # on windows or non-tty, just wait for a simple input
             await asyncio.get_event_loop().run_in_executor(None, input)
             return
 
-        # These imports are guaranteed to exist when HAS_TERMINAL_CONTROL is True
+        # these imports are guaranteed to exist when HAS_TERMINAL_CONTROL is true
         import select as select_module
         import termios as termios_module
         import tty as tty_module
 
-        # Save terminal settings
+        # save terminal settings
         fd = sys.stdin.fileno()
         old_settings = termios_module.tcgetattr(fd)
 
         try:
-            # Use cbreak mode (not raw) - allows single char input without corrupting display
+            # use cbreak mode (not raw) - allows single char input without corrupting display
             tty_module.setcbreak(fd)
 
-            # Wait for key press in a non-blocking way
+            # wait for key press in a non-blocking way
             while True:
-                # Small delay to keep display responsive
+                # small delay to keep display responsive
                 await asyncio.sleep(0.1)
 
-                # Use select to check for input without blocking
+                # use select to check for input without blocking
                 if select_module.select([sys.stdin], [], [], 0)[0]:
                     char = sys.stdin.read(1)
-                    # Exit on q, Q, Enter, or Escape
+                    # exit on q, Q, enter, or escape
                     if char in ("q", "Q", "\r", "\n", "\x1b"):
                         break
         finally:
-            # Restore terminal settings
+            # restore terminal settings
             termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     async def __aenter__(self) -> "EvalTUI":
@@ -485,7 +485,7 @@ class EvalTUI:
         """Print a summary after the TUI closes."""
         self.console.print()
 
-        # Summary table
+        # summary table
         table = Table(title="Evaluation Summary")
         table.add_column("Environment", style="cyan")
         table.add_column("Status", justify="center")
@@ -503,7 +503,7 @@ class EvalTUI:
             }
             status = status_styles.get(env_state.status, env_state.status)
 
-            # Use env_state.total for actual resolved values
+            # use env_state.total for actual resolved values
             total_rollouts = env_state.total
             if config.independent_scoring:
                 actual_num_examples = (
@@ -531,7 +531,7 @@ class EvalTUI:
 
         self.console.print(table)
 
-        # Print save paths if any
+        # print save paths if any
         saved_envs = [
             (env_id, env_state)
             for env_id, env_state in self.state.envs.items()
@@ -543,7 +543,7 @@ class EvalTUI:
             for env_id, env_state in saved_envs:
                 self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
 
-        # Print errors if any
+        # print errors if any
         for env_id, env_state in self.state.envs.items():
             if env_state.error:
                 self.console.print()
