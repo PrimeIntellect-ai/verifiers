@@ -478,7 +478,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     env_id,
                     status="completed",
                     total=actual_total,
-                    progress=actual_total,  # Mark as fully complete
+                    progress=actual_total,
                     metrics=final_metrics,
                     save_path=save_path,
                 )
@@ -504,7 +504,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                         # Error already shown in TUI via update_env_state
                         pass
                     else:
-                        all_results.append(result)
+                        all_results.append(cast(GenerateOutputs, result))
 
                 # Refresh to show completion state
                 tui.refresh()
