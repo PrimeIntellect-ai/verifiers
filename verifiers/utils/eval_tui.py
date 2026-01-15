@@ -132,54 +132,6 @@ class EvalTUI:
 
         self.refresh()
 
-    def _get_total_rollouts(self) -> int:
-        """Get total rollouts across all environments."""
-        # use env_state.total which gets updated by on_start callback
-        return sum(env_state.total for env_state in self.state.envs.values())
-
-    def _get_completed_rollouts(self) -> int:
-        """Get completed rollouts across all environments."""
-        total = 0
-        for env_id, env_state in self.state.envs.items():
-            config = self.configs.get(env_id)
-            if config:
-                if config.independent_scoring:
-                    # in independent scoring mode, progress already represents rollouts
-                    total += env_state.progress
-                else:
-                    # in group scoring mode, progress represents groups
-                    total += env_state.progress * config.rollouts_per_example
-        return total
-
-    def _make_global_progress(self) -> Panel:
-        """Create the global progress bar panel."""
-        total = self._get_total_rollouts()
-        completed = self._get_completed_rollouts()
-        elapsed = self.state.elapsed_time
-
-        # format elapsed time
-        mins, secs = divmod(int(elapsed), 60)
-        time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
-
-        # calculate percentage
-        pct = (completed / total * 100) if total > 0 else 0
-
-        # use same styling as env progress bars
-        is_running = not self.state.all_completed
-        progress = Progress(
-            SpinnerColumn() if is_running else TextColumn(""),
-            BarColumn(bar_width=None),
-            TextColumn(f"[bold]{pct:.0f}%"),
-            TextColumn(f"({completed}/{total} rollouts)"),
-            TextColumn(f"| {time_str}"),
-            console=self.console,
-            expand=True,
-        )
-        task = progress.add_task("overall", total=total, completed=completed)
-        progress.update(task, completed=completed)
-
-        return Panel(progress, border_style="green")
-
     def _get_error_rate_color(self, error_rate: float) -> str:
         """Get color for error rate: green at 0.0, red at 1.0."""
         # clamp to [0, 1]
