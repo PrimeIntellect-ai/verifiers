@@ -19,6 +19,7 @@ from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
     run_multi_evaluation,
+    run_multi_evaluation_tui,
 )
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,13 @@ def main():
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
+    parser.add_argument(
+        "--tui",
+        "-u",
+        default=False,
+        action="store_true",
+        help="Use TUI mode for live evaluation display",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -388,7 +396,10 @@ def main():
         logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
 
     multi_eval_config = MultiEvalConfig(env=eval_configs)
-    asyncio.run(run_multi_evaluation(multi_eval_config))
+    if args.tui:
+        asyncio.run(run_multi_evaluation_tui(multi_eval_config))
+    else:
+        asyncio.run(run_multi_evaluation(multi_eval_config))
 
 
 if __name__ == "__main__":
