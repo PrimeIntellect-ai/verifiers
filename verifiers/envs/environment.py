@@ -913,6 +913,8 @@ class Environment(ABC):
 
         # process tasks as they complete
         reward_sum, reward_count = 0, 0
+        metrics_sums: dict[str, float] = {}
+        metrics_counts: dict[str, int] = {}
         groups_or_rollouts_completed = 0
         all_states: list[State] = []
         try:
@@ -923,12 +925,20 @@ class Environment(ABC):
                 all_states.extend(states)
                 groups_or_rollouts_completed += 1
 
-                # track reward for rolling average
+                # track reward and all metrics for rolling averages
                 for s in states:
                     r = s.get("reward")
                     if r is not None:
                         reward_sum += r
                         reward_count += 1
+
+                    # track all metrics from state
+                    state_metrics = s.get("metrics")
+                    if state_metrics:
+                        for name, value in state_metrics.items():
+                            if value is not None:
+                                metrics_sums[name] = metrics_sums.get(name, 0.0) + value
+                                metrics_counts[name] = metrics_counts.get(name, 0) + 1
 
                 if pbar is not None:
                     pbar.update(1)
@@ -937,8 +947,15 @@ class Environment(ABC):
 
                 # Call progress callback for TUI updates
                 if on_progress is not None:
-                    avg_reward = reward_sum / reward_count if reward_count > 0 else None
-                    on_progress(groups_or_rollouts_completed, pbar_total, avg_reward)
+                    # Build metrics dict with running averages
+                    avg_metrics: dict[str, float] = {}
+                    if reward_count > 0:
+                        avg_metrics["reward"] = reward_sum / reward_count
+                    for name, total in metrics_sums.items():
+                        count = metrics_counts.get(name, 0)
+                        if count > 0:
+                            avg_metrics[name] = total / count
+                    on_progress(groups_or_rollouts_completed, pbar_total, avg_metrics)
 
                 # save intermediate results
                 if (
