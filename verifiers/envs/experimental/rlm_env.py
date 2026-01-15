@@ -480,7 +480,19 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                 json=payload,
                 timeout=SUB_LLM_TIMEOUT,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError as http_err:
+                error_text = ""
+                try:
+                    error_text = resp.text
+                except Exception:
+                    error_text = ""
+                if error_text:
+                    raise RuntimeError(
+                        f"{http_err} | response={error_text[:2000]}"
+                    ) from http_err
+                raise
             data = resp.json()
             content = data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
             metadata = data.get("_rlm_metadata", {{}})
@@ -1860,6 +1872,40 @@ class RLMEnv(SandboxEnv):
             normalized.append(msg_copy)
         return normalized
 
+    @staticmethod
+    def _truncate_for_log(text: str, limit: int = 2000) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "... [truncated]"
+
+    @classmethod
+    def _summarize_messages_for_error(
+        cls, messages: list[dict] | None, limit: int = 2000
+    ) -> str:
+        if not messages:
+            return "(no messages)"
+        parts: list[str] = []
+        for idx, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content")
+            if isinstance(content, list):
+                content_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        content_parts.append(item.get("text", ""))
+                    else:
+                        content_parts.append(json.dumps(item, ensure_ascii=True))
+                content_text = "\n".join(content_parts)
+            elif isinstance(content, dict):
+                content_text = json.dumps(content, ensure_ascii=True)
+            elif content is None:
+                content_text = "None"
+            else:
+                content_text = str(content)
+            parts.append(f"[{idx}] {role}: {content_text}")
+        summary = "\n".join(parts)
+        return cls._truncate_for_log(summary, limit=limit)
+
     async def _call_sub_llm_api(
         self, client: Any, model: str, messages: list[dict], tools: list | None = None
     ) -> Any | None:
@@ -2216,8 +2262,24 @@ class RLMEnv(SandboxEnv):
 
             return web.json_response(response_dict)
         except Exception as e:
-            logger.error(f"Sub-LLM call failed: {e}")
-            return web.json_response({"error": str(e)}, status=500)
+            state_ref = context.get("state") if context else None
+            last_code = ""
+            if state_ref is not None:
+                last_code = str(state_ref.get("rlm_last_code", "") or "")
+            debug_payload = {
+                "batch_id": batch_id,
+                "request_id": request_id,
+                "messages": self._summarize_messages_for_error(messages_with_system),
+                "last_code": last_code,
+            }
+            logger.error(
+                "Sub-LLM call failed: %s\n%s",
+                e,
+                json.dumps(debug_payload, ensure_ascii=True),
+            )
+            return web.json_response(
+                {"error": str(e), "debug": debug_payload}, status=500
+            )
 
     @vf.teardown
     async def teardown_tunnels(self):
@@ -2524,6 +2586,7 @@ class RLMEnv(SandboxEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+        state["rlm_last_code"] = code
 
         # Time the full tool call execution
         execution_start = perf_counter()
