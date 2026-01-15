@@ -49,8 +49,9 @@ IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
-# Progress callback for TUI updates: (completed, total, reward) -> None
-ProgressCallback = Callable[[int, int, float | None], None]
+# Progress callback for TUI updates: (completed, total, metrics_dict) -> None
+# metrics_dict includes 'reward' and any other tracked metrics with running averages
+ProgressCallback = Callable[[int, int, dict[str, float]], None]
 
 
 class TrajectoryStepTokens(TypedDict):
