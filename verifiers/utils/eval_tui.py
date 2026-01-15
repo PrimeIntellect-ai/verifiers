@@ -6,6 +6,7 @@ import asyncio
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 # Check for Unix-specific terminal control modules
@@ -42,6 +43,9 @@ class EnvEvalState:
     progress: int = 0  # completed groups/ rollouts
     total: int = 0  # total groups/ rollouts
     metrics: dict[str, float] = field(default_factory=dict)
+
+    # path where results were saved (if save_results=True)
+    save_path: Path | None = None
 
     @property
     def elapsed_time(self) -> float:
@@ -91,6 +95,7 @@ class EvalTUI:
         total: int | None = None,
         metrics: dict[str, float] | None = None,
         error: str | None = None,
+        save_path: Path | None = None,
     ) -> None:
         """Update the state of a specific environment evaluation."""
         assert env_id in self.state.envs
@@ -114,6 +119,9 @@ class EvalTUI:
 
         if error is not None:
             env_state.error = error
+
+        if save_path is not None:
+            env_state.save_path = save_path
 
         self.refresh()
 
@@ -421,32 +429,16 @@ class EvalTUI:
         """Print a summary after the TUI closes."""
         self.console.print()
 
-        # Determine overall status
-        # completed = sum(1 for e in self.state.envs.values() if e.status == "completed")
-        failed = sum(1 for e in self.state.envs.values() if e.status == "failed")
-        pending = sum(
-            1 for e in self.state.envs.values() if e.status in ("pending", "running")
-        )
-
-        if pending > 0:
-            self.console.print("[yellow bold]Evaluation Interrupted[/yellow bold]")
-        elif failed > 0:
-            self.console.print(
-                f"[red bold]Evaluation Complete ({failed} failed)[/red bold]"
-            )
-        else:
-            self.console.print("[green bold]Evaluation Complete[/green bold]")
-        self.console.print()
-
         # Summary table
-        table = Table(title="Results Summary")
+        table = Table(title="Evaluation Summary")
         table.add_column("Environment", style="cyan")
         table.add_column("Status", justify="center")
-        table.add_column("Progress", justify="right")
-        table.add_column("Avg Reward", justify="right")
-        table.add_column("Time", justify="right")
+        table.add_column("N", justify="center")
+        table.add_column("Avg Reward", justify="center")
+        table.add_column("Time", justify="center")
 
         for env_id, env_state in self.state.envs.items():
+            config = self.configs[env_id]
             status_styles = {
                 "completed": "[green]DONE[/green]",
                 "failed": "[red]FAILED[/red]",
@@ -455,7 +447,8 @@ class EvalTUI:
             }
             status = status_styles.get(env_state.status, env_state.status)
 
-            progress = f"{env_state.progress}/{env_state.total}"
+            total_rollouts = str(config.num_examples * config.rollouts_per_example)
+            n = f"{config.num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
 
             reward = (
                 f"{env_state.metrics.get('reward', 0):.3f}"
@@ -467,9 +460,21 @@ class EvalTUI:
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            table.add_row(env_id, status, progress, reward, time_str)
+            table.add_row(env_id, status, n, reward, time_str)
 
         self.console.print(table)
+
+        # Print save paths if any
+        saved_envs = [
+            (env_id, env_state)
+            for env_id, env_state in self.state.envs.items()
+            if env_state.save_path is not None
+        ]
+        if saved_envs:
+            self.console.print()
+            self.console.print("[bold]Results saved to:[/bold]")
+            for env_id, env_state in saved_envs:
+                self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
 
         # Print errors if any
         for env_id, env_state in self.state.envs.items():

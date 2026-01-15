@@ -401,11 +401,19 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     if values:
                         final_metrics[name] = sum(values) / len(values)
 
+                # Get save path if results were saved
+                save_path = (
+                    result["metadata"]["path_to_save"]
+                    if env_config.save_results
+                    else None
+                )
+
                 tui.update_env_state(
                     env_id,
                     status="completed",
                     progress=tui.state.envs[env_id].total,  # Mark as fully complete
                     metrics=final_metrics,
+                    save_path=save_path,
                 )
 
                 return result
