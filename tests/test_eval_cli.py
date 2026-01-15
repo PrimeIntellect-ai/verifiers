@@ -114,7 +114,6 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
         "temperature": 0.9,
         "sampling_args": None,
         "verbose": False,
-        "print_results": False,
         "no_interleave_scoring": False,
         "state_columns": [],
         "save_results": False,

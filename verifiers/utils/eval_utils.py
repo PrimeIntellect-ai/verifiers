@@ -370,7 +370,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
     with vf.log_level(logging.CRITICAL):
         # Create modified configs with tqdm disabled (TUI handles progress display)
         tui_configs = [
-            env_config.model_copy(update={"use_tqdm": False, "print_results": False})
+            env_config.model_copy(update={"use_tqdm": False})
             for env_config in config.env
         ]
 

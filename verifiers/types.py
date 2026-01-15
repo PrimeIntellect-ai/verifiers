@@ -241,7 +241,6 @@ class EvalConfig(BaseModel):
     extra_env_kwargs: dict = {}
     # logging
     verbose: bool = False
-    print_results: bool = True
     use_tqdm: bool = True
     # saving
     state_columns: list[str] | None = None

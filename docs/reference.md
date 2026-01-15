@@ -542,7 +542,6 @@ class EvalConfig(BaseModel):
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
     extra_env_kwargs: dict = {}
-    print_results: bool = False
     verbose: bool = False
     state_columns: list[str] | None = None
     save_results: bool = False
