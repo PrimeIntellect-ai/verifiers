@@ -104,7 +104,7 @@ def load_toml_config(path: Path) -> list[dict]:
         invalid_fields = set(env.keys()) - valid_fields
         if invalid_fields:
             raise ValueError(
-                f"Invalid field(s) {invalid_fields} in [[env]] section for '{env.get('id', 'unknown')}'. "
+                f"Invalid field(s) {invalid_fields} for {env.get('id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
 
