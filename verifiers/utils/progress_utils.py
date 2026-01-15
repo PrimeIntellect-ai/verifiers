@@ -255,11 +255,6 @@ class RolloutProgress:
 
     def _render(self) -> Group:
         elapsed = time.time() - self.start_time
-        reward_avg = self.metrics["reward"].avg
-        postfix = None
-        if reward_avg is not None:
-            postfix = f"reward={reward_avg:.3f}"
-
         try:
             from tqdm import tqdm
 
@@ -271,7 +266,6 @@ class RolloutProgress:
                 ncols=ncols,
                 prefix=self.desc,
                 unit="it",
-                postfix=postfix,
             )
         except Exception:
             progress_text = (
@@ -375,13 +369,6 @@ class MultiEnvProgress:
 
         for idx, name in enumerate(self.env_order):
             env_state = self.envs[name]
-            reward_metric = (
-                env_state.metrics.get("reward") if env_state.metrics else None
-            )
-            reward_avg = reward_metric.avg if reward_metric else None
-            postfix = None
-            if reward_avg is not None:
-                postfix = f"reward={reward_avg:.3f}"
             try:
                 from tqdm import tqdm
 
@@ -392,7 +379,6 @@ class MultiEnvProgress:
                     ncols=ncols,
                     prefix=name,
                     unit="it",
-                    postfix=postfix,
                 )
             except Exception:
                 progress_text = (

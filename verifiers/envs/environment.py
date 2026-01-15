@@ -962,7 +962,6 @@ class Environment(ABC):
                 pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         # process tasks as they complete
-        reward_sum, reward_count = 0, 0
         groups_or_rollouts_completed = 0
         all_states: list[State] = []
         try:
@@ -973,19 +972,10 @@ class Environment(ABC):
                 all_states.extend(states)
                 groups_or_rollouts_completed += 1
 
-                # track reward for rolling average
-                for s in states:
-                    r = s.get("reward")
-                    if r is not None:
-                        reward_sum += r
-                        reward_count += 1
-
                 if rich_progress is not None:
                     rich_progress.update(states)
                 elif pbar is not None:
                     pbar.update(1)
-                    if reward_count > 0:
-                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
 
                 # save intermediate results
                 if (
