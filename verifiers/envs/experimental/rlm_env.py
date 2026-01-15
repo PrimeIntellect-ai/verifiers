@@ -1919,11 +1919,65 @@ class RLMEnv(SandboxEnv):
         summary = "\n".join(parts)
         return cls._truncate_for_log(summary, limit=limit)
 
+    @staticmethod
+    def _normalize_tools_payload(tools: list | None) -> list | None:
+        if tools is None:
+            return None
+        cleaned: list[dict[str, Any]] = []
+        for tool in tools:
+            if tool is None:
+                continue
+            tool_dict = None
+            if isinstance(tool, dict):
+                tool_dict = dict(tool)
+            else:
+                model_dump = getattr(tool, "model_dump", None)
+                if callable(model_dump):
+                    tool_dict = model_dump()
+            if tool_dict is None:
+                continue
+            tool_dict = {k: v for k, v in tool_dict.items() if v is not None}
+            func = tool_dict.get("function")
+            if isinstance(func, dict):
+                func = {k: v for k, v in func.items() if v is not None}
+                if func.get("parameters") is None:
+                    func["parameters"] = {"type": "object", "properties": {}}
+                tool_dict["function"] = func
+            cleaned.append(tool_dict)
+        return cleaned or None
+
+    @staticmethod
+    def _summarize_tools_for_error(tools: list | None) -> list[dict[str, Any]]:
+        if not tools:
+            return []
+        summary: list[dict[str, Any]] = []
+        for tool in tools:
+            tool_dict: dict[str, Any]
+            if isinstance(tool, dict):
+                tool_dict = tool
+            else:
+                model_dump = getattr(tool, "model_dump", None)
+                tool_dict = model_dump() if callable(model_dump) else {}
+            func = tool_dict.get("function", {})
+            params = {}
+            if isinstance(func, dict):
+                params = func.get("parameters", {})
+            summary.append(
+                {
+                    "type": tool_dict.get("type"),
+                    "name": func.get("name") if isinstance(func, dict) else None,
+                    "has_parameters": params is not None,
+                    "parameters_type": type(params).__name__,
+                }
+            )
+        return summary
+
     async def _call_sub_llm_api(
         self, client: Any, model: str, messages: list[dict], tools: list | None = None
     ) -> Any | None:
         """Make a single sub-LLM API call with timeout. Returns None on timeout."""
         normalized_messages = self._normalize_message_content(messages)
+        tools_payload = self._normalize_tools_payload(tools)
         logprobs_support = self._sub_llm_supports_logprobs
 
         async def _create_call(logprobs: bool | None) -> Any:
@@ -1931,8 +1985,8 @@ class RLMEnv(SandboxEnv):
                 "model": model,
                 "messages": normalized_messages,
             }
-            if tools is not None:
-                payload["tools"] = tools
+            if tools_payload is not None:
+                payload["tools"] = tools_payload
             if logprobs is not None:
                 payload["logprobs"] = logprobs
             return await asyncio.wait_for(
@@ -2287,6 +2341,7 @@ class RLMEnv(SandboxEnv):
                 "request_id": request_id,
                 "messages": self._summarize_messages_for_error(messages_with_system),
                 "last_code": last_code,
+                "tools": self._summarize_tools_for_error(self.sub_oai_tools),
             }
             logger.error(
                 "Sub-LLM call failed: %s\n%s",
