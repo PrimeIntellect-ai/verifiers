@@ -134,9 +134,8 @@ class EvalTUI:
 
     def _get_total_rollouts(self) -> int:
         """Get total rollouts across all environments."""
-        return sum(
-            c.num_examples * c.rollouts_per_example for c in self.configs.values()
-        )
+        # Use env_state.total which gets updated by on_start callback
+        return sum(env_state.total for env_state in self.state.envs.values())
 
     def _get_completed_rollouts(self) -> int:
         """Get completed rollouts across all environments."""
@@ -228,7 +227,16 @@ class EvalTUI:
         config_line.append(" via ", style="dim")
         config_line.append(config.client_config.api_base_url, style="white")
         config_line.append("  |  ", style="dim")
-        config_line.append(str(config.num_examples), style="white")
+        # Derive actual num_examples from total (handles num_examples=-1 case)
+        if config.num_examples == -1 and env_state.total > 0:
+            if config.independent_scoring:
+                actual_num_examples = env_state.total // config.rollouts_per_example
+            else:
+                actual_num_examples = env_state.total
+            config_line.append(str(actual_num_examples), style="white")
+        else:
+            num_str = "all" if config.num_examples == -1 else str(config.num_examples)
+            config_line.append(num_str, style="white")
         config_line.append("x", style="white")
         config_line.append(str(config.rollouts_per_example), style="white")
         config_line.append(" rollouts", style="dim")
@@ -265,7 +273,8 @@ class EvalTUI:
                 config_line.append(" steps", style="dim")
 
         # Create progress bar with timing
-        total_rollouts = config.num_examples * config.rollouts_per_example
+        # Use env_state.total which gets updated by on_start callback
+        total_rollouts = env_state.total
         if config.independent_scoring:
             completed_rollouts = env_state.progress
         else:
@@ -277,11 +286,13 @@ class EvalTUI:
         mins, secs = divmod(int(elapsed), 60)
         time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
+        # Show "..." for total if not yet known
+        total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
             BarColumn(bar_width=None),
             TextColumn(f"[bold]{pct:.0f}%"),
-            TextColumn(f"({completed_rollouts}/{total_rollouts} rollouts)"),
+            TextColumn(f"({completed_rollouts}/{total_str} rollouts)"),
             TextColumn(f"| {time_str}"),
             console=self.console,
             expand=True,
@@ -463,8 +474,19 @@ class EvalTUI:
             }
             status = status_styles.get(env_state.status, env_state.status)
 
-            total_rollouts = str(config.num_examples * config.rollouts_per_example)
-            n = f"{config.num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
+            # Use env_state.total for actual resolved values
+            total_rollouts = env_state.total
+            if config.independent_scoring:
+                actual_num_examples = (
+                    total_rollouts // config.rollouts_per_example
+                    if total_rollouts > 0
+                    else config.num_examples
+                )
+            else:
+                actual_num_examples = (
+                    total_rollouts if total_rollouts > 0 else config.num_examples
+                )
+            n = f"{actual_num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
 
             reward = (
                 f"{env_state.metrics.get('reward', 0):.3f}"

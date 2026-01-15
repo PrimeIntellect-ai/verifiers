@@ -45,6 +45,7 @@ from verifiers.types import (
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
+    StartCallback,
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
@@ -834,6 +835,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        on_start: StartCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_log: LogCallback | None = None,
     ) -> GenerateOutputs:
@@ -846,6 +848,10 @@ class Environment(ABC):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
             inputs_list = inputs
+
+        # Notify caller of actual total count (useful when num_examples=-1)
+        if on_start is not None:
+            on_start(len(inputs_list))
 
         # resolve concurrency knobs
         gen_limit = max_concurrent_generation

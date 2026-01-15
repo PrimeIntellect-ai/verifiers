@@ -26,6 +26,7 @@ from verifiers.types import (
     LogCallback,
     MultiEvalConfig,
     ProgressCallback,
+    StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
@@ -248,6 +249,7 @@ def print_results(
 
 async def run_evaluation(
     config: EvalConfig,
+    on_start: StartCallback | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
@@ -285,6 +287,7 @@ async def run_evaluation(
         save_results=config.save_results,
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
+        on_start=on_start,
         on_progress=on_progress,
         on_log=on_log,
     )
@@ -383,6 +386,9 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             """Run a single evaluation with TUI progress updates."""
             env_id = env_config.env_id
 
+            def on_start(total: int) -> None:
+                tui.update_env_state(env_id, total=total)
+
             def on_progress(completed: int, metrics: dict[str, float]) -> None:
                 tui.update_env_state(
                     env_id,
@@ -396,7 +402,10 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             tui.update_env_state(env_id, status="running")
             try:
                 result = await run_evaluation(
-                    env_config, on_progress=on_progress, on_log=on_log
+                    env_config,
+                    on_start=on_start,
+                    on_progress=on_progress,
+                    on_log=on_log,
                 )
 
                 # Update final state from results with all metrics
@@ -416,10 +425,17 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     else None
                 )
 
+                # Calculate actual total from result metadata
+                actual_total = (
+                    result["metadata"]["num_examples"]
+                    * result["metadata"]["rollouts_per_example"]
+                )
+
                 tui.update_env_state(
                     env_id,
                     status="completed",
-                    progress=tui.state.envs[env_id].total,  # Mark as fully complete
+                    total=actual_total,
+                    progress=actual_total,  # Mark as fully complete
                     metrics=final_metrics,
                     save_path=save_path,
                 )

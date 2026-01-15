@@ -50,6 +50,7 @@ GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
 # callbacks for evals
+StartCallback = Callable[[int], None]  # receives actual total count
 ProgressCallback = Callable[[int, dict[str, float]], None]
 LogCallback = Callable[[str], None]
 
