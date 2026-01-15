@@ -374,13 +374,11 @@ class EvalTUI:
         layout = Layout()
 
         layout.split_column(
-            Layout(name="header", size=3),
             Layout(name="progress", size=3),
             Layout(name="envs", ratio=1),
             Layout(name="footer", size=3),
         )
 
-        layout["header"].update(self._make_header())
         layout["progress"].update(self._make_global_progress())
         layout["envs"].update(self._make_env_stack())
         layout["footer"].update(self._make_footer())
