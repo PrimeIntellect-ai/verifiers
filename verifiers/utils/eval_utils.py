@@ -319,6 +319,8 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
 async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutputs]:
     """Run multi-environment evaluation with a TUI display."""
+    import logging as logging_module
+
     from verifiers.utils.eval_tui import EvalTUI, is_tty
 
     # Fall back to non-TUI mode if not a TTY
@@ -326,6 +328,11 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
         logger.info("Not a TTY, falling back to standard output")
         await run_multi_evaluation(config)
         return []
+
+    # Suppress all logging during TUI mode (TUI handles display)
+    root_logger = logging_module.getLogger()
+    original_level = root_logger.level
+    root_logger.setLevel(logging_module.CRITICAL + 1)  # Suppress all logs
 
     # Create modified configs with tqdm disabled (TUI handles progress display)
     tui_configs = [
@@ -343,6 +350,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             tui.update_env_state(
                 env_id,
                 progress=completed,
+                total=total,
                 avg_reward=avg_reward,
                 reward_count=completed if avg_reward is not None else None,
             )
@@ -358,7 +366,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             tui.update_env_state(
                 env_id,
                 status="completed",
-                progress=count,
+                progress=tui.state.envs[env_id].total,  # Mark as fully complete
                 avg_reward=final_avg,
                 reward_count=count,
             )
@@ -378,12 +386,11 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                 return_exceptions=True,
             )
 
-            # Process results
+            # Process results (silently, errors shown in TUI)
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    logger.error(
-                        f"Evaluation failed for {config.env[i].env_id}: {result}"
-                    )
+                    # Error already shown in TUI via update_env_state
+                    pass
                 else:
                     all_results.append(result)
 
@@ -394,7 +401,10 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             await tui.wait_for_exit()
 
     except KeyboardInterrupt:
-        logger.info("Evaluation interrupted by user")
+        pass  # Silent exit on interrupt
+    finally:
+        # Restore logging level
+        root_logger.setLevel(original_level)
 
     return all_results
 
