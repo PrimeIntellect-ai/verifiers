@@ -79,6 +79,14 @@ class RLMCodeExecutionTimeout(Exception):
     """Raised when code execution exceeds the configured timeout."""
 
 
+class RLMSubLLMRequestError(Exception):
+    """Raised when a sub-LLM API request fails, carrying the request payload."""
+
+    def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
 @dataclass(frozen=True)
 class RLMWorkerPaths:
     base_dir: str
@@ -1886,6 +1894,21 @@ class RLMEnv(SandboxEnv):
         return normalized
 
     @staticmethod
+    def _unwrap_exception(error: Exception) -> Exception:
+        cause = getattr(error, "__cause__", None)
+        if isinstance(cause, Exception):
+            return cause
+        return error
+
+    @staticmethod
+    def _sanitize_payload_for_json(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            json.dumps(payload)
+            return payload
+        except TypeError:
+            return json.loads(json.dumps(payload, default=str))
+
+    @staticmethod
     def _sanitize_tool_schema(oai_tool: dict[str, Any]) -> None:
         function = oai_tool.get("function", {})
         params = function.get("parameters")
@@ -2020,10 +2043,15 @@ class RLMEnv(SandboxEnv):
                 payload["tools"] = tools_payload
             if logprobs is not None:
                 payload["logprobs"] = logprobs
-            return await asyncio.wait_for(
-                client.chat.completions.create(**payload),
-                timeout=self.sub_llm_api_timeout,
-            )
+            try:
+                return await asyncio.wait_for(
+                    client.chat.completions.create(**payload),
+                    timeout=self.sub_llm_api_timeout,
+                )
+            except asyncio.TimeoutError:
+                raise
+            except Exception as e:
+                raise RLMSubLLMRequestError(str(e), payload) from e
 
         try:
             if logprobs_support is False:
@@ -2041,7 +2069,10 @@ class RLMEnv(SandboxEnv):
             )
             return None
         except Exception as e:
-            if logprobs_support is None and self._is_logprobs_param_error(e):
+            error_to_check = self._unwrap_exception(e)
+            if logprobs_support is None and self._is_logprobs_param_error(
+                error_to_check
+            ):
                 if self._sub_llm_supports_logprobs is None:
                     self._sub_llm_supports_logprobs = False
                 try:
@@ -2367,17 +2398,21 @@ class RLMEnv(SandboxEnv):
             last_code = ""
             if state_ref is not None:
                 last_code = str(state_ref.get("rlm_last_code", "") or "")
+            payload = None
+            if isinstance(e, RLMSubLLMRequestError):
+                payload = self._sanitize_payload_for_json(e.payload)
             debug_payload = {
                 "batch_id": batch_id,
                 "request_id": request_id,
                 "messages": self._summarize_messages_for_error(messages_with_system),
                 "last_code": last_code,
                 "tools": self._summarize_tools_for_error(self.sub_oai_tools),
+                "sub_llm_payload": payload,
             }
             logger.error(
                 "Sub-LLM call failed: %s\n%s",
                 e,
-                json.dumps(debug_payload, ensure_ascii=True),
+                json.dumps(debug_payload, ensure_ascii=True, default=str),
             )
             return web.json_response(
                 {"error": str(e), "debug": debug_payload}, status=500
