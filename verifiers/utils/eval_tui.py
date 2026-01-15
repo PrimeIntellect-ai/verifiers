@@ -200,15 +200,6 @@ class EvalTUI:
         config = self.configs_by_id[env_id]
         env_state = self.state.envs[env_id]
 
-        # Status indicator
-        status_styles = {
-            "pending": ("dim", "PENDING"),
-            "running": ("yellow", "RUNNING"),
-            "completed": ("green", "DONE"),
-            "failed": ("red", "FAILED"),
-        }
-        style, label = status_styles.get(env_state.status, ("dim", "?"))
-
         # Build the content table with two columns: config info and status/progress
         table = Table.grid(expand=True, padding=(0, 2))
         table.add_column("config", ratio=2)
@@ -243,17 +234,8 @@ class EvalTUI:
         config_line2.append(str(config.max_concurrent), style="white")
         config_lines.append(config_line2)
 
-        # Right column: Status, timing, reward
+        # Right column: Reward only (timing moved to progress bar)
         status_lines = []
-
-        # Timing
-        elapsed = env_state.elapsed_time
-        mins, secs = divmod(int(elapsed), 60)
-        time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
-        time_text = Text()
-        time_text.append("time: ", style="dim")
-        time_text.append(time_str, style="bold")
-        status_lines.append(time_text)
 
         # Reward
         reward_text = Text()
@@ -264,30 +246,28 @@ class EvalTUI:
             reward_text.append("-", style="dim")
         status_lines.append(reward_text)
 
-        # Progress (groups completed)
-        progress_text = Text()
-        progress_text.append("progress: ", style="dim")
-        progress_text.append(
-            f"{env_state.progress}/{env_state.total} groups", style="white"
-        )
-        status_lines.append(progress_text)
-
         # Add the config and status columns
         table.add_row(
             Group(*config_lines),
             Group(*status_lines),
         )
 
-        # Create progress bar
+        # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
         completed_rollouts = env_state.progress * config.rollouts_per_example
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
+
+        # Format elapsed time
+        elapsed = env_state.elapsed_time
+        mins, secs = divmod(int(elapsed), 60)
+        time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
             BarColumn(bar_width=None),
             TextColumn(f"[bold]{pct:.0f}%"),
             TextColumn(f"({completed_rollouts}/{total_rollouts} rollouts)"),
+            TextColumn(f"| {time_str}"),
             console=self.console,
             expand=True,
         )
@@ -318,10 +298,9 @@ class EvalTUI:
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # Build title with env name and status
+        # Build title with env name only (status shown via border color)
         title = Text()
         title.append(env_id, style="bold cyan")
-        title.append(f" [{label}]", style=style)
 
         return Panel(
             Group(*content_items),
