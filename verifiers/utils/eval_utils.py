@@ -247,7 +247,7 @@ def print_results(
 
 async def run_evaluation(
     config: EvalConfig,
-    on_progress: "ProgressCallback | None" = None,
+    on_progress: ProgressCallback | None = None,
 ) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
     client = setup_client(config.client_config)
@@ -284,7 +284,6 @@ async def run_evaluation(
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
         on_progress=on_progress,
-        use_tqdm=config.use_tqdm,
     )
 
     if config.save_results:
@@ -297,9 +296,44 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
+    async def run_with_progress(env_config: EvalConfig) -> GenerateOutputs:
+        if env_config.use_tqdm:
+            from tqdm import tqdm
+
+            # Delay pbar creation until first callback (when generate actually starts)
+            pbar: tqdm | None = None
+
+            def tqdm_callback(_progress: int, metrics: dict[str, float]) -> None:
+                nonlocal pbar
+                if pbar is None:
+                    # Create pbar on first callback
+                    if env_config.independent_scoring:
+                        pbar_total = (
+                            env_config.num_examples * env_config.rollouts_per_example
+                        )
+                        pbar_desc = (
+                            f"Processing {pbar_total} {env_config.env_id} rollouts"
+                        )
+                    else:
+                        pbar_total = env_config.num_examples
+                        pbar_desc = f"Processing {pbar_total} {env_config.env_id} groups ({env_config.num_examples * env_config.rollouts_per_example} total rollouts)"
+                    pbar = tqdm(
+                        total=pbar_total, desc=pbar_desc, postfix=dict(reward="?")
+                    )
+                pbar.update()
+                reward = metrics.get("reward")
+                if reward:
+                    pbar.set_postfix(reward=f"{reward:.3f}")
+
+            on_progress = tqdm_callback
+        else:
+            on_progress = None
+        result = await run_evaluation(env_config, on_progress=on_progress)
+        return result
+
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.env]
+        *[run_with_progress(env_config) for env_config in config.env]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()
@@ -346,13 +380,10 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             """Run a single evaluation with TUI progress updates."""
             env_id = env_config.env_id
 
-            def on_progress(
-                completed: int, total: int, metrics: dict[str, float]
-            ) -> None:
+            def on_progress(completed: int, metrics: dict[str, float]) -> None:
                 tui.update_env_state(
                     env_id,
                     progress=completed,
-                    total=total,
                     metrics=metrics,
                 )
 
