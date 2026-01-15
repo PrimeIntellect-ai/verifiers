@@ -47,6 +47,9 @@ class EnvEvalState:
     # path where results were saved (if save_results=True)
     save_path: Path | None = None
 
+    # log message for special events (updated by on_log callback)
+    log_message: str | None = None
+
     @property
     def elapsed_time(self) -> float:
         if self.start_time is None:
@@ -96,6 +99,7 @@ class EvalTUI:
         metrics: dict[str, float] | None = None,
         error: str | None = None,
         save_path: Path | None = None,
+        log_message: str | None = None,
     ) -> None:
         """Update the state of a specific environment evaluation."""
         assert env_id in self.state.envs
@@ -122,6 +126,9 @@ class EvalTUI:
 
         if save_path is not None:
             env_state.save_path = save_path
+
+        if log_message is not None:
+            env_state.log_message = log_message
 
         self.refresh()
 
@@ -256,10 +263,8 @@ class EvalTUI:
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
         if config.independent_scoring:
-            # In independent scoring mode, progress already represents rollouts
             completed_rollouts = env_state.progress
         else:
-            # In group scoring mode, progress represents groups
             completed_rollouts = env_state.progress * config.rollouts_per_example
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
@@ -285,6 +290,12 @@ class EvalTUI:
         # Metrics display
         metrics_content = self._make_metrics_display(env_state.metrics)
 
+        # Log message for special events
+        log_content = Text()
+        if env_state.log_message:
+            log_content.append("› ", style="dim cyan")
+            log_content.append(env_state.log_message, style="dim")
+
         # Error message if failed
         error_content = None
         if env_state.error:
@@ -300,6 +311,8 @@ class EvalTUI:
             content_items.append(metrics_content)
         else:
             content_items.append(space)
+        content_items.append(space)
+        content_items.append(log_content)
         if error_content:
             content_items.append(error_content)
 

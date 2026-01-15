@@ -37,6 +37,7 @@ from verifiers.types import (
     ChatMessage,
     GenerateMetadata,
     GenerateOutputs,
+    LogCallback,
     Messages,
     MessageType,
     ModelResponse,
@@ -834,10 +835,13 @@ class Environment(ABC):
         save_every: int = -1,
         independent_scoring: bool = False,
         on_progress: ProgressCallback | None = None,
+        on_log: LogCallback | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
         """
+        on_log = on_log or self.logger.debug
+
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
@@ -904,6 +908,7 @@ class Environment(ABC):
         metrics_sums: dict[str, float] = defaultdict(float)
         metrics_counts: dict[str, int] = defaultdict(int)
         groups_or_rollouts_completed = 0
+        total_groups_or_rollouts = len(tasks)
         all_states: list[State] = []
         for coro in asyncio.as_completed(tasks.keys()):
             result = await coro
@@ -950,8 +955,8 @@ class Environment(ABC):
                     gen_sampling_args,
                     start_time,
                 )
-                self.logger.debug(
-                    f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                on_log(
+                    f"Saving intermediate results ({groups_or_rollouts_completed}/{total_groups_or_rollouts} {('rollouts' if independent_scoring else 'groups')}) to {temp_results['metadata']['path_to_save']}"
                 )
                 save_rollout_results(temp_results)
 
@@ -968,9 +973,10 @@ class Environment(ABC):
             start_time,
         )
 
-        # Save if requested
+        # save if requested
         if save_results:
             save_rollout_results(results)
+            on_log(f"Saved final results to {results['metadata']['path_to_save']}")
 
         return results
 

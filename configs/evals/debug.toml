@@ -1,9 +1,11 @@
 [[env]]
 env_id = "gsm8k"
-num_examples = 1
+num_examples = 50
 rollouts_per_example = 1
-max_concurrent_generation = -1
-sampling_args = { max_tokens = 512 }
+sampling_args = { max_tokens = 1024 }
+independent_scoring = true
+save_results = true
+save_every = 10
 
 [[env]]
 env_id = "alphabet-sort"

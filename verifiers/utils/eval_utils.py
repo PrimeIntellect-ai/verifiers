@@ -23,6 +23,7 @@ from verifiers.types import (
     EvalConfig,
     GenerateMetadata,
     GenerateOutputs,
+    LogCallback,
     MultiEvalConfig,
     ProgressCallback,
 )
@@ -248,6 +249,7 @@ def print_results(
 async def run_evaluation(
     config: EvalConfig,
     on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
     client = setup_client(config.client_config)
@@ -284,6 +286,7 @@ async def run_evaluation(
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
         on_progress=on_progress,
+        on_log=on_log,
     )
 
     if config.save_results:
@@ -387,9 +390,14 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                     metrics=metrics,
                 )
 
+            def on_log(message: str) -> None:
+                tui.update_env_state(env_id, log_message=message)
+
             tui.update_env_state(env_id, status="running")
             try:
-                result = await run_evaluation(env_config, on_progress=on_progress)
+                result = await run_evaluation(
+                    env_config, on_progress=on_progress, on_log=on_log
+                )
 
                 # Update final state from results with all metrics
                 rewards = result["reward"]
