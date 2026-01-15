@@ -451,12 +451,8 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
             def on_progress(all_states: list[State], new_states: list[State]) -> None:
                 nonlocal error_accum, reward_accum, metrics_accum
 
-                # Compute progress as number of groups or rollouts completed
-                if env_config.independent_scoring:
-                    completed = len(all_states)
-                else:
-                    # Count unique example_ids to get number of groups
-                    completed = len(set(s.get("example_id", 0) for s in all_states))
+                # Progress is always rollout-based
+                completed = len(all_states)
 
                 for s in new_states:
                     if s.get("error") is not None:
@@ -469,6 +465,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
                         if value is not None:
                             metrics_accum[name] += value
 
+                # Compute averages over completed rollouts
                 reward = reward_accum / completed
                 metrics = {
                     name: metrics_accum[name] / completed for name in metrics_accum

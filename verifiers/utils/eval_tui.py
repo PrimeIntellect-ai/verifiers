@@ -40,8 +40,8 @@ class EnvEvalState:
     end_time: float | None = None
 
     # updated by on_progress callback
-    progress: int = 0  # completed groups/rollouts
-    total: int = 0  # total groups/rollouts
+    progress: int = 0  # completed rollouts
+    total: int = 0  # total rollouts
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     error_rate: float = 0.0  # error rate (rolling avg)
@@ -85,11 +85,7 @@ class EvalTUI:
 
         # initialize env states
         for config in configs:
-            total = (
-                config.num_examples * config.rollouts_per_example
-                if config.independent_scoring
-                else config.num_examples
-            )
+            total = config.num_examples * config.rollouts_per_example
             self.state.envs[config.env_id] = EnvEvalState(total=total)
 
     def update_env_state(
@@ -259,10 +255,7 @@ class EvalTUI:
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback
         total_rollouts = env_state.total
-        if config.independent_scoring:
-            completed_rollouts = env_state.progress
-        else:
-            completed_rollouts = env_state.progress * config.rollouts_per_example
+        completed_rollouts = env_state.progress  # always rollout-based
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
         # format elapsed time
