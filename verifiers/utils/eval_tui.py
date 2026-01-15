@@ -300,22 +300,17 @@ class EvalTUI:
             padding=(1, 1),
         )
 
-    def _make_env_stack(self) -> Layout:
-        """Create a vertical stack of environment panels that fill available height."""
+    def _make_env_stack(self) -> Group:
+        """Create a vertical stack of environment panels."""
         env_ids = list(self.state.envs.keys())
 
         if not env_ids:
-            return Layout()
+            return Group()
 
-        # Create a layout that splits evenly among all environments
-        layout = Layout()
-        layout.split_column(*[Layout(name=env_id, ratio=1) for env_id in env_ids])
+        # Create panels for each environment
+        panels = [self._make_env_panel(env_id) for env_id in env_ids]
 
-        # Update each section with its panel
-        for env_id in env_ids:
-            layout[env_id].update(self._make_env_panel(env_id))
-
-        return layout
+        return Group(*panels)
 
     def _make_footer(self) -> Panel:
         """Create the footer panel with instructions."""

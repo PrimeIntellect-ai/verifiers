@@ -404,8 +404,9 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> list[GenerateOutp
 
         except KeyboardInterrupt:
             pass  # Silent exit on interrupt
-        finally:
-            pass
+
+        # Print final summary after TUI exits
+        tui.print_final_summary()
 
         return all_results
 
