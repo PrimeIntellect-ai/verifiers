@@ -652,3 +652,28 @@ vf.setup_logging(level: str = "INFO")
 ```
 
 Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default.
+
+```python
+vf.log_level(level: str | int)
+```
+
+Context manager to temporarily set the verifiers logger to a new log level. Useful for temporarily adjusting verbosity during specific operations.
+
+```python
+with vf.log_level("DEBUG"):
+    # verifiers logs at DEBUG level here
+    ...
+# reverts to previous level
+```
+
+```python
+vf.quiet_verifiers()
+```
+
+Context manager to temporarily silence verifiers logging by setting WARNING level. Shorthand for `vf.log_level("WARNING")`.
+
+```python
+with vf.quiet_verifiers():
+    # verifiers logging is quieted here
+    outputs = env.generate(...)
+# logging restored
