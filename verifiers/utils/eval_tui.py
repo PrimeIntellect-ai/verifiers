@@ -218,18 +218,26 @@ class EvalTUI:
         config_line.append(str(config.rollouts_per_example), style="white")
         config_line.append(" rollouts", style="dim")
         config_line.append("  |  ", style="dim")
-        config_line.append(str(config.max_concurrent), style="white")
-        config_line.append(" concurrency", style="dim")
         if config.max_concurrent_generation or config.max_concurrent_scoring:
-            config_line.append(" (", style="dim")
-        if config.max_concurrent_generation:
-            config_line.append("gen=", style="dim")
-            config_line.append(str(config.max_concurrent_generation), style="white")
-        if config.max_concurrent_scoring:
-            config_line.append("sem=", style="dim")
-            config_line.append(str(config.max_concurrent_scoring), style="white")
-        if config.max_concurrent_generation or config.max_concurrent_scoring:
-            config_line.append(") ", style="dim")
+            gen_concurrency = (
+                config.max_concurrent_generation or config.max_concurrent_scoring
+            )
+            sem_concurrency = (
+                config.max_concurrent_scoring or config.max_concurrent_generation
+            )
+            config_line.append(str(gen_concurrency), style="white")
+            config_line.append(" concurrent generation", style="dim")
+            config_line.append(" and ", style="dim")
+            config_line.append(str(sem_concurrency), style="white")
+            config_line.append(" concurrent scoring", style="dim")
+        else:
+            config_line.append(str(config.max_concurrent), style="white")
+            config_line.append(" concurrent rollouts", style="dim")
+        config_line.append("  |  ", style="dim")
+        if not config.save_results:
+            config_line.append("not ", style="white")
+        config_line.append("saving", style="white")
+        config_line.append(" results", style="dim")
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
