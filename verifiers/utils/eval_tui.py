@@ -251,8 +251,7 @@ class EvalTUI:
             config_line.append(")", style="dim")
         if config.save_results:
             config_line.append("  |  ", style="dim")
-            config_line.append("saving", style="white")
-            config_line.append(" results", style="dim")
+            config_line.append("saving results", style="white")
 
         # Create progress bar with timing
         total_rollouts = config.num_examples * config.rollouts_per_example
