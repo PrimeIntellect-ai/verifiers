@@ -106,6 +106,7 @@ class EvalTUI:
         env_id: str,
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
+        total: int | None = None,
         avg_reward: float | None = None,
         reward_count: int | None = None,
         last_log: str | None = None,
@@ -127,6 +128,9 @@ class EvalTUI:
         if progress is not None:
             env_state.progress = progress
 
+        if total is not None:
+            env_state.total = total
+
         # Handle avg_reward by converting to sum/count
         if avg_reward is not None and reward_count is not None:
             env_state.reward_sum = avg_reward * reward_count
@@ -141,6 +145,9 @@ class EvalTUI:
 
         if error is not None:
             env_state.error = error
+
+        # Trigger a refresh of the live display
+        self.refresh()
 
     def _make_header(self) -> Panel:
         """Create the header panel with config info."""
@@ -365,13 +372,13 @@ class EvalTUI:
         old_settings = termios_module.tcgetattr(fd)
 
         try:
-            # Set terminal to raw mode to capture single key presses
-            tty_module.setraw(fd)
+            # Use cbreak mode (not raw) - allows single char input without corrupting display
+            tty_module.setcbreak(fd)
 
             # Wait for key press in a non-blocking way
             while True:
-                # Check if input is available
-                await asyncio.sleep(0.1)  # Small delay to allow refresh
+                # Small delay to keep display responsive
+                await asyncio.sleep(0.1)
 
                 # Use select to check for input without blocking
                 if select_module.select([sys.stdin], [], [], 0)[0]:
