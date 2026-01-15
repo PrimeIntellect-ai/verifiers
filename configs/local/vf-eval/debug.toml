@@ -1,5 +1,7 @@
 [[env]]
 id = "gsm8k"
+num_examples = 1
+rollouts_per_example = 1
 
 [[env]]
 id = "alphabet-sort"

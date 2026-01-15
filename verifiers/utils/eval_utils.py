@@ -99,6 +99,15 @@ def load_toml_config(path: Path) -> list[dict]:
     if not all("id" in e for e in env_list):
         raise ValueError(f"All [[env]] sections must contain an 'id' field: {path}")
 
+    valid_fields = set(EvalConfig.model_fields.keys())
+    for env in env_list:
+        invalid_fields = set(env.keys()) - valid_fields
+        if invalid_fields:
+            raise ValueError(
+                f"Invalid field(s) {invalid_fields} in [[env]] section for '{env.get('id', 'unknown')}'. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+
     return env_list
 
 
@@ -289,7 +298,7 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(env_config) for env_config in config.env]
+        *[run_evaluation(eval_config) for eval_config in config.env]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()

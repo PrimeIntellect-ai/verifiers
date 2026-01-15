@@ -253,19 +253,21 @@ def main():
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
-    # resolve env_id_or_path
+    # resolve env_id_or_path: TOML config > comma-separated list > single env ID
     if is_toml_config(args.env_id_or_path):
+        # single/multi-env eval via single TOML config
         path = Path(args.env_id_or_path)
         raw_multi_env_config = load_toml_config(path)
     elif "," in args.env_id_or_path:
-        # comma-separated list of env IDs: "gsm8k,alphabet-sort,math-python"
+        # multi-env eval via comma-separated list
         env_ids = [env_id.strip() for env_id in args.env_id_or_path.split(",")]
         raw_multi_env_config = [{"id": env_id} for env_id in env_ids if env_id]
     else:
+        # single-eval env
         raw_multi_env_config = [{"id": args.env_id_or_path}]
 
-    # apply defaults: CLI args take precedence, then env defaults, then global defaults
     def resolve_eval_config(raw_env_config: dict) -> EvalConfig:
+        """Resolve per-env eval config. TOML > CLI > Env Defaults > Global Defaults"""
         assert "id" in raw_env_config
         env_id = raw_env_config["id"]
         env_defaults = get_env_eval_defaults(env_id)
@@ -372,7 +374,6 @@ def main():
             max_concurrent_generation=args.max_concurrent_generation,
             max_concurrent_scoring=args.max_concurrent_scoring,
             # logging
-            print_results=True,
             verbose=args.verbose,
             # saving
             state_columns=args.state_columns,
@@ -382,6 +383,9 @@ def main():
             save_to_hf_hub=args.save_to_hf_hub,
             hf_hub_dataset_name=args.hf_hub_dataset_name,
         )
+
+        # override all fields with TOML per-env config (highest priority)
+        eval_config = eval_config.model_copy(update=raw_env_config)
 
         return eval_config
 
