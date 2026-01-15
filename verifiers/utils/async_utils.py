@@ -54,7 +54,7 @@ class EventLoopLagMonitor:
             f"{__name__}.{self.__class__.__name__}"
         )
         self.lags = []
-        self.logger.info(
+        self.logger.debug(
             f"Event loop lag monitor initialized with measure_interval={self.measure_interval} and max_measurements={self.max_measurements}"
         )
 
