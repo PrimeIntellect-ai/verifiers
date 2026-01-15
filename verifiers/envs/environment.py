@@ -910,7 +910,7 @@ class Environment(ABC):
                 tasks[task] = i
 
         # process tasks as they complete
-        groups_or_rollouts_completed = 0
+        completed_groups_or_rollouts = 0
         total_groups_or_rollouts = len(tasks)
         all_states: list[State] = []
         for coro in asyncio.as_completed(tasks.keys()):
@@ -918,7 +918,7 @@ class Environment(ABC):
             # normalize: independent_scoring returns State, group returns list[State]
             new_states = [result] if independent_scoring else result
             all_states.extend(new_states)
-            groups_or_rollouts_completed += 1
+            completed_groups_or_rollouts += 1
 
             # call progress callback with all finished states and new states
             if on_progress is not None:
@@ -928,7 +928,7 @@ class Environment(ABC):
             if (
                 save_results
                 and save_every > 0
-                and groups_or_rollouts_completed % save_every == 0
+                and completed_groups_or_rollouts % save_every == 0
             ):
                 temp_results = self._prepare_rollout_results(
                     all_states,
@@ -940,7 +940,7 @@ class Environment(ABC):
                     start_time,
                 )
                 on_log(
-                    f"Saving intermediate results ({groups_or_rollouts_completed}/{total_groups_or_rollouts} {('rollouts' if independent_scoring else 'groups')}) to {temp_results['metadata']['path_to_save']}"
+                    f"Saving intermediate results ({completed_groups_or_rollouts}/{total_groups_or_rollouts} {('rollouts' if independent_scoring else 'groups')}) to {temp_results['metadata']['path_to_save']}"
                 )
                 save_rollout_results(temp_results)
 
