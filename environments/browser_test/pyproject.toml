@@ -1,0 +1,20 @@
+[project]
+name = "browser-test"
+version = "0.1.0"
+description = "Browser smoke test environment using Browserbase"
+tags = ["browser", "browserbase", "smoke-test", "web-automation", "eval"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["browser_test.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

@@ -4,27 +4,32 @@ Dataset utilities for browser environment evaluation.
 This module provides functions for loading and creating datasets
 used in browser task evaluations.
 
-TODO: Prime Environments Hub Integration
-When prime_environments_hub is available:
-1. Import: from prime_environments_hub import load_dataset as load_hub_dataset
-2. Try hub first in each load_*_dataset() function
-3. Fall back to local files if hub unavailable or fails
-4. Remove local datasets/ directory once hub is stable
+Datasets can be loaded from Prime Environments Hub or fall back to local files.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Literal, Union, Optional
 
 from datasets import Dataset
 
-# TODO: Prime Environments Hub integration
-# try:
-#     from prime_environments_hub import load_dataset as load_hub_dataset
-#     HUB_AVAILABLE = True
-# except ImportError:
-#     HUB_AVAILABLE = False
-HUB_AVAILABLE = False
+# Prime Environments Hub integration
+try:
+    from prime import load_dataset as load_prime_dataset
+
+    HUB_AVAILABLE = True
+except ImportError:
+    HUB_AVAILABLE = False
+
+# Mapping from benchmark names to Prime Hub dataset identifiers
+HUB_DATASETS = {
+    "gaia": "browserbase/gaia-web",
+    "webvoyager": "browserbase/webvoyager",
+    "onlineMind2Web": "browserbase/mind2web-online",
+}
+
+_logger = logging.getLogger(__name__)
 
 BenchmarkType = Literal["smoke_test", "gaia", "webvoyager", "onlineMind2Web"]
 DifficultyLevel = Union[str, int, None]
@@ -95,17 +100,64 @@ def _load_from_hub(benchmark: str, **kwargs) -> Optional[Dataset]:
 
     Returns None if hub is unavailable or loading fails, allowing
     fallback to local files.
+
+    Args:
+        benchmark: Benchmark name (gaia, webvoyager, onlineMind2Web)
+        **kwargs: Benchmark-specific filters (difficulty_level, web_filter, etc.)
+
+    Returns:
+        Dataset if successfully loaded from Hub, None otherwise
     """
     if not HUB_AVAILABLE:
         return None
 
-    try:
-        # Future implementation when hub is available:
-        # return load_hub_dataset(f"browser_env/{benchmark}", **kwargs)
-        pass
-    except Exception:
+    hub_name = HUB_DATASETS.get(benchmark)
+    if hub_name is None:
         return None
-    return None
+
+    try:
+        # Load from Prime Environments Hub
+        dataset = load_prime_dataset(hub_name)
+
+        # Apply benchmark-specific filters
+        if benchmark == "gaia":
+            difficulty = kwargs.get("difficulty_level", "easy")
+            internal_level = _normalize_gaia_difficulty(difficulty)
+            dataset = dataset.filter(lambda x: x.get("Level") == internal_level)
+        elif benchmark == "webvoyager":
+            web_filter = kwargs.get("web_filter")
+            if web_filter:
+                dataset = dataset.filter(lambda x: x.get("web_name") == web_filter)
+        elif benchmark == "onlineMind2Web":
+            difficulty = kwargs.get("difficulty_level")
+            if difficulty:
+                internal_level = _normalize_mind2web_difficulty(difficulty)
+                dataset = dataset.filter(lambda x: x.get("level") == internal_level)
+
+        # Standardize column names to match expected format
+        column_mapping = {
+            "ques": "question",
+            "Final answer": "answer",
+            "web": "start_url",
+            "id": "task_id",
+            "confirmed_task": "question",
+            "website": "start_url",
+        }
+        for old_name, new_name in column_mapping.items():
+            if (
+                old_name in dataset.column_names
+                and new_name not in dataset.column_names
+            ):
+                dataset = dataset.rename_column(old_name, new_name)
+
+        return dataset
+
+    except Exception as e:
+        _logger.warning(
+            f"Failed to load {benchmark} from Prime Hub ({hub_name}): {e}. "
+            "Falling back to local files."
+        )
+        return None
 
 
 __all__ = [
