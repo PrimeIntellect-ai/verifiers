@@ -490,7 +490,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                     error_text = ""
                 if error_text:
                     raise RuntimeError(
-                        f"{http_err} | response={error_text[:2000]}"
+                        str(http_err) + " | response=" + error_text[:2000]
                     ) from http_err
                 raise
             data = resp.json()
