@@ -17,6 +17,10 @@ SKIPPED_ENVS = [
     "continuation_quality",
     # Different project structure (uses src/ layout, no pyproject.toml at root)
     "mcp_env",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, MODEL_API_KEY
+    "browser_dom_example",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
+    "browser_cua_example",
 ]
 
 

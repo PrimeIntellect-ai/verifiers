@@ -305,7 +305,9 @@ class CUAMode:
             return messages
 
         positions_to_replace = set(
-            screenshot_positions[: -self.keep_recent_screenshots]
+            screenshot_positions
+            if self.keep_recent_screenshots == 0
+            else screenshot_positions[: -self.keep_recent_screenshots]
         )
         filtered_messages = copy.deepcopy(messages)
 

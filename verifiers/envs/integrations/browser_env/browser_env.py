@@ -95,6 +95,7 @@ class BrowserEnv(vf.StatefulToolEnv):
         # Initialize the appropriate mode strategy
         if mode == "dom":
             self._mode_impl = DOMMode(
+                browserbase_api_key=browserbase_api_key,
                 project_id=browserbase_project_id,
                 model_api_key=model_api_key,
                 stagehand_model=stagehand_model,

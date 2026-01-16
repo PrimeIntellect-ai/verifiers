@@ -19,11 +19,13 @@ class DOMMode:
 
     def __init__(
         self,
+        browserbase_api_key: str | None = None,
         project_id: str | None = None,
         model_api_key: str | None = None,
         stagehand_model: str = "openai/gpt-4o-mini",
         proxy_model_to_stagehand: bool = False,
     ):
+        self.api_key = browserbase_api_key or os.getenv("BROWSERBASE_API_KEY")
         self.project_id = project_id or os.getenv("BROWSERBASE_PROJECT_ID")
         self.model_api_key = model_api_key or os.getenv("MODEL_API_KEY")
         self.stagehand_model = stagehand_model
@@ -66,7 +68,7 @@ class DOMMode:
 
         if self.stagehand_client is None:
             self.stagehand_client = AsyncStagehand(
-                browserbase_api_key=os.getenv("BROWSERBASE_API_KEY"),
+                browserbase_api_key=self.api_key,
                 browserbase_project_id=self.project_id,
                 model_api_key=api_key,
             )
