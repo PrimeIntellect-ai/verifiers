@@ -2,13 +2,14 @@
 Browser Environment - Unified browser automation with DOM and CUA modes.
 
 Usage:
-    from verifiers.envs.integrations.browser_env import load_environment
+    from verifiers.envs.integrations.browser_env import BrowserEnv
 
-    # DOM mode (natural language)
-    env = load_environment(mode="dom", benchmark="gaia")
-
-    # CUA mode (vision-based)
-    env = load_environment(mode="cua", benchmark="webvoyager")
+    # Create environment with your own dataset and rubric
+    env = BrowserEnv(
+        mode="dom",  # or "cua"
+        dataset=my_dataset,
+        rubric=my_rubric,
+    )
 
 Install:
     uv add 'verifiers[browser]'
@@ -17,28 +18,12 @@ Install:
 import importlib
 from typing import TYPE_CHECKING
 
-# Always available - no special dependencies
-from .browser_datasets import (
-    load_benchmark_dataset,
-    load_smoke_test_dataset,
-    load_gaia_dataset,
-    load_webvoyager_dataset,
-    load_mind2web_dataset,
-    BenchmarkType,
-)
-from .rewards import (
-    efficiency_reward,
-    judge_answer_reward,
-    get_judge_prompt,
-    JUDGE_PROMPT,
-    TASK_JUDGE_PROMPT,
-)
-
 # Lazy imports for classes that require optional dependencies (stagehand)
 _LAZY_IMPORTS = {
     "BrowserEnv": ".browser_env:BrowserEnv",
     "ModeType": ".browser_env:ModeType",
-    "load_environment": "._loader:load_environment",
+    "DOM_DEFAULT_PROMPT": ".browser_env:DOM_DEFAULT_PROMPT",
+    "CUA_DEFAULT_PROMPT": ".browser_env:CUA_DEFAULT_PROMPT",
 }
 
 
@@ -59,25 +44,16 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    # Main exports (lazy)
     "BrowserEnv",
     "ModeType",
-    "load_environment",
-    # Dataset loading (always available)
-    "BenchmarkType",
-    "load_benchmark_dataset",
-    "load_smoke_test_dataset",
-    "load_gaia_dataset",
-    "load_webvoyager_dataset",
-    "load_mind2web_dataset",
-    # Rewards (always available)
-    "efficiency_reward",
-    "judge_answer_reward",
-    "get_judge_prompt",
-    "JUDGE_PROMPT",
-    "TASK_JUDGE_PROMPT",
+    "DOM_DEFAULT_PROMPT",
+    "CUA_DEFAULT_PROMPT",
 ]
 
 if TYPE_CHECKING:
-    from .browser_env import BrowserEnv, ModeType
-    from ._loader import load_environment
+    from .browser_env import (
+        BrowserEnv,
+        ModeType,
+        DOM_DEFAULT_PROMPT,
+        CUA_DEFAULT_PROMPT,
+    )
