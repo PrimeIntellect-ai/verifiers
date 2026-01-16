@@ -20,4 +20,4 @@ Environment for running custom agent code inside sandboxes. Intercepts the agent
 
 ## RLMEnv
 
-Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a Python REPL that stores the context as a variable, and can spawn sub-LLM calls to process chunks of the context recursively.
+Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a Python REPL that stores the context as a variable, and can spawn sub-LLM calls to process chunks of the context recursively. Use `execution_backend="sandbox"` (default) or `"local"` for host execution. User code runs with a best-effort guardrail that blocks common filesystem modules and `open` by default; customize via `disallowed_modules` and `disallowed_builtins`.

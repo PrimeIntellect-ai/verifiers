@@ -316,19 +316,17 @@ def load_example_dataset(
     elif name == "openrs_easy":
         if split is None:
             split = "train"
-        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
+        dataset = load_dataset("knoveleng/open-rs")[split]
         dataset = dataset.filter(lambda x: x["level"] == "Easy")
     elif name == "openrs_hard":
         if split is None:
             split = "train"
-        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
+        dataset = load_dataset("knoveleng/open-rs")[split]
         dataset = dataset.filter(lambda x: x["level"] == "Hard")
     elif name == "prime_code":
         if split is None:
             split = "train"
-        dataset = cast(
-            Dataset, load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
-        )
+        dataset = load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
         dataset = dataset.filter(
             lambda x: x["prompt"].startswith(
                 "Solve the following coding problem using the programming language python:"

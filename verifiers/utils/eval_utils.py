@@ -13,6 +13,7 @@ from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
@@ -58,7 +59,110 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
-def print_results(results: GenerateOutputs, num_samples: int = 1):
+def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
+    """Group results by task name.
+
+    Args:
+        results: The GenerateOutputs from an evaluation run.
+
+    Returns:
+        A dictionary mapping task names to their corresponding GenerateOutputs.
+    """
+    task_indices: dict[str, list[int]] = {}
+    for i, task in enumerate(results["task"]):
+        if task not in task_indices:
+            task_indices[task] = []
+        task_indices[task].append(i)
+
+    task_results: dict[str, GenerateOutputs] = {}
+    for task, indices in task_indices.items():
+        task_results[task] = GenerateOutputs(
+            prompt=[results["prompt"][i] for i in indices],
+            completion=[results["completion"][i] for i in indices],
+            answer=[results["answer"][i] for i in indices],
+            state=[results["state"][i] for i in indices],
+            task=[results["task"][i] for i in indices],
+            info=[results["info"][i] for i in indices],
+            example_id=[results["example_id"][i] for i in indices],
+            reward=[results["reward"][i] for i in indices],
+            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
+            stop_conditions=[results["stop_conditions"][i] for i in indices],
+            is_truncated=[results["is_truncated"][i] for i in indices],
+            metadata=results["metadata"],
+        )
+    return task_results
+
+
+def print_rewards(results: GenerateOutputs):
+    print("Rewards:")
+    print(
+        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
+    )
+    r = results["metadata"]["rollouts_per_example"]
+    n = len(results["reward"]) // r
+    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
+    for i in range(r):
+        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
+        out = f"r{i + 1}: {trials}"
+        print(out)
+    for k in results["metrics"]:
+        v = results["metrics"][k]
+        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        for i in range(r):
+            trials = [round(v[i + (j * r)], 3) for j in range(n)]
+            out = f"r{i + 1}: {trials}"
+            print(out)
+
+
+def print_info(results: GenerateOutputs):
+    print("Info:")
+    print(
+        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+    )
+    counter = Counter(results["stop_conditions"])
+    print(
+        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
+    )
+    errors = [s.get("error") for s in results["state"]]
+    has_errors = [e is not None for e in errors]
+    if any(has_errors):
+        print(
+            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
+        )
+        errors = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in errors]
+        counter = Counter(error_chains)
+        for error_chain, count in counter.items():
+            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
+
+
+def print_timing(results: GenerateOutputs):
+    print("Timing:")
+    generation_ms_arr = np.array(
+        [s["timing"]["generation_ms"] for s in results["state"]]
+    )
+    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
+    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
+    generation_arr = generation_ms_arr / 1000
+    scoring_arr = scoring_ms_arr / 1000
+    total_arr = total_ms_arr / 1000
+
+    print(
+        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
+    )
+    print(
+        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
+    )
+    print(
+        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
+    )
+
+
+def print_results(
+    results: GenerateOutputs,
+    event_loop_lags: list[float] | None = None,
+    num_samples: int = 1,
+):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
     print(f"Environment: {results['metadata']['env_id']}")
@@ -80,62 +184,30 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
         num_samples=num_samples,
     )
     print("--- All ---")
-    print("Rewards:")
-    print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
-    )
-    r = results["metadata"]["rollouts_per_example"]
-    n = len(results["reward"]) // r
-    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
-    for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
-        out = f"r{i + 1}: {trials}"
-        print(out)
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
-        for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
-            print(out)
+    print_rewards(results)
+    print_info(results)
+    print_timing(results)
 
-    print("Info:")
-    print(
-        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
-    )
-    counter = Counter(results["stop_conditions"])
-    print(
-        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
-    )
-    has_errors = [e is not None for e in errors]
-    if any(has_errors):
-        print(
-            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
+    num_tasks = len(set(results["task"]))
+    if num_tasks > 1:
+        task_results = get_results_by_task(results)
+        for task, task_results in task_results.items():
+            print(f"\n--- {task} ---")
+            print_rewards(task_results)
+            print_info(task_results)
+            print_timing(task_results)
+
+    if event_loop_lags:
+        print("\nPerformance:")
+        event_loop_lags_arr = np.array(event_loop_lags)
+        med_lag, p90_lag, max_lag = (
+            np.median(event_loop_lags_arr),
+            np.percentile(event_loop_lags_arr, 90),
+            np.max(event_loop_lags_arr),
         )
-        errors = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in errors]
-        counter = Counter(error_chains)
-        for error_chain, count in counter.items():
-            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
-
-    generation_ms_arr = np.array(
-        [s["timing"]["generation_ms"] for s in results["state"]]
-    )
-    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
-    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
-    print("Timing:")
-    print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
-    )
+        print(
+            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
+        )
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
@@ -149,6 +221,10 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+
+    # load event loop lag monitor
+    event_loop_lag_monitor = EventLoopLagMonitor()
+    event_loop_lag_monitor.run_in_background()
 
     # set extra environment kwargs
     if config.extra_env_kwargs:
@@ -175,11 +251,15 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        independent_scoring=config.independent_scoring,
     )
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
+
+    event_loop_lags = event_loop_lag_monitor.get_lags()
+
     if config.print_results:
-        print_results(results)
+        print_results(results, event_loop_lags)
     if config.save_results:
         save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
     return results

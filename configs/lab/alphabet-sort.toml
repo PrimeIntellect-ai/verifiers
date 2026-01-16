@@ -1,0 +1,58 @@
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+# trajectory_strategy = "interleaved"  # or "branching"
+# learning_rate = 1e-4
+# lora_alpha = 16
+# oversampling_factor = 2.0
+# max_async_level = 2
+# env_file = ["secrets.env"] # optional file(s) for keys/secrets
+
+[sampling]
+max_tokens = 512
+
+[[env]]
+id = "primeintellect/alphabet-sort"
+args = { min_turns = 3, max_turns = 5, power_per_turn = false }
+
+# [[env]] # add multiple [[env]] sections for multi-env training
+# id = "primeintellect/another-env"
+# args = { split = "train", max_examples = 1000 }
+
+# Optional: W&B logging
+# [wandb]
+# project = "alphabet-sort"
+# name = "qwen3-30b-i-alphabet-sort"
+# entity = "my-team"
+
+# Optional: online evaluation
+# [eval]
+# interval = 100
+# # optional: default for all environments
+# num_examples = -1
+# rollouts_per_example = 1
+# eval_base_model = true
+#
+# [[eval.env]]
+# id = "primeintellect/eval-env"
+# args = { split = "test" }
+# # environment-specific overrides
+# num_examples = 30
+# rollouts_per_example = 4
+
+# Optional: validation during training
+# [val]
+# num_examples = 64
+# rollouts_per_example = 1
+# interval = 5
+
+# Optional: buffer configuration for difficulty filtering
+# [buffer]
+# easy_threshold = 0.8
+# hard_threshold = 0.2
+# easy_fraction = 0.0
+# hard_fraction = 0.0
+# online_difficulty_filtering = false
+# env_ratios = [0.5, 0.5]
+# seed = 42

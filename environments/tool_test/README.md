@@ -23,13 +23,13 @@
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval tool-test
+prime eval run tool-test
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval tool-test \
+prime eval run tool-test \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"num_train_examples": 1000, "num_eval_examples": 100}'

@@ -98,6 +98,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
+          body_path: assets/release/RELEASE_${{ steps.release.outputs.tag }}.md
           files: |
             dist/*
-          generate_release_notes: true

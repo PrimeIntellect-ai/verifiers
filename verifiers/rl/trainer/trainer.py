@@ -53,7 +53,9 @@ class RLTrainer(Trainer):
         # model + tokenizer
         if isinstance(model, str):
             model_name = model
-            model, processing_class = vf.get_model_and_tokenizer(model)
+            model, processing_class = vf.get_model_and_tokenizer(
+                model, use_liger=args.use_liger
+            )
         else:
             model_name = model.config._name_or_path
         assert isinstance(model, PreTrainedModel)
@@ -303,7 +305,7 @@ class RLTrainer(Trainer):
             logits = logits[:, -logits_to_keep:]
             logits = logits / self.temperature
             logprobs = selective_log_softmax(logits, targets)
-            entropies = entropy_from_logits(logits)
+            entropies = entropy_from_logits(logits.detach())
             all_logprobs.append(logprobs)
             all_entropies.append(entropies)
         logprobs = torch.cat(all_logprobs, dim=0)

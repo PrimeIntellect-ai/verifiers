@@ -138,7 +138,7 @@ def build_train_command(env_id: str, config_path_str: str, trainer_gpu_str: str)
     if "/" in env_id:
         parts.extend(["prime env install", env_id, "&&"])
     else:
-        parts.extend(["uv run", "vf-install", env_id, "&&"])
+        parts.extend(["prime env install", env_id, "&&"])
 
     parts.extend([trainer_gpu_str, "uv run", "vf-train", "@", str(config_path_str)])
 

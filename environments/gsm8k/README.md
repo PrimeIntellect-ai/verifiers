@@ -23,13 +23,13 @@
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval gsm8k
+prime eval run gsm8k
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval gsm8k \
+prime eval run gsm8k \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"num_train_examples": -1, "num_eval_examples": -1}'
@@ -51,9 +51,3 @@ Notes:
 | `reward` | 1.0 if parsed boxed answer equals target, else 0.0 |
 | `format_reward` | Adherence to `<think>` + boxed `\boxed{...}` format |
 
-## Evaluation Reports
-
-<!-- Do not edit below this line. Content is auto-generated. -->
-<!-- vf:begin:reports -->
-<p>No reports found. Run <code>uv run vf-eval gsm8k -a '{"key": "value"}'</code> to generate one.</p>
-<!-- vf:end:reports -->

@@ -5,10 +5,7 @@ id = "kalomaze/alphabet-sort"
 
 [env.args]
 min_turns = 3
-max_turns = 3
-min_names_per_turn = 1
-max_names_per_turn = 4
-similarity_power = 8
+max_turns = 5
 power_per_turn = false
 
 [inference]

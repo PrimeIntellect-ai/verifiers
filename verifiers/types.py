@@ -214,7 +214,7 @@ class ClientConfig(BaseModel):
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] | None = None
+    extra_headers: dict[str, str] = {}
 
 
 class EvalConfig(BaseModel):
@@ -233,6 +233,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
+    independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     # logging
     print_results: bool = False

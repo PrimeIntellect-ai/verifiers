@@ -15,7 +15,7 @@ name = "wiki-search-4b"
 lr = 1e-5
 weight_decay = 0.0
 
-[trainer.model.experimental.lora]
+[trainer.model.lora]
 rank = 8
 alpha = 32
 dropout = 0.0
@@ -36,7 +36,6 @@ seq_len = 16384
 mask_truncated_completions = false
 zero_truncated_completions = true
 oversampling_factor = 2.0
-
 
 [orchestrator.sampling]
 max_tokens = 4096

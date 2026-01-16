@@ -222,7 +222,6 @@ def load_environment(
     ]
     parser = vf.Parser()
     dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-    tool_rubric = vf.ToolRubric(tools=tools)
 
     JUDGE_PROMPT = """Given a ground truth answer \
     and a response, determine if the response is both correct and coherent.
@@ -265,12 +264,11 @@ def load_environment(
 
     system_prompt = "Use the provided Wikipedia search tools to help answer questions."
     judge_rubric.add_reward_func(judge_reward_func, weight=1.0)
-    rubric = vf.RubricGroup(rubrics=[tool_rubric, judge_rubric])
     vf_env = vf.ToolEnv(
         dataset=dataset,
         system_prompt=system_prompt,
         parser=parser,
-        rubric=rubric,
+        rubric=judge_rubric,
         tools=tools,
         max_turns=max_turns,
     )

@@ -2,10 +2,10 @@ import verifiers as vf
 
 """
 # install
-vf-install reverse-text (-p /path/to/environments)
+prime env install reverse-text (-p /path/to/environments)
 
 # quick eval
-vf-eval reverse-text (-m model_name in endpoints.py)
+prime eval run reverse-text (-m model_name in endpoints.py)
 
 1-GPU inference:
 CUDA_VISIBLE_DEVICES=0 uv run vf-vllm --model willcb/Qwen2.5-0.5B-Reverse-SFT \

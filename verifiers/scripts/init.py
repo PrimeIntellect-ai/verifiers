@@ -27,13 +27,13 @@ README_TEMPLATE = """\
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval {env_id_dash}
+prime eval run {env_id_dash}
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval {env_id_dash} \
+prime eval run {env_id_dash} \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{{"key": "value"}}'  # env-specific args as JSON
@@ -89,16 +89,16 @@ from .{env_id} import load_environment
 __all__ = ["load_environment"]
 """
 
-ENVIRONMENT_TEMPLATE = """\
+ENVIRONMENT_TEMPLATE = '''\
 import verifiers as vf
 
 
 def load_environment(**kwargs) -> vf.Environment:
-    '''
+    """
     Loads a custom environment.
-    '''
+    """
     raise NotImplementedError("Implement your custom environment here.")
-"""
+'''
 
 
 def init_environment(

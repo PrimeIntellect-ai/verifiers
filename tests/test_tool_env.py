@@ -9,7 +9,7 @@ from openai.types.chat.chat_completion_user_message_param import (
 )
 
 import verifiers as vf
-from tests.conftest import faulty_tool, square_tool
+from tests.conftest import faulty_tool, offset_tool, square_tool
 from verifiers.types import RolloutInput
 
 
@@ -209,3 +209,57 @@ class TestToolEnv:
         assert state["stop_condition"] == "has_error"
         assert state["timing"] is not None
         assert state["completion"] is not None
+
+    def test_add_tool_no_duplicate(self, mock_openai_client, sample_chat_dataset):
+        """Test that add_tool doesn't add duplicate entries to tools list."""
+        env = vf.ToolEnv(
+            tools=[square_tool],
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
+
+        initial_tool_count = len(env.tools)
+        assert initial_tool_count == 1
+
+        env.add_tool(offset_tool)
+
+        assert len(env.tools) == 2
+        assert env.tools.count(square_tool) == 1
+        assert env.tools.count(offset_tool) == 1
+
+    def test_remove_tool_no_error(self, mock_openai_client, sample_chat_dataset):
+        """Test that remove_tool removes a tool exactly once."""
+        env = vf.ToolEnv(
+            tools=[square_tool, offset_tool],
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
+
+        assert len(env.tools) == 2
+
+        env.remove_tool(square_tool)
+
+        assert len(env.tools) == 1
+        assert square_tool not in env.tools
+        assert offset_tool in env.tools
+
+    def test_add_tool_updates_tool_monitor_rubric(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Test that add_tool properly updates tool_monitor_rubric metrics."""
+        env = vf.ToolEnv(
+            tools=[square_tool],
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+        )
+
+        assert "square_tool" in env.tool_monitor_rubric.tool_names
+        assert "offset_tool" not in env.tool_monitor_rubric.tool_names
+
+        env.add_tool(offset_tool)
+
+        assert "offset_tool" in env.tool_monitor_rubric.tool_names
+        assert len(env.tool_monitor_rubric.tool_names) == 2

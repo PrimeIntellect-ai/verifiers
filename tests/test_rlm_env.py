@@ -1,12 +1,22 @@
 """Tests for the RLMEnv class."""
 
 import json
+import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
 from prime_sandboxes import CommandTimeoutError
 
+import verifiers as vf
+from verifiers.utils.rlm_data_serialization_utils import (
+    DataSerializer,
+    SerializedData,
+    build_default_data_serializers,
+    build_builtin_serializer,
+    deserialize_builtin,
+    prepare_context_data,
+)
 from verifiers.envs.experimental import rlm_env as rlm_module
 from verifiers.envs.experimental.rlm_env import RLMEnv
 
@@ -25,6 +35,8 @@ def mock_sandbox_client():
     client.bulk_delete = AsyncMock()
     client.wait_for_creation = AsyncMock()
     client.execute_command = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
+    client.upload_file = AsyncMock()
+    client.upload_bytes = AsyncMock()
     return client
 
 
@@ -84,6 +96,24 @@ def rlm_env_with_sub_tools(mock_sandbox_client, mock_dataset):
         env.sandbox_client = mock_sandbox_client
         yield env
         # Clean up to prevent teardown logging errors
+        env.active_sandboxes.clear()
+
+
+@pytest.fixture
+def rlm_env_local(mock_sandbox_client, mock_dataset):
+    """Create an RLMEnv instance with local execution backend."""
+    with (
+        patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+        patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+    ):
+        mock_client_cls.return_value = mock_sandbox_client
+        env = RLMEnv(
+            dataset=mock_dataset,
+            execution_backend="local",
+            interception_port=1234,
+        )
+        env.sandbox_client = mock_sandbox_client
+        yield env
         env.active_sandboxes.clear()
 
 
@@ -207,19 +237,20 @@ async def test_execute_code_timeout_restarts_sandbox(rlm_env):
     rlm_env.sandbox_client.execute_command = AsyncMock(
         side_effect=CommandTimeoutError("sandbox_123", "command", 1)
     )
-    rlm_env._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
-    rlm_env._prepare_sandbox_and_start_worker = AsyncMock()
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._recreate_sandbox = AsyncMock(side_effect=lambda state: state)
+    sandbox_executor._prepare_sandbox_and_start_worker = AsyncMock()
 
     state = {
         "sandbox_id": "sandbox_123",
-        "rlm_context": {"input_data": None, "input_data_metadata": {}},
+        "rlm_context": {"input_data_spec": None, "input_data_metadata": {}},
     }
     result = await rlm_env._execute_code("sandbox_123", "print(1)", state)
 
     assert result["status"] == "error"
     assert "sandbox was restarted" in result["result"].lower()
-    rlm_env._recreate_sandbox.assert_awaited_once()
-    rlm_env._prepare_sandbox_and_start_worker.assert_awaited_once()
+    sandbox_executor._recreate_sandbox.assert_awaited_once()
+    sandbox_executor._prepare_sandbox_and_start_worker.assert_awaited_once()
     assert state["_exec_seq"] == 0
 
 
@@ -252,16 +283,17 @@ def test_install_wait_scales_with_packages(mock_sandbox_client, mock_dataset):
 
 @pytest.mark.asyncio
 async def test_start_worker_waits_for_install_done(rlm_env):
-    rlm_env._execute_command_with_retry = AsyncMock(
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._execute_command_with_retry = AsyncMock(
         return_value=MagicMock(stdout="", stderr="")
     )
-    rlm_env._wait_for_install_done = AsyncMock()
-    rlm_env._wait_for_worker_ready = AsyncMock()
+    sandbox_executor._wait_for_install_done = AsyncMock()
+    sandbox_executor._wait_for_worker_ready = AsyncMock()
 
     state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
-    await rlm_env._start_worker(state)
+    await sandbox_executor._start_worker(state)
 
-    rlm_env._wait_for_install_done.assert_awaited_once()
+    sandbox_executor._wait_for_install_done.assert_awaited_once()
 
 
 def test_worker_timeout_clamped_to_sandbox_timeout():
@@ -269,6 +301,16 @@ def test_worker_timeout_clamped_to_sandbox_timeout():
         "SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)"
         in rlm_module._RLM_WORKER_SCRIPT
     )
+
+
+def test_worker_script_includes_disallowed_imports():
+    assert "RLM_DISALLOWED_MODULES" in rlm_module._RLM_WORKER_SCRIPT
+    assert "RLM_DISALLOWED_BUILTINS" in rlm_module._RLM_WORKER_SCRIPT
+
+
+def test_worker_script_includes_stagger_env_vars():
+    assert "RLM_SUB_LLM_STAGGER_MS" in rlm_module._RLM_WORKER_SCRIPT
+    assert "RLM_SUB_LLM_STAGGER_JITTER_MS" in rlm_module._RLM_WORKER_SCRIPT
 
 
 # =============================================================================
@@ -293,7 +335,11 @@ class TestRLMEnvInitialization:
             assert env.max_iterations == 50
             assert env.max_output_length == 8192
             assert env.max_sub_llm_parallelism == 5
+            assert env.sub_llm_stagger_ms == 200
+            assert env.sub_llm_stagger_jitter_ms == 50
             assert env.context_key == "context"
+            assert "os" in env.disallowed_modules
+            assert env.disallowed_builtins == "open"
 
     def test_custom_configuration(self, mock_sandbox_client, mock_dataset):
         """Custom sub_model, sub_tools, max_iterations, max_output_length."""
@@ -313,6 +359,8 @@ class TestRLMEnvInitialization:
                 max_iterations=20,
                 max_output_length=4096,
                 max_sub_llm_parallelism=10,
+                sub_llm_stagger_ms=15,
+                sub_llm_stagger_jitter_ms=5,
                 context_key="custom_context",
             )
 
@@ -321,6 +369,8 @@ class TestRLMEnvInitialization:
             assert env.max_iterations == 20
             assert env.max_output_length == 4096
             assert env.max_sub_llm_parallelism == 10
+            assert env.sub_llm_stagger_ms == 15
+            assert env.sub_llm_stagger_jitter_ms == 5
             assert env.context_key == "custom_context"
 
     def test_system_prompt_customization(self, mock_sandbox_client, mock_dataset):
@@ -343,6 +393,21 @@ class TestRLMEnvInitialization:
         # RLMEnv should not have bash in its tool_map
         assert "bash" not in rlm_env.tool_map
 
+    def test_local_backend_defaults(self, mock_sandbox_client, mock_dataset):
+        """Local backend sets host default and skips tunnel pool."""
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(dataset=mock_dataset, execution_backend="local")
+
+            assert env.execution_backend == "local"
+            assert env.interception_host == "127.0.0.1"
+            assert env._tunnel_pool is None
+
+            env.active_sandboxes.clear()
+
 
 # =============================================================================
 # 3. State Management
@@ -360,9 +425,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -383,9 +446,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -405,9 +466,7 @@ class TestSetupState:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
+        rlm_env._executor.setup = AsyncMock()
 
         context_data = {"key": "value"}
         state = {
@@ -419,7 +478,376 @@ class TestSetupState:
         result = await rlm_env.setup_state(state)
 
         assert "rlm_context" in result
-        assert result["rlm_context"]["input_data"] == context_data
+        input_spec = result["rlm_context"]["input_data_spec"]
+        assert input_spec is not None
+        assert input_spec["dtype"] == "builtin"
+        assert input_spec["payload_path"] is not None
+
+
+class TestLocalBackendSetup:
+    """Tests for local execution backend setup."""
+
+    @pytest.mark.asyncio
+    async def test_local_setup_skips_sandbox_and_sets_url(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+        rlm_env_local.sandbox_client.create = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+
+        assert "sandbox_id" not in result
+        assert result["interception_url"].startswith("http://127.0.0.1:1234")
+        rlm_env_local.sandbox_client.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_local_payload_path_uses_temp_dir(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+
+        context_data = {"key": "value"}
+        state = {
+            "info": {"context": context_data},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+        payload_path = result["rlm_payload_path"]
+        base_dir = result["rlm_paths"]["base_dir"]
+
+        assert payload_path.startswith(base_dir)
+
+    @pytest.mark.asyncio
+    async def test_local_setup_initializes_sandbox_state(self, rlm_env_local):
+        rlm_env_local._ensure_interception_server = AsyncMock()
+        rlm_env_local._executor.setup = AsyncMock()
+
+        state = {
+            "info": {},
+            "model": "test-model",
+            "client": MagicMock(),
+        }
+
+        result = await rlm_env_local.setup_state(state)
+
+        assert "sandbox_state" in result
+        assert result["sandbox_state"]["ready"] is False
+        assert result["sandbox_state"]["ready_wait_time"] == 0.0
+        assert result["sandbox_state"]["command_execution_times"] == []
+
+
+@pytest.mark.asyncio
+async def test_local_teardown_uses_sync_cleanup_on_shutdown(rlm_env_local, tmp_path):
+    executor = rlm_env_local._executor
+    venv_path = tmp_path / "venv"
+    venv_path.mkdir()
+    executor._instance_venv_path = str(venv_path)
+    executor._instance_venv_ready = True
+
+    with (
+        patch(
+            "verifiers.envs.experimental.rlm_env.sys.is_finalizing", return_value=True
+        ),
+        patch("verifiers.envs.experimental.rlm_env.shutil.rmtree") as mock_rmtree,
+        patch(
+            "verifiers.envs.experimental.rlm_env.asyncio.to_thread"
+        ) as mock_to_thread,
+    ):
+        await executor.teardown()
+
+    mock_rmtree.assert_called_once()
+    mock_to_thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_local_teardown_stops_remaining_sessions(rlm_env_local):
+    executor = rlm_env_local._executor
+    state = {"rollout_id": "rlm_test123"}
+    session = executor._get_or_create_session(state)
+
+    with (
+        patch.object(executor, "_stop_worker") as stop_worker,
+        patch.object(session.temp_dir, "cleanup") as cleanup,
+    ):
+        await executor.teardown()
+
+    stop_worker.assert_called_once_with(session)
+    cleanup.assert_called_once()
+    assert executor._sessions == {}
+
+
+class TestInstallPackages:
+    """Tests for sandbox package installation behavior."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_ignores_non_int_exit_code(self, rlm_env):
+        """Non-int exit_code from mocks should not raise."""
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(exit_code=MagicMock(), stdout="", stderr="")
+        )
+
+        await sandbox_executor._wait_for_install_done("sandbox_123")
+
+        sandbox_executor._execute_command_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_raises_on_nonzero_exit_code(self, rlm_env):
+        """Non-zero integer exit_code should raise SandboxError."""
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
+            side_effect=[
+                MagicMock(exit_code=1, stdout="", stderr=""),
+                MagicMock(stdout="log", stderr=""),
+            ]
+        )
+
+        with pytest.raises(vf.SandboxError):
+            await sandbox_executor._wait_for_install_done("sandbox_123")
+
+        assert sandbox_executor._execute_command_with_retry.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_wait_for_install_done_includes_requests_and_extras(self, rlm_env):
+        """Install command should include requests plus extra packages."""
+        rlm_env.pip_install_packages = "polars>=0.20.0 numpy"
+        sandbox_executor = rlm_env._executor
+        sandbox_executor._execute_command_with_retry = AsyncMock(
+            return_value=MagicMock(exit_code=0, stdout="", stderr="")
+        )
+
+        await sandbox_executor._wait_for_install_done("sandbox_123")
+
+        install_script = sandbox_executor._execute_command_with_retry.call_args.args[1]
+        assert "pip install -q requests polars>=0.20.0 numpy" in install_script
+
+
+@pytest.mark.asyncio
+async def test_start_worker_exports_stagger_env_vars(rlm_env):
+    sandbox_executor = rlm_env._executor
+    sandbox_executor._execute_command_with_retry = AsyncMock(
+        return_value=MagicMock(stdout="", stderr="")
+    )
+    sandbox_executor._wait_for_install_done = AsyncMock()
+    sandbox_executor._wait_for_worker_ready = AsyncMock()
+
+    rlm_env.sub_llm_stagger_ms = 25
+    rlm_env.sub_llm_stagger_jitter_ms = 7
+
+    state = {"sandbox_id": "sandbox_123", "interception_url": "http://test"}
+    await sandbox_executor._start_worker(state)
+
+    start_cmd = sandbox_executor._execute_command_with_retry.call_args.args[1]
+    assert 'RLM_SUB_LLM_STAGGER_MS="25"' in start_cmd
+    assert 'RLM_SUB_LLM_STAGGER_JITTER_MS="7"' in start_cmd
+
+
+@pytest.mark.asyncio
+async def test_local_worker_exports_stagger_env_vars(rlm_env_local, tmp_path):
+    executor = rlm_env_local._executor
+    state = {
+        "rollout_id": "rlm_test123",
+        "interception_url": "http://test",
+        "model": "test-model",
+    }
+    session = executor._get_or_create_session(state)
+    session.venv_path = str(tmp_path / "venv")
+
+    rlm_env_local.sub_llm_stagger_ms = 18
+    rlm_env_local.sub_llm_stagger_jitter_ms = 9
+
+    with (
+        patch.object(executor, "_venv_python", return_value="python"),
+        patch.object(executor, "_wait_for_ready", new=AsyncMock()),
+        patch("verifiers.envs.experimental.rlm_env.subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        await executor._start_worker(state, session)
+
+    _, kwargs = mock_popen.call_args
+    env = kwargs["env"]
+    assert env["RLM_SUB_LLM_STAGGER_MS"] == "18"
+    assert env["RLM_SUB_LLM_STAGGER_JITTER_MS"] == "9"
+
+
+# =============================================================================
+# 3. Data Serialization
+# =============================================================================
+
+
+class TestDataSerialization:
+    """Tests for prepare_context_data and default serializers."""
+
+    def test_prepare_text_context_data_for_text(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            "hello", None, serializers, max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "text"
+        assert spec["payload_path"] is not None
+        assert prepared.payload_bytes is not None
+
+        metadata = prepared.context_dict["input_data_metadata"]
+        assert "str" in metadata["type"]
+        assert metadata["size"] == 5
+        assert "hash" not in metadata
+
+    def test_prepare_builtin_context_data_for_dict(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            {"a": 1}, None, serializers, max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+        assert spec["payload_path"] is not None
+
+        metadata = prepared.context_dict["input_data_metadata"]
+        assert metadata["dtype"] == "builtin"
+
+    def test_prepare_context_data_requires_supported_dtype(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Unsupported dtype.*dict"):
+            prepare_context_data(
+                {"a": 1}, "unknown", serializers, max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_rejects_unknown_type(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Unsupported data type.*object"):
+            prepare_context_data(object(), None, serializers, max_payload_bytes=1024)
+
+    def test_prepare_file_payload_with_deserializer(self):
+        serializer = DataSerializer(
+            dtype="file",
+            serialize=lambda data: SerializedData(
+                dtype="file",
+                inline_data=None,
+                file_bytes=b"payload",
+                file_name="payload.bin",
+                metadata={"type": "file"},
+                deserializer_code="def decode(payload, spec):\n    return payload\n",
+                deserializer_function="decode",
+            ),
+        )
+        prepared = prepare_context_data(
+            object(), "file", [serializer], max_payload_bytes=1024
+        )
+
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec["payload_path"] is not None
+        assert spec["deserializer_code"] is not None
+        assert spec["deserializer_function"] == "decode"
+
+    def test_inline_payload_rejected(self):
+        serializer = DataSerializer(
+            dtype="inline",
+            serialize=lambda data: SerializedData(
+                dtype="inline",
+                inline_data={"value": "nope"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "inline"},
+            ),
+        )
+        with pytest.raises(ValueError, match="Inline payloads are not supported"):
+            prepare_context_data(
+                object(), "inline", [serializer], max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_requires_deserializer_for_custom_dtype(self):
+        serializer = DataSerializer(
+            dtype="binary",
+            serialize=lambda data: SerializedData(
+                dtype="binary",
+                inline_data=None,
+                file_bytes=b"payload",
+                file_name="payload.bin",
+                metadata={"type": "binary"},
+            ),
+        )
+        with pytest.raises(ValueError, match="requires a deserializer"):
+            prepare_context_data(
+                object(), "binary", [serializer], max_payload_bytes=1024
+            )
+
+    def test_prepare_context_data_accepts_nested_primitives(self):
+        serializers = build_default_data_serializers()
+        data = {"values": [1, 2, (3, 4)], "flag": True}
+        prepared = prepare_context_data(data, None, serializers, max_payload_bytes=1024)
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_prepare_context_data_accepts_tuple(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            (1, 2, 3), None, serializers, max_payload_bytes=1024
+        )
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_prepare_context_data_accepts_bytes(self):
+        serializers = build_default_data_serializers()
+        prepared = prepare_context_data(
+            b"payload", None, serializers, max_payload_bytes=1024
+        )
+        spec = prepared.context_dict["input_data_spec"]
+        assert spec is not None
+        assert spec["dtype"] == "builtin"
+
+    def test_payload_size_enforced(self):
+        serializers = build_default_data_serializers()
+        with pytest.raises(ValueError, match="Payload exceeds sandbox storage limit"):
+            prepare_context_data("hello", None, serializers, max_payload_bytes=1)
+
+    def test_prepare_context_data_ambiguous_match_requires_dtype(self):
+        serializer_a = DataSerializer(
+            dtype="a",
+            serialize=lambda data: SerializedData(
+                dtype="a",
+                inline_data={"value": "a"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "a"},
+            ),
+            can_handle=lambda data: True,
+        )
+        serializer_b = DataSerializer(
+            dtype="b",
+            serialize=lambda data: SerializedData(
+                dtype="b",
+                inline_data={"value": "b"},
+                file_bytes=None,
+                file_name=None,
+                metadata={"type": "b"},
+            ),
+            can_handle=lambda data: True,
+        )
+        with pytest.raises(ValueError, match="Ambiguous data type"):
+            prepare_context_data(object(), None, [serializer_a, serializer_b], None)
+
+    def test_builtin_serializer_handles_special_floats(self):
+        serializer = build_builtin_serializer()
+        data = {"values": [float("nan"), float("inf"), float("-inf")]}
+        serialized = serializer.serialize(data)
+        assert serialized.file_bytes is not None
+        decoded = deserialize_builtin(serialized.file_bytes, {})
+        values = decoded["values"]
+        assert math.isnan(values[0])
+        assert values[1] == float("inf")
+        assert values[2] == float("-inf")
 
 
 class TestCleanupRLMState:
@@ -449,6 +877,18 @@ class TestCleanupRLMState:
         state = {"rollout_id": "nonexistent"}
         # Should not raise
         await rlm_env.cleanup_rlm_state(state)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stops_interception_server_when_idle(self, rlm_env):
+        rollout_id = "rlm_test123"
+        rlm_env.active_rollouts[rollout_id] = {"client": MagicMock()}
+        rlm_env._executor.cleanup = AsyncMock()
+        rlm_env._teardown_interception_server = AsyncMock()
+
+        state = {"rollout_id": rollout_id}
+        await rlm_env.cleanup_rlm_state(state)
+
+        rlm_env._teardown_interception_server.assert_awaited_once()
 
 
 # =============================================================================
@@ -800,8 +1240,8 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_reads_answer_from_sandbox(self, rlm_env):
         """Reads partial answer from sandbox when stopping."""
-        rlm_env._execute_command_with_retry = AsyncMock(
-            return_value=MagicMock(stdout='{"content": "partial answer from sandbox"}')
+        rlm_env._executor.read_answer = AsyncMock(
+            return_value="partial answer from sandbox"
         )
 
         state = {
@@ -817,9 +1257,7 @@ class TestPromptTooLongStopCondition:
     @pytest.mark.asyncio
     async def test_handles_sandbox_read_error(self, rlm_env):
         """Handles errors when reading answer from sandbox."""
-        rlm_env._execute_command_with_retry = AsyncMock(
-            return_value=MagicMock(stdout="invalid json")
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="")
 
         state = {
             "prompt_too_long": True,
@@ -852,9 +1290,7 @@ class TestContextWarningSentInitialization:
         rlm_env._tunnel_pool.get_tunnel_url = AsyncMock(
             return_value="https://test.trycloudflare.com"
         )
-        rlm_env._write_json_to_sandbox = AsyncMock()
-        rlm_env._wait_for_worker_ready = AsyncMock()
-        rlm_env._test_logprobs_support = AsyncMock(return_value=True)
+        rlm_env._executor.setup = AsyncMock()
 
         state = {
             "info": {},
@@ -1043,7 +1479,80 @@ class TestRunSubLLMWithTools:
 
 
 # =============================================================================
-# 7. Interception Server
+# 7. Sub-LLM Logprobs Handling
+# =============================================================================
+
+
+class TestSubLLMLogprobs:
+    """Tests for lazy logprobs detection in sub-LLM calls."""
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_fallback_on_param_error(self, rlm_env):
+        """Retries without logprobs and marks support False on param error."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Invalid request: logprobs not supported for this model"),
+                mock_response,
+            ]
+        )
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        assert rlm_env._sub_llm_supports_logprobs is False
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["logprobs"] is True
+        assert calls[1].kwargs["logprobs"] is None
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_success_sets_true(self, rlm_env):
+        """Sets support True when the first logprobs call succeeds."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        assert rlm_env._sub_llm_supports_logprobs is True
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["logprobs"] is True
+
+    @pytest.mark.asyncio
+    async def test_lazy_logprobs_fallback_if_flag_flips(self, rlm_env):
+        """Retries without logprobs even if another call flips the flag."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        call_count = 0
+
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                rlm_env._sub_llm_supports_logprobs = False
+                raise Exception("logprobs not supported")
+            return mock_response
+
+        mock_client.chat.completions.create = AsyncMock(side_effect=side_effect)
+
+        rlm_env._sub_llm_supports_logprobs = None
+        messages = [{"role": "user", "content": "hi"}]
+        result = await rlm_env._call_sub_llm_api(mock_client, "gpt-4", messages)
+
+        assert result is mock_response
+        calls = mock_client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["logprobs"] is True
+        assert calls[1].kwargs["logprobs"] is None
+
+
+# =============================================================================
+# 8. Interception Server
 # =============================================================================
 
 
@@ -1171,11 +1680,7 @@ class TestPostRollout:
     @pytest.mark.asyncio
     async def test_reads_answer_from_sandbox(self, rlm_env):
         """Reads answer from sandbox if not set."""
-        rlm_env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(
-                stdout='{"content": "read from sandbox", "ready": true}'
-            )
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="read from sandbox")
         state = {"sandbox_id": "sandbox_123"}
 
         await rlm_env.post_rollout(state)
@@ -1194,9 +1699,7 @@ class TestPostRollout:
     @pytest.mark.asyncio
     async def test_handles_read_error(self, rlm_env):
         """Handles errors when reading from sandbox."""
-        rlm_env.sandbox_client.execute_command = AsyncMock(
-            return_value=MagicMock(stdout="invalid json")
-        )
+        rlm_env._executor.read_answer = AsyncMock(return_value="")
         state = {"sandbox_id": "sandbox_123"}
 
         await rlm_env.post_rollout(state)
@@ -1205,7 +1708,7 @@ class TestPostRollout:
 
 
 # =============================================================================
-# 8. Sub-LLM Trajectory Steps (new implementation)
+# 9. Sub-LLM Trajectory Steps (new implementation)
 # =============================================================================
 
 

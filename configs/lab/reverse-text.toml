@@ -1,0 +1,20 @@
+model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+# trajectory_strategy = "interleaved"  # or "branching"
+# learning_rate = 1e-4
+# lora_alpha = 16
+# oversampling_factor = 2.0
+# max_async_level = 2
+# env_file = ["secrets.env"] # optional file(s) for keys/secrets
+
+[sampling]
+max_tokens = 256
+
+[[env]]
+id = "primeintellect/reverse-text"
+
+[wandb]
+project = "reverse-text"
+name = "qwen3-30b-t-reverse-text"

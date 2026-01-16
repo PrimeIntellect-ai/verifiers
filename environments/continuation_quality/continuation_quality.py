@@ -69,8 +69,8 @@ Think aloud in a <scratchpad> for a few lines, then respond with the letter grad
 
     grade_parser = vf.XMLParser(fields=["grade"], answer_field="grade")
 
-    async def grade_reward(judge, prompt, completion, answer, state, **kwargs) -> float:
-        judge_response = await judge(prompt, completion, answer, state, **kwargs)
+    async def grade_reward(judge, prompt, completion, answer, state) -> float:
+        judge_response = await judge(prompt, completion, answer, state)
         judge_grade = (
             (grade_parser.parse_answer(judge_response) or "F")
             .strip()

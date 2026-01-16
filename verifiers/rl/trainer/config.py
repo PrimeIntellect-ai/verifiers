@@ -14,6 +14,12 @@ class RLConfig(TrainingArguments):
 
     _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS
 
+    # Model loading parameters
+    use_liger: bool = field(
+        default=True,
+        metadata={"help": "Whether to use Liger kernel for optimized training."},
+    )
+
     # LoRA parameters
     use_lora: bool = field(
         default=True,

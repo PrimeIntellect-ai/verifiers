@@ -107,9 +107,9 @@ Respond with ONLY a single number from 0 to 10."""
     )
 
     async def comprehensive_evaluation(
-        judge, prompt, completion, answer, state, **kwargs
+        judge, prompt, completion, answer, state
     ) -> float:
-        judge_response = await judge(prompt, completion, answer, state, **kwargs)
+        judge_response = await judge(prompt, completion, answer, state)
 
         numbers = re.findall(r"\b([0-9]|10)\b", judge_response)
         if numbers:

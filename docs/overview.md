@@ -9,28 +9,44 @@ Environments contain everything required to run and evaluate a model on a partic
 
 Environments can be used for training models with reinforcement learning (RL), evaluating capabilities, generating synthetic data, experimenting with agent harnesses, and more. 
 
-Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
+Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
 
 ## Getting Started
 
-Ensure you have `uv` installed, as well as the `prime` CLI tool:
+Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction) tool:
 ```bash
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# create a new project if needed
-uv init && uv venv --python 3.12
 # install the prime CLI
 uv tool install prime
+# log in to the Prime Intellect platform
+prime login
+```
+To set up a new workspace for developing environments, do:
+```bash
+# ~/dev/my-lab
+prime lab setup 
 ```
 
-Then, add `verifiers` to your project:
+This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
+```
+configs/
+├── endpoints.py        # OpenAI-compatible API endpoint configuration
+└── lab/                # Example configs for Hosted Training
+environments/
+└── AGENTS.md           # Documentation for AI coding agents
+AGENTS.md               # Top-level documentation for AI coding agents
+CLAUDE.md               # Claude-specific pointer to AGENTS.md
+```
+
+Alternatively, add `verifiers` to an existing project:
 ```bash
-uv add verifiers
+uv add verifiers && prime lab setup --skip-install
 ```
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-uv run vf-init my-env # creates a new template in ./environments/my_env
+prime env init my-env # creates a new template in ./environments/my_env
 ```
 
 This will create a new module called `my_env` with a basic environment template.
@@ -58,12 +74,23 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 
 To install the environment module into your project, do:
 ```bash
-uv run vf-install my-env
+prime env install my-env # installs from ./environments/my_env
 ```
 
-To run a quick local evaluation with OpenAI-compatible models, do:
+To install an environment from the Environments Hub into your project, do:
 ```bash
-uv run vf-eval my-env -m gpt-4.1-mini -n 5
+prime env install primeintellect/math-python
+```
+
+To run a local evaluation with any OpenAI-compatible model, do:
+```bash
+prime eval run my-env -m gpt-5-nano # run and save eval results locally
+```
+Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.py`.
+
+View local evaluation results in the terminal UI:
+```bash
+prime eval tui
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
@@ -73,12 +100,7 @@ prime env push --path ./environments/my_env
 
 To run an evaluation directly from the Environments Hub, do:
 ```bash
-prime eval primeintellect/math-python
-``` 
-
-To install an environment from the Environments Hub into your project, do:
-```bash
-prime env install primeintellect/math-python
+prime eval run primeintellect/math-python
 ```
 
 ## Documentation
@@ -89,8 +111,8 @@ prime env install primeintellect/math-python
 
 **[Training](training.md)** — Train models in your environments with reinforcement learning.
 
-**[Contributing](development.md)** — Contributing to verifiers
+**[Development](development.md)** — Contributing to verifiers
 
-**[API Reference](api_reference.md)** — Understanding the API and data structures
+**[API Reference](reference.md)** — Understanding the API and data structures
 
 **[FAQs](faqs.md)** - Other frequently asked questions.

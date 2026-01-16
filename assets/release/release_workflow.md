@@ -8,7 +8,7 @@ version and finishes cleanly.
 
 - Land a release prep PR on `main` with:
   - `verifiers/__init__.py` set to the final version (for example `0.1.4`).
-  - Updated release notes in `notes/RELEASE_vX.Y.Z.md`.
+  - Updated release notes in `assets/release/RELEASE_vX.Y.Z.md`.
   - Any ancillary artifacts or documentation updates that belong with the release.
 - Verify CI is green on the commit you intend to tag.
 - Confirm the organization secret `PYPI_TOKEN` is configured with publish permissions for the project.

@@ -259,8 +259,23 @@ class Environment(ABC):
 
         else:
             if system_prompt is not None:
-                self.logger.warning(
-                    "Dataset already has a 'prompt' column, so the provided system_prompt will be ignored."
+
+                def prepend_system_prompt(
+                    prompt: list[ChatMessage],
+                ) -> list[ChatMessage]:
+                    assert isinstance(prompt, list), (
+                        f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
+                    )
+                    if prompt and prompt[0].get("role") == "system":
+                        return prompt
+                    sys_msg = cast(
+                        ChatMessage, {"role": "system", "content": system_prompt}
+                    )
+                    return [sys_msg, *prompt]
+
+                dataset = dataset.map(
+                    lambda x: {"prompt": prepend_system_prompt(x["prompt"])},
+                    **map_kwargs,
                 )
             if few_shot is not None:
                 self.logger.warning(
@@ -674,22 +689,28 @@ class Environment(ABC):
     @final
     async def run_rollout(
         self,
-        sem: AsyncContextManager,
         input: RolloutInput,
         client: AsyncOpenAI,
         model: str,
-        sampling_args: SamplingArgs | None = None,
+        gen_sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager,
+        score_sem: AsyncContextManager | None = None,
+        score: bool = False,
     ) -> State:
-        """
-        Run a rollout with a semaphore (generation only, no scoring).
-        """
-        async with sem:
+        """Generate and, optionally, score a rollout."""
+        async with gen_sem:
             state = await self.rollout(
                 input,
                 client,
                 model,
-                sampling_args,
+                gen_sampling_args,
             )
+        if score:
+            assert score_sem is not None
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_rollout(state)
         return state
 
     @final
@@ -701,24 +722,26 @@ class Environment(ABC):
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
+        score: bool = True,
         **kwargs,
     ) -> list[State]:
-        """Generate and score one group."""
+        """Generate and, optionally, score one group."""
         rollout_tasks = [
             self.run_rollout(
-                gen_sem,
                 input,
                 client,
                 model,
                 gen_sampling_args,
+                gen_sem,
             )
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states, score_sem=score_sem)
-        else:
-            await self.rubric.dummy_score_group(group_states)
+        if score:
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_group(group_states)
         return list(group_states)
 
     def _prepare_rollout_results(
@@ -808,9 +831,10 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         use_tqdm: bool = True,
+        independent_scoring: bool = False,
     ) -> GenerateOutputs:
         """
-        Generate rollouts for a set of inputs by group.
+        Generate rollouts for a set of inputs.
         """
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
@@ -825,15 +849,6 @@ class Environment(ABC):
         if score_limit is None:
             score_limit = max_concurrent
 
-        # group inputs by example_id
-        input_groups: dict[int, list[RolloutInput]] = {}
-        for input_item in inputs_list:
-            example_id = input_item["example_id"]
-            if example_id not in input_groups:
-                input_groups[example_id] = []
-            input_groups[example_id].append(input_item)
-        group_list = list(input_groups.values())
-
         # set up semaphores
         gen_sem = await maybe_semaphore(gen_limit)
         score_sem = await maybe_semaphore(score_limit)
@@ -843,48 +858,86 @@ class Environment(ABC):
         if sampling_args is not None:
             gen_sampling_args.update(sampling_args)
 
-        # create tasks for all groups
         start_time = time.time()
-        group_tasks = {
-            asyncio.create_task(
-                self.run_group(
-                    group,
-                    client,
-                    model,
-                    gen_sampling_args,
-                    gen_sem,
-                    score_sem,
-                )
-            ): i
-            for i, group in enumerate(group_list)
-        }
 
-        # process groups as they complete
+        # create tasks based on mode
+        tasks: dict[asyncio.Task, int] = {}
+        if independent_scoring:
+            for i, input_item in enumerate(inputs_list):
+                task = asyncio.create_task(
+                    self.run_rollout(
+                        input_item,
+                        client,
+                        model,
+                        gen_sampling_args,
+                        gen_sem,
+                        score_sem,
+                        score=True,
+                    )
+                )
+                tasks[task] = i
+            pbar_total = len(inputs_list)
+            pbar_desc = f"Processing {len(inputs_list)} rollouts"
+        else:
+            input_groups: dict[int, list[RolloutInput]] = {}
+            for input_item in inputs_list:
+                example_id = input_item["example_id"]
+                if example_id not in input_groups:
+                    input_groups[example_id] = []
+                input_groups[example_id].append(input_item)
+            group_list = list(input_groups.values())
+
+            for i, group in enumerate(group_list):
+                task = asyncio.create_task(
+                    self.run_group(
+                        group,
+                        client,
+                        model,
+                        gen_sampling_args,
+                        gen_sem,
+                        score_sem,
+                    )
+                )
+                tasks[task] = i
+            pbar_total = len(group_list)
+            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
+
+        # set up progress bar
         pbar = None
         if use_tqdm:
             from tqdm import tqdm
 
-            pbar = tqdm(
-                total=len(group_list),
-                desc=f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)",
-            )
+            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
-        groups_completed = 0
+        # process tasks as they complete
+        reward_sum, reward_count = 0, 0
+        groups_or_rollouts_completed = 0
         all_states: list[State] = []
         try:
-            for coro in asyncio.as_completed(group_tasks.keys()):
-                group_states = await coro
-                all_states.extend(group_states)
-                groups_completed += 1
+            for coro in asyncio.as_completed(tasks.keys()):
+                result = await coro
+                # normalize: independent_scoring returns State, group returns list[State]
+                states = [result] if independent_scoring else result
+                all_states.extend(states)
+                groups_or_rollouts_completed += 1
+
+                # track reward for rolling average
+                for s in states:
+                    r = s.get("reward")
+                    if r is not None:
+                        reward_sum += r
+                        reward_count += 1
 
                 if pbar is not None:
                     pbar.update(1)
+                    if reward_count > 0:
+                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
 
                 # save intermediate results
                 if (
                     save_results
                     and save_every > 0
-                    and groups_completed % save_every == 0
+                    and groups_or_rollouts_completed % save_every == 0
                 ):
                     temp_results = self._prepare_rollout_results(
                         all_states,
@@ -987,6 +1040,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        independent_scoring: bool = False,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1005,6 +1059,7 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            independent_scoring=independent_scoring,
             **kwargs,
         )
 
@@ -1022,6 +1077,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        independent_scoring: bool = False,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset synchronously.
@@ -1039,6 +1095,7 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            independent_scoring=independent_scoring,
         )
 
     # setters for use by trainers
@@ -1082,7 +1139,7 @@ class Environment(ABC):
         """Set the score rollouts flag for this environment."""
         self.score_rollouts = score_rollouts
 
-    make_dataset = make_dataset
+    make_dataset = staticmethod(make_dataset)
 
 
 _EnvT = TypeVar("_EnvT", bound=Environment)

@@ -29,13 +29,13 @@
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval dummy-harbor-env
+prime eval run dummy-harbor-env
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval dummy-harbor-env -m gpt-4.1-mini -n 1 -r 1
+prime eval run dummy-harbor-env -m gpt-4.1-mini -n 1 -r 1
 ```
 
 ### How It Works

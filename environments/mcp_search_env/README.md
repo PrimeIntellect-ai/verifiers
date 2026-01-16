@@ -29,13 +29,13 @@ This environment demonstrates how to use the first-class `MCPEnv` from `verifier
 Run an evaluation with default settings:
 
 ```bash
-uv run vf-eval mcp-search-env
+prime eval run mcp-search-env
 ```
 
 Configure model and sampling:
 
 ```bash
-uv run vf-eval mcp-search-env   -m gpt-4.1-mini   -n 1 -r 1
+prime eval run mcp-search-env   -m gpt-4.1-mini   -n 1 -r 1
 ```
 
 Notes:

@@ -21,6 +21,23 @@ class ToolMonitorRubric(vf.Rubric):
         for tool_name in self.tool_names:
             self.add_metric(self.get_tool_call_count_func(tool_name))
 
+    def add_tool_metric(self, tool: Callable):
+        tool_name = tool.__name__  # type: ignore[union-attr]
+        if tool_name not in self.tool_names:
+            self.tool_names.append(tool_name)
+            self.add_metric(self.get_tool_call_count_func(tool_name))
+
+    def remove_tool_metric(self, tool: Callable):
+        tool_name = tool.__name__  # type: ignore[union-attr]
+        if tool_name in self.tool_names:
+            self.tool_names.remove(tool_name)
+            metric_name = f"{tool_name}_calls"
+            for i, func in enumerate(self.funcs):
+                if func.__name__ == metric_name:
+                    self.funcs.pop(i)
+                    self.weights.pop(i)
+                    break
+
     async def total_tool_calls(self, completion: Messages) -> float:
         """Count the total number of tool calls."""
         total = 0
@@ -75,7 +92,8 @@ class ToolEnv(vf.MultiTurnEnv):
         }
         super().__init__(oai_tools=self.oai_tools, max_turns=max_turns, **kwargs)
 
-        self.add_rubric(ToolMonitorRubric(tools=self.tools))
+        self.tool_monitor_rubric = ToolMonitorRubric(tools=self.tools)
+        self.add_rubric(self.tool_monitor_rubric)
 
     def _should_stop_for_error(self, err: Exception) -> bool:
         """Check if error is in stop_errors."""
@@ -87,6 +105,7 @@ class ToolEnv(vf.MultiTurnEnv):
             self.oai_tools = []
         self.oai_tools.append(convert_func_to_oai_tool(tool))
         self.tool_map[getattr(tool, "__name__", tool.__class__.__name__)] = tool
+        self.tool_monitor_rubric.add_tool_metric(tool)
 
     def remove_tool(self, tool: Callable):
         self.tools.remove(tool)
@@ -95,6 +114,7 @@ class ToolEnv(vf.MultiTurnEnv):
         self.oai_tools.remove(convert_func_to_oai_tool(tool))
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map.pop(tool_name)
+        self.tool_monitor_rubric.remove_tool_metric(tool)
 
     @vf.stop
     async def no_tools_called(self, state: vf.State) -> bool:

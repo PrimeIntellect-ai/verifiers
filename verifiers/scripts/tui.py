@@ -4,19 +4,21 @@ Textual-based TUI for viewing verifiers eval results.
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich.console import Console
 from rich.markup import escape as safe_escape
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
-from textual.widgets import Footer, Label, OptionList, Static
+from textual.widgets import Footer, Input, Label, OptionList, Static
 from textual.widgets._option_list import Option
 
 
@@ -29,7 +31,17 @@ class RunInfo:
     model: str
     run_id: str
     path: Path
-    metadata: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
+
+    def load_metadata(self) -> Dict[str, Any]:
+        if self.metadata is not None:
+            return self.metadata
+        meta_path = self.path / "metadata.json"
+        try:
+            self.metadata = json.loads(meta_path.read_text())
+        except Exception:
+            self.metadata = {}
+        return self.metadata
 
 
 def _iter_eval_roots(env_dir: Path, global_outputs_dir: Path) -> List[Path]:
@@ -80,46 +92,109 @@ def discover_results(
                 meta = run_dir / "metadata.json"
                 results = run_dir / "results.jsonl"
                 if meta.exists() and results.exists():
-                    try:
-                        metadata = json.loads(meta.read_text())
-                    except Exception:
-                        metadata = {}
                     run = RunInfo(
                         env_id=env_id,
                         model=model,
                         run_id=run_dir.name,
                         path=run_dir,
-                        metadata=metadata,
                     )
                     discovered.setdefault(env_id, {}).setdefault(model, []).append(run)
 
-    # Sort runs by time
-    for env_id, models in discovered.items():
-        for model, runs in models.items():
-            runs.sort(
-                key=lambda r: (
-                    r.metadata.get("date", ""),
-                    r.metadata.get("time", ""),
-                    r.run_id,
-                )
-            )
     return discovered
 
 
-def load_run_results(run: RunInfo) -> List[Dict[str, Any]]:
-    """Load results.jsonl into memory."""
-    data: List[Dict[str, Any]] = []
-    results_path = run.path / "results.jsonl"
-    with results_path.open("r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+class LazyRunResults:
+    """Lazy loader for results.jsonl with optional metadata count."""
+
+    def __init__(self, run: RunInfo):
+        self._path = run.path / "results.jsonl"
+        self._fh = self._path.open("r", encoding="utf-8")
+        self._offsets: List[int] = []
+        self._cache: Dict[int, Dict[str, Any]] = {}
+        self._eof = False
+        self._count: Optional[int] = None
+
+        meta = run.load_metadata()
+        num_examples = meta.get("num_examples")
+        rollouts_per_example = meta.get("rollouts_per_example")
+        if isinstance(num_examples, int) and num_examples >= 0:
+            if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
+                self._count = num_examples * rollouts_per_example
+            else:
+                self._count = num_examples
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+
+    def _read_next_line(self) -> Optional[str]:
+        if self._eof:
+            return None
+        pos = self._fh.tell()
+        line = self._fh.readline()
+        if not line:
+            self._eof = True
+            return None
+        self._offsets.append(pos)
+        return line
+
+    def _ensure_index(self, index: int) -> bool:
+        if index < 0:
+            return False
+        while len(self._offsets) <= index and not self._eof:
+            line = self._read_next_line()
+            if line is None:
+                break
+        return index < len(self._offsets)
+
+    def _ensure_count(self) -> int:
+        if self._count is not None:
+            return self._count
+        while not self._eof:
+            line = self._read_next_line()
+            if line is None:
+                break
+        self._count = len(self._offsets)
+        return self._count
+
+    def get(self, index: int) -> Dict[str, Any]:
+        if index in self._cache:
+            return self._cache[index]
+        if not self._ensure_index(index):
+            return {}
+        pos = self._fh.tell()
+        try:
+            self._fh.seek(self._offsets[index])
+            line = self._fh.readline()
             try:
-                data.append(json.loads(line))
+                data = json.loads(line)
             except json.JSONDecodeError:
-                continue
-    return data
+                data = {}
+        finally:
+            self._fh.seek(pos)
+        self._cache[index] = data
+        return data
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        return self.get(index)
+
+    def __len__(self) -> int:
+        return self._ensure_count()
+
+    def __bool__(self) -> bool:
+        if self._count is not None:
+            return self._count > 0
+        if self._offsets:
+            return True
+        if self._eof:
+            return False
+        line = self._read_next_line()
+        return line is not None
+
+
+def load_run_results(run: RunInfo) -> LazyRunResults:
+    """Open results.jsonl lazily."""
+    return LazyRunResults(run)
 
 
 # ----------------------------
@@ -190,6 +265,51 @@ class Panel(Container):
         margin: 1;
     }
     """
+
+
+# ----------------------------
+# Search helpers
+# ----------------------------
+@dataclass(frozen=True)
+class SearchHit:
+    column: str
+    line_index: int
+    line_text: str
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    column: str
+    line_index: int
+    pattern: str
+
+
+def _stylize_matches(text: Text, pattern: re.Pattern, style: str) -> Text:
+    plain = text.plain
+    for match in pattern.finditer(plain):
+        text.stylize(style, match.start(), match.end())
+    return text
+
+
+def _line_wrap_count(line: str, width: int, console: Console) -> int:
+    if width <= 0:
+        return 1
+    if not line:
+        return 1
+    try:
+        wrapped = Text(line).wrap(console, width)
+        return max(1, len(wrapped))
+    except Exception:
+        return max(1, (len(line) - 1) // width + 1)
+
+
+def _compute_line_offsets(lines: List[str], width: int, console: Console) -> List[int]:
+    offsets: List[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += _line_wrap_count(line, width, console)
+    return offsets
 
 
 # ----------------------------
@@ -334,14 +454,30 @@ class SelectRunScreen(Screen):
                 Label(Text.assemble(("Model: ", "bold"), str(self.model))),
                 Label(Text("Select Run")),
                 OptionList(id="run-list"),
+                classes="run-list-panel",
+            )
+            yield Panel(
+                VerticalScroll(
+                    Static("", id="run-details", markup=False), id="run-details-scroll"
+                ),
+                classes="run-details-panel",
             )
         yield Footer()
 
     def on_mount(self) -> None:
         option_list = self.query_one("#run-list", OptionList)
 
+        # Load metadata only for runs in this model, when the run list is shown.
+        self.runs.sort(
+            key=lambda r: (
+                r.load_metadata().get("date", ""),
+                r.load_metadata().get("time", ""),
+                r.run_id,
+            )
+        )
+
         for i, run in enumerate(self.runs):
-            meta = run.metadata
+            meta = run.load_metadata()
             datetime_str = f"{meta.get('date', '')} {meta.get('time', '')}".strip()
             reward = meta.get("avg_reward", "")
             if isinstance(reward, (int, float)):
@@ -357,6 +493,13 @@ class SelectRunScreen(Screen):
             )
 
         option_list.focus()
+        details_widget = self.query_one("#run-details", Static)
+        details_widget.update(Text("Select a run to see details", style="dim"))
+
+    @on(OptionList.OptionHighlighted, "#run-list")
+    def on_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is not None:
+            self._update_details_for_index(int(event.option_id))
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -379,6 +522,78 @@ class SelectRunScreen(Screen):
                 if 0 <= idx < len(self.runs):
                     self.app.push_screen(ViewRunScreen(self.runs[idx]))
 
+    def _update_details_for_index(self, idx: int) -> None:
+        if not (0 <= idx < len(self.runs)):
+            return
+        run = self.runs[idx]
+        details = self._build_run_details(run)
+        details_widget = self.query_one("#run-details", Static)
+        details_widget.update(details)
+
+    def _build_run_details(self, run: RunInfo) -> Text:
+        meta = run.load_metadata()
+        out = Text()
+        out.append("Run ID: ", style="bold")
+        out.append(str(run.run_id))
+        out.append("\n")
+        out.append("Environment: ", style="bold")
+        out.append(str(run.env_id))
+        out.append("\n")
+        out.append("Model: ", style="bold")
+        out.append(str(run.model))
+        out.append("\n")
+        base_url = meta.get("base_url", "")
+        if base_url:
+            out.append("Base URL: ", style="bold")
+            out.append(str(base_url))
+            out.append("\n")
+
+        avg_reward = meta.get("avg_reward")
+        if isinstance(avg_reward, (int, float)):
+            out.append("Avg reward: ", style="bold")
+            out.append(f"{avg_reward:.3f}")
+            out.append("\n")
+
+        avg_metrics = meta.get("avg_metrics", {})
+        if isinstance(avg_metrics, dict) and avg_metrics:
+            out.append("Avg metrics: ", style="bold")
+            out.append("\n")
+            for key in sorted(avg_metrics.keys()):
+                value = avg_metrics.get(key)
+                if isinstance(value, (int, float)):
+                    out.append(f"  {key}: {value:.3f}\n")
+                else:
+                    out.append(f"  {key}: {value}\n")
+
+        time_ms = meta.get("time_ms")
+        if isinstance(time_ms, (int, float)):
+            seconds = time_ms / 1000.0
+            if seconds >= 60:
+                minutes = int(seconds // 60)
+                rem = seconds - minutes * 60
+                runtime_str = f"{minutes}m {rem:.1f}s"
+            else:
+                runtime_str = f"{seconds:.1f}s"
+            out.append("Runtime: ", style="bold")
+            out.append(runtime_str)
+            out.append("\n")
+
+        env_args = meta.get("env_args", {})
+        out.append("\nEnv args:\n", style="bold")
+        try:
+            out.append(json.dumps(env_args, ensure_ascii=False, indent=2))
+        except Exception:
+            out.append(str(env_args))
+
+        sampling_args = meta.get("sampling_args", {})
+        out.append("\n\nSampling args:\n", style="bold")
+        try:
+            out.append(json.dumps(sampling_args, ensure_ascii=False, indent=2))
+        except Exception:
+            out.append(str(sampling_args))
+
+        return out
+
 
 class ViewRunScreen(Screen):
     """Screen for viewing run details and rollouts."""
@@ -388,6 +603,7 @@ class ViewRunScreen(Screen):
         Binding("b,backspace", "back", "Back"),
         Binding("left,h", "prev_record", "Previous"),
         Binding("right,l", "next_record", "Next"),
+        Binding("s", "search", "Search"),
     ]
 
     def __init__(self, run: RunInfo):
@@ -395,6 +611,13 @@ class ViewRunScreen(Screen):
         self.run = run
         self.records = load_run_results(run)
         self.current_record_idx = 0
+        self._prompt_lines: List[str] = []
+        self._completion_lines: List[str] = []
+        self._prompt_offsets: List[int] = []
+        self._completion_offsets: List[int] = []
+        self._highlight_regex: Optional[re.Pattern] = None
+        self._highlight_column: Optional[str] = None
+        self._highlight_timer = None
 
     def compose(self) -> ComposeResult:
         with Container():
@@ -428,7 +651,7 @@ class ViewRunScreen(Screen):
         yield Footer()
 
     def _get_metadata_text(self) -> Text:
-        meta = self.run.metadata
+        meta = self.run.load_metadata()
         sampling_args = meta.get("sampling_args", {})
         avg_reward = meta.get("avg_reward", "")
         if isinstance(avg_reward, (int, float)):
@@ -501,6 +724,10 @@ class ViewRunScreen(Screen):
     def on_mount(self) -> None:
         self.update_display()
 
+    def on_unmount(self) -> None:
+        if hasattr(self.records, "close"):
+            self.records.close()
+
     def update_display(self) -> None:
         """Update the display with current record."""
         if not self.records:
@@ -511,7 +738,10 @@ class ViewRunScreen(Screen):
         # Update prompt
         prompt = record.get("prompt", "")
         prompt_widget = self.query_one("#prompt-content", Static)
-        prompt_widget.update(format_prompt_or_completion(prompt))
+        prompt_text = format_prompt_or_completion(prompt)
+        if self._highlight_regex and self._highlight_column == "prompt":
+            _stylize_matches(prompt_text, self._highlight_regex, "reverse")
+        prompt_widget.update(prompt_text)
 
         # Update completion
         completion = record.get("completion", "")
@@ -522,6 +752,8 @@ class ViewRunScreen(Screen):
             completion_text.append("\n\n")
             completion_text.append("error: ", style="bold red")
             completion_text.append(str(error), style="red")
+        if self._highlight_regex and self._highlight_column == "completion":
+            _stylize_matches(completion_text, self._highlight_regex, "reverse")
         completion_widget.update(completion_text)
 
         # Update details
@@ -562,6 +794,8 @@ class ViewRunScreen(Screen):
         # Update metadata with current record index
         metadata_widget = self.query_one("#metadata", Static)
         metadata_widget.update(self._get_metadata_text())
+        self._prompt_lines = prompt_text.plain.split("\n")
+        self._completion_lines = completion_text.plain.split("\n")
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -581,6 +815,92 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+
+    def action_search(self) -> None:
+        if not self.records:
+            return
+        self.app.push_screen(
+            SearchScreen(self._prompt_lines, self._completion_lines),
+            self._handle_search_result,
+        )
+
+    def _handle_search_result(self, result: Optional[SearchResult]) -> None:
+        if result is None:
+            return
+        try:
+            compiled = re.compile(result.pattern, re.IGNORECASE)
+        except re.error:
+            return
+        self._highlight_regex = compiled
+        self._highlight_column = result.column
+        if self._highlight_timer is not None:
+            self._highlight_timer.stop()
+        self.update_display()
+        self._recompute_line_offsets()
+        self._scroll_to_line(result.column, result.line_index)
+        self._highlight_timer = self.set_timer(3.0, self._clear_highlight)
+
+    def _clear_highlight(self) -> None:
+        if not self.is_mounted:
+            return
+        self._highlight_regex = None
+        self._highlight_column = None
+        self.update_display()
+
+    def _get_scroll_width(self, scroll: VerticalScroll) -> int:
+        width = scroll.size.width
+        padding = getattr(scroll.styles, "padding", None)
+        if padding is not None:
+            width -= padding.left + padding.right
+        if not width:
+            content_size = getattr(scroll, "content_size", None)
+            if content_size is not None:
+                width = scroll.content_size.width
+        return max(1, width)
+
+    def _recompute_line_offsets(self) -> None:
+        if not self._prompt_lines and not self._completion_lines:
+            return
+        console = getattr(self.app, "console", None) or Console()
+        prompt_scroll = self.query_one("#prompt-scroll", VerticalScroll)
+        completion_scroll = self.query_one("#completion-scroll", VerticalScroll)
+        prompt_width = self._get_scroll_width(prompt_scroll)
+        completion_width = self._get_scroll_width(completion_scroll)
+        self._prompt_offsets = _compute_line_offsets(
+            self._prompt_lines, prompt_width, console
+        )
+        self._completion_offsets = _compute_line_offsets(
+            self._completion_lines, completion_width, console
+        )
+
+    def _scroll_to_line(self, column: str, line_index: int) -> None:
+        if column == "prompt":
+            offsets = self._prompt_offsets
+            scroll = self.query_one("#prompt-scroll", VerticalScroll)
+        else:
+            offsets = self._completion_offsets
+            scroll = self.query_one("#completion-scroll", VerticalScroll)
+
+        if not offsets or line_index < 0 or line_index >= len(offsets):
+            return
+        target = offsets[line_index]
+        max_scroll = getattr(scroll, "max_scroll_y", None)
+        if callable(max_scroll):
+            max_scroll = max_scroll()
+        if max_scroll is None:
+            max_scroll = getattr(scroll, "scroll_y_max", None)
+        if max_scroll is None:
+            target = max(0, target)
+        else:
+            target = max(0, min(target, max_scroll))
+
+        if hasattr(scroll, "scroll_to"):
+            try:
+                scroll.scroll_to(y=target, animate=False)
+            except TypeError:
+                scroll.scroll_to(y=target)
+        else:
+            scroll.scroll_y = target
 
 
 # ----------------------------
@@ -717,8 +1037,50 @@ class VerifiersTUI(App):
         max-height: 6;
     }
     
+    .run-list-panel {
+        height: 1fr;
+    }
+    
+    #run-list {
+        height: 1fr;
+        max-height: 100%;
+    }
+    
+    .run-details-panel {
+        height: 1fr;
+    }
+    
+    #run-details-scroll {
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-color: $secondary;
+        scrollbar-background: $panel;
+        scrollbar-corner-color: $panel;
+    }
+    
     Footer {
         background: $panel;
+    }
+    
+    .search-header {
+        height: auto;
+    }
+    
+    .search-columns {
+        height: 1fr;
+        layout: horizontal;
+    }
+    
+    .search-panel {
+        width: 50%;
+        height: 100%;
+        layout: vertical;
+    }
+    
+    .search-input {
+        background: $surface;
+        color: $text;
     }
     """
 
@@ -749,6 +1111,255 @@ class VerifiersTUI(App):
             self.theme = "white-warm"
         else:
             self.theme = "black-warm"
+
+
+class SearchScreen(ModalScreen[Optional[SearchResult]]):
+    """Modal screen for searching prompt/completion text."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "select", "Select"),
+    ]
+
+    def __init__(self, prompt_lines: List[str], completion_lines: List[str]):
+        super().__init__()
+        self._prompt_lines = prompt_lines
+        self._completion_lines = completion_lines
+        self._prompt_hits: List[SearchHit] = []
+        self._completion_hits: List[SearchHit] = []
+        self._active_column: Optional[str] = None
+        self._prompt_cursor: Optional[int] = None
+        self._completion_cursor: Optional[int] = None
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            with Panel(classes="search-header"):
+                yield Label(Text("Search (regex, case-insensitive)", style="bold"))
+                yield Input(
+                    placeholder="regex...", id="search-input", classes="search-input"
+                )
+                yield Label("", id="search-error", classes="subtitle")
+
+            with Horizontal(classes="search-columns"):
+                with Panel(classes="search-panel"):
+                    yield Label(Text("Prompt results", style="bold"), id="prompt-count")
+                    yield OptionList(id="prompt-results")
+                with Panel(classes="search-panel"):
+                    yield Label(
+                        Text("Completion results", style="bold"),
+                        id="completion-count",
+                    )
+                    yield OptionList(id="completion-results")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#search-input", Input).focus()
+        self._update_results("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._update_results(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_select()
+
+    @on(OptionList.OptionHighlighted, "#prompt-results")
+    def on_prompt_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "prompt"
+        self._prompt_cursor = int(event.option_id)
+        self._sync_highlights()
+
+    @on(OptionList.OptionHighlighted, "#completion-results")
+    def on_completion_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "completion"
+        self._completion_cursor = int(event.option_id)
+        self._sync_highlights()
+
+    @on(OptionList.OptionSelected, "#prompt-results")
+    def on_prompt_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "prompt"
+        self._prompt_cursor = int(event.option_id)
+        self.action_select()
+
+    @on(OptionList.OptionSelected, "#completion-results")
+    def on_completion_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        self._active_column = "completion"
+        self._completion_cursor = int(event.option_id)
+        self.action_select()
+
+    def on_key(self, event) -> None:
+        if event.key in ("left", "right", "up", "down"):
+            if event.key == "left":
+                self._switch_column("prompt")
+            elif event.key == "right":
+                self._switch_column("completion")
+            elif event.key == "up":
+                self._move_selection(-1)
+            elif event.key == "down":
+                self._move_selection(1)
+            event.prevent_default()
+            event.stop()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_select(self) -> None:
+        selection = self._current_selection()
+        if selection is None:
+            return
+        pattern = self.query_one("#search-input", Input).value
+        self.dismiss(
+            SearchResult(
+                column=selection.column,
+                line_index=selection.line_index,
+                pattern=pattern,
+            )
+        )
+
+    def _update_results(self, pattern: str) -> None:
+        prompt_list = self.query_one("#prompt-results", OptionList)
+        completion_list = self.query_one("#completion-results", OptionList)
+        error_label = self.query_one("#search-error", Label)
+        prompt_label = self.query_one("#prompt-count", Label)
+        completion_label = self.query_one("#completion-count", Label)
+
+        prompt_list.clear_options()
+        completion_list.clear_options()
+        self._prompt_hits = []
+        self._completion_hits = []
+        self._prompt_cursor = None
+        self._completion_cursor = None
+
+        if not pattern:
+            error_label.update("")
+            prompt_label.update(Text("Prompt results", style="bold"))
+            completion_label.update(Text("Completion results", style="bold"))
+            self._active_column = None
+            return
+
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            error_label.update(Text(f"Invalid regex: {exc}", style="red"))
+            prompt_label.update(Text("Prompt results", style="bold"))
+            completion_label.update(Text("Completion results", style="bold"))
+            self._active_column = None
+            return
+
+        error_label.update("")
+        self._prompt_hits = self._find_hits("prompt", self._prompt_lines, compiled)
+        self._completion_hits = self._find_hits(
+            "completion", self._completion_lines, compiled
+        )
+
+        for idx, hit in enumerate(self._prompt_hits):
+            prompt_list.add_option(self._build_option(hit, compiled, idx))
+        for idx, hit in enumerate(self._completion_hits):
+            completion_list.add_option(self._build_option(hit, compiled, idx))
+
+        prompt_label.update(
+            Text(f"Prompt results ({len(self._prompt_hits)})", style="bold")
+        )
+        completion_label.update(
+            Text(f"Completion results ({len(self._completion_hits)})", style="bold")
+        )
+
+        if self._completion_hits:
+            self._active_column = "completion"
+            self._completion_cursor = 0
+        elif self._prompt_hits:
+            self._active_column = "prompt"
+            self._prompt_cursor = 0
+        else:
+            self._active_column = None
+
+        self._sync_highlights()
+
+    def _find_hits(
+        self, column: str, lines: List[str], pattern: re.Pattern
+    ) -> List[SearchHit]:
+        hits: List[SearchHit] = []
+        for idx, line in enumerate(lines):
+            if pattern.search(line):
+                hits.append(SearchHit(column=column, line_index=idx, line_text=line))
+        return hits
+
+    def _build_option(
+        self, hit: SearchHit, pattern: re.Pattern, option_index: int
+    ) -> Option:
+        prefix = Text(f"{hit.line_index + 1:>5} | ", style="dim")
+        content = Text(hit.line_text)
+        _stylize_matches(content, pattern, "reverse")
+        return Option(prefix + content, id=str(option_index))
+
+    def _sync_highlights(self) -> None:
+        prompt_list = self.query_one("#prompt-results", OptionList)
+        completion_list = self.query_one("#completion-results", OptionList)
+
+        if self._active_column == "prompt" and self._prompt_cursor is not None:
+            prompt_list.highlighted = self._prompt_cursor
+            completion_list.highlighted = None
+            if hasattr(prompt_list, "scroll_to_highlight"):
+                prompt_list.scroll_to_highlight()
+        elif (
+            self._active_column == "completion" and self._completion_cursor is not None
+        ):
+            completion_list.highlighted = self._completion_cursor
+            prompt_list.highlighted = None
+            if hasattr(completion_list, "scroll_to_highlight"):
+                completion_list.scroll_to_highlight()
+        else:
+            prompt_list.highlighted = None
+            completion_list.highlighted = None
+
+    def _switch_column(self, target: str) -> None:
+        if target == "prompt" and self._prompt_hits:
+            self._active_column = "prompt"
+            if self._prompt_cursor is None:
+                self._prompt_cursor = 0
+        elif target == "completion" and self._completion_hits:
+            self._active_column = "completion"
+            if self._completion_cursor is None:
+                self._completion_cursor = 0
+        self._sync_highlights()
+
+    def _move_selection(self, delta: int) -> None:
+        if self._active_column == "prompt" and self._prompt_hits:
+            if self._prompt_cursor is None:
+                self._prompt_cursor = 0
+            else:
+                self._prompt_cursor = max(
+                    0, min(len(self._prompt_hits) - 1, self._prompt_cursor + delta)
+                )
+        elif self._active_column == "completion" and self._completion_hits:
+            if self._completion_cursor is None:
+                self._completion_cursor = 0
+            else:
+                self._completion_cursor = max(
+                    0,
+                    min(
+                        len(self._completion_hits) - 1, self._completion_cursor + delta
+                    ),
+                )
+        self._sync_highlights()
+
+    def _current_selection(self) -> Optional[SearchHit]:
+        if self._active_column == "prompt" and self._prompt_hits:
+            if self._prompt_cursor is None:
+                return None
+            return self._prompt_hits[self._prompt_cursor]
+        if self._active_column == "completion" and self._completion_hits:
+            if self._completion_cursor is None:
+                return None
+            return self._completion_hits[self._completion_cursor]
+        return None
 
 
 def main() -> None:
