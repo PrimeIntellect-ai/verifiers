@@ -274,7 +274,9 @@ touch /tmp/vf_complete
         intercept = self.intercepts.get(request_id) if request_id else None
 
         if intercept:
-            model = intercept.get("model") or model
+            # Always use the configured model from state, not the intercepted model
+            # (agent may send a placeholder like "model" from its config)
+            model = state.get("model") or model
             oai_tools = intercept.get("tools") or oai_tools
 
         response = await super().get_model_response(
