@@ -7,6 +7,8 @@ from typing import (
     Literal,
 )
 
+from datasets import Dataset
+
 from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
@@ -48,6 +50,7 @@ SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
+DatasetBuilder = Callable[[], Dataset]
 
 
 class TrajectoryStepTokens(TypedDict):

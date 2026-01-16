@@ -34,6 +34,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
     Messages,
@@ -67,8 +68,8 @@ class Environment(ABC):
 
     def __init__(
         self,
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
+        dataset: Dataset | DatasetBuilder | None = None,
+        eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
         few_shot: list[ChatMessage] | None = None,
         parser: Parser | None = None,
@@ -100,45 +101,30 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
+        self._map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_score_rollouts(score_rollouts)
 
-        if self.message_type == "chat":
-            if dataset is not None:
-                self.dataset = self._format_dataset(
-                    dataset, self.system_prompt, self.few_shot, map_kwargs=map_kwargs
-                )
-            else:
-                self.dataset = None
-            if eval_dataset is not None:
-                self.eval_dataset = self._format_dataset(
-                    eval_dataset,
-                    self.system_prompt,
-                    self.few_shot,
-                    map_kwargs=map_kwargs,
-                )
-            else:
-                self.eval_dataset = None
-        else:
-            if self.system_prompt or self.few_shot:
-                raise ValueError(
-                    'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
-                    'Please use message_type="chat" instead, or pre-format your dataset '
-                    'to contain a "prompt" column.'
-                )
-            if dataset is not None:
-                self.dataset = self._format_completion_dataset(
-                    dataset, map_kwargs=map_kwargs
-                )
-            else:
-                self.dataset = None
-            if eval_dataset is not None:
-                self.eval_dataset = self._format_completion_dataset(
-                    eval_dataset, map_kwargs=map_kwargs
-                )
-            else:
-                self.eval_dataset = None
+        if self.message_type != "chat" and (self.system_prompt or self.few_shot):
+            raise ValueError(
+                'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
+                'Please use message_type="chat" instead, or pre-format your dataset '
+                'to contain a "prompt" column.'
+            )
+
+        self._dataset_source: Dataset | DatasetBuilder | None = dataset
+        self._eval_dataset_source: Dataset | DatasetBuilder | None = eval_dataset
+        self._dataset: Dataset | None = None
+        self._eval_dataset: Dataset | None = None
+
+        if dataset is not None and not callable(dataset):
+            self._dataset = self._format_dataset_source(dataset)
+        if eval_dataset is not None and not callable(eval_dataset):
+            self._eval_dataset = self._format_dataset_source(eval_dataset)
+
+        self.dataset: Dataset | None = self._dataset
+        self.eval_dataset: Dataset | None = self._eval_dataset
 
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
@@ -153,7 +139,12 @@ class Environment(ABC):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-        if self.dataset is None and self.eval_dataset is None:
+        if (
+            self._dataset_source is None
+            and self._eval_dataset_source is None
+            and self._dataset is None
+            and self._eval_dataset is None
+        ):
             raise ValueError("Either dataset or eval_dataset must be provided")
         self.rollouts_per_example = None
         self._stop_conditions: list[StopCondition] = []
@@ -324,32 +315,74 @@ class Environment(ABC):
         dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
+    def _format_dataset_source(self, dataset: Dataset) -> Dataset:
+        """Format a dataset based on message_type."""
+        if self.message_type == "chat":
+            return self._format_dataset(
+                dataset,
+                self.system_prompt,
+                self.few_shot,
+                map_kwargs=self._map_kwargs,
+            )
+        else:
+            return self._format_completion_dataset(dataset, map_kwargs=self._map_kwargs)
+
+    def _build_dataset(self) -> Dataset | None:
+        """Build and cache the training dataset from source if needed."""
+        if self._dataset is not None:
+            return self._dataset
+        if self._dataset_source is None:
+            return None
+        if callable(self._dataset_source):
+            built = self._dataset_source()
+            self._dataset = self._format_dataset_source(built)
+        else:
+            self._dataset = self._format_dataset_source(self._dataset_source)
+        self.dataset = self._dataset
+        return self._dataset
+
+    def _build_eval_dataset(self) -> Dataset | None:
+        """Build and cache the evaluation dataset from source if needed."""
+        if self._eval_dataset is not None:
+            return self._eval_dataset
+        if self._eval_dataset_source is None:
+            return None
+        if callable(self._eval_dataset_source):
+            built = self._eval_dataset_source()
+            self._eval_dataset = self._format_dataset_source(built)
+        else:
+            self._eval_dataset = self._format_dataset_source(self._eval_dataset_source)
+        self.eval_dataset = self._eval_dataset
+        return self._eval_dataset
+
     @final
     def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
-        if self.dataset is None:
+        ds = self._build_dataset()
+        if ds is None:
             raise ValueError("dataset is not set")
         if seed is not None:
-            self.dataset = self.dataset.shuffle(seed=seed)
+            ds = ds.shuffle(seed=seed)
+            self._dataset = ds
         if n > 0:
-            # Cap n to the length of the dataset to prevent IndexError
-            n = min(n, len(self.dataset))
-            return self.dataset.select(range(n))
-        return self.dataset
+            n = min(n, len(ds))
+            return ds.select(range(n))
+        return ds
 
     @final
     def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
-        if self.eval_dataset is None:
+        ds = self._build_eval_dataset()
+        if ds is None:
             self.logger.warning(
                 "eval_dataset is not set, falling back to train dataset"
             )
             return self.get_dataset(n, seed)
         if seed is not None:
-            self.eval_dataset = self.eval_dataset.shuffle(seed=seed)
+            ds = ds.shuffle(seed=seed)
+            self._eval_dataset = ds
         if n > 0:
-            # Cap n to the length of the dataset to prevent IndexError
-            n = min(n, len(self.eval_dataset))
-            return self.eval_dataset.select(range(n))
-        return self.eval_dataset
+            n = min(n, len(ds))
+            return ds.select(range(n))
+        return ds
 
     async def get_model_response(
         self,
