@@ -182,6 +182,13 @@ class BrowserEnv(vf.StatefulToolEnv):
             tool_name, tool_args, messages, state, **kwargs
         )
 
+    async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
+        """Get prompt messages, filtering screenshots in CUA mode."""
+        messages = await super().get_prompt_messages(state)
+        if self.mode == "cua":
+            messages = self._mode_impl.filter_screenshots_in_messages(list(messages))
+        return messages
+
     @vf.cleanup
     async def cleanup_session(self, state: vf.State) -> None:
         """Clean up session after rollout."""
@@ -255,12 +262,11 @@ class BrowserEnv(vf.StatefulToolEnv):
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
         """
-        Handle environment response, filtering screenshots in CUA mode.
-        """
-        if self.mode == "cua":
-            # Filter screenshots to manage context size
-            messages = self._mode_impl.filter_screenshots_in_messages(list(messages))
+        Handle environment response for tool calls.
 
+        Note: Screenshot filtering is handled in get_prompt_messages() to ensure
+        filtering applies to the actual prompt sent to the model.
+        """
         tool_messages = await super().env_response(messages, state, **kwargs)
         if not isinstance(tool_messages, list):
             return tool_messages

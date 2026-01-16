@@ -1,7 +1,8 @@
 """DOM-based browser mode using Stagehand SDK."""
 
-import os
+import asyncio
 import json
+import os
 from typing import Any
 from dotenv import load_dotenv
 import verifiers as vf
@@ -32,6 +33,7 @@ class DOMMode:
         self.proxy_model_to_stagehand = proxy_model_to_stagehand
         self.stagehand_client: AsyncStagehand | None = None
         self.logger = None  # Will be set when register_tools is called
+        self._client_lock = asyncio.Lock()
 
     def register_tools(self, env) -> None:
         """Register DOM mode tools with the environment."""
@@ -66,12 +68,13 @@ class DOMMode:
                 "verifiers client has an api_key."
             )
 
-        if self.stagehand_client is None:
-            self.stagehand_client = AsyncStagehand(
-                browserbase_api_key=self.api_key,
-                browserbase_project_id=self.project_id,
-                model_api_key=api_key,
-            )
+        async with self._client_lock:
+            if self.stagehand_client is None:
+                self.stagehand_client = AsyncStagehand(
+                    browserbase_api_key=self.api_key,
+                    browserbase_project_id=self.project_id,
+                    model_api_key=api_key,
+                )
 
         session = await self.stagehand_client.sessions.create(
             model_name=self.stagehand_model,
