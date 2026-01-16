@@ -156,6 +156,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
+        env_vars.setdefault("OPENAI_TIMEOUT", "600")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
