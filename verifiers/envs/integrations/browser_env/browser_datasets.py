@@ -4,12 +4,12 @@ Dataset utilities for browser environment evaluation.
 This module provides functions for loading and creating datasets
 used in browser task evaluations.
 
-Datasets can be loaded from Prime Environments Hub or fall back to local files.
+Datasets are loaded from Prime Environments Hub. For local dataset fallback,
+use the example environments (gaia, webvoyager, mind2web) which include
+local dataset copies.
 """
 
-import json
 import logging
-from pathlib import Path
 from typing import Literal, Union, Optional
 
 from datasets import Dataset
@@ -33,9 +33,6 @@ _logger = logging.getLogger(__name__)
 
 BenchmarkType = Literal["smoke_test", "gaia", "webvoyager", "onlineMind2Web"]
 DifficultyLevel = Union[str, int, None]
-
-# Base path for local datasets (fallback)
-_LOCAL_DATASETS_PATH = Path(__file__).parent / "datasets"
 
 # ==================== Difficulty Level Mappings ====================
 # Unified difficulty levels: "easy", "medium", "hard" (or integers 1, 2, 3)
@@ -155,7 +152,8 @@ def _load_from_hub(benchmark: str, **kwargs) -> Optional[Dataset]:
     except Exception as e:
         _logger.warning(
             f"Failed to load {benchmark} from Prime Hub ({hub_name}): {e}. "
-            "Falling back to local files."
+            "Install the benchmark environment (e.g., 'prime env install browserbase/gaia') "
+            "for local dataset fallback."
         )
         return None
 
@@ -222,17 +220,19 @@ def load_gaia_dataset(
             - "easy" or 1: Level 1 tasks (26 tasks, easier)
             - "hard" or 2: Level 2 tasks (65 tasks, harder)
             Default: "easy"
-        use_hub: If True, try Prime Hub first, fall back to local (default: True)
+        use_hub: If True, load from Prime Hub (default: True)
 
     Returns:
         Dataset: A HuggingFace Dataset with 'question', 'answer', 'start_url', and 'task_id' columns
+
+    Raises:
+        RuntimeError: If Hub is unavailable. Install the gaia environment for local fallback.
 
     Example:
         >>> dataset = load_gaia_dataset(num_examples=5, difficulty_level="easy")
         >>> dataset = load_gaia_dataset(difficulty_level="hard")
         >>> dataset = load_gaia_dataset(difficulty_level=1)  # backwards compatible
     """
-    # Try hub first if enabled
     if use_hub:
         hub_dataset = _load_from_hub("gaia", difficulty_level=difficulty_level)
         if hub_dataset is not None:
@@ -242,34 +242,10 @@ def load_gaia_dataset(
                 )
             return hub_dataset
 
-    # Fall back to local file
-    internal_level = _normalize_gaia_difficulty(difficulty_level)
-    gaia_path = _LOCAL_DATASETS_PATH / "gaia" / "GAIA_web.jsonl"
-
-    questions = []
-    answers = []
-    start_urls = []
-    task_ids = []
-
-    with open(gaia_path) as f:
-        for line in f:
-            if line.strip():
-                row = json.loads(line)
-                if row.get("Level") == internal_level:
-                    questions.append(row["ques"])
-                    answers.append(row["Final answer"])
-                    start_urls.append(row.get("web", "https://www.google.com/"))
-                    task_ids.append(row.get("id", row.get("task_id", "")))
-                    if num_examples > 0 and len(questions) >= num_examples:
-                        break
-
-    return Dataset.from_dict(
-        {
-            "question": questions,
-            "answer": answers,
-            "start_url": start_urls,
-            "task_id": task_ids,
-        }
+    raise RuntimeError(
+        "Failed to load GAIA dataset from Prime Hub. "
+        "Install the gaia environment for local dataset: "
+        "'prime env install browserbase/gaia' or 'uv pip install -e ./environments/gaia'"
     )
 
 
@@ -287,18 +263,20 @@ def load_webvoyager_dataset(
     Args:
         num_examples: Number of examples to load. Use -1 to load all (default: -1)
         web_filter: Optional filter for specific website name (e.g., "Allrecipes", "Amazon")
-        use_hub: If True, try Prime Hub first, fall back to local (default: True)
+        use_hub: If True, load from Prime Hub (default: True)
 
     Returns:
         Dataset: A HuggingFace Dataset with 'question', 'answer', 'start_url',
                  'task_id', and 'website' columns
+
+    Raises:
+        RuntimeError: If Hub is unavailable. Install the webvoyager environment for local fallback.
 
     Example:
         >>> dataset = load_webvoyager_dataset(num_examples=5, web_filter="Allrecipes")
         >>> print(dataset[0])
         {'question': 'Provide a recipe for...', 'website': 'Allrecipes', ...}
     """
-    # Try hub first if enabled
     if use_hub:
         hub_dataset = _load_from_hub("webvoyager", web_filter=web_filter)
         if hub_dataset is not None:
@@ -308,42 +286,10 @@ def load_webvoyager_dataset(
                 )
             return hub_dataset
 
-    # Fall back to local file
-    webvoyager_path = _LOCAL_DATASETS_PATH / "webvoyager" / "WebVoyager_data.jsonl"
-
-    questions = []
-    answers = []
-    start_urls = []
-    task_ids = []
-    websites = []
-
-    with open(webvoyager_path) as f:
-        for line in f:
-            if line.strip():
-                row = json.loads(line)
-
-                # Optional website filter
-                if web_filter and row.get("web_name") != web_filter:
-                    continue
-
-                questions.append(row["ques"])
-                # Task-based eval: no explicit answer, use empty string
-                answers.append("")
-                start_urls.append(row["web"])
-                task_ids.append(row["id"])
-                websites.append(row["web_name"])
-
-                if num_examples > 0 and len(questions) >= num_examples:
-                    break
-
-    return Dataset.from_dict(
-        {
-            "question": questions,
-            "answer": answers,
-            "start_url": start_urls,
-            "task_id": task_ids,
-            "website": websites,
-        }
+    raise RuntimeError(
+        "Failed to load WebVoyager dataset from Prime Hub. "
+        "Install the webvoyager environment for local dataset: "
+        "'prime env install browserbase/webvoyager' or 'uv pip install -e ./environments/webvoyager'"
     )
 
 
@@ -366,17 +312,19 @@ def load_mind2web_dataset(
             - "hard" or 3: Hard tasks (74 tasks)
             - None: All tasks (301 tasks)
             Default: None (all)
-        use_hub: If True, try Prime Hub first, fall back to local (default: True)
+        use_hub: If True, load from Prime Hub (default: True)
 
     Returns:
         Dataset: A HuggingFace Dataset with 'question', 'answer', 'start_url',
                  'task_id', and 'difficulty' columns
 
+    Raises:
+        RuntimeError: If Hub is unavailable. Install the mind2web environment for local fallback.
+
     Example:
         >>> dataset = load_mind2web_dataset(num_examples=5, difficulty_level="easy")
         >>> dataset = load_mind2web_dataset(difficulty_level=2)  # medium tasks
     """
-    # Try hub first if enabled
     if use_hub:
         hub_dataset = _load_from_hub(
             "onlineMind2Web", difficulty_level=difficulty_level
@@ -388,43 +336,10 @@ def load_mind2web_dataset(
                 )
             return hub_dataset
 
-    # Fall back to local file
-    internal_level = _normalize_mind2web_difficulty(difficulty_level)
-    mind2web_path = _LOCAL_DATASETS_PATH / "onlineMind2Web" / "onlineMind2Web.jsonl"
-
-    questions = []
-    answers = []
-    start_urls = []
-    task_ids = []
-    difficulties = []
-
-    with open(mind2web_path) as f:
-        for line in f:
-            if line.strip():
-                row = json.loads(line)
-
-                # Optional difficulty filter
-                if internal_level and row.get("level") != internal_level:
-                    continue
-
-                questions.append(row["confirmed_task"])
-                # Task-based eval: no explicit answer, use empty string
-                answers.append("")
-                start_urls.append(row["website"])
-                task_ids.append(row["task_id"])
-                difficulties.append(row["level"])
-
-                if num_examples > 0 and len(questions) >= num_examples:
-                    break
-
-    return Dataset.from_dict(
-        {
-            "question": questions,
-            "answer": answers,
-            "start_url": start_urls,
-            "task_id": task_ids,
-            "difficulty": difficulties,
-        }
+    raise RuntimeError(
+        "Failed to load Mind2Web dataset from Prime Hub. "
+        "Install the mind2web environment for local dataset: "
+        "'prime env install browserbase/mind2web' or 'uv pip install -e ./environments/mind2web'"
     )
 
 
