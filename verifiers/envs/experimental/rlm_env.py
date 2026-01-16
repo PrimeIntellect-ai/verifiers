@@ -43,6 +43,7 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
+from openai.types.chat import ChatCompletion
 from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
@@ -69,6 +70,10 @@ from verifiers.utils.rlm_data_serialization_utils import (
     prepare_context_data,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
+from verifiers.utils.token_utils import (
+    prepare_sampling_args_for_token_prompts,
+    tokenize_vllm,
+)
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
@@ -1647,9 +1652,6 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
-        # Logprobs support detection (None = unknown, True/False = known)
-        self._sub_llm_supports_logprobs: bool | None = None
-
         super().__init__(
             sandbox_name="rlm-env",
             start_command=start_command,
@@ -1789,30 +1791,28 @@ class RLMEnv(SandboxEnv):
         )
 
     @staticmethod
-    def _is_logprobs_param_error(error: Exception) -> bool:
-        """Return True if the error indicates logprobs is an unsupported/invalid param."""
-        error_text = str(error).lower()
-        if "logprob" not in error_text:
-            return False
-        param_markers = (
-            "not supported",
-            "unsupported",
-            "not allowed",
-            "not permitted",
-            "forbidden",
-            "invalid",
-            "unknown",
-            "unexpected",
-            "additional properties",
-            "not a valid",
-            "unrecognized",
-            "extra fields",
-            "parameter",
-            "params",
-            "schema",
-            "403",
-        )
-        return any(marker in error_text for marker in param_markers)
+    def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
+        """Normalize sampling args to match main model behavior."""
+        if "max_tokens" in sampling_args:
+            if sampling_args["max_tokens"] is None:
+                sampling_args.pop("max_tokens")
+            else:
+                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
+        if (
+            "max_completion_tokens" in sampling_args
+            and sampling_args["max_completion_tokens"] is None
+        ):
+            sampling_args.pop("max_completion_tokens")
+        return {k: v for k, v in sampling_args.items() if v is not None}
+
+    def _prepare_sub_llm_sampling_args(
+        self, state: State, *, interleaved: bool
+    ) -> dict[str, Any]:
+        sampling_args = dict(state.get("sampling_args") or {})
+        sampling_args = self._normalize_sampling_args(sampling_args)
+        if interleaved:
+            return prepare_sampling_args_for_token_prompts(sampling_args)
+        return sampling_args
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -1861,50 +1861,58 @@ class RLMEnv(SandboxEnv):
         return normalized
 
     async def _call_sub_llm_api(
-        self, client: Any, model: str, messages: list[dict], tools: list | None = None
+        self,
+        state: State,
+        client: Any,
+        model: str,
+        messages: list[dict],
+        tools: list | None = None,
     ) -> Any | None:
-        """Make a single sub-LLM API call with timeout. Returns None on timeout."""
+        """Make a single sub-LLM API call matching main-model request mode."""
         normalized_messages = self._normalize_message_content(messages)
-        logprobs_support = self._sub_llm_supports_logprobs
+        sampling_args = self._prepare_sub_llm_sampling_args(
+            state, interleaved=self.interleaved_rollouts
+        )
 
-        async def _create_call(logprobs: bool | None) -> Any:
+        try:
+            if self.interleaved_rollouts:
+                extra_body = sampling_args.pop("extra_body", {})
+                prompt_ids = await tokenize_vllm(
+                    client=client,
+                    messages=normalized_messages,
+                    tools=tools,
+                    model=model,
+                )
+                body = dict(
+                    model=model,
+                    messages=normalized_messages,
+                    tools=tools,
+                    tokens=prompt_ids,
+                    **sampling_args,
+                    **extra_body,
+                )
+                return await asyncio.wait_for(
+                    client.post(
+                        "/chat/completions/tokens",
+                        body=body,
+                        cast_to=ChatCompletion,
+                    ),
+                    timeout=self.sub_llm_api_timeout,
+                )
             return await asyncio.wait_for(
                 client.chat.completions.create(
                     model=model,
                     messages=normalized_messages,
                     tools=tools,
-                    logprobs=logprobs,
+                    **sampling_args,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
-
-        try:
-            if logprobs_support is False:
-                return await _create_call(None)
-            if logprobs_support is True:
-                return await _create_call(True)
-
-            # Unknown support: try logprobs=True once, then fallback on param errors.
-            response = await _create_call(True)
-            self._sub_llm_supports_logprobs = True
-            return response
         except asyncio.TimeoutError:
             logger.warning(
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
-        except Exception as e:
-            if logprobs_support is None and self._is_logprobs_param_error(e):
-                if self._sub_llm_supports_logprobs is None:
-                    self._sub_llm_supports_logprobs = False
-                try:
-                    return await _create_call(None)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-                    )
-                    return None
-            raise
 
     def _make_timeout_result(
         self,
@@ -1926,12 +1934,12 @@ class RLMEnv(SandboxEnv):
         )
 
     async def _run_sub_llm(
-        self, client: Any, model: str, messages: list[dict]
+        self, state: State, client: Any, model: str, messages: list[dict]
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
-            response = await self._call_sub_llm_api(client, model, messages)
+            response = await self._call_sub_llm_api(state, client, model, messages)
             if response is None:
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
@@ -1966,7 +1974,7 @@ class RLMEnv(SandboxEnv):
             prompt_snapshot = [dict(m) for m in current_messages]
 
             response = await self._call_sub_llm_api(
-                client, model, current_messages, tools
+                state, client, model, current_messages, tools
             )
             if response is None:
                 return self._make_timeout_result(
@@ -2029,7 +2037,7 @@ class RLMEnv(SandboxEnv):
         )
 
         prompt_snapshot = [dict(m) for m in current_messages]
-        response = await self._call_sub_llm_api(client, model, current_messages)
+        response = await self._call_sub_llm_api(state, client, model, current_messages)
         if response is None:
             return self._make_timeout_result(
                 turns,
@@ -2128,7 +2136,11 @@ class RLMEnv(SandboxEnv):
 
         try:
             # Run sub-LLM call (handles both with-tools and no-tools cases)
-            result = await self._run_sub_llm(client, sub_model, messages_with_system)
+            if state_ref is None:
+                return web.json_response({"error": "State not available"}, status=500)
+            result = await self._run_sub_llm(
+                state_ref, client, sub_model, messages_with_system
+            )
             final_content = result["final_content"]
             prompt_tokens = result["total_prompt_tokens"]
             completion_tokens = result["total_completion_tokens"]
