@@ -26,21 +26,51 @@ Unified browser automation environment supporting two modes:
 ### Quick Start
 
 ```python
-from verifiers.envs.integrations.browser_env import load_environment
+from verifiers.envs.integrations.browser_env import BrowserEnv
+from datasets import Dataset
+import verifiers as vf
+
+# Create your dataset
+dataset = Dataset.from_list([
+    {"prompt": [{"role": "user", "content": "Navigate to example.com and find the main heading"}]},
+])
+
+# Create a rubric
+rubric = vf.Rubric(funcs=[my_reward_func])
 
 # DOM mode (natural language)
-env = load_environment(mode="dom", benchmark="gaia")
+env = BrowserEnv(
+    mode="dom",
+    dataset=dataset,
+    rubric=rubric,
+)
 
 # CUA mode (vision-based) - requires starting CUA server first
-env = load_environment(mode="cua", benchmark="webvoyager")
+env = BrowserEnv(
+    mode="cua",
+    dataset=dataset,
+    rubric=rubric,
+)
 ```
 
-### Benchmarks
+### DOM Mode Options
 
-- `smoke_test`: Basic navigation test (1 task)
-- `gaia`: GAIA web tasks (difficulty: "easy", "hard")
-- `webvoyager`: WebVoyager navigation tasks (643 tasks)
-- `onlineMind2Web`: Mind2Web tasks (difficulty: "easy", "medium", "hard")
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `stagehand_model` | `"openai/gpt-4o-mini"` | Model Stagehand uses for page understanding |
+| `model_api_key` | `MODEL_API_KEY` env | API key for Stagehand's model |
+| `proxy_model_to_stagehand` | `False` | Route LLM calls through verifiers client |
+
+#### `proxy_model_to_stagehand` Flag
+
+Controls how Stagehand's internal LLM calls (for `observe`, `act`, `extract`) are routed:
+
+- **`False` (default)**: Stagehand uses its own configured model (`stagehand_model`) with the `model_api_key`. Best for production where you want Stagehand to use a fast/cheap model (e.g., `gpt-4o-mini`) independently of the agent model.
+
+- **`True`**: Stagehand's LLM calls are routed through the same model/endpoint as the verifiers client. The agent's `api_key` and `base_url` are injected into Stagehand tool calls. Useful for:
+  - Using a single model for both agent reasoning and browser understanding
+  - Routing through custom API endpoints (e.g., vLLM, custom inference servers)
+  - Training scenarios where you want consistent model usage
 
 ### CUA Server Setup
 
@@ -57,6 +87,6 @@ pnpm install
 ```bash
 BROWSERBASE_API_KEY         # Browserbase cloud API key
 BROWSERBASE_PROJECT_ID      # Browserbase cloud project
-MODEL_API_KEY               # For DOM mode LLM calls
+MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
 OPENAI_API_KEY              # For LLM judge evaluation
 ```
