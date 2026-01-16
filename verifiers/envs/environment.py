@@ -536,6 +536,7 @@ class Environment(ABC):
                 **sampling_args,
                 **extra_body,
             )
+
             return await client.post(
                 "/chat/completions/tokens",
                 body=body,
