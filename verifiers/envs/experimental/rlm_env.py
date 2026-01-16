@@ -84,14 +84,6 @@ class RLMCodeExecutionTimeout(Exception):
     """Raised when code execution exceeds the configured timeout."""
 
 
-class RLMSubLLMRequestError(Exception):
-    """Raised when a sub-LLM API request fails, carrying the request payload."""
-
-    def __init__(self, message: str, payload: dict[str, Any]) -> None:
-        super().__init__(message)
-        self.payload = payload
-
-
 @dataclass(frozen=True)
 class RLMWorkerPaths:
     base_dir: str
@@ -1881,14 +1873,6 @@ class RLMEnv(SandboxEnv):
             normalized.append(msg_copy)
         return normalized
 
-    @staticmethod
-    def _sanitize_payload_for_json(payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            json.dumps(payload)
-            return payload
-        except TypeError:
-            return json.loads(json.dumps(payload, default=str))
-
     async def _call_sub_llm_api(
         self,
         state: State,
@@ -1951,7 +1935,7 @@ class RLMEnv(SandboxEnv):
             )
             return None
         except Exception as e:
-            raise RLMSubLLMRequestError(str(e), payload) from e
+            raise e
 
     def _make_timeout_result(
         self,
@@ -2267,35 +2251,7 @@ class RLMEnv(SandboxEnv):
 
             return web.json_response(response_dict)
         except Exception as e:
-            repl_request = None
-            repl_code = None
-            if state_ref is not None:
-                repl_request = state_ref.get("rlm_last_repl_request")
-                if isinstance(repl_request, dict):
-                    repl_code = repl_request.get("code")
-            main_request = None
-            if state_ref is not None:
-                main_request = state_ref.get("last_model_request")
-            payload = None
-            if isinstance(e, RLMSubLLMRequestError):
-                payload = self._sanitize_payload_for_json(e.payload)
-            debug_payload = {
-                "batch_id": batch_id,
-                "request_id": request_id,
-                "repl_request": repl_request,
-                "repl_code": repl_code,
-                "main_request": main_request,
-                "sub_llm_payload": payload,
-                "messages": messages_with_system,
-            }
-            logger.error(
-                "Sub-LLM call failed: %s\n%s",
-                e,
-                json.dumps(debug_payload, ensure_ascii=True, default=str),
-            )
-            return web.json_response(
-                {"error": str(e), "debug": debug_payload}, status=500
-            )
+            return web.json_response({"error": str(e)}, status=500)
 
     @vf.teardown
     async def teardown_tunnels(self):
@@ -2602,8 +2558,6 @@ class RLMEnv(SandboxEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
-        state["rlm_last_repl_request"] = {"code": code}
-
         # Time the full tool call execution
         execution_start = perf_counter()
         result = await self._execute_code(sandbox_id, code, state)
