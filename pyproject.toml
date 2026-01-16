@@ -36,7 +36,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-sandboxes>=0.2.7",
-    "prime-tunnel>=0.1.0",
+    "prime-tunnel",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -46,6 +46,9 @@ dependencies = [
     "typing_extensions; python_version < '3.12'",
     "wget>=3.2",
 ]
+
+[tool.uv.sources]
+prime-tunnel = { git = "https://github.com/PrimeIntellect-ai/prime.git", branch = "feature/tunnel" }
 
 [dependency-groups]
 dev = [
