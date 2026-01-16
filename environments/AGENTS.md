@@ -7,34 +7,36 @@ This file mirrors the "Environments" section from the Verifiers documentation, a
 This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Table of Contents
-- [Your First Environment](#your-first-environment)
-- [Datasets](#datasets)
-  - [Building the Prompt](#building-the-prompt)
-  - [Evaluation Datasets](#evaluation-datasets)
-- [Rubrics](#rubrics)
-  - [Reward Functions](#reward-functions)
-  - [Multiple Reward Functions](#multiple-reward-functions)
-  - [Execution Order and State](#execution-order-and-state)
-  - [Group-Based Reward Functions](#group-based-reward-functions)
-  - [Shared Objects](#shared-objects)
-  - [Rubric Groups](#rubric-groups)
-  - [Metrics and Monitor Rubrics](#metrics-and-monitor-rubrics)
-- [Tool Environments](#tool-environments)
-  - [MCP Tool Environments](#mcp-tool-environments)
-  - [Stateful Tool Environments](#stateful-tool-environments)
-- [Custom Multi-Turn Environments](#custom-multi-turn-environments)
-  - [The Rollout Loop](#the-rollout-loop)
-  - [Stop Conditions](#stop-conditions)
-  - [Error Handling](#error-handling)
-  - [State Initialization](#state-initialization)
-  - [Cleanup and Teardown](#cleanup-and-teardown)
-  - [Signaling Early Termination](#signaling-early-termination)
-- [Developing Environments](#developing-environments)
-  - [pyproject.toml](#pyprojecttoml)
-  - [Managing Dependencies](#managing-dependencies)
-  - [Installation](#installation)
-- [Environment Groups](#environment-groups)
-- [Integrations and Experimental Environments](#integrations-and-experimental-environments)
+- [environments/AGENTS.md](#environmentsagentsmd)
+  - [Table of Contents](#table-of-contents)
+  - [Your First Environment](#your-first-environment)
+  - [Datasets](#datasets)
+    - [Building the Prompt](#building-the-prompt)
+    - [Evaluation Datasets](#evaluation-datasets)
+  - [Rubrics](#rubrics)
+    - [Reward Functions](#reward-functions)
+    - [Multiple Reward Functions](#multiple-reward-functions)
+    - [Execution Order and State](#execution-order-and-state)
+    - [Group-Based Reward Functions](#group-based-reward-functions)
+    - [Shared Objects](#shared-objects)
+    - [Rubric Groups](#rubric-groups)
+    - [Metrics and Monitor Rubrics](#metrics-and-monitor-rubrics)
+  - [Tool Environments](#tool-environments)
+    - [MCP Tool Environments](#mcp-tool-environments)
+    - [Stateful Tool Environments](#stateful-tool-environments)
+  - [Custom Multi-Turn Environments](#custom-multi-turn-environments)
+    - [The Rollout Loop](#the-rollout-loop)
+    - [Stop Conditions](#stop-conditions)
+    - [Error Handling](#error-handling)
+    - [State Initialization](#state-initialization)
+    - [Cleanup and Teardown](#cleanup-and-teardown)
+    - [Signaling Early Termination](#signaling-early-termination)
+  - [Developing Environments](#developing-environments)
+    - [pyproject.toml](#pyprojecttoml)
+    - [Managing Dependencies](#managing-dependencies)
+    - [Installation](#installation)
+  - [Environment Groups](#environment-groups)
+  - [Integrations and Experimental Environments](#integrations-and-experimental-environments)
 
 ## Your First Environment
 
@@ -724,8 +726,9 @@ Supported third-party environment integrations include:
 
 - **`TextArenaEnv`** — wraps [TextArena](https://github.com/LeonGuertler/TextArena) text-based game environments
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
+- **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena).
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv).
 
 Newer and more experimental environment classes include:
 
