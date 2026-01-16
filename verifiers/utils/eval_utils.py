@@ -21,9 +21,9 @@ import verifiers as vf
 from verifiers.types import (
     Endpoints,
     EvalConfig,
+    EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
-    MultiEvalConfig,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
@@ -244,56 +244,63 @@ def print_results(
             print_timing(task_results)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+async def run_evaluation(
+    env_config: EvalConfig,
+    run_config: EvalRunConfig,
+) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(config.client_config)
+    client = setup_client(run_config.client_config)
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
+        f"Initialized AsyncOpenAI client with base_url: {run_config.client_config.api_base_url}"
     )
 
     # load environment
-    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+    vf_env = vf.load_environment(env_id=env_config.env_id, **env_config.env_args)
 
     # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+    if run_config.extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {run_config.extra_env_kwargs}")
+        vf_env.set_kwargs(**run_config.extra_env_kwargs)
 
     # run evaluation
-    results_path = get_eval_results_path(config)
-    logger.info(f"Starting evaluation with model: {config.model}")
+    results_path = get_eval_results_path(run_config, env_config)
+    logger.info(f"Starting evaluation with model: {run_config.model}")
     logger.info(
-        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+        f"Configuration: num_examples={env_config.num_examples}, rollouts_per_example={env_config.rollouts_per_example}, max_concurrent={run_config.max_concurrent}"
     )
     results = await vf_env.evaluate(
         client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
+        model=run_config.model,
+        sampling_args=run_config.sampling_args,
+        num_examples=env_config.num_examples,
+        rollouts_per_example=env_config.rollouts_per_example,
+        max_concurrent=run_config.max_concurrent,
+        max_concurrent_generation=run_config.max_concurrent_generation,
+        max_concurrent_scoring=run_config.max_concurrent_scoring,
         results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        independent_scoring=config.independent_scoring,
+        state_columns=run_config.state_columns,
+        save_results=run_config.save_results,
+        save_every=run_config.save_every,
+        independent_scoring=run_config.independent_scoring,
     )
 
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+    if run_config.save_results:
+        save_rollout_results(
+            results,
+            run_config.save_to_hf_hub,
+            run_config.hf_hub_dataset_name,
+        )
     return results
 
 
-async def run_multi_evaluation(config: MultiEvalConfig) -> None:
+async def run_multi_evaluation(config: EvalRunConfig) -> None:
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.env]
+        *[run_evaluation(eval_config, config) for eval_config in config.env]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()

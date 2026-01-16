@@ -214,7 +214,7 @@ env_id = "math-python"
 # Uses CLI args or defaults for num_examples and rollouts_per_example
 ```
 
-Each `[[env]]` section must contain an `env_id` field. All other fields are optional and correspond to the same options available via CLI flags:
+Each `[[env]]` section must contain an `env_id` field. All other fields are optional and correspond to per-environment options:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -222,7 +222,6 @@ Each `[[env]]` section must contain an `env_id` field. All other fields are opti
 | `env_args` | table | Arguments passed to `load_environment()` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
-| `extra_env_kwargs` | table | Arguments passed to environment constructor |
 
 Example with `env_args`:
 
@@ -238,7 +237,7 @@ split = "test"
 
 ### Configuration Precedence
 
-Settings are resolved with the following priority order (highest to lowest):
+Settings are resolved with the following priority order (highest to lowest) for per-environment fields:
 
 1. **TOML per-environment settings** — Values specified in `[[env]]` sections
 2. **CLI arguments** — Flags passed on the command line
@@ -261,3 +260,5 @@ env_id = "alphabet-sort"
 # gsm8k uses 100 examples (from TOML), alphabet-sort uses 10 (from CLI)
 prime eval run configs/eval/mixed.toml -n 10
 ```
+
+Run-level settings (model, sampling args, concurrency, saving, etc.) are configured via CLI flags and apply to all environments in the run. These are not set in the TOML file, so CLI flags always win for those settings.

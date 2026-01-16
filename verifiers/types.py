@@ -222,14 +222,20 @@ class EvalConfig(BaseModel):
 
     # environment
     env_id: str
-    env_args: dict
+    env_args: dict = {}
+    num_examples: int
+    rollouts_per_example: int
+
+
+class EvalRunConfig(BaseModel):
+    """Pydantic model for evaluation run configuration."""
+
+    env: list[EvalConfig]
+    # run
     env_dir_path: str
-    # evaluation
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
-    num_examples: int
-    rollouts_per_example: int
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
@@ -243,9 +249,3 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
-
-
-class MultiEvalConfig(BaseModel):
-    """Pydantic model for multi-environment evaluation configuration."""
-
-    env: list[EvalConfig]
