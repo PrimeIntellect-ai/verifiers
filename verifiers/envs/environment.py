@@ -484,6 +484,15 @@ class Environment(ABC):
                     }
 
                 if oai_tools:
+                    state["last_model_request"] = {
+                        "endpoint": "/chat/completions",
+                        "body": {
+                            "model": model,
+                            "messages": prompt,
+                            "tools": oai_tools,
+                            **sampling_args,
+                        },
+                    }
                     response = await client.chat.completions.create(
                         model=model,
                         messages=prompt,
@@ -491,6 +500,14 @@ class Environment(ABC):
                         **sampling_args,
                     )
                 else:
+                    state["last_model_request"] = {
+                        "endpoint": "/chat/completions",
+                        "body": {
+                            "model": model,
+                            "messages": prompt,
+                            **sampling_args,
+                        },
+                    }
                     response = await client.chat.completions.create(
                         model=model,
                         messages=prompt,
@@ -503,6 +520,14 @@ class Environment(ABC):
                         "oai_tools are not supported for completion tasks."
                     )
                 assert isinstance(prompt, str)
+                state["last_model_request"] = {
+                    "endpoint": "/completions",
+                    "body": {
+                        "model": model,
+                        "prompt": prompt,
+                        **sampling_args,
+                    },
+                }
                 response = await client.completions.create(
                     model=model, prompt=prompt, **sampling_args
                 )
@@ -536,6 +561,10 @@ class Environment(ABC):
                 **sampling_args,
                 **extra_body,
             )
+            state["last_model_request"] = {
+                "endpoint": "/chat/completions/tokens",
+                "body": body,
+            }
 
             return await client.post(
                 "/chat/completions/tokens",

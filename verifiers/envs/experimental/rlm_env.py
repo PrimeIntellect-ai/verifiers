@@ -2260,6 +2260,9 @@ class RLMEnv(SandboxEnv):
                 repl_request = state_ref.get("rlm_last_repl_request")
                 if isinstance(repl_request, dict):
                     repl_code = repl_request.get("code")
+            main_request = None
+            if state_ref is not None:
+                main_request = state_ref.get("last_model_request")
             payload = None
             if isinstance(e, RLMSubLLMRequestError):
                 payload = self._sanitize_payload_for_json(e.payload)
@@ -2268,6 +2271,7 @@ class RLMEnv(SandboxEnv):
                 "request_id": request_id,
                 "repl_request": repl_request,
                 "repl_code": repl_code,
+                "main_request": main_request,
                 "sub_llm_payload": payload,
                 "messages": messages_with_system,
             }
