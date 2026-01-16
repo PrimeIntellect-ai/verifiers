@@ -27,14 +27,11 @@ verifiers/envs/integrations/browser_env/cua-server/
 ```bash
 cd verifiers/envs/integrations/browser_env/cua-server
 
-# Install dependencies
-npm install
-
-# Start the server
-npm start
+# Start the server (installs dependencies automatically if needed)
+./start.sh
 ```
 
-The server runs on `http://localhost:3000` by default.
+The server runs on `http://localhost:3000` by default. Use `./start.sh --port 8080` for a custom port.
 
 ## Installation
 
@@ -65,7 +62,7 @@ Note: CUA mode does NOT require `MODEL_API_KEY` since it doesn't use Stagehand.
 
 1. **Start the CUA server** (in a separate terminal):
    ```bash
-   cd verifiers/envs/integrations/browser_env/cua-server && npm start
+   cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
    ```
 
 2. **Run the evaluation**:

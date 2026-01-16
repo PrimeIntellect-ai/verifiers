@@ -107,6 +107,59 @@ class CUAMode:
         env.add_tool(self.wait, args_to_skip=_skip)
         env.add_tool(self.screenshot, args_to_skip=_skip)
 
+        # Verify server is reachable early to provide clear error messages
+        self.verify_server_connection()
+
+    # ==================== Server Health Check Methods ====================
+
+    async def _check_server_health(self) -> None:
+        """Check if the CUA server is reachable by hitting its health endpoint."""
+        health_url = f"{self.server_url}/health"
+        timeout = aiohttp.ClientTimeout(total=5)
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(health_url) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise RuntimeError(
+                            f"CUA server health check failed with status {resp.status}: {error_text}"
+                        )
+        except aiohttp.ClientConnectorError:
+            raise RuntimeError(
+                f"\nCUA server is not reachable at {self.server_url}\n\n"
+                "To start the CUA server:\n"
+                "  cd verifiers/envs/integrations/browser_env/cua-server\n"
+                "  npm install && npm run dev\n\n"
+                "The server must be running before using CUA mode environments.\n"
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"\nCUA server at {self.server_url} did not respond within 5 seconds.\n\n"
+                "Please check if the server is running and responsive:\n"
+                "  cd verifiers/envs/integrations/browser_env/cua-server\n"
+                "  npm install && npm run dev\n"
+            )
+
+    def verify_server_connection(self) -> None:
+        """Synchronously verify that the CUA server is reachable."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # We're already in an async context, create a task
+            # This shouldn't happen in normal usage since register_tools is sync
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, self._check_server_health())
+                future.result()
+        else:
+            # No running loop, we can use asyncio.run directly
+            asyncio.run(self._check_server_health())
+
     # ==================== HTTP Client Methods ====================
 
     async def _get_client(self) -> aiohttp.ClientSession:

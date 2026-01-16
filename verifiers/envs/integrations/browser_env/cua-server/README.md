@@ -18,10 +18,10 @@ npm install @browserbasehq/stagehand fastify
 
 ```bash
 # Start the server
-npx tsx index.ts
+./start.sh
 
-# Or with environment variables
-CUA_SERVER_PORT=8080 npx tsx index.ts
+# Or with custom port
+./start.sh --port 8080
 ```
 
 ## Environment Variables
