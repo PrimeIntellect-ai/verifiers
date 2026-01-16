@@ -1,5 +1,6 @@
 """Unified Browser Environment with DOM and CUA modes."""
 
+import os
 from typing import Any, Literal
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
@@ -82,6 +83,15 @@ class BrowserEnv(vf.StatefulToolEnv):
         super().__init__(**kwargs)
         self.mode = mode
 
+        # Validate required environment variables before proceeding
+        self._validate_environment_variables(
+            mode=mode,
+            env=env,
+            browserbase_api_key=browserbase_api_key,
+            browserbase_project_id=browserbase_project_id,
+            model_api_key=model_api_key,
+        )
+
         # Initialize the appropriate mode strategy
         if mode == "dom":
             self._mode_impl = DOMMode(
@@ -107,6 +117,51 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         # Register mode-specific tools
         self._mode_impl.register_tools(self)
+
+    def _validate_environment_variables(
+        self,
+        mode: str,
+        env: str,
+        browserbase_api_key: str | None,
+        browserbase_project_id: str | None,
+        model_api_key: str | None,
+    ) -> None:
+        """
+        Validate that required environment variables are set before initialization.
+
+        Raises:
+            ValueError: If required environment variables are missing.
+        """
+        missing_vars = []
+
+        # Check Browserbase credentials for DOM mode or CUA+BROWSERBASE
+        if mode == "dom" or (mode == "cua" and env == "BROWSERBASE"):
+            resolved_api_key = browserbase_api_key or os.getenv("BROWSERBASE_API_KEY")
+            resolved_project_id = browserbase_project_id or os.getenv(
+                "BROWSERBASE_PROJECT_ID"
+            )
+
+            if not resolved_api_key:
+                missing_vars.append("BROWSERBASE_API_KEY")
+            if not resolved_project_id:
+                missing_vars.append("BROWSERBASE_PROJECT_ID")
+
+        # Check MODEL_API_KEY for DOM mode (used by Stagehand)
+        if mode == "dom":
+            resolved_model_key = model_api_key or os.getenv("MODEL_API_KEY")
+            if not resolved_model_key:
+                missing_vars.append("MODEL_API_KEY")
+
+        if missing_vars:
+            mode_desc = f"mode='{mode}'"
+            if mode == "cua":
+                mode_desc += f", env='{env}'"
+
+            raise ValueError(
+                f"Missing required environment variables for BrowserEnv ({mode_desc}):\n"
+                f"  {', '.join(missing_vars)}\n\n"
+                f"Please set these variables in your environment or .env file."
+            )
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Delegate session creation to the mode strategy."""
