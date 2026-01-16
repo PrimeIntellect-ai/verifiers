@@ -1,6 +1,6 @@
 [project]
 name = "browser-cua-example"
-version = "0.1.0"
+version = "0.1.1"
 description = "Example environment demonstrating CUA (Computer Use Agent) mode browser automation"
 tags = ["browser", "browserbase", "cua", "vision", "example"]
 requires-python = ">=3.10"

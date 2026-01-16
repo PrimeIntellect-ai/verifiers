@@ -1,6 +1,6 @@
 [project]
 name = "browser-dom-example"
-version = "0.1.0"
+version = "0.1.1"
 description = "Example environment demonstrating DOM mode browser automation with Stagehand"
 tags = ["browser", "browserbase", "dom", "stagehand", "example"]
 requires-python = ">=3.10"
