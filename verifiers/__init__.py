@@ -27,6 +27,7 @@ from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
 from .rubrics.judge_rubric import JudgeRubric
 from .rubrics.rubric_group import RubricGroup
+from .rubrics.tool_rubric import ToolRubric
 from .utils.data_utils import (
     extract_boxed_answer,
     extract_hash_answer,
@@ -51,6 +52,7 @@ __all__ = [
     "Rubric",
     "JudgeRubric",
     "RubricGroup",
+    "ToolRubric",
     "MathRubric",
     "TextArenaEnv",
     "ReasoningGymEnv",
@@ -143,3 +145,4 @@ if TYPE_CHECKING:
         get_model_and_tokenizer,
     )
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .rubrics.tool_rubric import ToolRubric  # noqa: F401
