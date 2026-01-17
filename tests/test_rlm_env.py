@@ -38,6 +38,7 @@ def mock_sandbox_client():
     client.execute_command = AsyncMock(return_value=MagicMock(stdout="", stderr=""))
     client.upload_file = AsyncMock()
     client.upload_bytes = AsyncMock()
+    client.teardown = MagicMock()
     return client
 
 
@@ -708,7 +709,7 @@ async def test_local_worker_exports_stagger_env_vars(rlm_env_local, tmp_path):
         patch.object(executor, "_wait_for_ready", new=AsyncMock()),
         patch("verifiers.envs.experimental.rlm_env.subprocess.Popen") as mock_popen,
     ):
-        mock_popen.return_value = MagicMock()
+        mock_popen.return_value = MagicMock(wait=MagicMock(), pid=1234)
         await executor._start_worker(state, session)
 
     _, kwargs = mock_popen.call_args
