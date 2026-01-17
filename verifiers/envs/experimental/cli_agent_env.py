@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shlex
 import time
@@ -7,6 +8,13 @@ from typing import Any, cast
 
 from aiohttp import web
 from openai import AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+    ChatCompletionMessageToolCall,
+)
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message_tool_call import Function
 from prime_sandboxes import (
     AdvancedConfigs,
     AsyncSandboxClient,
@@ -256,9 +264,6 @@ touch /tmp/vf_complete
         """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
         if not prompt:
-            from openai.types.chat import ChatCompletion, ChatCompletionMessage
-            from openai.types.chat.chat_completion import Choice
-
             return ChatCompletion(
                 id="agent-completed",
                 choices=[
@@ -282,21 +287,157 @@ touch /tmp/vf_complete
             model = state.get("model") or model
             oai_tools = intercept.get("tools") or oai_tools
 
-        response = await super().get_model_response(
-            state=state,
-            prompt=prompt,
-            client=client,
-            model=model,
-            oai_tools=oai_tools,
-            sampling_args=sampling_args,
-            message_type=message_type,
-        )
+        # Handle streaming requests
+        if intercept and intercept.get("stream"):
+            response = await self._get_streaming_model_response(
+                state=state,
+                prompt=prompt,
+                intercept=intercept,
+                client=client,
+                model=model,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+            )
+        else:
+            response = await super().get_model_response(
+                state=state,
+                prompt=prompt,
+                client=client,
+                model=model,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
 
         if intercept:
             intercept["response_future"].set_result(response)
             state["current_request_id"] = None
 
         return response
+
+    async def _get_streaming_model_response(
+        self,
+        state: State,
+        prompt: Messages,
+        intercept: dict,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
+        oai_tools: list[ChatCompletionToolParam] | None = None,
+        sampling_args: SamplingArgs | None = None,
+    ) -> ChatCompletion:
+        """Handle streaming API call, forwarding chunks and accumulating response."""
+        chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+
+        # Resolve client and model
+        client = client or state["client"]
+        model = model or state["model"]
+        sampling_args = sampling_args or state.get("sampling_args") or {}
+
+        # Remove max_tokens and use max_completion_tokens for chat
+        if "max_tokens" in sampling_args:
+            sampling_args = dict(sampling_args)
+            max_tokens = sampling_args.pop("max_tokens")
+            if "max_completion_tokens" not in sampling_args:
+                sampling_args["max_completion_tokens"] = max_tokens
+
+        # Make streaming API call
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": prompt,
+            "stream": True,
+        }
+        if oai_tools:
+            create_kwargs["tools"] = oai_tools
+        create_kwargs.update(sampling_args)
+
+        stream = await client.chat.completions.create(**create_kwargs)
+
+        # Accumulate response while streaming chunks
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, dict] = {}  # index -> {id, type, function}
+        finish_reason = None
+        completion_id = None
+        created_time = int(time.time())
+
+        async for chunk in stream:
+            # Forward chunk to HTTP handler
+            await chunk_queue.put(chunk)
+
+            # Accumulate data
+            if not completion_id and chunk.id:
+                completion_id = chunk.id
+            if chunk.created:
+                created_time = chunk.created
+
+            if chunk.choices:
+                choice = chunk.choices[0]
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                delta = choice.delta
+                if delta:
+                    if delta.content:
+                        accumulated_content += delta.content
+
+                    # Accumulate tool calls
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in accumulated_tool_calls:
+                                accumulated_tool_calls[idx] = {
+                                    "id": tc.id or "",
+                                    "type": tc.type or "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            if tc.id:
+                                accumulated_tool_calls[idx]["id"] = tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    accumulated_tool_calls[idx]["function"]["name"] = (
+                                        tc.function.name
+                                    )
+                                if tc.function.arguments:
+                                    accumulated_tool_calls[idx]["function"][
+                                        "arguments"
+                                    ] += tc.function.arguments
+
+        # Signal end of stream
+        await chunk_queue.put(None)
+
+        # Build accumulated ChatCompletion
+        tool_calls_list = None
+        if accumulated_tool_calls:
+            tool_calls_list = [
+                ChatCompletionMessageToolCall(
+                    id=tc_data["id"],
+                    type="function",
+                    function=Function(
+                        name=tc_data["function"]["name"],
+                        arguments=tc_data["function"]["arguments"],
+                    ),
+                )
+                for idx, tc_data in sorted(accumulated_tool_calls.items())
+            ]
+
+        message = ChatCompletionMessage(
+            role="assistant",
+            content=accumulated_content if accumulated_content else None,
+            tool_calls=tool_calls_list,
+        )
+
+        return ChatCompletion(
+            id=completion_id or f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            choices=[
+                Choice(
+                    finish_reason=finish_reason or "stop",
+                    index=0,
+                    message=message,
+                )
+            ],
+            created=created_time,
+            model=model,
+            object="chat.completion",
+        )
 
     async def add_model_response(
         self,
@@ -379,38 +520,97 @@ touch /tmp/vf_complete
 
         self.log_request(rollout_id, request_body)
 
+        is_streaming = request_body.get("stream", False)
         request_id = f"req_{uuid.uuid4().hex[:8]}"
+
+        # For streaming, we use a queue to pass chunks from get_model_response
+        chunk_queue: asyncio.Queue | None = asyncio.Queue() if is_streaming else None
+
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
             "messages": request_body["messages"],
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
+            "stream": is_streaming,
+            "chunk_queue": chunk_queue,
             "response_future": asyncio.Future(),
         }
 
         self.intercepts[request_id] = intercept
         await context["request_id_queue"].put(request_id)
 
-        try:
-            response_future = cast(asyncio.Future[Any], intercept["response_future"])
-            response = await response_future
-        except asyncio.CancelledError:
-            return web.json_response(  # type: ignore
-                {"error": "Rollout cancelled"}, status=499
-            )
-        except Exception as e:
-            logger.error(f"Error processing intercepted request: {e}")
-            return web.json_response(  # type: ignore
-                {"error": str(e)}, status=500
+        if is_streaming:
+            return await self._handle_streaming_response(request, rollout_id, intercept)
+        else:
+            try:
+                response_future = cast(
+                    asyncio.Future[Any], intercept["response_future"]
+                )
+                response = await response_future
+            except asyncio.CancelledError:
+                return web.json_response(  # type: ignore
+                    {"error": "Rollout cancelled"}, status=499
+                )
+            except Exception as e:
+                logger.error(f"Error processing intercepted request: {e}")
+                return web.json_response(  # type: ignore
+                    {"error": str(e)}, status=500
+                )
+
+            response_dict = (
+                response.model_dump()
+                if hasattr(response, "model_dump")
+                else dict(response)
             )
 
-        response_dict = (
-            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            self.log_response(rollout_id, response_dict)
+            return web.json_response(response_dict)  # type: ignore
+
+    async def _handle_streaming_response(
+        self, http_request: Any, rollout_id: str, intercept: dict
+    ) -> Any:
+        """Handle streaming SSE response to the agent."""
+        chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+        response_future = cast(asyncio.Future[Any], intercept["response_future"])
+
+        response = web.StreamResponse(  # type: ignore
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
         )
+        await response.prepare(http_request)
 
-        self.log_response(rollout_id, response_dict)
-        return web.json_response(response_dict)  # type: ignore
+        try:
+            while True:
+                # Wait for chunks from get_model_response
+                chunk = await chunk_queue.get()
+
+                if chunk is None:
+                    # End of stream signal
+                    await response.write(b"data: [DONE]\n\n")
+                    break
+
+                # Convert chunk to SSE format
+                chunk_dict = (
+                    chunk.model_dump() if hasattr(chunk, "model_dump") else dict(chunk)
+                )
+                chunk_json = json.dumps(chunk_dict)
+                await response.write(f"data: {chunk_json}\n\n".encode())
+
+            # Wait for the accumulated response
+            await response_future
+
+        except asyncio.CancelledError:
+            logger.debug(f"[{rollout_id}] Streaming cancelled")
+        except Exception as e:
+            logger.error(f"[{rollout_id}] Streaming error: {e}")
+
+        await response.write_eof()
+        return response
 
     @vf.teardown
     async def teardown_tunnel(self):
