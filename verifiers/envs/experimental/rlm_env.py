@@ -1865,7 +1865,7 @@ class RLMEnv(SandboxEnv):
         """
         normalized: ChatMessages = []
         for msg in messages:
-            msg_copy: dict[str, Any] = dict(msg)
+            msg_copy: dict[str, Any] = cast(dict[str, Any], msg).copy()
             content = msg_copy.get("content")
 
             if content is not None and isinstance(content, dict):
