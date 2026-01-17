@@ -157,6 +157,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
         env_vars.setdefault("OPENAI_TIMEOUT", "600")
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
+        env_vars.setdefault("HTTPX_TIMEOUT", "600")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
