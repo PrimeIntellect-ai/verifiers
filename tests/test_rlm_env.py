@@ -722,6 +722,9 @@ async def test_local_worker_exports_stagger_env_vars(rlm_env_local, tmp_path):
     env = kwargs["env"]
     assert env["RLM_SUB_LLM_STAGGER_MS"] == "18"
     assert env["RLM_SUB_LLM_STAGGER_JITTER_MS"] == "9"
+    session.worker_process = None
+    executor._sessions.pop(session.rollout_id, None)
+    session.temp_dir.cleanup()
 
 
 @pytest.mark.asyncio
@@ -745,6 +748,9 @@ async def test_local_worker_starts_new_session(rlm_env_local, tmp_path):
 
     _, kwargs = mock_popen.call_args
     assert kwargs["start_new_session"] is True
+    session.worker_process = None
+    executor._sessions.pop(session.rollout_id, None)
+    session.temp_dir.cleanup()
 
 
 def test_local_worker_stop_kills_process_group(rlm_env_local):
@@ -761,6 +767,9 @@ def test_local_worker_stop_kills_process_group(rlm_env_local):
 
     mock_killpg.assert_called_once_with(4242, signal.SIGTERM)
     process.wait.assert_called_once()
+    session.worker_process = None
+    executor._sessions.pop(session.rollout_id, None)
+    session.temp_dir.cleanup()
 
 
 # =============================================================================
