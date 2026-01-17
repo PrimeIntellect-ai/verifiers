@@ -238,10 +238,12 @@ class Orchestrator:
         completion_logprobs: list[list[float]] = []
         advantages: list[float] = []
 
-        for state in env_results["state"]:
-            trajectory = state["trajectory"]
+        rollouts = env_results["rollouts"]
+
+        for rollout in rollouts:
+            trajectory = rollout.get("trajectory", [])
             for step in trajectory:
-                tokens = step["tokens"]
+                tokens = step.get("tokens")
                 if tokens is None:
                     continue
                 prompt_ids.append(tokens["prompt_ids"])
@@ -251,14 +253,21 @@ class Orchestrator:
                 completion_logprobs.append(tokens["completion_logprobs"])
                 advantages.append(step["advantage"])
 
-        # Build rewards_dict from rollout-level data (for logging only)
-        rewards_dict = {"reward": env_results["reward"]}
-        for k in env_results["metrics"]:
-            rewards_dict[k] = env_results["metrics"][k]
+        # Build rewards from rollouts
+        rewards = [r.get("reward", 0.0) for r in rollouts]
+        rewards_dict: dict[str, list] = {"reward": rewards}
+
+        # Aggregate metrics from rollouts
+        for r in rollouts:
+            if r.get("metrics"):
+                for k, v in r["metrics"].items():
+                    if k not in rewards_dict:
+                        rewards_dict[k] = []
+                    rewards_dict[k].append(v)
 
         metrics_dict = {}
-        if env_results["reward"]:
-            rewards_arr = np.asarray(env_results["reward"], dtype=np.float32)
+        if rewards:
+            rewards_arr = np.asarray(rewards, dtype=np.float32)
             metrics_dict["reward"] = float(rewards_arr.mean())
             metrics_dict["reward/std"] = float(rewards_arr.std())
 
@@ -292,8 +301,8 @@ class Orchestrator:
         generation_ms: list[float] = []
         scoring_ms: list[float] = []
         total_ms: list[float] = []
-        for state in env_results["state"]:
-            timing = state.get("timing", {})
+        for rollout in rollouts:
+            timing = rollout.get("timing", {})
             if "generation_ms" in timing:
                 generation_ms.append(float(timing["generation_ms"]))
             if "scoring_ms" in timing:
@@ -309,7 +318,11 @@ class Orchestrator:
             metrics_dict["timing/total_ms"] = float(np.mean(total_ms))
 
         metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
-        errors = [state.get("error") for state in env_results["state"]]
+        errors = [r.get("error") for r in rollouts]
+
+        # Extract prompts and completions from rollouts
+        prompts = [r["prompt"] for r in rollouts]
+        completions = [r.get("completion") for r in rollouts]
 
         # build per-process microbatches
         N = len(advantages)
@@ -356,8 +369,8 @@ class Orchestrator:
             global_item_count=global_item_count,
             generation_time=wall_clock_s,
             rewards_dict=rewards_dict,
-            completions=env_results["completion"],
-            prompts=env_results["prompt"],
+            completions=completions,
+            prompts=prompts,
             errors=errors,
             metrics_dict=metrics_dict,
         )

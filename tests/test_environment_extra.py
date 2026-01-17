@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 from datasets import Dataset
@@ -99,8 +98,6 @@ def _make_metadata(
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=[],
-        path_to_save=Path("test.jsonl"),
     )
 
 
@@ -176,7 +173,7 @@ def test_run_rollouts_with_max_concurrent(mock_openai_client):
             max_concurrent=2,
         )
     )
-    assert len(results["state"]) == 3
+    assert len(results["rollouts"]) == 3
 
 
 def test_run_rollouts_with_semaphore(mock_openai_client):
@@ -197,7 +194,7 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
             max_concurrent=2,
         )
     )
-    assert len(results["state"]) == 3
+    assert len(results["rollouts"]) == 3
 
 
 def test_evaluate_fallback_and_repeat(mock_openai_client):
@@ -215,8 +212,7 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
         )
     )
     # Expect n * r rollouts in outputs
-    assert len(res["prompt"]) == 2 * 2
-    assert len(res["completion"]) == 2 * 2
+    assert len(res["rollouts"]) == 2 * 2
 
 
 @pytest.mark.asyncio
@@ -231,7 +227,7 @@ async def test_generate_inside_running_loop(mock_openai_client):
     ]
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
     out = await env.generate(inputs, client=mock_openai_client, model="test-model")
-    assert "completion" in out and len(out["completion"]) == 1
+    assert "rollouts" in out and len(out["rollouts"]) == 1
 
 
 def test_sanitize_tool_calls_outputs_strings():
@@ -258,25 +254,23 @@ def test_sanitize_tool_calls_outputs_strings():
 
 
 def test_make_dataset_basic_without_tools(mock_openai_client):
-    results = GenerateOutputs(
-        prompt=[[{"role": "user", "content": "Hi"}]],
-        completion=[[{"role": "assistant", "content": "Hello"}]],
-        answer=[""],
-        state=[
+    output = GenerateOutputs(
+        rollouts=[
             {
+                "prompt": [{"role": "user", "content": "Hi"}],
+                "completion": [{"role": "assistant", "content": "Hello"}],
+                "example_id": 0,
+                "task": "default",
+                "reward": 1.0,
+                "metrics": {"foo": 0.1},
                 "timing": {
                     "generation_ms": 0.0,
                     "scoring_ms": 0.0,
                     "total_ms": 0.0,
-                }
+                },
             }
         ],
-        info=[{}],
-        task=["default"],
-        reward=[1.0],
-        metrics={"foo": [0.1]},
-        example_id=[0],
         metadata=_make_metadata(num_examples=1),
     )
-    ds = build_dataset(results)
+    ds = build_dataset(output)
     assert len(ds) == 1 and "foo" in ds.column_names

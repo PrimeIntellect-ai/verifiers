@@ -422,10 +422,9 @@ class TestEnvGroup:
             inputs, client=mock_openai_client, model="test-model"
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 2
 
     def test_env_group_with_mixed_datasets(self, mock_openai_client):
         """Test EnvGroup with environments having different dataset configurations."""

@@ -191,13 +191,6 @@ def main():
         help="Disable interleaving of scoring",
     )
     parser.add_argument(
-        "--state-columns",
-        "-C",
-        type=lambda t: [s.strip() for s in t.split(",")],
-        default=[],
-        help="Comma-separated list of state columns to save (e.g., 'turn,timing')",
-    )
-    parser.add_argument(
         "--save-results",
         "-s",
         default=False,
@@ -234,11 +227,25 @@ def main():
         help="Name of dataset to save to Hugging Face Hub",
     )
     parser.add_argument(
+        "--state-columns",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Extra state columns to include in saved results",
+    )
+    parser.add_argument(
         "--extra-env-kwargs",
         "-x",
         type=json.loads,
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
+    )
+    parser.add_argument(
+        "--num-workers",
+        "-w",
+        type=int,
+        default=1,
+        help="Number of worker subprocesses for environment execution (default=1)",
     )
     args = parser.parse_args()
 
@@ -343,6 +350,7 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
+        num_workers=args.num_workers,
         # logging
         print_results=True,
         verbose=args.verbose,

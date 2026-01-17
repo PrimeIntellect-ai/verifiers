@@ -162,21 +162,11 @@ class RolloutTiming(TypedDict, total=False):
 
 ```python
 class GenerateOutputs(TypedDict):
-    prompt: list[Messages]
-    completion: list[Messages]
-    answer: list[str]
-    state: list[State]
-    task: list[str]
-    info: list[Info]
-    example_id: list[int]
-    reward: list[float]
-    metrics: dict[str, list[float]]
-    stop_conditions: list[str | None]
-    is_truncated: list[bool]
+    rollouts: list[RolloutResult]
     metadata: GenerateMetadata
 ```
 
-Output from `Environment.generate()`.
+Output from `Environment.generate()`. Contains the list of rollout results and metadata about the generation run.
 
 ### GenerateMetadata
 
@@ -193,8 +183,6 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
-    state_columns: list[str]
-    path_to_save: Path
 ```
 
 ### RolloutScore / RolloutScores
@@ -544,7 +532,6 @@ class EvalConfig(BaseModel):
     extra_env_kwargs: dict = {}
     print_results: bool = False
     verbose: bool = False
-    state_columns: list[str] | None = None
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False

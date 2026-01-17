@@ -1,5 +1,4 @@
 import argparse
-from pathlib import Path
 from types import SimpleNamespace
 
 import verifiers.scripts.eval as vf_eval
@@ -19,8 +18,6 @@ def _make_metadata(config) -> GenerateMetadata:
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=config.state_columns or [],
-        path_to_save=Path("test.jsonl"),
     )
 
 
@@ -46,12 +43,12 @@ def _run_cli(monkeypatch, overrides):
         "verbose": False,
         "print_results": False,
         "no_interleave_scoring": False,
-        "state_columns": [],
         "save_results": False,
         "save_every": -1,
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
         "extra_env_kwargs": {},
+        "num_workers": 1,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)
@@ -70,23 +67,20 @@ def _run_cli(monkeypatch, overrides):
         captured["sampling_args"] = dict(config.sampling_args)
         metadata = _make_metadata(config)
         return GenerateOutputs(
-            prompt=[[{"role": "user", "content": "p"}]],
-            completion=[[{"role": "assistant", "content": "c"}]],
-            answer=[""],
-            state=[
+            rollouts=[
                 {
+                    "prompt": [{"role": "user", "content": "p"}],
+                    "completion": [{"role": "assistant", "content": "c"}],
+                    "example_id": 0,
+                    "task": "default",
+                    "reward": 1.0,
                     "timing": {
                         "generation_ms": 0.0,
                         "scoring_ms": 0.0,
                         "total_ms": 0.0,
-                    }
+                    },
                 }
             ],
-            task=["default"],
-            info=[{}],
-            example_id=[0],
-            reward=[1.0],
-            metrics={},
             metadata=metadata,
         )
 

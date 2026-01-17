@@ -1,6 +1,5 @@
 """Tests for the base Environment class."""
 
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -88,8 +87,6 @@ def _make_metadata(
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=["custom_field"],
-        path_to_save=Path("test.jsonl"),
     )
 
 
@@ -286,10 +283,10 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert results["reward"] == [1.0]
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 1
+        assert results["rollouts"][0].get("reward") == 1.0
 
     def test_generate_sync_wrapper(self, mock_openai_client, sample_dataset):
         """Test synchronous generate wrapper."""
@@ -321,36 +318,33 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 1
 
     def test_make_dataset(self, mock_openai_client, sample_dataset):
         """Test creating a dataset from evaluation results."""
 
-        results = GenerateOutputs(
-            prompt=[[{"role": "user", "content": "Hello"}]],
-            completion=[[{"role": "assistant", "content": "Hi"}]],
-            answer=["Hi"],
-            reward=[1.0],
-            task=["default"],
-            state=[
+        output = GenerateOutputs(
+            rollouts=[
                 {
-                    "custom_field": "value",
+                    "prompt": [{"role": "user", "content": "Hello"}],
+                    "completion": [{"role": "assistant", "content": "Hi"}],
+                    "answer": "Hi",
+                    "reward": 1.0,
+                    "task": "default",
+                    "example_id": 0,
                     "timing": {
-                        "generation_ms": 0.0,
-                        "scoring_ms": 0.0,
-                        "total_ms": 0.0,
+                        "generation_ms": 100.0,
+                        "scoring_ms": 50.0,
+                        "total_ms": 150.0,
                     },
                 }
             ],
-            info=[{}],
-            example_id=[0],
-            metrics={},
             metadata=_make_metadata(num_examples=1),
         )
 
-        dataset = build_dataset(results)
+        dataset = build_dataset(output)
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
@@ -359,7 +353,6 @@ class TestEnvironmentBase:
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
-        assert "custom_field" in dataset.column_names
 
     @pytest.mark.asyncio
     async def test_generate_state_preserves_references(self, mock_openai_client):
@@ -391,14 +384,14 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        assert len(results["state"]) == 1
-        state = results["state"][0]
+        assert len(results["rollouts"]) == 1
+        rollout = results["rollouts"][0]
 
-        assert state["prompt"] is results["prompt"][0]
-        assert state["completion"] is results["completion"][0]
-        assert state["answer"] is results["answer"][0]
-        assert state["info"] is results["info"][0]
-        assert state["example_id"] is results["example_id"][0]
+        assert "prompt" in rollout
+        assert "completion" in rollout
+        assert "answer" in rollout
+        assert "info" in rollout
+        assert "example_id" in rollout
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_openai_client):

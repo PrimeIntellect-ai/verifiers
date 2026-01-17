@@ -95,6 +95,44 @@ class RolloutTiming(TypedDict, total=False):
     total_ms: float
 
 
+class RolloutResultTrajectoryStep(TypedDict, total=False):
+    """Serializable trajectory step for RolloutResult."""
+
+    prompt: Messages
+    completion: Messages
+    tokens: TrajectoryStepTokens
+    advantage: float
+
+
+class _RolloutResultRequired(TypedDict):
+    """Required fields for RolloutResult."""
+
+    prompt: Messages
+    completion: Messages
+    example_id: int
+    task: str
+    metrics: dict[str, float]
+
+
+class RolloutResult(_RolloutResultRequired, total=False):
+    """Serializable result from a rollout, used in GenerateOutputs.
+
+    This is the public contract for what evaluation/generation returns.
+    Unlike State, this contains only pickleable fields suitable for IPC.
+    """
+
+    # Optional input fields
+    answer: str
+    info: Info
+    # From rollout execution
+    reward: float
+    is_truncated: bool
+    stop_condition: str | None
+    trajectory: list[RolloutResultTrajectoryStep]
+    timing: RolloutTiming
+    error: str | None  # Stringified error (not the original Exception)
+
+
 class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
@@ -144,7 +182,7 @@ JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "obje
 
 
 class GenerateMetadata(TypedDict):
-    """Pydantic model for generation metadata."""
+    """Metadata about a generation run."""
 
     env_id: str
     env_args: dict
@@ -162,19 +200,9 @@ class GenerateMetadata(TypedDict):
 
 
 class GenerateOutputs(TypedDict):
-    """TypedDict for generation outputs."""
+    """Output from generate() - rollouts plus metadata."""
 
-    prompt: list[Messages]
-    completion: list[Messages]
-    answer: list[str]
-    state: list[State]
-    task: list[str]
-    info: list[Info]
-    example_id: list[int]
-    reward: list[float]
-    metrics: dict[str, list[float]]
-    stop_conditions: list[str | None]
-    is_truncated: list[bool]
+    rollouts: list[RolloutResult]
     metadata: GenerateMetadata
 
 
@@ -238,11 +266,12 @@ class EvalConfig(BaseModel):
     max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    num_workers: int = 1
     # logging
     print_results: bool = False
     verbose: bool = False
     # saving
-    state_columns: list[str] | None = None
+    state_columns: list[str] = []
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False

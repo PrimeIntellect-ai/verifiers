@@ -34,6 +34,8 @@ from .utils.data_utils import (
     load_example_dataset,
 )
 from .utils.env_utils import load_environment
+from .workers.client import EnvClient
+from .workers.server import EnvServer
 from .utils.logging_utils import (
     log_level,
     print_prompt_completions_sample,
@@ -68,6 +70,8 @@ __all__ = [
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    "EnvClient",
+    "EnvServer",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",

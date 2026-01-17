@@ -302,12 +302,11 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
-        assert len(results["state"]) == 2
-        assert results["reward"] == [1.0, 1.0]
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 2
+        assert results["rollouts"][0].get("reward") == 1.0
+        assert results["rollouts"][1].get("reward") == 1.0
 
     @pytest.mark.asyncio
     async def test_a_generate_with_dataset(
@@ -329,10 +328,9 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 2
 
     @pytest.mark.asyncio
     async def test_a_generate_no_scoring(self, mock_singleturn_env):
@@ -354,11 +352,10 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results  # reward attribute exists
+        assert "rollouts" in results
+        assert "metadata" in results
         # Scoring always happens now, so rewards will be set
-        assert len(results["reward"]) >= 0
+        assert len(results["rollouts"]) >= 0
 
     def test_generate_sync_wrapper(self, mock_singleturn_env):
         """Test the synchronous generate wrapper."""
@@ -388,9 +385,9 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
+        assert "rollouts" in results
+        assert "metadata" in results
+        assert len(results["rollouts"]) == 1
 
     @pytest.mark.asyncio
     async def test_different_message_types_in_same_env(

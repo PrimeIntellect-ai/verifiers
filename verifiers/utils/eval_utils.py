@@ -4,6 +4,7 @@ import logging
 import time
 from collections import Counter
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
@@ -11,14 +12,20 @@ import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    RolloutResult,
+)
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.type_utils import build_generate_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -59,94 +66,91 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
-def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
-    """Group results by task name.
+def get_output_by_task(output: GenerateOutputs) -> dict[str, GenerateOutputs]:
+    """Group output by task name."""
+    rollouts = output["rollouts"]
+    task_groups: dict[str, list[RolloutResult]] = {}
+    for r in rollouts:
+        task = r.get("task", "default")
+        if task not in task_groups:
+            task_groups[task] = []
+        task_groups[task].append(r)
 
-    Args:
-        results: The GenerateOutputs from an evaluation run.
-
-    Returns:
-        A dictionary mapping task names to their corresponding GenerateOutputs.
-    """
-    task_indices: dict[str, list[int]] = {}
-    for i, task in enumerate(results["task"]):
-        if task not in task_indices:
-            task_indices[task] = []
-        task_indices[task].append(i)
-
-    task_results: dict[str, GenerateOutputs] = {}
-    for task, indices in task_indices.items():
-        task_results[task] = GenerateOutputs(
-            prompt=[results["prompt"][i] for i in indices],
-            completion=[results["completion"][i] for i in indices],
-            answer=[results["answer"][i] for i in indices],
-            state=[results["state"][i] for i in indices],
-            task=[results["task"][i] for i in indices],
-            info=[results["info"][i] for i in indices],
-            example_id=[results["example_id"][i] for i in indices],
-            reward=[results["reward"][i] for i in indices],
-            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
-            stop_conditions=[results["stop_conditions"][i] for i in indices],
-            is_truncated=[results["is_truncated"][i] for i in indices],
-            metadata=results["metadata"],
-        )
-    return task_results
+    return {
+        task: GenerateOutputs(rollouts=group, metadata=output["metadata"])
+        for task, group in task_groups.items()
+    }
 
 
-def print_rewards(results: GenerateOutputs):
+def print_rewards(output: GenerateOutputs):
+    rollouts = output["rollouts"]
+    rewards = [r.get("reward", 0.0) for r in rollouts]
     print("Rewards:")
     print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
+        f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
     )
-    r = results["metadata"]["rollouts_per_example"]
-    n = len(results["reward"]) // r
-    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
-    for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
-        out = f"r{i + 1}: {trials}"
-        print(out)
-    for k in results["metrics"]:
-        v = results["metrics"][k]
+
+    rpe = output["metadata"]["rollouts_per_example"]
+    n = len(rewards) // rpe
+    for i in range(rpe):
+        trials = [round(rewards[i + (j * rpe)], 3) for j in range(n)]
+        print(f"r{i + 1}: {trials}")
+
+    # Aggregate metrics
+    metrics: dict[str, list[float]] = {}
+    for r in rollouts:
+        if r.get("metrics"):
+            for k, v in r["metrics"].items():
+                if k not in metrics:
+                    metrics[k] = []
+                metrics[k].append(v)
+
+    for k, v in metrics.items():
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
-        for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
-            print(out)
+        for i in range(rpe):
+            trials = [round(v[i + (j * rpe)], 3) for j in range(n)]
+            print(f"r{i + 1}: {trials}")
 
 
-def print_info(results: GenerateOutputs):
+def print_info(output: GenerateOutputs):
+    rollouts = output["rollouts"]
+    is_truncated = [r.get("is_truncated", False) for r in rollouts]
+    stop_conditions = [r.get("stop_condition") for r in rollouts]
+    errors = [r.get("error") for r in rollouts]
+
     print("Info:")
     print(
-        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+        f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    counter = Counter(results["stop_conditions"])
+
+    counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [s.get("error") for s in results["state"]]
+
     has_errors = [e is not None for e in errors]
     if any(has_errors):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
-        errors = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in errors]
+        error_strs = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in error_strs]
         counter = Counter(error_chains)
         for error_chain, count in counter.items():
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
 
 
-def print_timing(results: GenerateOutputs):
-    print("Timing:")
-    generation_ms_arr = np.array(
-        [s["timing"]["generation_ms"] for s in results["state"]]
-    )
-    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
-    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
+def print_timing(output: GenerateOutputs):
+    rollouts = output["rollouts"]
+    generation_ms = [r.get("timing", {}).get("generation_ms", 0.0) for r in rollouts]
+    scoring_ms = [r.get("timing", {}).get("scoring_ms", 0.0) for r in rollouts]
+    total_ms = [r.get("timing", {}).get("total_ms", 0.0) for r in rollouts]
 
+    generation_arr = np.array(generation_ms) / 1000
+    scoring_arr = np.array(scoring_ms) / 1000
+    total_arr = np.array(total_ms) / 1000
+
+    print("Timing:")
     print(
         f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
     )
@@ -159,43 +163,50 @@ def print_timing(results: GenerateOutputs):
 
 
 def print_results(
-    results: GenerateOutputs,
+    output: GenerateOutputs,
     event_loop_lags: list[float] | None = None,
     num_samples: int = 1,
 ):
-    assert results["metadata"] is not None
+    rollouts = output["rollouts"]
+    metadata = output["metadata"]
+
     print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
-    print(f"Model: {results['metadata']['model']}")
-    print(f"Provider: {results['metadata']['base_url']}")
-    print(f"Examples: {results['metadata']['num_examples']}")
-    print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
+    print(f"Environment: {metadata['env_id']}")
+    print(f"Model: {metadata['model']}")
+    print(f"Provider: {metadata['base_url']}")
+    print(f"Examples: {metadata['num_examples']}")
+    print(f"Rollouts per example: {metadata['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    printable_completions = [messages_to_printable(c) for c in results["completion"]]
-    errors = [s.get("error") for s in results["state"]]
+    printable_prompts = [messages_to_printable(r["prompt"]) for r in rollouts]
+    printable_completions = [
+        messages_to_printable(r["completion"]) if r.get("completion") else ""
+        for r in rollouts
+    ]
+    errors = [r.get("error") for r in rollouts]
+    rewards = [r.get("reward", 0.0) for r in rollouts]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
         errors,
-        results["reward"],
+        rewards,
         step=0,
         num_samples=num_samples,
     )
     print("--- All ---")
-    print_rewards(results)
-    print_info(results)
-    print_timing(results)
+    print_rewards(output)
+    print_info(output)
+    print_timing(output)
 
-    num_tasks = len(set(results["task"]))
+    tasks = [r.get("task", "default") for r in rollouts]
+    num_tasks = len(set(tasks))
     if num_tasks > 1:
-        task_results = get_results_by_task(results)
-        for task, task_results in task_results.items():
+        task_outputs = get_output_by_task(output)
+        for task, task_output in task_outputs.items():
             print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
+            print_rewards(task_output)
+            print_info(task_output)
+            print_timing(task_output)
 
     if event_loop_lags:
         print("\nPerformance:")
@@ -211,6 +222,17 @@ def print_results(
 
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+    """
+    Run evaluation using worker subprocesses.
+
+    Workers call load_environment in their own subprocess, so each worker
+    owns its own environment instance. This enables multiprocessing and
+    proper isolation.
+    """
+    from tqdm import tqdm
+
+    from verifiers.workers.client import EnvClient
+
     # set up AsyncOpenAI client with high limits to prevent timeouts
     client = setup_client(
         config.client_config,
@@ -219,57 +241,124 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
 
-    # load environment
-    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
-
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
-    # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
-
-    # run evaluation
     results_path = get_eval_results_path(config)
     logger.info(f"Starting evaluation with model: {config.model}")
     logger.info(
-        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, "
+        f"max_concurrent={config.max_concurrent}, num_workers={config.num_workers}"
     )
+
     start_time = time.time()
-    results = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
+
+    # Create client - workers will load environment and dataset
+    env_client = EnvClient(
+        env_id=config.env_id,
+        env_args={**config.env_args, **config.extra_env_kwargs},
+        client_base_url=str(client.base_url),
+        client_api_key=client.api_key or "",
+        num_workers=config.num_workers,
         max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
+        sampling_args=config.sampling_args or {},
         independent_scoring=config.independent_scoring,
+        state_columns=config.state_columns,
     )
+
+    try:
+        # Start workers - first worker loads env and returns dataset
+        env_client.start(num_examples=config.num_examples)
+
+        # Get dataset from client (fetched from first worker)
+        dataset = env_client.dataset
+        num_examples = env_client.num_examples
+        total_rollouts = num_examples * config.rollouts_per_example
+
+        # Use env's sampling args as base, override with config
+        gen_sampling_args = deepcopy(env_client.env_sampling_args)
+        if config.sampling_args:
+            gen_sampling_args.update(config.sampling_args)
+        env_client.update_sampling_args(gen_sampling_args)
+
+        pbar = tqdm(
+            total=num_examples,
+            desc=f"Processing {num_examples} groups ({total_rollouts} total rollouts)",
+            postfix=dict(reward="?"),
+        )
+
+        all_results: list[RolloutResult] = []
+        reward_sum, reward_count = 0, 0
+
+        try:
+            # Construct groups explicitly: (group_inputs, example_id)
+            # Orchestrator controls duplication via rollouts_per_example
+            groups: list[tuple[list, int]] = []
+            for example in dataset.to_list():
+                example_id = example.get("example_id", 0)
+                group_inputs = [example] * config.rollouts_per_example
+                groups.append((group_inputs, example_id))
+
+            results_list = await env_client.run_groups(
+                groups=groups,
+                model_name=config.model,
+            )
+
+            for group_results in results_list:
+                for result in group_results:
+                    all_results.append(result)
+
+                    r = result.get("reward")
+                    if r is not None:
+                        reward_sum += r
+                        reward_count += 1
+
+                pbar.update(1)
+                if reward_count > 0:
+                    pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
+        finally:
+            pbar.close()
+
+    finally:
+        env_client.stop()
+
+    # sort by example_id to ensure deterministic ordering
+    all_results.sort(key=lambda s: s.get("example_id", 0))
+
+    # build output structure
+    output = build_generate_outputs(
+        rollouts=all_results,
+        env_id=config.env_id,
+        env_args=config.env_args,
+        model=config.model,
+        base_url=str(client.base_url) if hasattr(client, "base_url") else "",
+        sampling_args=gen_sampling_args,
+        start_time=start_time,
+        path_to_save=results_path,
+        state_columns=config.state_columns,
+    )
+
     end_time = time.time()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
     event_loop_lags = event_loop_lag_monitor.get_lags()
 
     if config.print_results:
-        print_results(results, event_loop_lags)
+        print_results(output, event_loop_lags)
     if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-    return results
+        save_rollout_results(
+            output,
+            path=results_path,
+            push_to_hf_hub=config.save_to_hf_hub,
+            hf_hub_dataset_name=config.hf_hub_dataset_name,
+        )
+    return output
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
     metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
+    metadata_dict.pop("date", None)
     return metadata_dict
 
 
@@ -287,43 +376,51 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
+def make_dataset(output: GenerateOutputs) -> Dataset:
+    """Convert GenerateOutputs to a Dataset for saving."""
+    rollouts = output["rollouts"]
+
+    clean_prompts = [messages_to_printable(r["prompt"]) for r in rollouts]
     clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results["completion"]]
+    clean_completions = [
+        messages_to_printable(r["completion"]) if r.get("completion") else ""
+        for r in rollouts
+    ]
     clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results["info"])
-    save_answer = any(answer != "" for answer in results["answer"])
-    errors = [s.get("error") for s in results["state"]]
-    results_dict = {
-        "example_id": results["example_id"],
+
+    infos = [r.get("info", {}) for r in rollouts]
+    answers = [r.get("answer", "") for r in rollouts]
+    stop_conditions = [r.get("stop_condition") for r in rollouts]
+    is_truncated = [r.get("is_truncated", False) for r in rollouts]
+
+    results_dict: dict = {
+        "example_id": [r.get("example_id", 0) for r in rollouts],
         "prompt": clean_prompts,
         "completion": clean_completions,
-        "task": results["task"],
-        "reward": results["reward"],
-        "error": [repr(e) if e is not None else None for e in errors],
-        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
-        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
+        "task": [r.get("task", "default") for r in rollouts],
+        "reward": [r.get("reward", 0.0) for r in rollouts],
+        "error": [r.get("error") for r in rollouts],
+        "stop_condition": stop_conditions,
+        "is_truncated": is_truncated,
+        "generation_ms": [
+            r.get("timing", {}).get("generation_ms", 0.0) for r in rollouts
+        ],
+        "scoring_ms": [r.get("timing", {}).get("scoring_ms", 0.0) for r in rollouts],
+        "total_ms": [r.get("timing", {}).get("total_ms", 0.0) for r in rollouts],
     }
-    if save_info:
-        results_dict["info"] = results["info"]
-    if save_answer:
-        results_dict["answer"] = results["answer"]
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        results_dict[k] = v
 
-    # Add selected state columns if specified
-    state_columns = results["metadata"]["state_columns"]
-    if state_columns:
-        for col in state_columns:
-            if col == "responses":
-                results_dict[col] = [
-                    [r.model_dump() for r in s.get(col, [])] for s in results["state"]
-                ]
-            else:
-                results_dict[col] = [s.get(col) for s in results["state"]]
+    if any(info != {} for info in infos):
+        results_dict["info"] = infos
+    if any(answer != "" for answer in answers):
+        results_dict["answer"] = answers
+
+    # Aggregate metrics from rollouts
+    for r in rollouts:
+        if r.get("metrics"):
+            for k, v in r["metrics"].items():
+                if k not in results_dict:
+                    results_dict[k] = []
+                results_dict[k].append(v)
 
     return Dataset.from_dict(results_dict)
 
@@ -349,17 +446,18 @@ def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
 
 
 def save_rollout_results(
-    results: GenerateOutputs,
+    output: GenerateOutputs,
+    path: Path,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
 ):
-    path_to_save = results["metadata"]["path_to_save"]
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    dataset = make_dataset(results)
-    metadata_dict = sanitize_metadata(results["metadata"])
-    save_to_disk(dataset, metadata_dict, path_to_save)
-    logger.info(f"Results saved to {path_to_save}")
+    """Save GenerateOutputs to disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset = make_dataset(output)
+    metadata_dict = sanitize_metadata(output["metadata"])
+    save_to_disk(dataset, metadata_dict, path)
+    logger.info(f"Results saved to {path}")
     if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
+        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(output)
         dataset.push_to_hub(dataset_name)
         logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
