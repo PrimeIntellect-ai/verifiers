@@ -158,6 +158,34 @@ class RolloutTiming(TypedDict, total=False):
     total_ms: float
 ```
 
+### RolloutResult
+
+```python
+class RolloutResultTrajectoryStep(TypedDict, total=False):
+    prompt: Messages
+    completion: Messages
+    tokens: TrajectoryStepTokens
+    advantage: float
+    extras: dict[str, Any]
+
+class RolloutResultBase(TypedDict):
+    prompt: Messages
+    completion: Messages
+    example_id: int
+    task: str
+    metrics: dict[str, float]
+
+class RolloutResult(RolloutResultBase, total=False):
+    answer: str
+    info: Info
+    reward: float
+    is_truncated: bool
+    stop_condition: str | None
+    trajectory: list[RolloutResultTrajectoryStep]
+    timing: RolloutTiming
+    error: str | None
+```
+
 ### GenerateOutputs
 
 ```python

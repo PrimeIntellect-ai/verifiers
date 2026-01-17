@@ -40,6 +40,7 @@ def _error_rollouts_for_request(
     results = []
     err = f"{type(error).__name__}: {error}"
     for inp in request.group_inputs:
+        assert "task" in inp, "RolloutInput is missing required field 'task'"
         prompt = inp["prompt"]
         completion: Messages = "" if isinstance(prompt, str) else []
         results.append(
@@ -63,7 +64,7 @@ async def _process_request_safe(
     logger: logging.Logger,
 ) -> RolloutResponse:
     try:
-        return await process_request(request, env, client_cycle, semaphore, logger)
+        return await process_request(request, env, client_cycle, semaphore)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -77,7 +78,6 @@ async def process_request(
     env: vf.Environment,
     client_cycle: Iterator[AsyncOpenAI],
     semaphore: AsyncContextManager,
-    logger: logging.Logger,
 ) -> RolloutResponse:
     """Process a single rollout request.
 

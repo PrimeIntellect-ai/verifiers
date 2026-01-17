@@ -203,6 +203,10 @@ class EnvClient:
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
         while True:
+            # Fail fast if a worker died after accepting requests.
+            for dead_idx, worker in enumerate(self._workers):
+                if not worker.is_alive and self._pending_counts[dead_idx] > 0:
+                    self._fail_pending_for_worker(dead_idx)
             for worker in self._workers:
                 while True:
                     response = worker.recv_response_nowait()
@@ -211,6 +215,16 @@ class EnvClient:
                     if isinstance(response, RolloutResponse):
                         self._handle_response(response)
             await asyncio.sleep(0.01)
+
+    def _fail_pending_for_worker(self, worker_idx: int) -> None:
+        err = RuntimeError(f"Env worker {worker_idx} died")
+        for example_id, (future, idx) in list(self._pending_futures.items()):
+            if idx == worker_idx:
+                self._pending_futures.pop(example_id, None)
+                if not future.done():
+                    future.set_exception(err)
+        if 0 <= worker_idx < len(self._pending_counts):
+            self._pending_counts[worker_idx] = 0
 
     def _handle_response(self, response: RolloutResponse):
         """Handle a response from a worker."""

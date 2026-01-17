@@ -131,7 +131,8 @@ def state_to_result(
     if state.get("timing"):
         result["timing"] = state["timing"]
     if state.get("error"):
-        result["error"] = type(state["error"]).__name__
+        err = state["error"]
+        result["error"] = f"{type(err).__name__}: {err}"
 
     # Extra state columns - must be serializable
     if state_columns:
