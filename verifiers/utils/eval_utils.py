@@ -12,6 +12,7 @@ import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
+from verifiers.errors import Error
 from verifiers.types import (
     Endpoints,
     EvalConfig,
@@ -28,6 +29,10 @@ from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.type_utils import build_generate_outputs
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_errors(errors: list[str | None]) -> list[Error | None]:
+    return [Error(e) if e is not None else None for e in errors]
 
 
 def load_endpoints(endpoints_path: str):
@@ -116,7 +121,7 @@ def print_info(output: GenerateOutputs):
     rollouts = output["rollouts"]
     is_truncated = [r.get("is_truncated", False) for r in rollouts]
     stop_conditions = [r.get("stop_condition") for r in rollouts]
-    errors = [r.get("error") for r in rollouts]
+    errors = _coerce_errors([r.get("error") for r in rollouts])
 
     print("Info:")
     print(
@@ -133,8 +138,8 @@ def print_info(output: GenerateOutputs):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
-        error_strs = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in error_strs]
+        error_objs = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in error_objs]
         counter = Counter(error_chains)
         for error_chain, count in counter.items():
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
@@ -183,7 +188,7 @@ def print_results(
         messages_to_printable(r["completion"]) if r.get("completion") else ""
         for r in rollouts
     ]
-    errors = [r.get("error") for r in rollouts]
+    errors = _coerce_errors([r.get("error") for r in rollouts])
     rewards = [r.get("reward", 0.0) for r in rollouts]
     print_prompt_completions_sample(
         printable_prompts,
@@ -359,6 +364,9 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
     metadata_dict = dict(metadata)
     metadata_dict.pop("date", None)
+    path_to_save = metadata_dict.get("path_to_save")
+    if isinstance(path_to_save, Path):
+        metadata_dict["path_to_save"] = str(path_to_save)
     return metadata_dict
 
 

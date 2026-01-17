@@ -58,7 +58,8 @@ class EnvClient:
         self.logger = logging.getLogger("verifiers.workers.client")
 
         self._workers: list[EnvServer] = []
-        self._pending_futures: dict[int, asyncio.Future] = {}
+        self._pending_futures: dict[int, tuple[asyncio.Future, int]] = {}
+        self._pending_counts: list[int] = []
         self._response_collector_task: asyncio.Task | None = None
 
         # Populated after start() by querying first worker
@@ -78,6 +79,7 @@ class EnvClient:
         first_worker = self._create_worker(0)
         first_worker.start()
         self._workers.append(first_worker)
+        self._pending_counts = [0]
 
         # Request dataset and metadata from first worker
         first_worker.send_request(MetadataRequest(num_examples=num_examples))
@@ -104,6 +106,7 @@ class EnvClient:
             worker = self._create_worker(i)
             worker.start()
             self._workers.append(worker)
+            self._pending_counts.append(0)
 
     def _create_worker(self, index: int) -> EnvServer:
         """Create a worker server instance."""
@@ -175,19 +178,27 @@ class EnvClient:
         )
 
         worker = self._select_worker()
+        worker_idx = self._workers.index(worker)
         worker.send_request(request)
 
         loop = asyncio.get_event_loop()
         future = loop.create_future()
-        self._pending_futures[example_id] = future
+        self._pending_futures[example_id] = (future, worker_idx)
+        self._pending_counts[worker_idx] += 1
 
         return future
 
     def _select_worker(self) -> EnvServer:
-        """Select a worker for the next request (round-robin by pending count)."""
+        """Select the least-loaded worker (by pending request count)."""
         if not self._workers:
             raise RuntimeError("No workers available")
-        return min(self._workers, key=lambda w: len(self._pending_futures))
+        min_idx = 0
+        min_pending = self._pending_counts[0]
+        for i, pending in enumerate(self._pending_counts[1:], start=1):
+            if pending < min_pending:
+                min_idx = i
+                min_pending = pending
+        return self._workers[min_idx]
 
     async def collect_responses(self):
         """Background task to collect responses and resolve futures."""
@@ -204,7 +215,11 @@ class EnvClient:
     def _handle_response(self, response: RolloutResponse):
         """Handle a response from a worker."""
         if response.example_id in self._pending_futures:
-            future = self._pending_futures.pop(response.example_id)
+            future, worker_idx = self._pending_futures.pop(response.example_id)
+            if 0 <= worker_idx < len(self._pending_counts):
+                self._pending_counts[worker_idx] = max(
+                    0, self._pending_counts[worker_idx] - 1
+                )
             if not future.done():
                 future.set_result(response.results)
 

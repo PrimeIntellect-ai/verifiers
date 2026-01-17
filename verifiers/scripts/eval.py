@@ -228,10 +228,10 @@ def main():
     )
     parser.add_argument(
         "--state-columns",
-        type=str,
-        nargs="*",
+        "-C",
+        type=lambda t: [s.strip() for s in t.split(",")],
         default=[],
-        help="Extra state columns to include in saved results",
+        help="Comma-separated list of state columns to save (e.g., 'turn,timing')",
     )
     parser.add_argument(
         "--extra-env-kwargs",

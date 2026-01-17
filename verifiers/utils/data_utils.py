@@ -1,7 +1,7 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
 import random
-from typing import Any, Callable, cast
+from typing import Any, Callable, Protocol, Sequence, cast
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
@@ -30,13 +30,19 @@ def format_dataset(
     """
     Create `example_id` and `prompt` columns if not present.
     """
+
     # if "id" column is present and not int, rename it to "src_id"
+    class _AddColumn(Protocol):
+        def add_column(self, name: str, column: Sequence[int]) -> Dataset: ...
+
     if "example_id" in dataset.column_names and not isinstance(
         dataset["example_id"][0], int
     ):
         dataset = dataset.rename_column("example_id", "src_id")
     if "example_id" not in dataset.column_names:
-        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+        dataset = cast(_AddColumn, dataset).add_column(
+            "example_id", list(range(len(dataset)))
+        )
 
     # extract format_prompt as a standalone function to avoid capturing self
     def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -268,10 +274,10 @@ def load_example_dataset(
             split = "test"
         aime_i = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        )  # type: ignore[redundant-cast]
+        )
         aime_ii = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
-        )  # type: ignore[redundant-cast]
+        )
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:
@@ -316,17 +322,19 @@ def load_example_dataset(
     elif name == "openrs_easy":
         if split is None:
             split = "train"
-        dataset = load_dataset("knoveleng/open-rs")[split]
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
         dataset = dataset.filter(lambda x: x["level"] == "Easy")
     elif name == "openrs_hard":
         if split is None:
             split = "train"
-        dataset = load_dataset("knoveleng/open-rs")[split]
+        dataset = cast(Dataset, load_dataset("knoveleng/open-rs")[split])
         dataset = dataset.filter(lambda x: x["level"] == "Hard")
     elif name == "prime_code":
         if split is None:
             split = "train"
-        dataset = load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
+        dataset = cast(
+            Dataset, load_dataset("PrimeIntellect/verifiable-coding-problems")[split]
+        )
         dataset = dataset.filter(
             lambda x: x["prompt"].startswith(
                 "Solve the following coding problem using the programming language python:"

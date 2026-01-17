@@ -1,5 +1,5 @@
 import json
-from typing import cast
+from typing import Any, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -14,14 +14,14 @@ def strip_nones_from_content(messages: list[ChatMessage]) -> list[ChatMessage]:
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, list):
-            new_msg = dict(msg)
-            new_msg["content"] = [  # type: ignore[typeddict-item]
+            new_msg: dict[str, Any] = {k: v for k, v in msg.items()}
+            new_msg["content"] = [
                 {k: v for k, v in c.items() if v is not None}
                 if isinstance(c, dict)
                 else c
                 for c in content
             ]
-            result.append(new_msg)  # type: ignore[arg-type]
+            result.append(cast(ChatMessage, new_msg))
         else:
             result.append(msg)
     return result

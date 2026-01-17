@@ -3,7 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from math_verify import parse, verify  # type: ignore[unresolved-import]
+from math_verify import parse, verify
 
 from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser

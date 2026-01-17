@@ -102,6 +102,8 @@ def state_to_result(
             traj_step["tokens"] = step["tokens"]
         if step.get("advantage") is not None:
             traj_step["advantage"] = step["advantage"]
+        if step.get("extras") is not None:
+            traj_step["extras"] = _serialize_value(step["extras"])
         trajectory.append(traj_step)
 
     # Required fields

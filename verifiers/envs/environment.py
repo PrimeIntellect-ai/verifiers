@@ -18,6 +18,8 @@ from typing import (
     Callable,
     List,
     Literal,
+    Protocol,
+    Sequence,
     TypeVar,
     cast,
     final,
@@ -214,12 +216,18 @@ class Environment(ABC):
 
     def _ensure_example_id(self, dataset: Dataset) -> Dataset:
         """Ensure example_id column exists and is integer type."""
+
+        class _AddColumn(Protocol):
+            def add_column(self, name: str, column: Sequence[int]) -> Dataset: ...
+
         if "example_id" in dataset.column_names and not isinstance(
             dataset["example_id"][0], int
         ):
             dataset = dataset.rename_column("example_id", "src_id")
         if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore (weird datasets thing)
+            dataset = cast(_AddColumn, dataset).add_column(
+                "example_id", list(range(len(dataset)))
+            )
         return dataset
 
     def _ensure_prompt(
@@ -968,7 +976,7 @@ class Environment(ABC):
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()
-            import nest_asyncio  # type: ignore
+            import nest_asyncio
 
             nest_asyncio.apply()
             return loop.run_until_complete(coro)

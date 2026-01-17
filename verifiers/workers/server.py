@@ -14,12 +14,12 @@ import queue
 from itertools import cycle
 from multiprocessing import Process
 from multiprocessing.queues import Queue
-from typing import Any, AsyncContextManager, Iterator, cast
+from typing import Any, AsyncContextManager, Iterator
 
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput
+from verifiers.types import Messages, RolloutResult
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.type_utils import state_to_result
 from verifiers.workers.types import (
@@ -32,6 +32,44 @@ from verifiers.workers.types import (
 
 WorkerRequest = RolloutRequest | MetadataRequest | Shutdown
 WorkerResponse = RolloutResponse | MetadataResponse
+
+
+def _error_rollouts_for_request(
+    request: RolloutRequest, error: BaseException
+) -> list[RolloutResult]:
+    results = []
+    err = f"{type(error).__name__}: {error}"
+    for inp in request.group_inputs:
+        prompt = inp["prompt"]
+        completion: Messages = "" if isinstance(prompt, str) else []
+        results.append(
+            {
+                "prompt": prompt,
+                "completion": completion,
+                "example_id": request.example_id,
+                "task": inp["task"],
+                "metrics": {},
+                "error": err,
+            }
+        )
+    return results
+
+
+async def _process_request_safe(
+    request: RolloutRequest,
+    env: vf.Environment,
+    client_cycle: Iterator[AsyncOpenAI],
+    semaphore: AsyncContextManager,
+    logger: logging.Logger,
+) -> RolloutResponse:
+    try:
+        return await process_request(request, env, client_cycle, semaphore, logger)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("Worker task failed")
+        results = _error_rollouts_for_request(request, e)
+        return RolloutResponse(example_id=request.example_id, results=results)
 
 
 async def process_request(
@@ -47,7 +85,7 @@ async def process_request(
     the desired duplication. This worker just runs the group.
     """
     client = next(client_cycle)
-    group_inputs = [cast(RolloutInput, inp) for inp in request.group_inputs]
+    group_inputs = request.group_inputs
 
     if request.independent_scoring:
         # Independent scoring: run each input separately with scoring
@@ -124,7 +162,7 @@ async def worker_loop(
                 continue
 
             task = asyncio.create_task(
-                process_request(request, env, client_cycle, semaphore, logger)
+                _process_request_safe(request, env, client_cycle, semaphore, logger)
             )
             pending_tasks[task] = request.example_id
         return True
@@ -144,11 +182,8 @@ async def worker_loop(
 
             for task in done:
                 pending_tasks.pop(task)
-                try:
-                    response = task.result()
-                    response_queue.put(response)
-                except Exception as e:
-                    logger.error(f"Task failed: {e}")
+                response = task.result()
+                response_queue.put(response)
     finally:
         for task in pending_tasks:
             task.cancel()

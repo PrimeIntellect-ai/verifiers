@@ -43,6 +43,7 @@ def _run_cli(monkeypatch, overrides):
         "verbose": False,
         "print_results": False,
         "no_interleave_scoring": False,
+        "state_columns": [],
         "save_results": False,
         "save_every": -1,
         "save_to_hf_hub": False,

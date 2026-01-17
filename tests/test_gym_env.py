@@ -147,13 +147,17 @@ def test_basic_rollout_and_reward_sum(toy_env_class, client):
         num_eval_episodes=1,
     )
 
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    steps = st.get("trajectory", [])
+    res = env.evaluate_sync(
+        client=client,
+        model="mock",
+        state_columns=["gym_done", "is_completed"],
+    )
+    rollout = res["rollouts"][0]
+    steps = rollout.get("trajectory", [])
 
     assert len(steps) > 0
-    assert res["reward"] == [1.0]
-    assert st.get("gym_done") is True
+    assert rollout.get("reward") == 1.0
+    assert rollout.get("gym_done") is True
 
     last_prompt = steps[-1]["prompt"]
     assert "Episode already ended." in str(last_prompt)
@@ -173,11 +177,15 @@ def test_action_parse_error_ends_episode(toy_env_class, client):
         num_eval_episodes=1,
     )
 
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    steps = st.get("trajectory", [])
+    res = env.evaluate_sync(
+        client=client,
+        model="mock",
+        state_columns=["gym_done", "is_completed"],
+    )
+    rollout = res["rollouts"][0]
+    steps = rollout.get("trajectory", [])
 
-    assert st.get("gym_done") is True
+    assert rollout.get("gym_done") is True
     last_prompt = steps[-1]["prompt"]
     assert "Action Parsing Error" in str(last_prompt)
 
@@ -200,13 +208,17 @@ def test_max_episode_steps_limits_turns(client):
         num_train_episodes=0,
         num_eval_episodes=1,
     )
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    steps = st.get("trajectory", [])
+    res = env.evaluate_sync(
+        client=client,
+        model="mock",
+        state_columns=["gym_done", "is_completed"],
+    )
+    rollout = res["rollouts"][0]
+    steps = rollout.get("trajectory", [])
 
     assert len(steps) == 3
-    assert st.get("gym_done") is False
-    assert st.get("is_completed") is True
+    assert rollout.get("gym_done") is False
+    assert rollout.get("is_completed") is True
 
     last_prompt = steps[-1]["prompt"]
     assert "Episode already ended." not in str(last_prompt)
@@ -229,8 +241,8 @@ def test_system_prompt_and_few_shot(toy_env_class, client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    first_prompt = st["prompt"]
+    rollout = res["rollouts"][0]
+    first_prompt = rollout["prompt"]
 
     roles = [m["role"] for m in first_prompt]
     contents = [m.get("content") for m in first_prompt]
@@ -256,12 +268,16 @@ def test_four_tuple_step_normalization(client):
         num_train_episodes=0,
         num_eval_episodes=1,
     )
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    steps = st.get("trajectory", [])
+    res = env.evaluate_sync(
+        client=client,
+        model="mock",
+        state_columns=["gym_done", "is_completed"],
+    )
+    rollout = res["rollouts"][0]
+    steps = rollout.get("trajectory", [])
 
     assert steps[0]["extras"]["gym_info"] == {"info": "done"}
-    assert st.get("gym_done") is True
+    assert rollout.get("gym_done") is True
 
 
 def test_env_kwargs_passed_to_env(toy_env_class, client):
@@ -275,9 +291,9 @@ def test_env_kwargs_passed_to_env(toy_env_class, client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
+    rollout = res["rollouts"][0]
 
-    first_obs_msg = st["prompt"][-1]["content"]
+    first_obs_msg = rollout["prompt"][-1]["content"]
     assert first_obs_msg == "x=5"
 
 
@@ -303,8 +319,8 @@ def test_custom_obs_to_text(client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
-    assert st["prompt"][-1]["content"] == "obs_is_0"
+    rollout = res["rollouts"][0]
+    assert rollout["prompt"][-1]["content"] == "obs_is_0"
 
 
 def test_missing_env_cls_raises_error():
@@ -324,11 +340,11 @@ def test_completion_mode(toy_env_class, client):
     )
 
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["results"][0]
+    rollout = res["rollouts"][0]
 
-    assert isinstance(st["prompt"], str)
-    assert st["prompt"] == "x=0"
-    comp = st.get("completion", "")
+    assert isinstance(rollout["prompt"], str)
+    assert rollout["prompt"] == "x=0"
+    comp = rollout.get("completion", "")
     assert isinstance(comp, str)
 
 

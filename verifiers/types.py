@@ -102,9 +102,10 @@ class RolloutResultTrajectoryStep(TypedDict, total=False):
     completion: Messages
     tokens: TrajectoryStepTokens
     advantage: float
+    extras: dict[str, Any]
 
 
-class _RolloutResultRequired(TypedDict):
+class RolloutResultBase(TypedDict):
     """Required fields for RolloutResult."""
 
     prompt: Messages
@@ -114,7 +115,7 @@ class _RolloutResultRequired(TypedDict):
     metrics: dict[str, float]
 
 
-class RolloutResult(_RolloutResultRequired, total=False):
+class RolloutResult(RolloutResultBase, total=False):
     """Serializable result from a rollout, used in GenerateOutputs.
 
     This is the public contract for what evaluation/generation returns.
@@ -181,7 +182,7 @@ class State(dict):
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 
-class GenerateMetadata(TypedDict):
+class GenerateMetadataRequired(TypedDict):
     """Metadata about a generation run."""
 
     env_id: str
@@ -195,6 +196,11 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+
+
+class GenerateMetadata(GenerateMetadataRequired, total=False):
+    """Metadata about a generation run (optional keys are only present when saving)."""
+
     state_columns: list[str]
     path_to_save: Path
 
