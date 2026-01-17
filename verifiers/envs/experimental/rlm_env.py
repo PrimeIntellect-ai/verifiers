@@ -54,7 +54,14 @@ from verifiers.envs.sandbox_env import (
     SandboxNotReadyError,
 )
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
+from verifiers.types import (
+    ChatMessage,
+    ChatMessages,
+    Messages,
+    ModelResponse,
+    State,
+    TrajectoryStep,
+)
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
@@ -290,7 +297,7 @@ class RLMMonitorRubric(vf.Rubric):
 class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
 
-    prompt_messages: list[dict]  # Messages before this LLM call
+    prompt_messages: ChatMessages  # Messages before this LLM call
     response: ModelResponse  # Full response object (with token_ids, logprobs)
     tool_call_count: int  # Number of tool calls made in this turn
 
@@ -1846,7 +1853,9 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
-    def _normalize_message_content(self, messages: list[dict]) -> list[dict]:
+    def _normalize_message_content(
+        self, messages: ChatMessages | list[dict[str, Any]]
+    ) -> ChatMessages:
         """Normalize message content fields to formats the API accepts.
 
         The API expects content to be: string, array of objects, or None.
@@ -1854,9 +1863,9 @@ class RLMEnv(SandboxEnv):
         1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
         2. Content is a content part object (has 'type' key) - wrap in array
         """
-        normalized = []
+        normalized: ChatMessages = []
         for msg in messages:
-            msg_copy = dict(msg)
+            msg_copy: dict[str, Any] = dict(msg)
             content = msg_copy.get("content")
 
             if content is not None and isinstance(content, dict):
@@ -1870,7 +1879,7 @@ class RLMEnv(SandboxEnv):
                 else:
                     # Unknown dict structure - try wrapping in array as fallback
                     msg_copy["content"] = [content]
-            normalized.append(msg_copy)
+            normalized.append(cast(ChatMessage, msg_copy))
         return normalized
 
     async def _call_sub_llm_api(
@@ -1878,7 +1887,7 @@ class RLMEnv(SandboxEnv):
         state: State,
         client: Any,
         model: str,
-        messages: list[dict],
+        messages: ChatMessages,
         tools: list | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
@@ -1957,7 +1966,7 @@ class RLMEnv(SandboxEnv):
         )
 
     async def _run_sub_llm(
-        self, state: State, client: Any, model: str, messages: list[dict]
+        self, state: State, client: Any, model: str, messages: ChatMessages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
@@ -1971,7 +1980,7 @@ class RLMEnv(SandboxEnv):
                 final_content=response.choices[0].message.content or "",
                 turns=[
                     SubLLMTurn(
-                        prompt_messages=[dict(m) for m in messages],
+                        prompt_messages=[cast(ChatMessage, dict(m)) for m in messages],
                         response=response,
                         tool_call_count=0,
                     )
@@ -1994,7 +2003,7 @@ class RLMEnv(SandboxEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            prompt_snapshot = [dict(m) for m in current_messages]
+            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
 
             response = await self._call_sub_llm_api(
                 state, client, model, current_messages, tools
@@ -2036,7 +2045,7 @@ class RLMEnv(SandboxEnv):
                     max_turns_reached=False,
                 )
 
-            current_messages.append(assistant_message.model_dump())
+            current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
@@ -2047,7 +2056,7 @@ class RLMEnv(SandboxEnv):
                 tool_result = await self._call_sub_tool(
                     tool_name, tool_args, tool_call.id
                 )
-                current_messages.append(tool_result)
+                current_messages.append(cast(ChatMessage, tool_result))
 
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
@@ -2059,7 +2068,7 @@ class RLMEnv(SandboxEnv):
             }
         )
 
-        prompt_snapshot = [dict(m) for m in current_messages]
+        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
         response = await self._call_sub_llm_api(state, client, model, current_messages)
         if response is None:
             return self._make_timeout_result(
@@ -2145,12 +2154,12 @@ class RLMEnv(SandboxEnv):
         if not sub_model:
             return web.json_response({"error": "Model not available"}, status=500)
 
-        messages = request_body.get("messages", [])
+        messages = cast(ChatMessages, request_body.get("messages", []))
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
 
         # Prepend system message with \boxed{} instruction
-        messages_with_system = [
+        messages_with_system: ChatMessages = [
             {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
             *messages,
         ]
