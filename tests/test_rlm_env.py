@@ -60,6 +60,8 @@ def rlm_env(mock_sandbox_client, mock_dataset):
     with (
         patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
         patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        # Avoid registering SIGTERM handlers that call exit(143) during tests.
+        patch("verifiers.envs.environment.signal.signal"),
     ):
         mock_client_cls.return_value = mock_sandbox_client
         env = RLMEnv(
@@ -88,6 +90,8 @@ def rlm_env_with_sub_tools(mock_sandbox_client, mock_dataset):
     with (
         patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
         patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        # Avoid registering SIGTERM handlers that call exit(143) during tests.
+        patch("verifiers.envs.environment.signal.signal"),
     ):
         mock_client_cls.return_value = mock_sandbox_client
         env = RLMEnv(
@@ -107,6 +111,8 @@ def rlm_env_local(mock_sandbox_client, mock_dataset):
     with (
         patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
         patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        # Avoid registering SIGTERM handlers that call exit(143) during tests.
+        patch("verifiers.envs.environment.signal.signal"),
     ):
         mock_client_cls.return_value = mock_sandbox_client
         env = RLMEnv(
