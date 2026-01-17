@@ -20,8 +20,8 @@ class Shutdown:
 class RolloutRequest:
     """Request to run a group of rollouts.
 
-    The orchestrator (vf-eval or prime-rl) is responsible for constructing
-    group_inputs with the desired duplication.
+    The caller is responsible for constructing `group_inputs` (including any
+    duplication needed to get multiple samples per example).
     """
 
     group_inputs: list[RolloutInput]

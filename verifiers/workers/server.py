@@ -81,8 +81,8 @@ async def process_request(
 ) -> RolloutResponse:
     """Process a single rollout request.
 
-    The orchestrator is responsible for constructing group_inputs with
-    the desired duplication. This worker just runs the group.
+    The caller constructs `group_inputs`. This worker runs the rollout(s) and
+    returns serialized results.
     """
     client = next(client_cycle)
     group_inputs = request.group_inputs

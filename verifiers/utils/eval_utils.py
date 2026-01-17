@@ -422,13 +422,21 @@ def make_dataset(output: GenerateOutputs) -> Dataset:
     if any(answer != "" for answer in answers):
         results_dict["answer"] = answers
 
-    # Aggregate metrics from rollouts
+    # Aggregate metrics from rollouts. Ensure every metric column has length == len(rollouts)
+    # by padding missing metrics for a rollout with None (missing), not 0.0.
+    n_rollouts = len(rollouts)
+    metric_keys: set[str] = set()
     for r in rollouts:
-        if r.get("metrics"):
-            for k, v in r["metrics"].items():
-                if k not in results_dict:
-                    results_dict[k] = []
-                results_dict[k].append(v)
+        metric_keys.update((r.get("metrics") or {}).keys())
+
+    if metric_keys:
+        metric_columns: dict[str, list[float | None]] = {
+            k: [None] * n_rollouts for k in metric_keys
+        }
+        for i, r in enumerate(rollouts):
+            for k, v in (r.get("metrics") or {}).items():
+                metric_columns[k][i] = float(v)
+        results_dict.update(metric_columns)
 
     return Dataset.from_dict(results_dict)
 

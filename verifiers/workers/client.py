@@ -26,7 +26,7 @@ class EnvClient:
     """Client that manages worker subprocesses for environment execution.
 
     One worker loads the environment and returns the dataset. The client
-    owns the dataset and the orchestrator dispatches group inputs to workers.
+    owns the dataset and the caller dispatches group inputs to workers.
     """
 
     def __init__(
@@ -165,8 +165,8 @@ class EnvClient:
     ) -> asyncio.Future:
         """Submit a group of inputs for rollout and return a future for the response.
 
-        The orchestrator is responsible for constructing group_inputs with
-        the desired duplication (e.g. [input] * rollouts_per_example).
+        The caller is responsible for constructing `group_inputs` (including any
+        duplication needed to get multiple samples per example).
         """
         request = RolloutRequest(
             group_inputs=group_inputs,
@@ -232,7 +232,7 @@ class EnvClient:
 
         Args:
             groups: List of (group_inputs, example_id) tuples.
-                The orchestrator constructs group_inputs with desired duplication.
+                The caller constructs group_inputs with the desired duplication.
             model_name: Model to use for generation.
 
         Returns:
