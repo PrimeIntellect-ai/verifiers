@@ -425,7 +425,7 @@ touch /tmp/vf_complete
             tool_calls=tool_calls_list,
         )
 
-        return ChatCompletion(
+        result = ChatCompletion(
             id=completion_id or f"chatcmpl-{uuid.uuid4().hex[:8]}",
             choices=[
                 Choice(
@@ -438,6 +438,12 @@ touch /tmp/vf_complete
             model=model,
             object="chat.completion",
         )
+
+        # Log the accumulated response
+        rollout_id = intercept.get("rollout_id", "?")
+        self.log_response(rollout_id, result.model_dump())
+
+        return result
 
     async def add_model_response(
         self,
