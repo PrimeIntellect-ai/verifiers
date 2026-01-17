@@ -11,6 +11,7 @@ This guide walks through building environments in Verifiers, from simple single-
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
   - [Evaluation Datasets](#evaluation-datasets)
+  - [Lazy Loading with DatasetBuilder](#lazy-loading-with-datasetbuilder)
 - [Rubrics](#rubrics)
   - [Reward Functions](#reward-functions)
   - [Multiple Reward Functions](#multiple-reward-functions)
@@ -133,6 +134,37 @@ return vf.SingleTurnEnv(
 ```
 
 When running `prime eval run`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
+
+### Lazy Loading with DatasetBuilder
+
+For large datasets or when running multiple environment replicas, you can defer dataset loading using a `DatasetBuilder`—a callable that returns a `Dataset` when invoked:
+
+```python
+def get_dataset_builder(split: str = "train", seed: int = 42) -> vf.DatasetBuilder:
+    """Returns a builder that lazily loads the dataset."""
+    def build() -> Dataset:
+        ds = load_dataset("my-dataset", split=split)
+        ds = ds.shuffle(seed=seed)
+        return ds
+    return build
+
+def load_environment():
+    dataset_builder = get_dataset_builder(split="train")
+    eval_builder = get_dataset_builder(split="test")
+    
+    return vf.SingleTurnEnv(
+        dataset=dataset_builder,      # built on first access
+        eval_dataset=eval_builder,    # built on first access
+        rubric=rubric,
+    )
+```
+
+The builder pattern is useful when:
+- Dataset loading is expensive (e.g., downloading from Hugging Face)
+- Multiple environment replicas don't all need to own the dataset
+- You want to parameterize dataset creation without loading it immediately
+
+When a raw `Dataset` is passed directly (the default pattern), it is loaded eagerly during environment initialization for backwards compatibility.
 
 ## Rubrics
 
@@ -732,4 +764,4 @@ Newer and more experimental environment classes include:
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
 - **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
-- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing
+- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Supports `execution_backend="sandbox"` (default) or `"local"` for host execution. User code runs in a Python REPL with a best-effort guardrail that blocks common filesystem modules and `open` by default; customize via `disallowed_modules`/`disallowed_builtins`.

@@ -113,15 +113,27 @@ class Environment(ABC):
                 'to contain a "prompt" column.'
             )
 
-        self._dataset_source: Dataset | DatasetBuilder | None = dataset
-        self._eval_dataset_source: Dataset | DatasetBuilder | None = eval_dataset
+        # Normalize to always use builders (wrap raw datasets in lambdas)
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
 
-        if dataset is not None and not callable(dataset):
-            self._dataset = self._format_dataset_source(dataset)
-        if eval_dataset is not None and not callable(eval_dataset):
-            self._eval_dataset = self._format_dataset_source(eval_dataset)
+        if dataset is not None:
+            if callable(dataset):
+                self._dataset_source: DatasetBuilder | None = dataset
+            else:
+                self._dataset_source = lambda ds=dataset: ds
+                self._build_dataset()  # Eagerly build for raw datasets (backwards compat)
+        else:
+            self._dataset_source = None
+
+        if eval_dataset is not None:
+            if callable(eval_dataset):
+                self._eval_dataset_source: DatasetBuilder | None = eval_dataset
+            else:
+                self._eval_dataset_source = lambda ds=eval_dataset: ds
+                self._build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
+        else:
+            self._eval_dataset_source = None
 
         self.dataset: Dataset | None = self._dataset
         self.eval_dataset: Dataset | None = self._eval_dataset
@@ -333,11 +345,8 @@ class Environment(ABC):
             return self._dataset
         if self._dataset_source is None:
             return None
-        if callable(self._dataset_source):
-            built = self._dataset_source()
-            self._dataset = self._format_dataset_source(built)
-        else:
-            self._dataset = self._format_dataset_source(self._dataset_source)
+        built = self._dataset_source()
+        self._dataset = self._format_dataset_source(built)
         self.dataset = self._dataset
         return self._dataset
 
@@ -347,11 +356,8 @@ class Environment(ABC):
             return self._eval_dataset
         if self._eval_dataset_source is None:
             return None
-        if callable(self._eval_dataset_source):
-            built = self._eval_dataset_source()
-            self._eval_dataset = self._format_dataset_source(built)
-        else:
-            self._eval_dataset = self._format_dataset_source(self._eval_dataset_source)
+        built = self._eval_dataset_source()
+        self._eval_dataset = self._format_dataset_source(built)
         self.eval_dataset = self._eval_dataset
         return self._eval_dataset
 
@@ -363,6 +369,7 @@ class Environment(ABC):
         if seed is not None:
             ds = ds.shuffle(seed=seed)
             self._dataset = ds
+            self.dataset = ds
         if n > 0:
             n = min(n, len(ds))
             return ds.select(range(n))
@@ -379,6 +386,7 @@ class Environment(ABC):
         if seed is not None:
             ds = ds.shuffle(seed=seed)
             self._eval_dataset = ds
+            self.eval_dataset = ds
         if n > 0:
             n = min(n, len(ds))
             return ds.select(range(n))
@@ -1048,12 +1056,8 @@ class Environment(ABC):
     def _get_eval_inputs(
         self, num_examples: int = -1, rollouts_per_example: int = 1
     ) -> List[RolloutInput]:
-        if self.eval_dataset is None:
-            self.logger.info("eval_dataset is not set, falling back to train dataset")
-            assert self.dataset is not None
-            inputs = self.get_dataset(n=num_examples)
-        else:
-            inputs = self.get_eval_dataset(n=num_examples)
+        # get_eval_dataset handles fallback to train dataset if no eval source exists
+        inputs = self.get_eval_dataset(n=num_examples)
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
