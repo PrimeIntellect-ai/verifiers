@@ -1829,6 +1829,9 @@ class RLMEnv(SandboxEnv):
         self, state: State, *, interleaved: bool
     ) -> dict[str, Any]:
         sampling_args = dict(state.get("sampling_args") or {})
+        extra_body = sampling_args.get("extra_body")
+        if isinstance(extra_body, dict):
+            sampling_args["extra_body"] = dict(extra_body)
         sampling_args = self._normalize_sampling_args(sampling_args)
         if interleaved:
             return prepare_sampling_args_for_token_prompts(sampling_args)
