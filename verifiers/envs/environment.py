@@ -101,7 +101,7 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
-        self._map_kwargs = map_kwargs
+        self.map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_score_rollouts(score_rollouts)
@@ -332,10 +332,10 @@ class Environment(ABC):
                 dataset,
                 self.system_prompt,
                 self.few_shot,
-                map_kwargs=self._map_kwargs,
+                map_kwargs=self.map_kwargs,
             )
         else:
-            return self._format_completion_dataset(dataset, map_kwargs=self._map_kwargs)
+            return self._format_completion_dataset(dataset, map_kwargs=self.map_kwargs)
 
     def build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
