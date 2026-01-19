@@ -75,7 +75,7 @@ class ZMQEnvClient(EnvClient):
             request, RunRolloutResponse, timeout=36000.0
         )
         assert response.state is not None
-        return vf.State(**response.state)
+        return response.state
 
     async def run_group(
         self,
@@ -94,7 +94,7 @@ class ZMQEnvClient(EnvClient):
         )
         response = await self._send_request(request, RunGroupResponse, timeout=36000.0)
         assert response.states is not None
-        return [vf.State(**state) for state in response.states]
+        return response.states
 
     async def evaluate(
         self,
@@ -124,7 +124,8 @@ class ZMQEnvClient(EnvClient):
             independent_scoring=independent_scoring,
         )
         response = await self._send_request(request, EvaluateResponse, timeout=36000.0)
-        return vf.GenerateOutputs(response.results)
+        assert response.results is not None
+        return response.results
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
@@ -183,7 +184,7 @@ class ZMQEnvClient(EnvClient):
                 )
                 # Don't break - log and continue for non-socket errors
 
-    async def start(self):
+    async def _start(self):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.socket.connect(self.address)
         self.logger.debug("ZMQ client started")
@@ -206,7 +207,7 @@ class ZMQEnvClient(EnvClient):
         """
         # Auto-start receiver if not already running
         if self._receiver_task is None:
-            await self.start()
+            await self._start()
 
         # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
@@ -248,17 +249,16 @@ async def main():
 
     parser = argparse.ArgumentParser(description="ZMQ Environment Client")
     parser.add_argument(
-        "--address", type=str, default="tcp://127.0.0.1:5555", help="ZMQ bind address"
+        "--address", type=str, default="tcp://127.0.0.1:5000", help="ZMQ bind address"
     )
-
     args = parser.parse_args()
 
     # initialize client
     client = ZMQEnvClient(address=args.address)
 
-    response = await client.health()
-    print(response)
-
+    is_healthy = await client.health()
+    assert is_healthy, "ZMQEnvServer is not healthy"
+    print("Checked that ZMQEnvServer is running and healthy.")
     results = await client.evaluate(
         client_config=vf.ClientConfig(),
         model="openai/gpt-4.1-mini",
@@ -266,7 +266,7 @@ async def main():
         num_examples=5,
         rollouts_per_example=3,
         max_concurrent=-1,
-        results_path=Path("results.jsonl"),
+        results_path=None,
         state_columns=[],
         save_results=False,
         save_every=-1,
