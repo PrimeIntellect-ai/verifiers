@@ -217,34 +217,41 @@ class ClientConfig(BaseModel):
     extra_headers: dict[str, str] = {}
 
 
-class EvalConfig(BaseModel):
-    """Pydantic model for evaluation configuration."""
+class EvalEnvConfig(BaseModel):
+    """Pydantic model for environment-specific evaluation configuration."""
 
-    # environment
     env_id: str
     env_args: dict = {}
     num_examples: int
     rollouts_per_example: int
+    interleave_scoring: bool = True
+    state_columns: list[str] | None = None
+    extra_env_kwargs: dict = {}
 
 
-class EvalRunConfig(BaseModel):
-    """Pydantic model for evaluation run configuration."""
+class EvalModelConfig(BaseModel):
+    """Pydantic model for model-specific evaluation configuration."""
 
-    env: list[EvalConfig]
-    # run
-    env_dir_path: str
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
-    independent_scoring: bool = False
-    extra_env_kwargs: dict = {}
-    # logging
-    verbose: bool = False
-    # saving
-    state_columns: list[str] | None = None
+
+
+class EvalConfig(BaseModel):
+    """Pydantic model for evaluation configuration."""
+
+    env: EvalEnvConfig
+    model: EvalModelConfig
+
+
+class EvalRunConfig(BaseModel):
+    """Pydantic model for evaluation run configuration."""
+
+    evals: list[EvalConfig]
+    env_dir_path: str
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False

@@ -14,14 +14,18 @@ def get_results_path(
     return base_path / "evals" / env_model_str / uuid_str
 
 
-def get_eval_results_path(run_config: EvalRunConfig, env_config: EvalConfig) -> Path:
-    module_name = env_config.env_id.replace("-", "_")
+def get_eval_results_path(run_config: EvalRunConfig, eval_config: EvalConfig) -> Path:
+    module_name = eval_config.env.env_id.replace("-", "_")
     local_env_dir = Path(run_config.env_dir_path) / module_name
 
     if local_env_dir.exists():
         base_path = local_env_dir / "outputs"
-        results_path = get_results_path(env_config.env_id, run_config.model, base_path)
+        results_path = get_results_path(
+            eval_config.env.env_id, eval_config.model.model, base_path
+        )
     else:
         base_path = Path("./outputs")
-        results_path = get_results_path(env_config.env_id, run_config.model, base_path)
+        results_path = get_results_path(
+            eval_config.env.env_id, eval_config.model.model, base_path
+        )
     return results_path

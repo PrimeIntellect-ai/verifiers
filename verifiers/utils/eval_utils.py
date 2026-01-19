@@ -21,6 +21,7 @@ import verifiers as vf
 from verifiers.types import (
     Endpoints,
     EvalConfig,
+    EvalEnvConfig,
     EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
@@ -76,7 +77,7 @@ def is_toml_config(path: str) -> bool:
     return Path(path).is_file() and Path(path).suffix == ".toml"
 
 
-def load_toml_config(path: Path) -> list[dict]:
+def load_toml_config(path: Path) -> dict[str, dict | list]:
     """Loads and validates a TOML config file."""
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -84,26 +85,108 @@ def load_toml_config(path: Path) -> list[dict]:
     with open(path, "rb") as f:
         raw_config = tomllib.load(f)
 
-    # validate schema
-    env_list: list[dict] = raw_config.get("env", [])
-    if not env_list:
-        raise ValueError(
-            f"Config file must contain at least one [[env]] section: {path}"
-        )
+    eval_list = raw_config.get("eval")
+    env_defaults = raw_config.get("env", {})
+    model_defaults = raw_config.get("model", {})
+    save_defaults = raw_config.get("save", {})
 
-    if not all("env_id" in e for e in env_list):
-        raise ValueError(f"All [[env]] sections must contain an env_id field: {path}")
-
-    valid_fields = set(EvalConfig.model_fields.keys())
-    for env in env_list:
-        invalid_fields = set(env.keys()) - valid_fields
-        if invalid_fields:
+    if eval_list is None:
+        env_list = raw_config.get("env", [])
+        if isinstance(env_list, list) and env_list:
+            eval_list = [{"env": env} for env in env_list]
+            env_defaults = {}
+        else:
             raise ValueError(
-                f"Invalid field(s) {invalid_fields} for {env.get('env_id', 'unknown')}. "
-                f"Valid fields are: {sorted(valid_fields)}"
+                f"Config file must contain at least one [[eval]] or [[env]] section: {path}"
             )
 
-    return env_list
+    if not isinstance(eval_list, list) or not eval_list:
+        raise ValueError(
+            f"Config file must contain at least one [[eval]] section: {path}"
+        )
+
+    valid_env_fields = set(EvalEnvConfig.model_fields.keys())
+    valid_env_fields.discard("env_id")
+    valid_model_fields = {
+        "model",
+        "sampling_args",
+        "max_concurrent",
+        "max_concurrent_generation",
+        "max_concurrent_scoring",
+        "api_key_var",
+        "api_base_url",
+        "extra_headers",
+        "client_config",
+    }
+    valid_save_fields = {
+        "save_results",
+        "save_every",
+        "save_to_hf_hub",
+        "hf_hub_dataset_name",
+    }
+
+    if env_defaults and not isinstance(env_defaults, dict):
+        raise ValueError("[env] defaults must be a table")
+    if model_defaults and not isinstance(model_defaults, dict):
+        raise ValueError("[model] defaults must be a table")
+    if save_defaults and not isinstance(save_defaults, dict):
+        raise ValueError("[save] defaults must be a table")
+
+    invalid_env_defaults = set(env_defaults.keys()) - valid_env_fields
+    if invalid_env_defaults:
+        raise ValueError(
+            f"Invalid [env] default field(s) {invalid_env_defaults}. "
+            f"Valid fields are: {sorted(valid_env_fields)}"
+        )
+
+    invalid_model_defaults = set(model_defaults.keys()) - valid_model_fields
+    if invalid_model_defaults:
+        raise ValueError(
+            f"Invalid [model] default field(s) {invalid_model_defaults}. "
+            f"Valid fields are: {sorted(valid_model_fields)}"
+        )
+
+    invalid_save_defaults = set(save_defaults.keys()) - valid_save_fields
+    if invalid_save_defaults:
+        raise ValueError(
+            f"Invalid [save] default field(s) {invalid_save_defaults}. "
+            f"Valid fields are: {sorted(valid_save_fields)}"
+        )
+
+    for eval_entry in eval_list:
+        if not isinstance(eval_entry, dict):
+            raise ValueError("Each [[eval]] entry must be a table")
+        raw_env = eval_entry.get("env", {})
+        raw_model = eval_entry.get("model", {})
+        if "env_id" in eval_entry:
+            raw_env = {**raw_env, "env_id": eval_entry["env_id"]}
+
+        if "env" not in eval_entry and "env_id" not in eval_entry:
+            raise ValueError("Each [[eval]] entry must include an env section")
+
+        if "env_id" not in raw_env:
+            raise ValueError("Each [[eval]] entry must include env.env_id")
+
+        invalid_env_fields = set(raw_env.keys()) - (valid_env_fields | {"env_id"})
+        if invalid_env_fields:
+            raise ValueError(
+                f"Invalid env field(s) {invalid_env_fields} for {raw_env.get('env_id', 'unknown')}. "
+                f"Valid fields are: {sorted(valid_env_fields | {'env_id'})}"
+            )
+
+        invalid_model_fields = set(raw_model.keys()) - valid_model_fields
+        if invalid_model_fields:
+            raise ValueError(
+                f"Invalid model field(s) {invalid_model_fields} for {raw_env.get('env_id', 'unknown')}. "
+                f"Valid fields are: {sorted(valid_model_fields)}"
+            )
+
+    return {
+        "evals": eval_list,
+        "env_defaults": env_defaults,
+        "model_defaults": model_defaults,
+        "save_defaults": save_defaults,
+    }
 
 
 def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
@@ -245,43 +328,49 @@ def print_results(
 
 
 async def run_evaluation(
-    env_config: EvalConfig,
-    run_config: EvalRunConfig,
+    eval_config: EvalConfig, run_config: EvalRunConfig
 ) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(run_config.client_config)
+    client = setup_client(eval_config.model.client_config)
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {run_config.client_config.api_base_url}"
+        f"Initialized AsyncOpenAI client with base_url: {eval_config.model.client_config.api_base_url}"
     )
 
     # load environment
-    vf_env = vf.load_environment(env_id=env_config.env_id, **env_config.env_args)
+    vf_env = vf.load_environment(
+        env_id=eval_config.env.env_id, **eval_config.env.env_args
+    )
 
     # set extra environment kwargs
-    if run_config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {run_config.extra_env_kwargs}")
-        vf_env.set_kwargs(**run_config.extra_env_kwargs)
+    if eval_config.env.extra_env_kwargs:
+        logger.info(
+            f"Setting extra environment kwargs: {eval_config.env.extra_env_kwargs}"
+        )
+        vf_env.set_kwargs(**eval_config.env.extra_env_kwargs)
 
     # run evaluation
-    results_path = get_eval_results_path(run_config, env_config)
-    logger.info(f"Starting evaluation with model: {run_config.model}")
+    results_path = get_eval_results_path(run_config, eval_config)
+    logger.info(f"Starting evaluation with model: {eval_config.model.model}")
     logger.info(
-        f"Configuration: num_examples={env_config.num_examples}, rollouts_per_example={env_config.rollouts_per_example}, max_concurrent={run_config.max_concurrent}"
+        "Configuration: num_examples=%s, rollouts_per_example=%s, max_concurrent=%s",
+        eval_config.env.num_examples,
+        eval_config.env.rollouts_per_example,
+        eval_config.model.max_concurrent,
     )
     results = await vf_env.evaluate(
         client=client,
-        model=run_config.model,
-        sampling_args=run_config.sampling_args,
-        num_examples=env_config.num_examples,
-        rollouts_per_example=env_config.rollouts_per_example,
-        max_concurrent=run_config.max_concurrent,
-        max_concurrent_generation=run_config.max_concurrent_generation,
-        max_concurrent_scoring=run_config.max_concurrent_scoring,
+        model=eval_config.model.model,
+        sampling_args=eval_config.model.sampling_args,
+        num_examples=eval_config.env.num_examples,
+        rollouts_per_example=eval_config.env.rollouts_per_example,
+        max_concurrent=eval_config.model.max_concurrent,
+        max_concurrent_generation=eval_config.model.max_concurrent_generation,
+        max_concurrent_scoring=eval_config.model.max_concurrent_scoring,
         results_path=results_path,
-        state_columns=run_config.state_columns,
+        state_columns=eval_config.env.state_columns,
         save_results=run_config.save_results,
         save_every=run_config.save_every,
-        independent_scoring=run_config.independent_scoring,
+        independent_scoring=not eval_config.env.interleave_scoring,
     )
 
     if run_config.save_results:
@@ -293,14 +382,14 @@ async def run_evaluation(
     return results
 
 
-async def run_multi_evaluation(config: EvalRunConfig) -> None:
+async def run_evaluations(config: EvalRunConfig) -> None:
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config, config) for eval_config in config.env]
+        *[run_evaluation(eval_config, config) for eval_config in config.evals]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()

@@ -188,77 +188,131 @@ prime eval run gsm8k,math-python,wordle -m qwen3-235b-i -n 10 -r 5 -c 64
 
 ### TOML Configuration
 
-For fine-grained control over per-environment settings, use a TOML configuration file. This allows you to specify different parameters for each environment while still running them in parallel.
+For fine-grained control over per-environment and per-model settings, use a TOML configuration file. This allows you to specify different parameters for each environment or model while still running them in parallel.
 
 ```bash
 prime eval run configs/eval/my-benchmark.toml -m gpt-4.1-mini
 ```
 
-The TOML file uses `[[env]]` sections to define each environment:
+The TOML file uses `[env]`/`[model]` defaults with one or more `[[eval]]` entries:
 
 ```toml
 # configs/eval/my-benchmark.toml
 
-[[env]]
-env_id = "gsm8k"
+[env]
 num_examples = 100
 rollouts_per_example = 5
 
-[[env]]
+[model]
+model = "openai/gpt-4.1-mini"
+
+[[eval]]
+[eval.env]
+env_id = "gsm8k"
+
+[[eval]]
+[eval.env]
 env_id = "alphabet-sort"
+num_examples = 50
+
+[[eval]]
+[eval.env]
+env_id = "math-python"
+```
+
+Eval TOML files define an evaluation run with defaults plus one or more `[[eval]]` entries. Defaults apply to any eval that does not override them.
+
+| Table | Field | Type | Description |
+|-------|-------|------|-------------|
+| `[env]` or `[eval.env]` | `env_id` | string | **Required in `[eval.env]`.** Environment module name |
+| `[env]` or `[eval.env]` | `env_args` | table | Arguments passed to `load_environment()` |
+| `[env]` or `[eval.env]` | `num_examples` | integer | Number of dataset examples to evaluate |
+| `[env]` or `[eval.env]` | `rollouts_per_example` | integer | Rollouts per example |
+| `[env]` or `[eval.env]` | `interleave_scoring` | boolean | Whether to interleave scoring with generation |
+| `[env]` or `[eval.env]` | `state_columns` | array | State columns to save |
+| `[env]` or `[eval.env]` | `extra_env_kwargs` | table | Arguments passed to environment constructor |
+| `[model]` or `[eval.model]` | `model` | string | Model name or endpoint alias |
+| `[model]` or `[eval.model]` | `sampling_args` | table | Sampling arguments |
+| `[model]` or `[eval.model]` | `max_concurrent` | integer | Max concurrent requests |
+| `[model]` or `[eval.model]` | `max_concurrent_generation` | integer | Max concurrent generation requests |
+| `[model]` or `[eval.model]` | `max_concurrent_scoring` | integer | Max concurrent scoring requests |
+| `[model]` or `[eval.model]` | `api_key_var` | string | API key env var name override |
+| `[model]` or `[eval.model]` | `api_base_url` | string | API base URL override |
+| `[model]` or `[eval.model]` | `extra_headers` | table | Extra HTTP headers |
+| `[save]` | `save_results` | boolean | Save results to disk |
+| `[save]` | `save_every` | integer | Save every N rollouts |
+| `[save]` | `save_to_hf_hub` | boolean | Save dataset to Hugging Face Hub |
+| `[save]` | `hf_hub_dataset_name` | string | Hugging Face dataset name override |
+
+Example with defaults and per-eval overrides:
+
+```toml
+# configs/eval/my-benchmark.toml
+
+[env]
 num_examples = 50
 rollouts_per_example = 3
 
-[[env]]
+[model]
+model = "openai/gpt-4.1-mini"
+max_concurrent = 64
+
+[save]
+save_results = true
+
+[[eval]]
+[eval.env]
 env_id = "math-python"
-# Uses CLI args or defaults for num_examples and rollouts_per_example
-```
+num_examples = 100
 
-Each `[[env]]` section must contain an `env_id` field. All other fields are optional and correspond to per-environment options:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `env_id` | string | **Required.** Environment module name |
-| `env_args` | table | Arguments passed to `load_environment()` |
-| `num_examples` | integer | Number of dataset examples to evaluate |
-| `rollouts_per_example` | integer | Rollouts per example |
-
-Example with `env_args`:
-
-```toml
-[[env]]
-env_id = "math-python"
-num_examples = 50
-
-[env.env_args]
+[eval.env.env_args]
 difficulty = "hard"
 split = "test"
+
+[[eval]]
+[eval.env]
+env_id = "gsm8k"
+
+[eval.model]
+model = "qwen3-235b-i"
 ```
 
 ### Configuration Precedence
 
 Settings are resolved with the following priority order (highest to lowest) for per-environment fields:
 
-1. **TOML per-environment settings** — Values specified in `[[env]]` sections
-2. **CLI arguments** — Flags passed on the command line
-3. **Environment defaults** — Values from the environment's `pyproject.toml`
-4. **Global defaults** — Built-in defaults (`num_examples=5`, `rollouts_per_example=3`)
+1. **Per-eval TOML env settings** — Values in `[eval.env]`
+2. **TOML env defaults** — Values in `[env]`
+3. **CLI arguments** — Flags passed on the command line
+4. **Environment defaults** — Values from the environment's `pyproject.toml`
+5. **Global defaults** — Built-in defaults (`num_examples=5`, `rollouts_per_example=3`)
 
-This means TOML settings always take precedence over CLI arguments for the environments where they're specified, while environments without TOML settings fall back to CLI arguments:
+This means per-eval TOML settings take precedence over CLI arguments for the environments where they're specified, while environments without per-eval settings fall back to the shared defaults and CLI arguments:
 
 ```toml
-[[env]]
+[env]
+num_examples = 10
+
+[[eval]]
+[eval.env]
 env_id = "gsm8k"
 num_examples = 100  # This env uses 100 examples
 
-[[env]]
+[[eval]]
+[eval.env]
 env_id = "alphabet-sort"
-# No num_examples specified — uses CLI arg
+# No num_examples specified — uses defaults
 ```
 
 ```bash
-# gsm8k uses 100 examples (from TOML), alphabet-sort uses 10 (from CLI)
-prime eval run configs/eval/mixed.toml -n 10
+# gsm8k uses 100 examples (from TOML), alphabet-sort uses 10 (from defaults)
+prime eval run configs/eval/mixed.toml
 ```
 
-Run-level settings (model, sampling args, concurrency, saving, etc.) are configured via CLI flags and apply to all environments in the run. These are not set in the TOML file, so CLI flags always win for those settings.
+Model settings resolve with the following priority (highest to lowest):
+
+1. **Per-eval TOML model settings** — Values in `[eval.model]`
+2. **TOML model defaults** — Values in `[model]`
+3. **CLI arguments** — Flags passed on the command line
+
+Save settings resolve with CLI flags taking precedence over `[save]` defaults.

@@ -526,32 +526,45 @@ When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded wi
 
 This allows seamless use after running `prime login`.
 
-### EvalConfig
+### EvalEnvConfig
 
 ```python
-class EvalConfig(BaseModel):
+class EvalEnvConfig(BaseModel):
     env_id: str
     env_args: dict = {}
     num_examples: int
     rollouts_per_example: int
+    interleave_scoring: bool = True
+    state_columns: list[str] | None = None
+    extra_env_kwargs: dict = {}
 ```
 
-### EvalRunConfig
+### EvalModelConfig
 
 ```python
-class EvalRunConfig(BaseModel):
-    env: list[EvalConfig]
-    env_dir_path: str
+class EvalModelConfig(BaseModel):
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
-    independent_scoring: bool = False
-    extra_env_kwargs: dict = {}
-    verbose: bool = False
-    state_columns: list[str] | None = None
+```
+
+### EvalConfig
+
+```python
+class EvalConfig(BaseModel):
+    env: EvalEnvConfig
+    model: EvalModelConfig
+```
+
+### EvalRunConfig
+
+```python
+class EvalRunConfig(BaseModel):
+    evals: list[EvalConfig]
+    env_dir_path: str
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False
