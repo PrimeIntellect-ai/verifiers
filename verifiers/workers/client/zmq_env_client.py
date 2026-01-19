@@ -26,11 +26,10 @@ from verifiers.workers.utils import msgpack_encoder
 
 
 class ZMQEnvClient(EnvClient):
-    def __init__(self, address: str = "tcp://127.0.0.1:5000", timeout: float = 60.0):
+    def __init__(self, address: str = "tcp://127.0.0.1:5000"):
         super().__init__(address=address)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
-        self.timeout = timeout
 
         # DEALER socket for async request/response
         self.ctx = zmq.asyncio.Context()
@@ -49,16 +48,12 @@ class ZMQEnvClient(EnvClient):
             zmq.TCP_KEEPALIVE_CNT, 3
         )  # Give up after 3 failed probes
 
-        # Connect to all endpoints
-        self.logger.debug(f"Connecting ZMQ client to {address}")
-        self.socket.connect(address)
-
         self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
 
     async def health(self) -> bool:
         request = HealthRequest()
-        response = await self._send_request(request, HealthResponse)
+        response = await self._send_request(request, HealthResponse, timeout=1.0)
         return response.success
 
     async def run_rollout(
@@ -76,7 +71,9 @@ class ZMQEnvClient(EnvClient):
             sampling_args=sampling_args,
             score=score,
         )
-        response = await self._send_request(request, RunRolloutResponse)
+        response = await self._send_request(
+            request, RunRolloutResponse, timeout=36000.0
+        )
         assert response.state is not None
         return vf.State(**response.state)
 
@@ -95,7 +92,7 @@ class ZMQEnvClient(EnvClient):
             sampling_args=sampling_args,
             score=score,
         )
-        response = await self._send_request(request, RunGroupResponse)
+        response = await self._send_request(request, RunGroupResponse, timeout=36000.0)
         assert response.states is not None
         return [vf.State(**state) for state in response.states]
 
@@ -126,7 +123,7 @@ class ZMQEnvClient(EnvClient):
             save_every=save_every,
             independent_scoring=independent_scoring,
         )
-        response = await self._send_request(request, EvaluateResponse)
+        response = await self._send_request(request, EvaluateResponse, timeout=36000.0)
         return vf.GenerateOutputs(response.results)
 
     def _fail_all_pending(self, reason: str):
@@ -188,12 +185,14 @@ class ZMQEnvClient(EnvClient):
 
     async def start(self):
         self._receiver_task = asyncio.create_task(self._receive_loop())
+        self.socket.connect(self.address)
         self.logger.debug("ZMQ client started")
 
     async def _send_request(
         self,
         request: BaseRequest,
         response_type: type[BaseResponseT],
+        timeout: float | None = None,
     ) -> BaseResponseT:
         """
         Send typed request to environment and parse typed response.
@@ -228,11 +227,11 @@ class ZMQEnvClient(EnvClient):
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
         try:
-            raw_response = await asyncio.wait_for(future, timeout=self.timeout)
+            raw_response = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
             raise TimeoutError(
-                f"Environment timeout for {request.request_type} request after {self.timeout}s"
+                f"Environment timeout for {request.request_type} request after {timeout}s"
             )
 
         # validate response with Pydantic

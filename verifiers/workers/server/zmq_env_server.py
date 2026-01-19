@@ -35,7 +35,7 @@ class ZMQEnvServer(EnvServer):
         self.clients: dict[str, AsyncOpenAI] = {}
 
     async def run(self, stop_event: asyncio.Event | None = None):
-        self.logger.info(f"Environment server listening on {self.address}")
+        self.logger.debug(f"{self.__class__.__name__} started on {self.address}")
 
         # Create a task to wait for stop signal
         stop_task = asyncio.create_task(stop_event.wait()) if stop_event else None
@@ -44,7 +44,7 @@ class ZMQEnvServer(EnvServer):
             while True:
                 # exit gracefully on stop signal
                 if stop_event and stop_event.is_set():
-                    self.logger.info("Stop event received, shutting down gracefully")
+                    self.logger.debug("Stop event received, shutting down gracefully")
                     break
 
                 try:
@@ -78,12 +78,9 @@ class ZMQEnvServer(EnvServer):
                 stop_task.cancel()
 
     async def close(self):
-        # TODO: close clients
-
-        # close zmq socket
         self.socket.close()
         self.ctx.term()
-        self.logger.info("Environment server shut down")
+        self.logger.debug("Environment server shut down")
 
     async def _process_request(
         self,
@@ -91,64 +88,61 @@ class ZMQEnvServer(EnvServer):
         request_id_bytes: bytes,
         payload_bytes: bytes,
     ):
-        async with self.semaphore:
-            # Default request_id from ZMQ frame, may be overwritten by Pydantic model
-            request_id = request_id_bytes.decode()
-            response: BaseResponse
+        # Default request_id from ZMQ frame, may be overwritten by Pydantic model
+        request_id = request_id_bytes.decode()
+        response: BaseResponse
 
-            try:
-                # deserialize request
-                raw = msgpack.unpackb(payload_bytes, raw=False)
-                request_type = raw.get("request_type")
-                request_id = raw.get("request_id", request_id)
-                self.logger.info(
-                    f"Got {request_type} request (request_id={request_id})"
-                )
+        try:
+            # deserialize request
+            raw = msgpack.unpackb(payload_bytes, raw=False)
+            request_type = raw.get("request_type")
+            request_id = raw.get("request_id", request_id)
+            self.logger.debug(f"Got {request_type} request (request_id={request_id})")
 
-                # validate and route to handler
-                if request_type == "health":
-                    request = HealthRequest.model_validate(raw)
-                    response = await self._handle_health(request)
-                elif request_type == "run_rollout":
-                    request = RunRolloutRequest.model_validate(raw)
-                    response = await self._handle_run_rollout(request)
-                elif request_type == "run_group":
-                    request = RunGroupRequest.model_validate(raw)
-                    response = await self._handle_run_group(request)
-                elif request_type == "evaluate":
-                    request = EvaluateRequest.model_validate(raw)
-                    response = await self._handle_evaluate(request)
-                else:
-                    response = BaseResponse(
-                        success=False,
-                        error=f"Unknown action: {request_type}",
-                    )
-
-            except Exception as e:
-                self.logger.error(f"Error processing request: {e}", exc_info=True)
+            # validate and route to handler
+            if request_type == "health":
+                request = HealthRequest.model_validate(raw)
+                response = await self._handle_health(request)
+            elif request_type == "run_rollout":
+                request = RunRolloutRequest.model_validate(raw)
+                response = await self._handle_run_rollout(request)
+            elif request_type == "run_group":
+                request = RunGroupRequest.model_validate(raw)
+                response = await self._handle_run_group(request)
+            elif request_type == "evaluate":
+                request = EvaluateRequest.model_validate(raw)
+                response = await self._handle_evaluate(request)
+            else:
+                self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(
-                    success=False,
-                    error=str(e),
+                    success=False, error=f"Unknown request type: {request_type}"
                 )
 
-            # serialize response using Pydantic
-            response_bytes = cast(
-                bytes,
-                msgpack.packb(
-                    response.model_dump(mode="python"),
-                    default=msgpack_encoder,
-                    use_bin_type=True,
-                ),
+        except Exception as e:
+            self.logger.error(f"Error processing request: {e}", exc_info=True)
+            response = BaseResponse(
+                success=False,
+                error=str(e),
             )
 
-            # send response: [client_id, request_id, response]
-            await self.socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
-            )
+        # serialize response using Pydantic
+        response_bytes = cast(
+            bytes,
+            msgpack.packb(
+                response.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            ),
+        )
 
-            self.logger.info(
-                f"Sent {response.__class__.__name__} (request_id={request_id}, {len(response_bytes)} bytes)"
-            )
+        # send response: [client_id, request_id, response]
+        await self.socket.send_multipart(
+            [client_id, request_id.encode(), response_bytes]
+        )
+
+        self.logger.debug(
+            f"Sent {response.__class__.__name__} (request_id={request_id}, {len(response_bytes)} bytes)"
+        )
 
 
 async def main():

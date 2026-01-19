@@ -1,11 +1,10 @@
 import asyncio
 import logging
-import multiprocessing
+import signal
 from abc import ABC, abstractmethod
 from typing import Any
 
 import verifiers as vf
-from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.workers.types import (
     EvaluateRequest,
     EvaluateResponse,
@@ -27,42 +26,53 @@ class EnvServer(ABC):
         env_id: str,
         env_args: dict[str, Any] = {},
         extra_env_kwargs: dict[str, Any] = {},
-        # server
-        max_concurrent: int = -1,
-        num_workers: int = 1,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(
-            f"Initializing {self.__class__.__name__} with env_id={env_id}, env_args={env_args}, extra_env_kwargs={extra_env_kwargs}, max_concurrent={max_concurrent}, num_workers={num_workers}"
+            f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=}"
         )
 
         self.env_id = env_id
         self.env_args = env_args
         self.extra_env_kwargs = extra_env_kwargs
 
-        self.max_concurrent = max_concurrent
-        self.num_workers = num_workers
-
-        self.workers = multiprocessing.Pool(num_workers)
-        self.semaphore = maybe_semaphore(max_concurrent)
-
         # load environment
         self.env = vf.load_environment(env_id, **self.env_args)
         if self.extra_env_kwargs:
             self.env.set_kwargs(**self.extra_env_kwargs)
 
-        self.logger.info(
-            f"Initialized {self.num_workers} worker process(es) to serve {self.env_id}"
-        )
-
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):
+        pass
+
+    @abstractmethod
+    async def close(self):
         pass
 
     @classmethod
     def run_server(cls, *args, **kwargs):
         server = cls(*args, **kwargs)
-        return asyncio.run(server.run())
+
+        async def run_with_graceful_shutdown():
+            # setup graceful shutdown for SIGTERM (K8s, Docker, Slurm) and SIGINT (Ctrl+C)
+            stop_event = asyncio.Event()
+
+            def signal_handler(sig):
+                server.logger.debug(
+                    f"Received signal {sig.name}, initiating graceful shutdown"
+                )
+                stop_event.set()
+
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+
+            try:
+                await server.run(stop_event=stop_event)
+            finally:
+                await server.close()
+
+        return asyncio.run(run_with_graceful_shutdown())
 
     async def _handle_health(self, _request: HealthRequest) -> HealthResponse:
         return HealthResponse()

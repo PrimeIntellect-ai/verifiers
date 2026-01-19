@@ -255,23 +255,11 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         from verifiers.workers.client.zmq_env_client import ZMQEnvClient
         from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
-        # NOTE: ZMQEnvServer must be created INSIDE the subprocess, not before fork.
-        # ZMQ contexts/sockets are not safe to share across fork boundaries.
-        def run_server(env_id: str, env_args: dict):
-            server = ZMQEnvServer(env_id=env_id, env_args=env_args)
-            asyncio.run(server.run())
-
         env_worker = Process(
             target=ZMQEnvServer.run_server,
             args=(config.env_id, config.env_args),
         )
         env_worker.start()
-
-        # Give the server a moment to start up and bind the socket
-        import time
-
-        time.sleep(0.5)
-
         env = ZMQEnvClient()
     else:
         env_worker = None
