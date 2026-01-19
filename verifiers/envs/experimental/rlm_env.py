@@ -26,7 +26,6 @@ import logging
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -44,7 +43,6 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai.types.chat import ChatCompletion
 from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
@@ -54,14 +52,7 @@ from verifiers.envs.sandbox_env import (
     SandboxNotReadyError,
 )
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import (
-    ChatMessage,
-    ChatMessages,
-    Messages,
-    ModelResponse,
-    State,
-    TrajectoryStep,
-)
+from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
@@ -78,10 +69,6 @@ from verifiers.utils.rlm_data_serialization_utils import (
     prepare_context_data,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.token_utils import (
-    prepare_sampling_args_for_token_prompts,
-    tokenize_vllm,
-)
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
@@ -297,7 +284,7 @@ class RLMMonitorRubric(vf.Rubric):
 class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
 
-    prompt_messages: ChatMessages  # Messages before this LLM call
+    prompt_messages: list[dict]  # Messages before this LLM call
     response: ModelResponse  # Full response object (with token_ids, logprobs)
     tool_call_count: int  # Number of tool calls made in this turn
 
@@ -1427,7 +1414,6 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env_vars,
-                start_new_session=True,
             )
         session.worker_process = process
 
@@ -1457,23 +1443,12 @@ class LocalRLMExecutor(BaseRLMExecutor):
     def _stop_worker(self, session: LocalRLMReplSession) -> None:
         if not session.worker_process:
             return
-        process = session.worker_process
         try:
-            if os.name != "nt":
-                os.killpg(process.pid, signal.SIGTERM)
-            else:
-                process.terminate()
-            process.wait(timeout=5)
+            session.worker_process.terminate()
+            session.worker_process.wait(timeout=5)
         except Exception:
             try:
-                if os.name != "nt":
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=5)
+                session.worker_process.kill()
             except Exception:
                 pass
         session.worker_process = None
@@ -1672,6 +1647,9 @@ class RLMEnv(SandboxEnv):
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
+        # Logprobs support detection (None = unknown, True/False = known)
+        self._sub_llm_supports_logprobs: bool | None = None
+
         super().__init__(
             sandbox_name="rlm-env",
             start_command=start_command,
@@ -1811,31 +1789,30 @@ class RLMEnv(SandboxEnv):
         )
 
     @staticmethod
-    def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
-        """Normalize sampling args to match main model behavior."""
-        if "max_tokens" in sampling_args:
-            if sampling_args["max_tokens"] is None:
-                sampling_args.pop("max_tokens")
-            else:
-                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-        if (
-            "max_completion_tokens" in sampling_args
-            and sampling_args["max_completion_tokens"] is None
-        ):
-            sampling_args.pop("max_completion_tokens")
-        return {k: v for k, v in sampling_args.items() if v is not None}
-
-    def _prepare_sub_llm_sampling_args(
-        self, state: State, *, interleaved: bool
-    ) -> dict[str, Any]:
-        sampling_args = dict(state.get("sampling_args") or {})
-        extra_body = sampling_args.get("extra_body")
-        if isinstance(extra_body, dict):
-            sampling_args["extra_body"] = dict(extra_body)
-        sampling_args = self._normalize_sampling_args(sampling_args)
-        if interleaved:
-            return prepare_sampling_args_for_token_prompts(sampling_args)
-        return sampling_args
+    def _is_logprobs_param_error(error: Exception) -> bool:
+        """Return True if the error indicates logprobs is an unsupported/invalid param."""
+        error_text = str(error).lower()
+        if "logprob" not in error_text:
+            return False
+        param_markers = (
+            "not supported",
+            "unsupported",
+            "not allowed",
+            "not permitted",
+            "forbidden",
+            "invalid",
+            "unknown",
+            "unexpected",
+            "additional properties",
+            "not a valid",
+            "unrecognized",
+            "extra fields",
+            "parameter",
+            "params",
+            "schema",
+            "403",
+        )
+        return any(marker in error_text for marker in param_markers)
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -1856,9 +1833,7 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
-    def _normalize_message_content(
-        self, messages: ChatMessages | list[dict[str, Any]]
-    ) -> ChatMessages:
+    def _normalize_message_content(self, messages: list[dict]) -> list[dict]:
         """Normalize message content fields to formats the API accepts.
 
         The API expects content to be: string, array of objects, or None.
@@ -1866,9 +1841,9 @@ class RLMEnv(SandboxEnv):
         1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
         2. Content is a content part object (has 'type' key) - wrap in array
         """
-        normalized: ChatMessages = []
+        normalized = []
         for msg in messages:
-            msg_copy: dict[str, Any] = cast(dict[str, Any], msg).copy()
+            msg_copy = dict(msg)
             content = msg_copy.get("content")
 
             if content is not None and isinstance(content, dict):
@@ -1882,72 +1857,54 @@ class RLMEnv(SandboxEnv):
                 else:
                     # Unknown dict structure - try wrapping in array as fallback
                     msg_copy["content"] = [content]
-            normalized.append(cast(ChatMessage, msg_copy))
+            normalized.append(msg_copy)
         return normalized
 
     async def _call_sub_llm_api(
-        self,
-        state: State,
-        client: Any,
-        model: str,
-        messages: ChatMessages,
-        tools: list | None = None,
+        self, client: Any, model: str, messages: list[dict], tools: list | None = None
     ) -> Any | None:
-        """Make a single sub-LLM API call matching main-model request mode."""
+        """Make a single sub-LLM API call with timeout. Returns None on timeout."""
         normalized_messages = self._normalize_message_content(messages)
-        sampling_args = self._prepare_sub_llm_sampling_args(
-            state, interleaved=self.interleaved_rollouts
-        )
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": normalized_messages,
-            "tools": tools,
-        }
+        logprobs_support = self._sub_llm_supports_logprobs
 
-        try:
-            if self.interleaved_rollouts:
-                extra_body = sampling_args.pop("extra_body", {})
-                prompt_ids = await tokenize_vllm(
-                    client=client,
-                    messages=normalized_messages,
-                    tools=tools,
-                    model=model,
-                )
-                payload = {
-                    "model": model,
-                    "messages": normalized_messages,
-                    "tools": tools,
-                    "tokens": prompt_ids,
-                    **sampling_args,
-                    **extra_body,
-                }
-                return await asyncio.wait_for(
-                    client.post(
-                        "/chat/completions/tokens",
-                        body=payload,
-                        cast_to=ChatCompletion,
-                    ),
-                    timeout=self.sub_llm_api_timeout,
-                )
-            payload = {
-                "model": model,
-                "messages": normalized_messages,
-                "tools": tools,
-                **sampling_args,
-            }
+        async def _create_call(logprobs: bool | None) -> Any:
             return await asyncio.wait_for(
                 client.chat.completions.create(
-                    **payload,
+                    model=model,
+                    messages=normalized_messages,
+                    tools=tools,
+                    logprobs=logprobs,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
+
+        try:
+            if logprobs_support is False:
+                return await _create_call(None)
+            if logprobs_support is True:
+                return await _create_call(True)
+
+            # Unknown support: try logprobs=True once, then fallback on param errors.
+            response = await _create_call(True)
+            self._sub_llm_supports_logprobs = True
+            return response
         except asyncio.TimeoutError:
             logger.warning(
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
         except Exception as e:
-            raise e
+            if logprobs_support is None and self._is_logprobs_param_error(e):
+                if self._sub_llm_supports_logprobs is None:
+                    self._sub_llm_supports_logprobs = False
+                try:
+                    return await _create_call(None)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
+                    )
+                    return None
+            raise
 
     def _make_timeout_result(
         self,
@@ -1969,12 +1926,12 @@ class RLMEnv(SandboxEnv):
         )
 
     async def _run_sub_llm(
-        self, state: State, client: Any, model: str, messages: ChatMessages
+        self, client: Any, model: str, messages: list[dict]
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
-            response = await self._call_sub_llm_api(state, client, model, messages)
+            response = await self._call_sub_llm_api(client, model, messages)
             if response is None:
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
@@ -1983,7 +1940,7 @@ class RLMEnv(SandboxEnv):
                 final_content=response.choices[0].message.content or "",
                 turns=[
                     SubLLMTurn(
-                        prompt_messages=[cast(ChatMessage, dict(m)) for m in messages],
+                        prompt_messages=[dict(m) for m in messages],
                         response=response,
                         tool_call_count=0,
                     )
@@ -2006,10 +1963,10 @@ class RLMEnv(SandboxEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
+            prompt_snapshot = [dict(m) for m in current_messages]
 
             response = await self._call_sub_llm_api(
-                state, client, model, current_messages, tools
+                client, model, current_messages, tools
             )
             if response is None:
                 return self._make_timeout_result(
@@ -2048,7 +2005,7 @@ class RLMEnv(SandboxEnv):
                     max_turns_reached=False,
                 )
 
-            current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
+            current_messages.append(assistant_message.model_dump())
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
@@ -2059,7 +2016,7 @@ class RLMEnv(SandboxEnv):
                 tool_result = await self._call_sub_tool(
                     tool_name, tool_args, tool_call.id
                 )
-                current_messages.append(cast(ChatMessage, tool_result))
+                current_messages.append(tool_result)
 
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
@@ -2071,8 +2028,8 @@ class RLMEnv(SandboxEnv):
             }
         )
 
-        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
-        response = await self._call_sub_llm_api(state, client, model, current_messages)
+        prompt_snapshot = [dict(m) for m in current_messages]
+        response = await self._call_sub_llm_api(client, model, current_messages)
         if response is None:
             return self._make_timeout_result(
                 turns,
@@ -2157,12 +2114,12 @@ class RLMEnv(SandboxEnv):
         if not sub_model:
             return web.json_response({"error": "Model not available"}, status=500)
 
-        messages = cast(ChatMessages, request_body.get("messages", []))
+        messages = request_body.get("messages", [])
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
 
         # Prepend system message with \boxed{} instruction
-        messages_with_system: ChatMessages = [
+        messages_with_system = [
             {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
             *messages,
         ]
@@ -2171,11 +2128,7 @@ class RLMEnv(SandboxEnv):
 
         try:
             # Run sub-LLM call (handles both with-tools and no-tools cases)
-            if state_ref is None:
-                return web.json_response({"error": "State not available"}, status=500)
-            result = await self._run_sub_llm(
-                state_ref, client, sub_model, messages_with_system
-            )
+            result = await self._run_sub_llm(client, sub_model, messages_with_system)
             final_content = result["final_content"]
             prompt_tokens = result["total_prompt_tokens"]
             completion_tokens = result["total_completion_tokens"]
@@ -2263,6 +2216,7 @@ class RLMEnv(SandboxEnv):
 
             return web.json_response(response_dict)
         except Exception as e:
+            logger.error(f"Sub-LLM call failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
     @vf.teardown
@@ -2570,6 +2524,7 @@ class RLMEnv(SandboxEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
         # Time the full tool call execution
         execution_start = perf_counter()
         result = await self._execute_code(sandbox_id, code, state)
