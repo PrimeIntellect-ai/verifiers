@@ -43,7 +43,7 @@ class EnvServer(ABC):
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(
-            f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=}"
+            f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=})"
         )
 
         self.env_id = env_id
