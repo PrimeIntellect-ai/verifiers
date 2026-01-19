@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import verifiers as vf
@@ -26,7 +27,20 @@ class EnvServer(ABC):
         env_id: str,
         env_args: dict[str, Any] = {},
         extra_env_kwargs: dict[str, Any] = {},
+        log_level: str | None = None,
+        log_file: str | None = None,
+        log_file_level: str | None = None,
     ):
+        # setup logging
+        log_file = log_file or f"logs/{env_id}.log"
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        if log_level is None:
+            vf.setup_logging(log_file=log_file, log_file_level=log_file_level)
+        else:
+            vf.setup_logging(
+                level=log_level, log_file=log_file, log_file_level=log_file_level
+            )
+
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info(
             f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=}"
