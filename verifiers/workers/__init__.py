@@ -14,10 +14,7 @@ from verifiers.workers.types import (
 )
 
 __all__ = [
-    # Client/Server
-    "ZMQEnvClient",
-    "ZMQEnvServer",
-    # Request/Response types
+    # types
     "BaseRequest",
     "BaseResponse",
     "HealthRequest",
@@ -28,4 +25,7 @@ __all__ = [
     "RunGroupResponse",
     "EvaluateRequest",
     "EvaluateResponse",
+    # clients/servers
+    "ZMQEnvClient",
+    "ZMQEnvServer",
 ]
