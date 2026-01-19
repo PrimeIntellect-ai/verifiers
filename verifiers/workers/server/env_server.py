@@ -48,3 +48,8 @@ class EnvServer(ABC):
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):
         pass
+
+    @classmethod
+    def run_server(cls, *args, **kwargs):
+        server = cls(*args, **kwargs)
+        return asyncio.run(server.run())

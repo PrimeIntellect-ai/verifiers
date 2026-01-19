@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import uuid
+from pathlib import Path
+from typing import cast
 
 import msgpack
 import zmq
@@ -12,7 +14,7 @@ from verifiers.workers.utils import msgpack_encoder
 
 
 class ZMQEnvClient(EnvClient):
-    def __init__(self, address: str = "tcp://127.0.0.1:5555", timeout: float = 60.0):
+    def __init__(self, address: str = "tcp://127.0.0.1:5000", timeout: float = 60.0):
         super().__init__(address=address)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
@@ -44,7 +46,7 @@ class ZMQEnvClient(EnvClient):
 
     async def health(self) -> bool:
         response = await self._send_request("health")
-        return response.get("status") == "ok"
+        return cast(bool, response.get("is_healthy"))
 
     async def run_rollout(
         self,
@@ -52,6 +54,7 @@ class ZMQEnvClient(EnvClient):
         client_config: vf.ClientConfig,
         model: str,
         sampling_args: vf.SamplingArgs,
+        score: bool = True,
     ) -> vf.State:
         response = await self._send_request(
             "run_rollout",
@@ -59,8 +62,57 @@ class ZMQEnvClient(EnvClient):
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
+            score=score,
         )
         return vf.State(**response)
+
+    async def run_group(
+        self,
+        group_inputs: list[vf.RolloutInput],
+        client_config: vf.ClientConfig,
+        model: str,
+        sampling_args: vf.SamplingArgs,
+        score: bool = True,
+    ) -> list[vf.State]:
+        response = await self._send_request(
+            "run_group",
+            group_inputs=group_inputs,
+            client_config=client_config,
+            model=model,
+            sampling_args=sampling_args,
+            score=score,
+        )
+        return [vf.State(**response) for response in response]
+
+    async def evaluate(
+        self,
+        client_config: vf.ClientConfig,
+        model: str,
+        sampling_args: vf.SamplingArgs,
+        num_examples: int,
+        rollouts_per_example: int,
+        max_concurrent: int,
+        results_path: Path | None,
+        state_columns: list[str] | None,
+        save_results: bool,
+        save_every: int,
+        independent_scoring: bool = False,
+    ) -> vf.GenerateOutputs:
+        response = await self._send_request(
+            "evaluate",
+            client_config=client_config,
+            model=model,
+            sampling_args=sampling_args,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            max_concurrent=max_concurrent,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_results=save_results,
+            save_every=save_every,
+            independent_scoring=independent_scoring,
+        )
+        return vf.GenerateOutputs(**response)
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
@@ -179,17 +231,20 @@ async def main():
     response = await client.health()
     print(response)
 
-    state = await client.run_rollout(
-        input=vf.RolloutInput(
-            example_id=0,
-            task="default",
-            prompt=[{"role": "user", "content": "What is 1+1?"}],
-        ),
+    results = await client.evaluate(
         client_config=vf.ClientConfig(),
         model="openai/gpt-4.1-mini",
-        sampling_args=vf.SamplingArgs(temperature=0.5),
+        sampling_args=vf.SamplingArgs(),
+        num_examples=5,
+        rollouts_per_example=3,
+        max_concurrent=-1,
+        results_path=Path("results.jsonl"),
+        state_columns=[],
+        save_results=False,
+        save_every=-1,
+        independent_scoring=True,
     )
-    print(state)
+    print(results)
 
 
 if __name__ == "__main__":

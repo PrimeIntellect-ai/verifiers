@@ -5,6 +5,7 @@ import logging
 import time
 from collections import Counter
 from contextlib import contextmanager
+from multiprocessing import Process
 from pathlib import Path
 from typing import cast
 
@@ -250,12 +251,34 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     )
 
     # load environment
-    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+    if config.use_env_worker:
+        from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+        from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
-    # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+        # NOTE: ZMQEnvServer must be created INSIDE the subprocess, not before fork.
+        # ZMQ contexts/sockets are not safe to share across fork boundaries.
+        def run_server(env_id: str, env_args: dict):
+            server = ZMQEnvServer(env_id=env_id, env_args=env_args)
+            asyncio.run(server.run())
+
+        env_worker = Process(
+            target=ZMQEnvServer.run_server,
+            args=(config.env_id, config.env_args),
+        )
+        env_worker.start()
+
+        # Give the server a moment to start up and bind the socket
+        import time
+
+        time.sleep(0.5)
+
+        env = ZMQEnvClient()
+    else:
+        env_worker = None
+        env = vf.load_environment(env_id=config.env_id, **config.env_args)
+        if config.extra_env_kwargs:
+            logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+            env.set_kwargs(**config.extra_env_kwargs)
 
     # run evaluation
     results_path = get_eval_results_path(config)
@@ -263,7 +286,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
-    results = await vf_env.evaluate(
+    results = await env.evaluate(
         client_config=config.client_config,
         model=config.model,
         sampling_args=config.sampling_args,
@@ -279,6 +302,7 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     if config.save_results:
         save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+
     return results
 
 

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 from typing import cast
 
@@ -8,8 +7,13 @@ import zmq
 import zmq.asyncio
 from openai import AsyncOpenAI
 
-from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
-from verifiers.utils.client_utils import setup_client
+from verifiers.types import (
+    ClientConfig,
+    GenerateOutputs,
+    RolloutInput,
+    SamplingArgs,
+    State,
+)
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.utils import msgpack_encoder
 
@@ -92,14 +96,21 @@ class ZMQEnvServer(EnvServer):
                 # deserialize request
                 request = msgpack.unpackb(payload_bytes, raw=False)
                 action = request.get("action")
+                self.logger.info(f"Got {action} request")
 
                 # route to handler
                 if action == "health":
                     response = await self._handle_health(request)
                 elif action == "run_rollout":
                     response = await self._handle_run_rollout(request)
+                elif action == "run_group":
+                    response = await self._handle_run_group(request)
+                elif action == "evaluate":
+                    response = await self._handle_evaluate(request)
                 else:
                     response = {"status": "error", "error": f"Unknown action: {action}"}
+
+                self.logger.info(f"Sending {action} response:\n{response}")
 
                 # serialize response
                 response_bytes = cast(
@@ -126,33 +137,67 @@ class ZMQEnvServer(EnvServer):
                 )
                 await self.socket.send_multipart([client_id, request_id, error_bytes])
 
-    async def _handle_health(self, request: dict) -> dict:
-        return {"status": "ok"}
+    async def _handle_health(self, _request: dict) -> dict:
+        return {"is_healthy": True}
 
-    async def _handle_run_rollout(self, request: dict) -> dict:
-        client = self._get_client(
-            ClientConfig.model_construct(**request.get("client_config", {}))
-        )
+    async def _handle_run_rollout(self, request: dict) -> State:
+        input = RolloutInput(**request.get("input", {}))
+        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
+        model = request.get("model", "")
+        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
+        score = request.get("score", True)
         state = await self.env.run_rollout(
-            input=RolloutInput(**request.get("input", {})),
-            client=client,
-            model=request.get("model", ""),
-            gen_sampling_args=SamplingArgs(**request.get("sampling_args", {})),
-            gen_sem=self.semaphore,
+            input, client_config, model, sampling_args, score
         )
         # Remove non-serializable fields before sending over the wire
         state.pop("client", None)
         return state
 
-    def _get_client(self, client_config: ClientConfig) -> AsyncOpenAI:
-        config_hash = hashlib.sha256(
-            json.dumps(client_config.model_dump()).encode()
-        ).hexdigest()
-        client = self.clients.get(config_hash)
-        if client is None:
-            client = setup_client(client_config)
-            self.clients[config_hash] = client
-        return client
+    async def _handle_run_group(self, request: dict) -> list[State]:
+        group_inputs = [
+            RolloutInput(**input) for input in request.get("group_inputs", [])
+        ]
+        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
+        model = request.get("model", "")
+        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
+        score = request.get("score", True)
+        states = await self.env.run_group(
+            group_inputs, client_config, model, sampling_args, score
+        )
+        # remove non-serializable fields
+        for state in states:
+            state.pop("client", None)
+        return states
+
+    async def _handle_evaluate(self, request: dict) -> GenerateOutputs:
+        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
+        model = request.get("model", "")
+        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
+        num_examples = request.get("num_examples", -1)
+        rollouts_per_example = request.get("rollouts_per_example", 1)
+        max_concurrent = request.get("max_concurrent", -1)
+        results_path = request.get("results_path", None)
+        state_columns = request.get("state_columns", None)
+        save_results = request.get("save_results", False)
+        save_every = request.get("save_every", -1)
+        independent_scoring = request.get("independent_scoring", False)
+        results = await self.env.evaluate(
+            client_config,
+            model,
+            sampling_args,
+            num_examples,
+            rollouts_per_example,
+            max_concurrent,
+            results_path,
+            state_columns,
+            save_results,
+            save_every,
+            independent_scoring,
+        )
+        # Remove non-serializable client from each state
+        for state in results.get("state", []):
+            state.pop("client", None)
+        return results
 
 
 async def main():
