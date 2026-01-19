@@ -663,6 +663,13 @@ touch /tmp/vf_complete
             for request_id in list(self.intercepts.keys()):
                 intercept = self.intercepts.get(request_id)
                 if intercept and intercept.get("rollout_id") == rollout_id:
+                    # For streaming requests, signal the chunk queue to exit
+                    chunk_queue = intercept.get("chunk_queue")
+                    if chunk_queue is not None:
+                        try:
+                            chunk_queue.put_nowait(None)
+                        except asyncio.QueueFull:
+                            pass
                     # Cancel pending future to unblock HTTP handler
                     future = intercept.get("response_future")
                     if future and not future.done():
