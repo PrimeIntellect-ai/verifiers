@@ -1,6 +1,7 @@
 import asyncio
 import atexit
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -14,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    AsyncContextManager,
     Awaitable,
     Callable,
     List,
@@ -25,7 +25,7 @@ from typing import (
 )
 
 from datasets import Dataset
-from openai import AsyncOpenAI, BadRequestError, OpenAI
+from openai import AsyncOpenAI, BadRequestError
 from openai.types.chat import ChatCompletion
 
 import verifiers as vf
@@ -34,6 +34,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    ClientConfig,
     DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
@@ -46,6 +47,7 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
@@ -162,6 +164,8 @@ class Environment(ABC):
         self._stop_conditions: list[StopCondition] = []
         self._cleanup_handlers: list[RolloutCleanup] = []
         self._teardown_handlers: list[EnvironmentTeardown] = []
+
+        self._clients: dict[str, AsyncOpenAI] = {}
 
         self.__post_init__()
 
@@ -339,6 +343,16 @@ class Environment(ABC):
         else:
             return self._format_completion_dataset(dataset, map_kwargs=self._map_kwargs)
 
+    def _get_client(self, client_config: ClientConfig) -> AsyncOpenAI:
+        config_hash = hashlib.sha256(
+            client_config.model_dump_json().encode()
+        ).hexdigest()
+        client = self._clients.get(config_hash)
+        if client is None:
+            client = setup_client(client_config)
+            self._clients[config_hash] = client
+        return client
+
     def _build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
         if self._dataset is not None:
@@ -429,7 +443,7 @@ class Environment(ABC):
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            client = client or self._get_client(state["client_config"])
             model = model or state["model"]
             assert client is not None and model is not None
             oai_tools = oai_tools or state["oai_tools"]
@@ -627,7 +641,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -644,7 +658,7 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
-        state["client"] = client
+        state["client_config"] = client_config
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
@@ -674,7 +688,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -731,25 +745,21 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager | None = None,
-        score: bool = False,
+        sampling_args: SamplingArgs,
+        score: bool = True,
     ) -> State:
         """Generate and, optionally, score a rollout."""
-        async with gen_sem:
-            state = await self.rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-            )
+        state = await self.rollout(
+            input,
+            client_config,
+            model,
+            sampling_args,
+        )
         if score:
-            assert score_sem is not None
             if self.score_rollouts:
-                await self.rubric.score_rollout(state, score_sem=score_sem)
+                await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
         return state
@@ -758,29 +768,21 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager,
+        sampling_args: SamplingArgs,
         score: bool = True,
         **kwargs,
     ) -> list[State]:
         """Generate and, optionally, score one group."""
         rollout_tasks = [
-            self.run_rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-                gen_sem,
-            )
+            self.run_rollout(input, client_config, model, sampling_args, score=False)
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
         if score:
             if self.score_rollouts:
-                await self.rubric.score_group(group_states, score_sem=score_sem)
+                await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
         return list(group_states)
@@ -789,7 +791,7 @@ class Environment(ABC):
         self,
         all_states: list[State],
         model: str,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         state_columns: list[str] | None,
         results_path: Path | None,
         gen_sampling_args: SamplingArgs,
@@ -828,7 +830,7 @@ class Environment(ABC):
             env_id=self.env_id,
             env_args=self.env_args,
             model=model,
-            base_url=str(client.base_url) if hasattr(client, "base_url") else "",
+            base_url=client_config.api_base_url,
             num_examples=num_unique_examples,
             rollouts_per_example=rollouts_per_example,
             sampling_args=gen_sampling_args,
@@ -861,12 +863,10 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
@@ -882,17 +882,8 @@ class Environment(ABC):
         elif isinstance(inputs, list):
             inputs_list = inputs
 
-        # resolve concurrency knobs
-        gen_limit = max_concurrent_generation
-        score_limit = max_concurrent_scoring
-        if gen_limit is None:
-            gen_limit = max_concurrent
-        if score_limit is None:
-            score_limit = max_concurrent
-
         # set up semaphores
-        gen_sem = await maybe_semaphore(gen_limit)
-        score_sem = await maybe_semaphore(score_limit)
+        sem = maybe_semaphore(max_concurrent)
 
         # set up sampling args
         gen_sampling_args = deepcopy(self.sampling_args)
@@ -904,22 +895,26 @@ class Environment(ABC):
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
+
+            async def run_rollout_with_sem(*args, **kwargs) -> State:
+                async with sem:
+                    return await self.run_rollout(*args, **kwargs)
+
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    self.run_rollout(
-                        input_item,
-                        client,
-                        model,
-                        gen_sampling_args,
-                        gen_sem,
-                        score_sem,
-                        score=True,
+                    run_rollout_with_sem(
+                        input_item, client_config, model, gen_sampling_args, sem
                     )
                 )
                 tasks[task] = i
             pbar_total = len(inputs_list)
             pbar_desc = f"Processing {len(inputs_list)} rollouts"
         else:
+
+            async def run_group_with_sem(*args, **kwargs) -> list[State]:
+                async with sem:
+                    return await self.run_group(*args, **kwargs)
+
             input_groups: dict[int, list[RolloutInput]] = {}
             for input_item in inputs_list:
                 example_id = input_item["example_id"]
@@ -930,13 +925,8 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    self.run_group(
-                        group,
-                        client,
-                        model,
-                        gen_sampling_args,
-                        gen_sem,
-                        score_sem,
+                    run_group_with_sem(
+                        group, client_config, model, gen_sampling_args, sem
                     )
                 )
                 tasks[task] = i
@@ -983,7 +973,7 @@ class Environment(ABC):
                     temp_results = self._prepare_rollout_results(
                         all_states,
                         model,
-                        client,
+                        client_config,
                         state_columns,
                         results_path,
                         gen_sampling_args,
@@ -1003,7 +993,7 @@ class Environment(ABC):
         results = self._prepare_rollout_results(
             all_states,
             model,
-            client,
+            client_config,
             state_columns,
             results_path,
             gen_sampling_args,
@@ -1019,14 +1009,12 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client_config: ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
-        if isinstance(client, OpenAI):
-            client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
         coro = self.generate(
             inputs,
-            client=client,
+            client_config=client_config,
             **kwargs,
         )
         # check if we're in existing event loop (e.g. Jupyter)
@@ -1065,14 +1053,12 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
@@ -1086,12 +1072,10 @@ class Environment(ABC):
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return await self.generate(
             inputs,
-            client=client,
+            client_config=client_config,
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
@@ -1102,7 +1086,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1122,7 +1106,7 @@ class Environment(ABC):
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
         return self.generate_sync(
             inputs,
-            client=client,
+            client_config=client_config,
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,

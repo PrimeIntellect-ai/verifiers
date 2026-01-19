@@ -16,7 +16,6 @@ if sys.version_info < (3, 12):
 else:
     from typing import TypedDict
 
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
@@ -99,14 +98,15 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI
+    client_config: "ClientConfig"
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
     is_truncated: bool
     stop_condition: str | None
-    oai_tools: list[ChatCompletionToolParam]
+    oai_tools: list[ChatCompletionToolParam] | None
+    trajectory_id: str
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
@@ -234,10 +234,9 @@ class EvalConfig(BaseModel):
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
-    max_concurrent_generation: int | None = None
-    max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    use_env_server: bool = False
     # logging
     verbose: bool = False
     # saving

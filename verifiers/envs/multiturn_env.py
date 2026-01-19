@@ -2,10 +2,9 @@ import logging
 from abc import abstractmethod
 from typing import final
 
-from openai import AsyncOpenAI
-
 import verifiers as vf
 from verifiers.types import (
+    ClientConfig,
     Messages,
     ModelResponse,
     RolloutInput,
@@ -129,11 +128,11 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
-        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.init_state(input, client_config, model, sampling_args)
         try:
             state = await self.setup_state(state)
         except vf.Error as e:

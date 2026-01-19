@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, AsyncContextManager, cast
+from typing import Any, cast
 
 import verifiers as vf
 from verifiers.types import (
@@ -109,7 +109,6 @@ class Rubric:
         self,
         func: RewardFunc,
         state: State,
-        score_sem: AsyncContextManager,
     ) -> float:
         """
         Invoke `func` with only the required arguments.
@@ -152,8 +151,7 @@ class Rubric:
                     ans = 0.0
             return ans
 
-        async with score_sem:
-            return await _call()
+        return await _call()
 
     # group-level reward helpers
     def _get_group_reward_func_names(self) -> list[str]:
@@ -173,7 +171,6 @@ class Rubric:
         self,
         func: GroupRewardFunc,
         states: list[State],
-        score_sem: AsyncContextManager,
     ) -> list[float]:
         """
         Invoke `func` with only the required arguments.
@@ -209,15 +206,14 @@ class Rubric:
                     ans = [0.0] * len(states)
             return ans
 
-        async with score_sem:
-            return await _call()
+        return await _call()
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""
         state["reward"] = 0.0
         state["metrics"] = {}
 
-    async def score_rollout(self, state: State, score_sem: AsyncContextManager):
+    async def score_rollout(self, state: State):
         """
         Evaluate all reward functions for a single rollout.
         """
@@ -233,7 +229,6 @@ class Rubric:
                 await self._call_individual_reward_func(
                     func=func,
                     state=state,
-                    score_sem=score_sem,
                 )
             )
         rewards = RolloutScore(
@@ -261,7 +256,7 @@ class Rubric:
         for state in states:
             await self.dummy_score_rollout(state)
 
-    async def score_group(self, states: list[State], score_sem: AsyncContextManager):
+    async def score_group(self, states: list[State]):
         """
         Score a group of rollouts together.
 
@@ -281,9 +276,7 @@ class Rubric:
             if is_group:
                 # GroupRewardFunc: score all states together
                 group_func = cast(GroupRewardFunc, func)
-                scores = await self._call_group_reward_func(
-                    group_func, states, score_sem=score_sem
-                )
+                scores = await self._call_group_reward_func(group_func, states)
                 func_name = func.__name__
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
@@ -294,9 +287,7 @@ class Rubric:
             else:
                 reward_func = cast(RewardFunc, func)
                 score_tasks = [
-                    self._call_individual_reward_func(
-                        reward_func, state, score_sem=score_sem
-                    )
+                    self._call_individual_reward_func(reward_func, state)
                     for state in states
                 ]
                 scores = await asyncio.gather(*score_tasks)

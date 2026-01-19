@@ -250,6 +250,13 @@ def main():
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
+    parser.add_argument(
+        "--use-env-server",
+        "-W",
+        default=False,
+        action="store_true",
+        help="Use env servers (will spawn a multi-process env server as a sidecar)",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -393,8 +400,7 @@ def main():
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
             max_concurrent=env_args.max_concurrent,
-            max_concurrent_generation=env_args.max_concurrent_generation,
-            max_concurrent_scoring=env_args.max_concurrent_scoring,
+            use_env_server=env_args.use_env_server,
             # logging
             verbose=env_args.verbose,
             # saving

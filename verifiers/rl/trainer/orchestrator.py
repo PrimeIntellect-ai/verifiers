@@ -5,14 +5,13 @@ import threading
 import time
 from typing import Any
 
-import httpx
 import numpy as np
 from datasets import Dataset
-from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from transformers import PreTrainedTokenizerBase
 
 from verifiers import Environment
+from verifiers.types import ClientConfig
 
 
 class Microbatch(BaseModel):
@@ -73,7 +72,12 @@ class Orchestrator:
         self.client_api_key = client_api_key
         self.client_limit = client_limit
         self.client_timeout = client_timeout
-        self.client = None  # created in worker thread
+        self.client_config = ClientConfig(
+            api_base_url=self.client_base_url,
+            api_key_var=self.client_api_key,
+            max_connections=self.client_limit,
+            timeout=self.client_timeout,
+        )
         self.model_name = model_name
         self.sampling_args = sampling_args
         self.rollouts_per_example = rollouts_per_example
@@ -185,14 +189,6 @@ class Orchestrator:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.worker_loop = loop
-        self.client = AsyncOpenAI(
-            base_url=self.client_base_url,
-            api_key=self.client_api_key,
-            http_client=httpx.AsyncClient(
-                limits=httpx.Limits(max_connections=self.client_limit),
-                timeout=self.client_timeout,
-            ),
-        )
         try:
             while not self.stop_event.is_set():
                 try:
@@ -207,7 +203,6 @@ class Orchestrator:
                     self.logger.error(f"Error in generation worker: {e}")
                     raise e
         finally:
-            loop.run_until_complete(self.client.close())
             loop.close()
             asyncio.set_event_loop(None)
 
@@ -216,13 +211,13 @@ class Orchestrator:
         Generate a single batch asynchronously.
         """
         self.is_generating = True
-        assert self.client is not None
+        assert self.client_config is not None
         start_time = time.time()
         batch_ds = self.get_dataset_slice(batch_id)
         repeated_ds = batch_ds.repeat(self.rollouts_per_example)
         env_results = await self.env.generate(
             repeated_ds,
-            client=self.client,
+            client_config=self.client_config,
             model=self.model_name,
             sampling_args=self.sampling_args,
             max_concurrent=self.max_concurrent,

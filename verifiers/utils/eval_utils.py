@@ -5,6 +5,7 @@ import logging
 import time
 from collections import Counter
 from contextlib import contextmanager
+from multiprocessing import Process
 from pathlib import Path
 from typing import cast
 
@@ -26,7 +27,6 @@ from verifiers.types import (
     MultiEvalConfig,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -244,20 +244,31 @@ def print_results(
             print_timing(task_results)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+async def run_evaluation(env_idx: int, config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(config.client_config)
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment
-    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+    if config.use_env_server:
+        from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+        from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
-    # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+        address = f"tcp://127.0.0.1:{5000 + env_idx}"
+        env_server = Process(
+            target=ZMQEnvServer.run_server,
+            args=(config.env_id, config.env_args),
+            kwargs=dict(address=address),
+        )
+        env_server.start()
+        env = ZMQEnvClient(address=address)
+    else:
+        env_server = None
+        env = vf.load_environment(env_id=config.env_id, **config.env_args)
+        if config.extra_env_kwargs:
+            logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+            env.set_kwargs(**config.extra_env_kwargs)
 
     # run evaluation
     results_path = get_eval_results_path(config)
@@ -265,25 +276,36 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
-    results = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        independent_scoring=config.independent_scoring,
-    )
+    try:
+        results = await env.evaluate(
+            client_config=config.client_config,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=config.max_concurrent,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            save_every=config.save_every,
+            independent_scoring=config.independent_scoring,
+        )
 
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-    return results
+        if config.save_results:
+            save_rollout_results(
+                results, config.save_to_hf_hub, config.hf_hub_dataset_name
+            )
+
+        return results
+    finally:
+        # Terminate the env server process if it was started
+        if env_server is not None:
+            env_server.terminate()
+            env_server.join(timeout=5)
+            if env_server.is_alive():
+                logger.warning("Env server did not terminate gracefully, killing it")
+                env_server.kill()
+                env_server.join()
 
 
 async def run_multi_evaluation(config: MultiEvalConfig) -> None:
@@ -293,7 +315,10 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.env]
+        *[
+            run_evaluation(env_idx, eval_config)
+            for env_idx, eval_config in enumerate(config.env)
+        ]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()

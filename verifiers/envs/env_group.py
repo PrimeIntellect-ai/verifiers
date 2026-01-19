@@ -1,11 +1,10 @@
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
+from typing import TYPE_CHECKING, Mapping, final
 
 from datasets import Dataset, concatenate_datasets
-from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     pass
@@ -37,7 +36,6 @@ class EnvGroupRubric(vf.Rubric):
     async def score_rollout(
         self,
         state: vf.State,
-        score_sem: AsyncContextManager,
     ) -> None:
         """
         Evaluate all reward functions in-place for a single rollout.
@@ -56,7 +54,7 @@ class EnvGroupRubric(vf.Rubric):
             state["metrics"] = metrics
             return
 
-        await env.rubric.score_rollout(state, score_sem=score_sem)
+        await env.rubric.score_rollout(state)
         env_reward = state.get("reward", 0.0)
         env_metrics = state.get("metrics", {}).copy() if state.get("metrics") else {}
 
@@ -71,7 +69,6 @@ class EnvGroupRubric(vf.Rubric):
     async def score_group(
         self,
         states: list[vf.State],
-        score_sem: AsyncContextManager,
     ) -> None:
         """
         Score a group of rollouts, routing to appropriate environment rubrics based on task.
@@ -94,7 +91,7 @@ class EnvGroupRubric(vf.Rubric):
             return
 
         # Score all states using the environment's rubric
-        await env.rubric.score_group(states, score_sem=score_sem)
+        await env.rubric.score_group(states)
 
         # Initialize metrics dict with all reward function names
         aggregated_metrics: dict[str, list[float]] = {
@@ -266,12 +263,12 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.rollout(input, client, model, sampling_args)
+        return await env.rollout(input, client_config, model, sampling_args)
 
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
