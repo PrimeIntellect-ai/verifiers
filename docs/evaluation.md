@@ -239,10 +239,10 @@ Eval TOML files define an evaluation run with defaults plus one or more `[[eval]
 | `[model]` or `[eval.model]` | `api_key_var` | string | API key env var name override |
 | `[model]` or `[eval.model]` | `api_base_url` | string | API base URL override |
 | `[model]` or `[eval.model]` | `extra_headers` | table | Extra HTTP headers |
-| `[save]` | `save_results` | boolean | Save results to disk |
-| `[save]` | `save_every` | integer | Save every N rollouts |
-| `[save]` | `save_to_hf_hub` | boolean | Save dataset to Hugging Face Hub |
-| `[save]` | `hf_hub_dataset_name` | string | Hugging Face dataset name override |
+| `[save]` or `[eval.save]` | `save_results` | boolean | Save results to disk |
+| `[save]` or `[eval.save]` | `save_every` | integer | Save every N rollouts |
+| `[save]` or `[eval.save]` | `save_to_hf_hub` | boolean | Save dataset to Hugging Face Hub |
+| `[save]` or `[eval.save]` | `hf_hub_dataset_name` | string | Hugging Face dataset name override |
 
 Example with defaults and per-eval overrides:
 
@@ -275,6 +275,9 @@ env_id = "gsm8k"
 
 [eval.model]
 model = "qwen3-235b-i"
+
+[eval.save]
+hf_hub_dataset_name = "gsm8k-qwen3-235b-i"
 ```
 
 ### Configuration Precedence
@@ -315,4 +318,8 @@ Model settings resolve with the following priority (highest to lowest):
 2. **TOML model defaults** — Values in `[model]`
 3. **CLI arguments** — Flags passed on the command line
 
-Save settings resolve with CLI flags taking precedence over `[save]` defaults.
+Save settings resolve with the following priority (highest to lowest):
+
+1. **Per-eval TOML save settings** — Values in `[eval.save]`
+2. **TOML save defaults** — Values in `[save]`
+3. **CLI arguments** — Flags passed on the command line

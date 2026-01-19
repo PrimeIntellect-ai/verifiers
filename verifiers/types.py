@@ -240,11 +240,21 @@ class EvalModelConfig(BaseModel):
     max_concurrent_scoring: int | None = None
 
 
+class EvalSaveConfig(BaseModel):
+    """Pydantic model for evaluation save configuration."""
+
+    save_results: bool = False
+    save_every: int = -1
+    save_to_hf_hub: bool = False
+    hf_hub_dataset_name: str | None = None
+
+
 class EvalConfig(BaseModel):
     """Pydantic model for evaluation configuration."""
 
     env: EvalEnvConfig
     model: EvalModelConfig
+    save: EvalSaveConfig
 
 
 class EvalRunConfig(BaseModel):
@@ -252,7 +262,3 @@ class EvalRunConfig(BaseModel):
 
     evals: list[EvalConfig]
     env_dir_path: str
-    save_results: bool = False
-    save_every: int = -1
-    save_to_hf_hub: bool = False
-    hf_hub_dataset_name: str | None = None

@@ -557,6 +557,7 @@ class EvalModelConfig(BaseModel):
 class EvalConfig(BaseModel):
     env: EvalEnvConfig
     model: EvalModelConfig
+    save: EvalSaveConfig
 ```
 
 ### EvalRunConfig
@@ -565,6 +566,12 @@ class EvalConfig(BaseModel):
 class EvalRunConfig(BaseModel):
     evals: list[EvalConfig]
     env_dir_path: str
+```
+
+### EvalSaveConfig
+
+```python
+class EvalSaveConfig(BaseModel):
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False

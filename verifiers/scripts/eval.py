@@ -19,6 +19,7 @@ from verifiers.types import (
     EvalEnvConfig,
     EvalModelConfig,
     EvalRunConfig,
+    EvalSaveConfig,
 )
 from verifiers.utils.eval_utils import (
     is_toml_config,
@@ -264,6 +265,29 @@ def build_env_config(
     )
 
 
+def build_save_config(
+    save_overrides: dict,
+    save_defaults: dict,
+    cli_defaults: dict,
+) -> EvalSaveConfig:
+    merged_defaults = {
+        "save_results": False,
+        "save_every": -1,
+        "save_to_hf_hub": False,
+        "hf_hub_dataset_name": None,
+    }
+    merged_defaults = merge_nested_dicts(merged_defaults, cli_defaults)
+    merged_defaults = merge_nested_dicts(merged_defaults, save_defaults)
+    merged = merge_nested_dicts(merged_defaults, save_overrides)
+
+    return EvalSaveConfig(
+        save_results=merged["save_results"],
+        save_every=merged["save_every"],
+        save_to_hf_hub=merged["save_to_hf_hub"],
+        hf_hub_dataset_name=merged.get("hf_hub_dataset_name"),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -489,6 +513,15 @@ def main():
     }
 
     cli_env_defaults = {k: v for k, v in cli_env_defaults.items() if v is not None}
+    cli_save_defaults = {}
+    if args.save_results is not None:
+        cli_save_defaults["save_results"] = args.save_results
+    if args.save_every is not None:
+        cli_save_defaults["save_every"] = args.save_every
+    if args.save_to_hf_hub is not None:
+        cli_save_defaults["save_to_hf_hub"] = args.save_to_hf_hub
+    if args.hf_hub_dataset_name is not None:
+        cli_save_defaults["hf_hub_dataset_name"] = args.hf_hub_dataset_name
 
     if is_toml_config(args.env_id_or_path):
         path = Path(args.env_id_or_path)
@@ -524,6 +557,7 @@ def main():
             raw_env = {**raw_env, "env_id": raw_eval["env_id"]}
         env_id = raw_env["env_id"]
         raw_model = raw_eval.get("model", {})
+        raw_save = raw_eval.get("save", {})
 
         env_config = build_env_config(
             env_id,
@@ -543,38 +577,19 @@ def main():
             merged_headers,
         )
 
-        eval_config = EvalConfig(env=env_config, model=model_config)
+        save_config = build_save_config(
+            raw_save,
+            toml_save_defaults,
+            cli_save_defaults,
+        )
+
+        eval_config = EvalConfig(env=env_config, model=model_config, save=save_config)
         eval_configs.append(eval_config)
         logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
-
-    save_results = (
-        args.save_results
-        if args.save_results is not None
-        else toml_save_defaults.get("save_results", False)
-    )
-    save_every = (
-        args.save_every
-        if args.save_every is not None
-        else toml_save_defaults.get("save_every", -1)
-    )
-    save_to_hf_hub = (
-        args.save_to_hf_hub
-        if args.save_to_hf_hub is not None
-        else toml_save_defaults.get("save_to_hf_hub", False)
-    )
-    hf_hub_dataset_name = (
-        args.hf_hub_dataset_name
-        if args.hf_hub_dataset_name is not None
-        else toml_save_defaults.get("hf_hub_dataset_name")
-    )
 
     run_config = EvalRunConfig(
         evals=eval_configs,
         env_dir_path=args.env_dir_path,
-        save_results=save_results,
-        save_every=save_every,
-        save_to_hf_hub=save_to_hf_hub,
-        hf_hub_dataset_name=hf_hub_dataset_name,
     )
     logger.debug(f"Evaluation run config: {run_config.model_dump_json(indent=2)}")
 

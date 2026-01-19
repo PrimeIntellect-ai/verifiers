@@ -158,6 +158,7 @@ def load_toml_config(path: Path) -> dict[str, dict | list]:
             raise ValueError("Each [[eval]] entry must be a table")
         raw_env = eval_entry.get("env", {})
         raw_model = eval_entry.get("model", {})
+        raw_save = eval_entry.get("save", {})
         if "env_id" in eval_entry:
             raw_env = {**raw_env, "env_id": eval_entry["env_id"]}
 
@@ -179,6 +180,13 @@ def load_toml_config(path: Path) -> dict[str, dict | list]:
             raise ValueError(
                 f"Invalid model field(s) {invalid_model_fields} for {raw_env.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_model_fields)}"
+            )
+
+        invalid_save_fields = set(raw_save.keys()) - valid_save_fields
+        if invalid_save_fields:
+            raise ValueError(
+                f"Invalid save field(s) {invalid_save_fields} for {raw_env.get('env_id', 'unknown')}. "
+                f"Valid fields are: {sorted(valid_save_fields)}"
             )
 
     return {
@@ -368,16 +376,16 @@ async def run_evaluation(
         max_concurrent_scoring=eval_config.model.max_concurrent_scoring,
         results_path=results_path,
         state_columns=eval_config.env.state_columns,
-        save_results=run_config.save_results,
-        save_every=run_config.save_every,
+        save_results=eval_config.save.save_results,
+        save_every=eval_config.save.save_every,
         independent_scoring=not eval_config.env.interleave_scoring,
     )
 
-    if run_config.save_results:
+    if eval_config.save.save_results:
         save_rollout_results(
             results,
-            run_config.save_to_hf_hub,
-            run_config.hf_hub_dataset_name,
+            eval_config.save.save_to_hf_hub,
+            eval_config.save.hf_hub_dataset_name,
         )
     return results
 
