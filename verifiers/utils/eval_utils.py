@@ -2,11 +2,17 @@ import asyncio
 import importlib.util
 import json
 import logging
+import sys
 import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
+
+if sys.version_info < (3, 12):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -77,7 +83,14 @@ def is_toml_config(path: str) -> bool:
     return Path(path).is_file() and Path(path).suffix == ".toml"
 
 
-def load_toml_config(path: Path) -> dict[str, dict | list]:
+class EvalTomlConfig(TypedDict):
+    evals: list[dict]
+    env_defaults: dict
+    model_defaults: dict
+    save_defaults: dict
+
+
+def load_toml_config(path: Path) -> EvalTomlConfig:
     """Loads and validates a TOML config file."""
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -106,7 +119,6 @@ def load_toml_config(path: Path) -> dict[str, dict | list]:
         )
 
     valid_env_fields = set(EvalEnvConfig.model_fields.keys())
-    valid_env_fields.discard("env_id")
     valid_model_fields = {
         "model",
         "sampling_args",
@@ -163,10 +175,17 @@ def load_toml_config(path: Path) -> dict[str, dict | list]:
             raw_env = {**raw_env, "env_id": eval_entry["env_id"]}
 
         if "env" not in eval_entry and "env_id" not in eval_entry:
-            raise ValueError("Each [[eval]] entry must include an env section")
+            if "env_id" not in env_defaults:
+                raise ValueError(
+                    "Each [[eval]] entry must include an env section, "
+                    "or env_id must be set in [env] defaults"
+                )
 
-        if "env_id" not in raw_env:
-            raise ValueError("Each [[eval]] entry must include env.env_id")
+        if "env_id" not in raw_env and "env_id" not in env_defaults:
+            raise ValueError(
+                "Each [[eval]] entry must include env.env_id, "
+                "or env_id must be set in [env] defaults"
+            )
 
         invalid_env_fields = set(raw_env.keys()) - (valid_env_fields | {"env_id"})
         if invalid_env_fields:

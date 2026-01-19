@@ -555,7 +555,11 @@ def main():
         raw_env = raw_eval.get("env", {})
         if "env_id" in raw_eval:
             raw_env = {**raw_env, "env_id": raw_eval["env_id"]}
-        env_id = raw_env["env_id"]
+        env_id = raw_env.get("env_id") or toml_env_defaults.get("env_id")
+        if not env_id or not isinstance(env_id, str):
+            raise ValueError(
+                "Each [[eval]] entry must have env_id either in [eval.env] or [env] defaults"
+            )
         raw_model = raw_eval.get("model", {})
         raw_save = raw_eval.get("save", {})
 

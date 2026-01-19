@@ -18,20 +18,20 @@ from verifiers.utils.eval_utils import (
 )
 
 
-def _make_metadata(config) -> GenerateMetadata:
+def _make_metadata(eval_config) -> GenerateMetadata:
     return GenerateMetadata(
-        env_id=config.env_id,
-        env_args=config.env_args,
-        model=config.model,
-        base_url=config.client_config.api_base_url,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        sampling_args=config.sampling_args,
+        env_id=eval_config.env.env_id,
+        env_args=eval_config.env.env_args,
+        model=eval_config.model.model,
+        base_url=eval_config.model.client_config.api_base_url,
+        num_examples=eval_config.env.num_examples,
+        rollouts_per_example=eval_config.env.rollouts_per_example,
+        sampling_args=eval_config.model.sampling_args,
         date="1970-01-01",
         time_ms=0.0,
         avg_reward=0.0,
         avg_metrics={},
-        state_columns=config.state_columns or [],
+        state_columns=eval_config.env.state_columns or [],
         path_to_save=Path("test.jsonl"),
     )
 
@@ -136,10 +136,10 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
     monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
     monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: {})
 
-    async def fake_run_evaluation(config):
-        captured["sampling_args"] = dict(config.sampling_args)
-        captured["configs"].append(config)
-        metadata = _make_metadata(config)
+    async def fake_run_evaluation(eval_config, run_config):
+        captured["sampling_args"] = dict(eval_config.model.sampling_args)
+        captured["configs"].append(eval_config)
+        metadata = _make_metadata(eval_config)
         return GenerateOutputs(
             prompt=[[{"role": "user", "content": "p"}]],
             completion=[[{"role": "assistant", "content": "c"}]],
@@ -182,7 +182,7 @@ def test_cli_single_env_id(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 1
-    assert configs[0].env_id == "env1"
+    assert configs[0].env.env_id == "env1"
 
 
 def test_cli_sampling_args_precedence_over_flags(monkeypatch):
@@ -266,9 +266,9 @@ def test_cli_comma_separated_env_ids(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 3
-    assert configs[0].env_id == "env1"
-    assert configs[1].env_id == "env2"
-    assert configs[2].env_id == "env3"
+    assert configs[0].env.env_id == "env1"
+    assert configs[1].env.env_id == "env2"
+    assert configs[2].env.env_id == "env3"
 
 
 def test_cli_comma_separated_with_spaces(monkeypatch):
@@ -282,9 +282,9 @@ def test_cli_comma_separated_with_spaces(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 3
-    assert configs[0].env_id == "env1"
-    assert configs[1].env_id == "env2"
-    assert configs[2].env_id == "env3"
+    assert configs[0].env.env_id == "env1"
+    assert configs[1].env.env_id == "env2"
+    assert configs[2].env.env_id == "env3"
 
 
 def test_cli_comma_separated_with_org_prefix(monkeypatch):
@@ -298,8 +298,8 @@ def test_cli_comma_separated_with_org_prefix(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "org/env1"
-    assert configs[1].env_id == "org/env2"
+    assert configs[0].env.env_id == "org/env1"
+    assert configs[1].env.env_id == "org/env2"
 
 
 def test_cli_comma_separated_shared_args(monkeypatch):
@@ -319,11 +319,11 @@ def test_cli_comma_separated_shared_args(monkeypatch):
     configs = captured["configs"]
     assert len(configs) == 3
     for config in configs:
-        assert config.num_examples == 10
-        assert config.rollouts_per_example == 4
-        assert config.max_concurrent == 16
-        assert config.sampling_args["max_tokens"] == 512
-        assert config.sampling_args["temperature"] == 0.7
+        assert config.env.num_examples == 10
+        assert config.env.rollouts_per_example == 4
+        assert config.model.max_concurrent == 16
+        assert config.model.sampling_args["max_tokens"] == 512
+        assert config.model.sampling_args["temperature"] == 0.7
 
 
 def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
@@ -337,8 +337,8 @@ def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "gsm8k"
-    assert configs[1].env_id == "alphabet-sort"
+    assert configs[0].env.env_id == "gsm8k"
+    assert configs[1].env.env_id == "alphabet-sort"
 
 
 def test_is_toml_config_with_valid_toml():
@@ -381,8 +381,8 @@ def test_load_toml_config_single_env():
         f.write('[[env]]\nenv_id = "env1"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
-        assert len(result) == 1
-        assert result[0]["env_id"] == "env1"
+        assert len(result["evals"]) == 1
+        assert result["evals"][0]["env"]["env_id"] == "env1"
 
 
 def test_load_toml_config_multi_env():
@@ -391,9 +391,9 @@ def test_load_toml_config_multi_env():
         f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
-        assert len(result) == 2
-        assert result[0]["env_id"] == "env1"
-        assert result[1]["env_id"] == "env2"
+        assert len(result["evals"]) == 2
+        assert result["evals"][0]["env"]["env_id"] == "env1"
+        assert result["evals"][1]["env"]["env_id"] == "env2"
 
 
 def test_load_toml_config_with_env_args():
@@ -404,10 +404,10 @@ def test_load_toml_config_with_env_args():
         )
         f.flush()
         result = load_toml_config(Path(f.name))
-        assert len(result) == 1
-        assert result[0]["env_id"] == "env1"
-        assert result[0]["env_args"]["split"] == "train"
-        assert result[0]["env_args"]["max_examples"] == 100
+        assert len(result["evals"]) == 1
+        assert result["evals"][0]["env"]["env_id"] == "env1"
+        assert result["evals"][0]["env"]["env_args"]["split"] == "train"
+        assert result["evals"][0]["env"]["env_args"]["max_examples"] == 100
 
 
 def test_load_toml_config_missing_env_section():
@@ -472,8 +472,8 @@ def test_cli_multi_env_via_toml_config(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "env1"
-    assert configs[1].env_id == "env2"
+    assert configs[0].env.env_id == "env1"
+    assert configs[1].env.env_id == "env2"
 
 
 def test_cli_multi_env_shares_common_args(monkeypatch):
@@ -494,10 +494,10 @@ def test_cli_multi_env_shares_common_args(monkeypatch):
 
     configs = captured["configs"]
     for config in configs:
-        assert config.num_examples == 10
-        assert config.rollouts_per_example == 4
-        assert config.max_concurrent == 16
-        assert config.sampling_args["max_tokens"] == 512
+        assert config.env.num_examples == 10
+        assert config.env.rollouts_per_example == 4
+        assert config.model.max_concurrent == 16
+        assert config.model.sampling_args["max_tokens"] == 512
 
 
 def test_cli_toml_per_env_num_examples(monkeypatch):
@@ -519,10 +519,10 @@ def test_cli_toml_per_env_num_examples(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].env_id == "env1"
-    assert configs[0].num_examples == 10
-    assert configs[1].env_id == "env2"
-    assert configs[1].num_examples == 20
+    assert configs[0].env.env_id == "env1"
+    assert configs[0].env.num_examples == 10
+    assert configs[1].env.env_id == "env2"
+    assert configs[1].env.num_examples == 20
 
 
 def test_cli_toml_per_env_rollouts_per_example(monkeypatch):
@@ -544,8 +544,8 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch):
 
     configs = captured["configs"]
     assert len(configs) == 2
-    assert configs[0].rollouts_per_example == 3
-    assert configs[1].rollouts_per_example == 5
+    assert configs[0].env.rollouts_per_example == 3
+    assert configs[1].env.rollouts_per_example == 5
 
 
 def test_cli_toml_per_env_overrides_cli_args(monkeypatch):
@@ -567,10 +567,10 @@ def test_cli_toml_per_env_overrides_cli_args(monkeypatch):
 
     configs = captured["configs"]
     # TOML per-env settings should override CLI args
-    assert configs[0].num_examples == 100
-    assert configs[0].rollouts_per_example == 10
-    assert configs[1].num_examples == 200
-    assert configs[1].rollouts_per_example == 20
+    assert configs[0].env.num_examples == 100
+    assert configs[0].env.rollouts_per_example == 10
+    assert configs[1].env.num_examples == 200
+    assert configs[1].env.rollouts_per_example == 20
 
 
 def test_cli_toml_mixed_per_env_and_cli_fallback(monkeypatch):
@@ -593,13 +593,13 @@ def test_cli_toml_mixed_per_env_and_cli_fallback(monkeypatch):
     configs = captured["configs"]
     assert len(configs) == 2
     # First env uses TOML settings (takes precedence over CLI)
-    assert configs[0].env_id == "env-with-settings"
-    assert configs[0].num_examples == 15
-    assert configs[0].rollouts_per_example == 4
+    assert configs[0].env.env_id == "env-with-settings"
+    assert configs[0].env.num_examples == 15
+    assert configs[0].env.rollouts_per_example == 4
     # Second env uses CLI args as fallback
-    assert configs[1].env_id == "env-without-settings"
-    assert configs[1].num_examples == 10
-    assert configs[1].rollouts_per_example == 2
+    assert configs[1].env.env_id == "env-without-settings"
+    assert configs[1].env.num_examples == 10
+    assert configs[1].env.rollouts_per_example == 2
 
 
 def test_cli_toml_without_settings_uses_defaults(monkeypatch):
@@ -619,5 +619,59 @@ def test_cli_toml_without_settings_uses_defaults(monkeypatch):
     configs = captured["configs"]
     # Both envs use global defaults
     for config in configs:
-        assert config.num_examples == 5  # DEFAULT_NUM_EXAMPLES
-        assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
+        assert config.env.num_examples == 5  # DEFAULT_NUM_EXAMPLES
+        assert config.env.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
+
+
+def test_cli_toml_global_env_id(monkeypatch):
+    """TOML with global env_id in [env] defaults applies to all [[eval]] entries."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[env]\nenv_id = "shared-env"\nnum_examples = 10\n\n'
+            '[[eval]]\n[eval.model]\nmodel = "model-a"\n\n'
+            '[[eval]]\n[eval.model]\nmodel = "model-b"\n'
+        )
+        f.flush()
+        captured = _run_cli(
+            monkeypatch,
+            {
+                "env_id_or_path": f.name,
+                "num_examples": None,
+                "rollouts_per_example": 1,
+            },
+        )
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    # Both evals should use the global env_id
+    assert configs[0].env.env_id == "shared-env"
+    assert configs[1].env.env_id == "shared-env"
+    # And inherit env settings from defaults
+    assert configs[0].env.num_examples == 10
+    assert configs[1].env.num_examples == 10
+
+
+def test_cli_toml_per_eval_env_id_overrides_global(monkeypatch):
+    """Per-eval env_id overrides global env_id from [env] defaults."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[env]\nenv_id = "default-env"\n\n'
+            '[[eval]]\n[eval.env]\nenv_id = "override-env"\n\n'
+            "[[eval]]\n"
+        )
+        f.flush()
+        captured = _run_cli(
+            monkeypatch,
+            {
+                "env_id_or_path": f.name,
+                "num_examples": 5,
+                "rollouts_per_example": 1,
+            },
+        )
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    # First eval overrides with per-eval env_id
+    assert configs[0].env.env_id == "override-env"
+    # Second eval uses global default
+    assert configs[1].env.env_id == "default-env"
