@@ -657,8 +657,7 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        input = RolloutInput(**state_input)
-        state = State(**input)  # type: ignore[missing-typed-dict-key]
+        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
         state["client_config"] = client_config
         state["model"] = model
         state["sampling_args"] = sampling_args

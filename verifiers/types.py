@@ -95,11 +95,9 @@ class RolloutTiming(TypedDict, total=False):
 
 
 class State(dict):
-    prompt: Messages
-    example_id: int
-    task: str
-    answer: str | None
-    info: Info | None
+    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    # rollout inputs
+    input: RolloutInput
     client_config: "ClientConfig"
     model: str
     sampling_args: SamplingArgs | None
@@ -116,6 +114,29 @@ class State(dict):
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None
+
+    def __getitem__(self, key: str) -> Any:
+        # forward to input if exists
+        if key in self.INPUT_FIELDS and "input" in self:
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                return input_obj[key]
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        # forward to input if exists
+        if key in self.INPUT_FIELDS and "input" in self:
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                input_obj[key] = value
+                return
+        super().__setitem__(key, value)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 # oai tools
