@@ -147,17 +147,33 @@ class ZMQEnvServer(EnvServer):
 
 async def main():
     import argparse
-    import signal
 
     parser = argparse.ArgumentParser(description="ZMQ Environment Server")
-    parser.add_argument("env_id", type=str, help="Environment ID to load")
     parser.add_argument(
-        "--env-args", type=json.loads, default={}, help="Environment args as JSON"
+        "env_id",
+        type=str,
+        default="gsm8k",
+        help="Environment module name(s) (comma-separated) or path to TOML config.",
     )
     parser.add_argument(
-        "--address", default="tcp://127.0.0.1:5555", help="ZMQ bind address"
+        "--env-args",
+        "-a",
+        type=json.loads,
+        default={},
+        help='Environment module arguments as JSON object (e.g., \'{"key": "value", "num": 42}\')',
     )
-
+    parser.add_argument(
+        "--address",
+        default="tcp://127.0.0.1:5000",
+        help="ZMQ bind address",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        default=False,
+        action="store_true",
+        help="Logging level",
+    )
     args = parser.parse_args()
 
     # initialize server
@@ -165,20 +181,11 @@ async def main():
         env_id=args.env_id,
         env_args=args.env_args,
         address=args.address,
+        log_level="DEBUG" if args.verbose else "INFO",
     )
 
-    # setup graceful shutdown for SIGTERM (K8s, Docker, Slurm) and SIGINT (Ctrl+C)
-    stop_event = asyncio.Event()
-
-    def signal_handler(sig):
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
-
     try:
-        await server.run(stop_event=stop_event)
+        await server.run()
     finally:
         await server.close()
 

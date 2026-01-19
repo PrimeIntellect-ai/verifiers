@@ -1,3 +1,4 @@
+import socket
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -30,3 +31,10 @@ def msgpack_encoder(obj):
     else:
         # raise on unknown types to make issues visible
         raise TypeError(f"Object of type {type(obj)} is not msgpack serializable")
+
+
+def get_free_port() -> int:
+    """Get a free port on the system."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
