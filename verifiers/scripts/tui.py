@@ -830,6 +830,8 @@ class ViewRunScreen(Screen):
         )
 
     def action_copy(self) -> None:
+        if not self.records:
+            return
         self.app.push_screen(
             CopyScreen(self._prompt_text, self._completion_text, "completion")
         )
