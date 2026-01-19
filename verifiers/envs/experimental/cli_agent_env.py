@@ -495,6 +495,11 @@ touch /tmp/vf_complete
                 self.handle_intercepted_request,
             )
 
+            app.router.add_get(
+                "/health",
+                lambda _: web.json_response({"status": "ok"}),
+            )
+
             runner = web.AppRunner(app)  # type: ignore
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", self.interception_port)  # type: ignore
