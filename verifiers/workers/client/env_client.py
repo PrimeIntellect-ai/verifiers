@@ -1,48 +1,13 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TypeVar
-
-from pydantic import BaseModel
 
 from verifiers.types import (
     ClientConfig,
     GenerateOutputs,
     RolloutInput,
-    RolloutTiming,
     SamplingArgs,
     State,
-    TrajectoryStep,
 )
-from verifiers.workers.types import BaseResponse
-
-
-class HealthResponse(BaseModel):
-    is_healthy: bool
-
-
-class RolloutRequest(BaseModel):
-    input: RolloutInput
-    client_config: ClientConfig
-    model: str
-    sampling_args: SamplingArgs
-
-
-class RolloutResponse(BaseModel):
-    is_completed: bool
-    is_truncated: bool
-    stop_condition: str | None
-    trajectory: list[TrajectoryStep]
-    reward: float | None
-    advantage: float | None
-    metrics: dict[str, float] | None
-    timing: RolloutTiming | None
-    error: str | None
-
-
-GroupRequest = list[RolloutRequest]
-GroupResponse = list[RolloutResponse]
-
-BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
 
 
 class EnvClient(ABC):
@@ -90,9 +55,6 @@ class EnvClient(ABC):
         save_results: bool,
         save_every: int,
         independent_scoring: bool = False,
-        # on_start: StartCallback | None = None,
-        # on_progress: ProgressCallback | None = None,
-        # on_log: LogCallback | None = None,
     ) -> GenerateOutputs:
         """Mirrors Environment.evaluate"""
         ...

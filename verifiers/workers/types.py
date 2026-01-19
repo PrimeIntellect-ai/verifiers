@@ -1,4 +1,4 @@
-from typing import Any, Literal, TypeVar
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -9,15 +9,6 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-
-
-def _dict_to_state(v: Any) -> State:
-    """Convert a dict to a State object if needed."""
-    if isinstance(v, State):
-        return v
-    if isinstance(v, dict):
-        return State(v)
-    raise ValueError(f"Expected State or dict, got {type(v)}")
 
 
 class BaseRequest(BaseModel):
@@ -53,10 +44,10 @@ class RunRolloutResponse(BaseResponse):
 
     @field_validator("state", mode="before")
     @classmethod
-    def convert_state(cls, v: Any) -> State | None:
+    def convert_state(cls, v: dict | None) -> State | None:
         if v is None:
             return None
-        return _dict_to_state(v)
+        return State(**v)
 
 
 class RunGroupRequest(BaseRequest):
@@ -70,14 +61,14 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    states: list[State]
+    states: list[State] | None = None
 
     @field_validator("states", mode="before")
     @classmethod
-    def convert_states(cls, v: Any) -> list[State]:
-        if not isinstance(v, list):
-            raise ValueError(f"Expected list, got {type(v)}")
-        return [_dict_to_state(s) for s in v]
+    def convert_states(cls, v: list[dict] | None) -> list[State] | None:
+        if v is None:
+            return []
+        return [State(**s) for s in v]
 
 
 class EvaluateRequest(BaseRequest):
@@ -97,14 +88,16 @@ class EvaluateRequest(BaseRequest):
 
 
 class EvaluateResponse(BaseResponse):
-    results: GenerateOutputs
+    results: GenerateOutputs | None = None
 
     @field_validator("results", mode="before")
     @classmethod
-    def convert_results_state(cls, v: Any) -> GenerateOutputs:
+    def convert_results_state(cls, v: dict | None) -> GenerateOutputs | None:
+        if v is None:
+            return None
         if isinstance(v, dict) and "state" in v:
-            v["state"] = [_dict_to_state(s) for s in v["state"]]
-        return v
+            v["state"] = [State(**s) for s in v["state"]]
+        return GenerateOutputs(**v)
 
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
