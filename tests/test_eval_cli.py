@@ -12,10 +12,7 @@ from verifiers.types import (
     GenerateOutputs,
     State,
 )
-from verifiers.utils.eval_utils import (
-    is_toml_config,
-    load_toml_config,
-)
+from verifiers.utils.eval_utils import load_toml_config
 
 
 def _make_metadata(config) -> GenerateMetadata:
@@ -339,40 +336,6 @@ def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
     assert len(configs) == 2
     assert configs[0].env_id == "gsm8k"
     assert configs[1].env_id == "alphabet-sort"
-
-
-def test_is_toml_config_with_valid_toml():
-    """Valid TOML file path returns True."""
-    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
-        f.write(b"[[env]]\nenv_id = 'test'\n")
-        f.flush()
-        assert is_toml_config(f.name) is True
-
-
-def test_is_toml_config_with_nonexistent_file():
-    """Nonexistent file returns False."""
-    assert is_toml_config("/nonexistent/path/config.toml") is False
-
-
-def test_is_toml_config_with_non_toml_extension():
-    """File with non-toml extension returns False."""
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
-        f.write(b"test: value\n")
-        f.flush()
-        assert is_toml_config(f.name) is False
-
-
-def test_is_toml_config_with_directory():
-    """Directory path returns False."""
-    with tempfile.TemporaryDirectory() as d:
-        assert is_toml_config(d) is False
-
-
-def test_is_toml_config_with_env_id():
-    """Simple env ID string returns False."""
-    assert is_toml_config("env") is False
-    assert is_toml_config("env1,env2") is False
-    assert is_toml_config("org/env") is False
 
 
 def test_load_toml_config_single_env():
