@@ -92,12 +92,12 @@ class EvaluateResponse(BaseResponse):
 
     @field_validator("results", mode="before")
     @classmethod
-    def convert_results_state(cls, v: dict | None) -> GenerateOutputs | None:
+    def convert_results_state(cls, v: dict | None) -> dict | None:
         if v is None:
             return None
         if isinstance(v, dict) and "state" in v:
             v["state"] = [State(**s) for s in v["state"]]
-        return GenerateOutputs(**v)
+        return v
 
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
