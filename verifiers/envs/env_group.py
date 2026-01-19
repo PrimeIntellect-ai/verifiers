@@ -171,7 +171,7 @@ class EnvGroup(vf.Environment):
             add_task = make_add_task_fn(name)
 
             # Build dataset if using DatasetBuilder, returns None if not available
-            env_dataset = env._build_dataset()
+            env_dataset = env.build_dataset()
             if env_dataset is not None:
                 # override task column to use env_name for routing
                 if "task" in env_dataset.column_names:
@@ -179,7 +179,7 @@ class EnvGroup(vf.Environment):
                 env_dataset = env_dataset.map(add_task, **map_kwargs)
                 datasets.append(env_dataset)
             # Build eval_dataset if using DatasetBuilder, returns None if not available
-            env_eval_dataset = env._build_eval_dataset()
+            env_eval_dataset = env.build_eval_dataset()
             if env_eval_dataset is not None:
                 # override task column to use env_name for routing
                 if "task" in env_eval_dataset.column_names:

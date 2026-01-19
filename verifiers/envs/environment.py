@@ -113,30 +113,28 @@ class Environment(ABC):
                 'to contain a "prompt" column.'
             )
 
-        # Normalize to always use builders (wrap raw datasets in lambdas)
-        self._dataset: Dataset | None = None
-        self._eval_dataset: Dataset | None = None
+        # Dataset sources (builders) and built datasets
+        # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
+        self.dataset: Dataset | None = None
+        self.eval_dataset: Dataset | None = None
 
         if dataset is not None:
             if callable(dataset):
-                self._dataset_source: DatasetBuilder | None = dataset
+                self.dataset_source: DatasetBuilder | None = dataset
             else:
-                self._dataset_source = lambda ds=dataset: ds
-                self._build_dataset()  # Eagerly build for raw datasets (backwards compat)
+                self.dataset_source = lambda ds=dataset: ds
+                self.build_dataset()  # Eagerly build for raw datasets (backwards compat)
         else:
-            self._dataset_source = None
+            self.dataset_source = None
 
         if eval_dataset is not None:
             if callable(eval_dataset):
-                self._eval_dataset_source: DatasetBuilder | None = eval_dataset
+                self.eval_dataset_source: DatasetBuilder | None = eval_dataset
             else:
-                self._eval_dataset_source = lambda ds=eval_dataset: ds
-                self._build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
+                self.eval_dataset_source = lambda ds=eval_dataset: ds
+                self.build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
         else:
-            self._eval_dataset_source = None
-
-        self.dataset: Dataset | None = self._dataset
-        self.eval_dataset: Dataset | None = self._eval_dataset
+            self.eval_dataset_source = None
 
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
@@ -152,10 +150,10 @@ class Environment(ABC):
             setattr(self, key, value)
 
         if (
-            self._dataset_source is None
-            and self._eval_dataset_source is None
-            and self._dataset is None
-            and self._eval_dataset is None
+            self.dataset_source is None
+            and self.eval_dataset_source is None
+            and self.dataset is None
+            and self.eval_dataset is None
         ):
             raise ValueError("Either dataset or eval_dataset must be provided")
         self.rollouts_per_example = None
@@ -339,58 +337,52 @@ class Environment(ABC):
         else:
             return self._format_completion_dataset(dataset, map_kwargs=self._map_kwargs)
 
-    def _build_dataset(self) -> Dataset | None:
+    def build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
-        if self._dataset is not None:
-            return self._dataset
-        if self._dataset_source is None:
+        if self.dataset is not None:
+            return self.dataset
+        if self.dataset_source is None:
             return None
-        built = self._dataset_source()
-        self._dataset = self._format_dataset_source(built)
-        self.dataset = self._dataset
-        return self._dataset
+        built = self.dataset_source()
+        self.dataset = self._format_dataset_source(built)
+        return self.dataset
 
-    def _build_eval_dataset(self) -> Dataset | None:
+    def build_eval_dataset(self) -> Dataset | None:
         """Build and cache the evaluation dataset from source if needed."""
-        if self._eval_dataset is not None:
-            return self._eval_dataset
-        if self._eval_dataset_source is None:
+        if self.eval_dataset is not None:
+            return self.eval_dataset
+        if self.eval_dataset_source is None:
             return None
-        built = self._eval_dataset_source()
-        self._eval_dataset = self._format_dataset_source(built)
-        self.eval_dataset = self._eval_dataset
-        return self._eval_dataset
+        built = self.eval_dataset_source()
+        self.eval_dataset = self._format_dataset_source(built)
+        return self.eval_dataset
 
     @final
     def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
-        ds = self._build_dataset()
-        if ds is None:
+        self.build_dataset()
+        if self.dataset is None:
             raise ValueError("dataset is not set")
         if seed is not None:
-            ds = ds.shuffle(seed=seed)
-            self._dataset = ds
-            self.dataset = ds
+            self.dataset = self.dataset.shuffle(seed=seed)
         if n > 0:
-            n = min(n, len(ds))
-            return ds.select(range(n))
-        return ds
+            n = min(n, len(self.dataset))
+            return self.dataset.select(range(n))
+        return self.dataset
 
     @final
     def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
-        ds = self._build_eval_dataset()
-        if ds is None:
+        self.build_eval_dataset()
+        if self.eval_dataset is None:
             self.logger.warning(
                 "eval_dataset is not set, falling back to train dataset"
             )
             return self.get_dataset(n, seed)
         if seed is not None:
-            ds = ds.shuffle(seed=seed)
-            self._eval_dataset = ds
-            self.eval_dataset = ds
+            self.eval_dataset = self.eval_dataset.shuffle(seed=seed)
         if n > 0:
-            n = min(n, len(ds))
-            return ds.select(range(n))
-        return ds
+            n = min(n, len(self.eval_dataset))
+            return self.eval_dataset.select(range(n))
+        return self.eval_dataset
 
     async def get_model_response(
         self,
