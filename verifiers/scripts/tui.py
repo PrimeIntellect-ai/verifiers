@@ -1156,7 +1156,6 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
-        Binding("q", "close", "Close"),
         Binding("enter", "select", "Select"),
     ]
 
