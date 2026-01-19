@@ -4,75 +4,56 @@ import random
 import re
 from typing import List
 
-import verifiers as vf
 from datasets import Dataset, load_dataset
 
+import verifiers as vf
 
-def load_environment(
-    max_turns: int = 3,
+
+def _extract_first_name(combined_name: str) -> str:
+    """Extract first name from combined name like 'VladimirDrinfeld' -> 'Vladimir'"""
+    if not combined_name:
+        return ""
+    # Find first uppercase letter after position 0
+    for i in range(1, len(combined_name)):
+        if combined_name[i].isupper():
+            return combined_name[:i]
+    # If no uppercase found after position 0, return whole string
+    return combined_name
+
+
+def _extract_last_name(combined_name: str) -> str:
+    """Extract last name from combined name like 'VladimirDrinfeld' -> 'Drinfeld'"""
+    if not combined_name:
+        return ""
+    # Find first uppercase letter after position 0
+    for i in range(1, len(combined_name)):
+        if combined_name[i].isupper():
+            return combined_name[i:]
+    # If no uppercase found after position 0, return empty string
+    return ""
+
+
+def get_dataset_builder(
     min_turns: int = 1,
+    max_turns: int = 3,
     min_names_per_turn: int = 1,
     max_names_per_turn: int = 5,
-    similarity_power: int = 4,
-    power_per_turn: bool = True,
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
-    **kwargs,
-) -> vf.Environment:
-    # Basic arg validation
-    assert min_turns >= 1, "min_turns must be at least 1"
-    assert min_turns <= max_turns, "min_turns must be less than or equal to max_turns"
-    assert min_names_per_turn >= 1, "min_names_per_turn must be at least 1"
-    assert min_names_per_turn <= max_names_per_turn, (
-        "min_names_per_turn must be less than or equal to max_names_per_turn"
-    )
+) -> vf.DatasetBuilder:
+    """Returns a DatasetBuilder that lazily builds the alphabet sorting dataset."""
 
-    def extract_first_name(combined_name: str) -> str:
-        """Extract first name from combined name like 'VladimirDrinfeld' -> 'Vladimir'"""
-        if not combined_name:
-            return ""
-
-        # Find first uppercase letter after position 0
-        for i in range(1, len(combined_name)):
-            if combined_name[i].isupper():
-                return combined_name[:i]
-
-        # If no uppercase found after position 0, return whole string
-        return combined_name
-
-    def extract_last_name(combined_name: str) -> str:
-        """Extract last name from combined name like 'VladimirDrinfeld' -> 'Drinfeld'"""
-        if not combined_name:
-            return ""
-
-        # Find first uppercase letter after position 0
-        for i in range(1, len(combined_name)):
-            if combined_name[i].isupper():
-                return combined_name[i:]
-
-        # If no uppercase found after position 0, return empty string
-        return ""
-
-    def count_tag_instances_and_contents(text: str, tag: str) -> tuple[int, List[str]]:
-        """Count instances of a tag and extract all their contents"""
-        pattern = f"<{tag}>(.*?)</{tag}>"
-        matches = re.findall(pattern, text, re.DOTALL)
-        return len(matches), matches
-
-    def get_random_turn_config():
-        num_turns = random.randint(min_turns, max_turns)
-        names_per_turn = []
-
-        for _ in range(num_turns):
-            names_per_turn.append(
-                random.randint(min_names_per_turn, max_names_per_turn)
-            )
-
-        return num_turns, names_per_turn
-
-    def build_dataset() -> Dataset:
+    def build() -> Dataset:
         random.seed(seed)
+
+        def get_random_turn_config():
+            num_turns = random.randint(min_turns, max_turns)
+            names_per_turn = [
+                random.randint(min_names_per_turn, max_names_per_turn)
+                for _ in range(num_turns)
+            ]
+            return num_turns, names_per_turn
 
         data = []
         hf_dataset = load_dataset(dataset_name, split=dataset_split)
@@ -103,7 +84,6 @@ def load_environment(
 
                 turn_names = []
                 idx = 0
-
                 for count in names_per_turn:
                     turn_names.append(selected_names[idx : idx + count])
                     idx += count
@@ -117,11 +97,11 @@ def load_environment(
                     # Sort by first or last name based on random choice
                     if sort_by_first:
                         sorted_cumulative = sorted(
-                            cumulative_names, key=extract_first_name
+                            cumulative_names, key=_extract_first_name
                         )
                     else:
                         sorted_cumulative = sorted(
-                            cumulative_names, key=extract_last_name
+                            cumulative_names, key=_extract_last_name
                         )
 
                     if turn_idx == 0:
@@ -197,14 +177,41 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                 print(f"Error line {line_num}: {e}")
 
         print(
-            f"Dataset: {len(data)} examples with {min_turns}-{max_turns} turns, {min_names_per_turn}-{max_names_per_turn} names per turn"
+            f"Dataset: {len(data)} examples with {min_turns}-{max_turns} turns, "
+            f"{min_names_per_turn}-{max_names_per_turn} names per turn"
         )
         return Dataset.from_list(data)
 
-    class SortingEnv(vf.MultiTurnEnv):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+    return build
 
+
+def _count_tag_instances_and_contents(text: str, tag: str) -> tuple[int, List[str]]:
+    """Count instances of a tag and extract all their contents"""
+    pattern = f"<{tag}>(.*?)</{tag}>"
+    matches = re.findall(pattern, text, re.DOTALL)
+    return len(matches), matches
+
+
+def load_environment(
+    max_turns: int = 3,
+    min_turns: int = 1,
+    min_names_per_turn: int = 1,
+    max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
+    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
+    dataset_split: str = "train",
+    seed: int = 1337420,
+    **kwargs,
+) -> vf.Environment:
+    assert min_turns >= 1, "min_turns must be at least 1"
+    assert min_turns <= max_turns, "min_turns must be less than or equal to max_turns"
+    assert min_names_per_turn >= 1, "min_names_per_turn must be at least 1"
+    assert min_names_per_turn <= max_names_per_turn, (
+        "min_names_per_turn must be less than or equal to max_names_per_turn"
+    )
+
+    class SortingEnv(vf.MultiTurnEnv):
         @vf.stop
         async def max_turns_for_example(self, state: vf.State) -> bool:
             """Stop when we've completed all required turns for this example."""
@@ -261,7 +268,7 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
         assistant_response = assistant_msgs[turn_num - 1]
 
         # Count tag instances and get their contents
-        tag_count, tag_contents = count_tag_instances_and_contents(
+        tag_count, tag_contents = _count_tag_instances_and_contents(
             assistant_response, xml_tag
         )
 
@@ -331,7 +338,14 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
         return weighted_reward
 
     rubric = vf.Rubric(funcs=[create_weighted_rewards()], weights=[1.0])
-    dataset = build_dataset()
-    env_instance = SortingEnv(dataset=dataset, rubric=rubric, max_turns=max_turns)
+    dataset_builder = get_dataset_builder(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+        dataset_name=dataset_name,
+        dataset_split=dataset_split,
+        seed=seed,
+    )
 
-    return env_instance
+    return SortingEnv(dataset=dataset_builder, rubric=rubric, max_turns=max_turns)
