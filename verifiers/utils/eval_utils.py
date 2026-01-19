@@ -286,24 +286,36 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     logger.info(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
-    results = await env.evaluate(
-        client_config=config.client_config,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        independent_scoring=config.independent_scoring,
-    )
+    try:
+        results = await env.evaluate(
+            client_config=config.client_config,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=config.max_concurrent,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            save_every=config.save_every,
+            independent_scoring=config.independent_scoring,
+        )
 
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
+        if config.save_results:
+            save_rollout_results(
+                results, config.save_to_hf_hub, config.hf_hub_dataset_name
+            )
 
-    return results
+        return results
+    finally:
+        # Terminate the env worker process if it was started
+        if env_worker is not None:
+            env_worker.terminate()
+            env_worker.join(timeout=5)
+            if env_worker.is_alive():
+                logger.warning("Env worker did not terminate gracefully, killing it")
+                env_worker.kill()
+                env_worker.join()
 
 
 async def run_multi_evaluation(config: MultiEvalConfig) -> None:
