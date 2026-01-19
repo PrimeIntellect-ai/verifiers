@@ -26,7 +26,6 @@ from verifiers.types import (
     MultiEvalConfig,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -246,7 +245,6 @@ def print_results(
 
 async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(config.client_config)
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
@@ -266,14 +264,12 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
     results = await vf_env.evaluate(
-        client=client,
+        client_config=config.client_config,
         model=config.model,
         sampling_args=config.sampling_args,
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
         max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
         results_path=results_path,
         state_columns=config.state_columns,
         save_results=config.save_results,

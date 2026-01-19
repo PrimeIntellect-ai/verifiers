@@ -393,8 +393,6 @@ def main():
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
             max_concurrent=env_args.max_concurrent,
-            max_concurrent_generation=env_args.max_concurrent_generation,
-            max_concurrent_scoring=env_args.max_concurrent_scoring,
             # logging
             verbose=env_args.verbose,
             # saving
