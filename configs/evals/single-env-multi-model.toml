@@ -1,0 +1,26 @@
+[env]
+num_examples = 5
+rollouts_per_example = 1
+
+[save]
+save_results = true
+
+[[eval]]
+[eval.env]
+env_id = "math-python"
+
+[eval.model]
+model = "openai/gpt-4.1-mini"
+
+[eval.save]
+hf_hub_dataset_name = "math-python-gpt-4.1-mini"
+
+[[eval]]
+[eval.env]
+env_id = "math-python"
+
+[eval.model]
+model = "qwen3-235b-i"
+
+[eval.save]
+hf_hub_dataset_name = "math-python-qwen3-235b-i"

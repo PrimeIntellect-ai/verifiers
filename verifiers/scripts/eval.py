@@ -118,21 +118,21 @@ def resolve_client_config(
     extra_headers: Dict[str, str],
 ) -> tuple[str, ClientConfig]:
     api_key_override = api_key_var_override is not None
-    api_base_url_override = api_base_url_override is not None
+    api_base_url_override_is_set = api_base_url_override is not None
 
     if model_name in endpoints:
         endpoint = endpoints[model_name]
         api_key_var = api_key_var_override if api_key_override else endpoint["key"]
         api_base_url = (
-            api_base_url_override if api_base_url_override else endpoint["url"]
+            api_base_url_override if api_base_url_override_is_set else endpoint["url"]
         )
         resolved_model = endpoint["model"]
-        if api_key_override or api_base_url_override:
+        if api_key_override or api_base_url_override_is_set:
             logger.debug(
                 "Using endpoint registry for model '%s' with overrides (key: %s, url: %s)",
                 resolved_model,
                 "override" if api_key_override else "registry",
-                "override" if api_base_url_override else "registry",
+                "override" if api_base_url_override_is_set else "registry",
             )
         else:
             logger.debug(

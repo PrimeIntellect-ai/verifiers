@@ -1,0 +1,19 @@
+[env]
+num_examples = 10
+rollouts_per_example = 2
+
+[model]
+model = "openai/gpt-4.1-mini"
+max_concurrent = 32
+
+[save]
+save_results = true
+
+[[eval]]
+[eval.env]
+env_id = "gsm8k"
+
+[[eval]]
+[eval.env]
+env_id = "alphabet-sort"
+num_examples = 5
