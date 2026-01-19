@@ -16,7 +16,6 @@ except ImportError:
 from verifiers import setup_logging
 from verifiers.types import ClientConfig, EvalConfig, MultiEvalConfig
 from verifiers.utils.eval_utils import (
-    is_toml_config,
     load_endpoints,
     load_toml_config,
     run_multi_evaluation,
@@ -255,9 +254,13 @@ def main():
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
     # resolve env_id_or_path: TOML config > comma-separated list > single env ID
-    if is_toml_config(args.env_id_or_path):
-        # single/multi-env eval via single TOML config
+    if args.env_id_or_path.endswith(".toml"):
+        # path looks like a TOML config file
         path = Path(args.env_id_or_path)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"TOML config file not found: {path}\nPlease check the path is correct."
+            )
         raw_multi_env_config = load_toml_config(path)
     elif "," in args.env_id_or_path:
         # multi-env eval via comma-separated list

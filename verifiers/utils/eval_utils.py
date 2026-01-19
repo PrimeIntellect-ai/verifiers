@@ -71,11 +71,6 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
-def is_toml_config(path: str) -> bool:
-    """Checks if a path is a valid TOML config file."""
-    return Path(path).is_file() and Path(path).suffix == ".toml"
-
-
 def load_toml_config(path: Path) -> list[dict]:
     """Loads and validates a TOML config file."""
     if not path.exists():
