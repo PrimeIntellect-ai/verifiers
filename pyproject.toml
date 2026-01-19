@@ -32,6 +32,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "math-verify>=0.8.0",
     "mcp>=1.14.1",
+    "msgpack>=1.1.2",
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",

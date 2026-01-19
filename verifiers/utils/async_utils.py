@@ -20,7 +20,7 @@ class NullAsyncContext:
         return False
 
 
-async def maybe_semaphore(
+def maybe_semaphore(
     limit: Optional[int] = None,
 ) -> AsyncContextManager:
     """
