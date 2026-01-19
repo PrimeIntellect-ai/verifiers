@@ -443,7 +443,7 @@ class Environment(ABC):
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            client = client or self._get_client(state["client_config"])
             model = model or state["model"]
             assert client is not None and model is not None
             oai_tools = oai_tools or state["oai_tools"]
@@ -657,8 +657,9 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
-        state["client"] = self._get_client(client_config)
+        input = RolloutInput(**state_input)
+        state = State(**input)  # type: ignore[missing-typed-dict-key]
+        state["client_config"] = client_config
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False

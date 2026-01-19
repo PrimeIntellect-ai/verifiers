@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -12,6 +13,7 @@ from verifiers.types import (
     State,
     TrajectoryStep,
 )
+from verifiers.workers.types import BaseResponse
 
 
 class HealthResponse(BaseModel):
@@ -39,6 +41,8 @@ class RolloutResponse(BaseModel):
 
 GroupRequest = list[RolloutRequest]
 GroupResponse = list[RolloutResponse]
+
+BaseResponseT = TypeVar("BaseResponseT", bound=BaseResponse)
 
 
 class EnvClient(ABC):

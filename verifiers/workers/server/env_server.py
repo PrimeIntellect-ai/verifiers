@@ -6,6 +6,16 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.workers.types import (
+    EvaluateRequest,
+    EvaluateResponse,
+    HealthRequest,
+    HealthResponse,
+    RunGroupRequest,
+    RunGroupResponse,
+    RunRolloutRequest,
+    RunRolloutResponse,
+)
 
 
 class EnvServer(ABC):
@@ -53,3 +63,47 @@ class EnvServer(ABC):
     def run_server(cls, *args, **kwargs):
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())
+
+    async def _handle_health(self, _request: HealthRequest) -> HealthResponse:
+        return HealthResponse()
+
+    async def _handle_run_rollout(
+        self, request: RunRolloutRequest
+    ) -> RunRolloutResponse:
+        state = await self.env.run_rollout(
+            request.input,
+            request.client_config,
+            request.model,
+            request.sampling_args,
+            request.score,
+        )
+        return RunRolloutResponse(state=state)
+
+    async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
+        states = await self.env.run_group(
+            request.group_inputs,
+            request.client_config,
+            request.model,
+            request.sampling_args,
+            request.score,
+        )
+        return RunGroupResponse(states=states)
+
+    async def _handle_evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
+        from pathlib import Path
+
+        results_path = Path(request.results_path) if request.results_path else None
+        results = await self.env.evaluate(
+            request.client_config,
+            request.model,
+            request.sampling_args,
+            request.num_examples,
+            request.rollouts_per_example,
+            request.max_concurrent,
+            results_path,
+            request.state_columns,
+            request.save_results,
+            request.save_every,
+            request.independent_scoring,
+        )
+        return EvaluateResponse(results=results)

@@ -10,6 +10,18 @@ import zmq.asyncio
 
 import verifiers as vf
 from verifiers.workers.client.env_client import EnvClient
+from verifiers.workers.types import (
+    BaseRequest,
+    BaseResponseT,
+    EvaluateRequest,
+    EvaluateResponse,
+    HealthRequest,
+    HealthResponse,
+    RunGroupRequest,
+    RunGroupResponse,
+    RunRolloutRequest,
+    RunRolloutResponse,
+)
 from verifiers.workers.utils import msgpack_encoder
 
 
@@ -41,12 +53,13 @@ class ZMQEnvClient(EnvClient):
         self.logger.debug(f"Connecting ZMQ client to {address}")
         self.socket.connect(address)
 
-        self.pending: dict[bytes, asyncio.Future] = {}
+        self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
 
     async def health(self) -> bool:
-        response = await self._send_request("health")
-        return cast(bool, response.get("is_healthy"))
+        request = HealthRequest()
+        response = await self._send_request(request, HealthResponse)
+        return response.success
 
     async def run_rollout(
         self,
@@ -56,15 +69,16 @@ class ZMQEnvClient(EnvClient):
         sampling_args: vf.SamplingArgs,
         score: bool = True,
     ) -> vf.State:
-        response = await self._send_request(
-            "run_rollout",
+        request = RunRolloutRequest(
             input=input,
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
             score=score,
         )
-        return vf.State(**response)
+        response = await self._send_request(request, RunRolloutResponse)
+        assert response.state is not None
+        return vf.State(**response.state)
 
     async def run_group(
         self,
@@ -74,15 +88,16 @@ class ZMQEnvClient(EnvClient):
         sampling_args: vf.SamplingArgs,
         score: bool = True,
     ) -> list[vf.State]:
-        response = await self._send_request(
-            "run_group",
+        request = RunGroupRequest(
             group_inputs=group_inputs,
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
             score=score,
         )
-        return [vf.State(**response) for response in response]
+        response = await self._send_request(request, RunGroupResponse)
+        assert response.states is not None
+        return [vf.State(**state) for state in response.states]
 
     async def evaluate(
         self,
@@ -98,25 +113,25 @@ class ZMQEnvClient(EnvClient):
         save_every: int,
         independent_scoring: bool = False,
     ) -> vf.GenerateOutputs:
-        response = await self._send_request(
-            "evaluate",
+        request = EvaluateRequest(
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
             max_concurrent=max_concurrent,
-            results_path=results_path,
+            results_path=str(results_path) if results_path else None,
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
         )
-        return vf.GenerateOutputs(**response)
+        response = await self._send_request(request, EvaluateResponse)
+        return vf.GenerateOutputs(response.results)
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
-        for request_id, future in list(self.pending.items()):
+        for _, future in list(self.pending.items()):
             if not future.done():
                 future.set_exception(RuntimeError(reason))
         self.pending.clear()
@@ -134,7 +149,8 @@ class ZMQEnvClient(EnvClient):
                     )
                     continue
 
-                request_id, response_data = msg[0], msg[1]
+                request_id_bytes, response_data = msg[0], msg[1]
+                request_id = request_id_bytes.decode()
 
                 if request_id in self.pending:
                     future = self.pending.pop(request_id)
@@ -145,7 +161,7 @@ class ZMQEnvClient(EnvClient):
                         except Exception as unpack_error:
                             # Unpacking failed - fail the specific future
                             self.logger.error(
-                                f"Failed to unpack response for request {request_id.hex()}: {unpack_error}"
+                                f"Failed to unpack response for request {request_id}: {unpack_error}"
                             )
                             future.set_exception(
                                 RuntimeError(
@@ -154,7 +170,7 @@ class ZMQEnvClient(EnvClient):
                             )
                 else:
                     self.logger.warning(
-                        f"Received response for unknown request_id: {request_id.hex()}"
+                        f"Received response for unknown request_id: {request_id}"
                     )
 
             except asyncio.CancelledError:
@@ -174,43 +190,56 @@ class ZMQEnvClient(EnvClient):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.logger.debug("ZMQ client started")
 
-    async def _send_request(self, action: str, **kwargs) -> dict:
+    async def _send_request(
+        self,
+        request: BaseRequest,
+        response_type: type[BaseResponseT],
+    ) -> BaseResponseT:
         """
-        Send request to environment.
+        Send typed request to environment and parse typed response.
 
         Args:
-            action: Action type (generate, get_dataset, etc.)
-            **kwargs: Action-specific parameters
+            request: Pydantic request model (contains action and request_id)
+            response_type: Expected Pydantic response type
 
         Returns:
-            Response dict
+            Validated response of type T
         """
         # Auto-start receiver if not already running
         if self._receiver_task is None:
             await self.start()
 
-        request_id = uuid.uuid4().bytes
+        # Use request_id from Pydantic model, encode to bytes for ZMQ frame
+        request_id = uuid.uuid4().hex
 
-        # Let msgpack traverse dicts/lists in C - only call msgpack_encoder for unknown types
-        payload_bytes = msgpack.packb(
-            {"action": action, **kwargs},
-            default=msgpack_encoder,
-            use_bin_type=True,
+        # Serialize using Pydantic
+        payload_bytes = cast(
+            bytes,
+            msgpack.packb(
+                request.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            ),
         )
 
-        future = asyncio.Future()
+        future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
 
-        await self.socket.send_multipart([request_id, payload_bytes])
+        await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
         try:
-            response = await asyncio.wait_for(future, timeout=self.timeout)
+            raw_response = await asyncio.wait_for(future, timeout=self.timeout)
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
-            raise TimeoutError(f"Environment timeout for action: {action}")
+            raise TimeoutError(
+                f"Environment timeout for {request.request_type} request after {self.timeout}s"
+            )
 
-        if response.get("status") == "error":
-            raise RuntimeError(f"Environment error: {response.get('error')}")
+        # validate response with Pydantic
+        response = response_type.model_validate(raw_response)
+
+        if not response.success:
+            raise RuntimeError(f"Server error: {response.error}")
 
         return response
 

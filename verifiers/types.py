@@ -16,7 +16,6 @@ if sys.version_info < (3, 12):
 else:
     from typing import TypedDict
 
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
@@ -96,17 +95,20 @@ class RolloutTiming(TypedDict, total=False):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
-    # rollout inputs
-    input: RolloutInput
-    client: AsyncOpenAI
+    prompt: Messages
+    example_id: int
+    task: str
+    answer: str | None
+    info: Info | None
+    client_config: "ClientConfig"
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
     is_truncated: bool
     stop_condition: str | None
-    oai_tools: list[ChatCompletionToolParam]
+    oai_tools: list[ChatCompletionToolParam] | None
+    trajectory_id: str
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
@@ -114,29 +116,6 @@ class State(dict):
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None
-
-    def __getitem__(self, key: str) -> Any:
-        # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
-            input_obj = super().__getitem__("input")
-            if key in input_obj:
-                return input_obj[key]
-        return super().__getitem__(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
-            input_obj = super().__getitem__("input")
-            if key in input_obj:
-                input_obj[key] = value
-                return
-        super().__setitem__(key, value)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
 
 
 # oai tools

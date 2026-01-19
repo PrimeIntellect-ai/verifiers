@@ -7,14 +7,14 @@ import zmq
 import zmq.asyncio
 from openai import AsyncOpenAI
 
-from verifiers.types import (
-    ClientConfig,
-    GenerateOutputs,
-    RolloutInput,
-    SamplingArgs,
-    State,
-)
 from verifiers.workers.server.env_server import EnvServer
+from verifiers.workers.types import (
+    BaseResponse,
+    EvaluateRequest,
+    HealthRequest,
+    RunGroupRequest,
+    RunRolloutRequest,
+)
 from verifiers.workers.utils import msgpack_encoder
 
 
@@ -30,7 +30,7 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.SNDHWM, 10000)
         self.socket.setsockopt(zmq.RCVHWM, 10000)
         self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.bind(address)
+        self.socket.bind(self.address)
 
         self.clients: dict[str, AsyncOpenAI] = {}
 
@@ -88,116 +88,67 @@ class ZMQEnvServer(EnvServer):
     async def _process_request(
         self,
         client_id: bytes,
-        request_id: bytes,
+        request_id_bytes: bytes,
         payload_bytes: bytes,
     ):
         async with self.semaphore:
+            # Default request_id from ZMQ frame, may be overwritten by Pydantic model
+            request_id = request_id_bytes.decode()
+            response: BaseResponse
+
             try:
                 # deserialize request
-                request = msgpack.unpackb(payload_bytes, raw=False)
-                action = request.get("action")
-                self.logger.info(f"Got {action} request")
+                raw = msgpack.unpackb(payload_bytes, raw=False)
+                request_type = raw.get("request_type")
+                request_id = raw.get("request_id", request_id)
+                self.logger.info(
+                    f"Got {request_type} request (request_id={request_id})"
+                )
 
-                # route to handler
-                if action == "health":
+                # validate and route to handler
+                if request_type == "health":
+                    request = HealthRequest.model_validate(raw)
                     response = await self._handle_health(request)
-                elif action == "run_rollout":
+                elif request_type == "run_rollout":
+                    request = RunRolloutRequest.model_validate(raw)
                     response = await self._handle_run_rollout(request)
-                elif action == "run_group":
+                elif request_type == "run_group":
+                    request = RunGroupRequest.model_validate(raw)
                     response = await self._handle_run_group(request)
-                elif action == "evaluate":
+                elif request_type == "evaluate":
+                    request = EvaluateRequest.model_validate(raw)
                     response = await self._handle_evaluate(request)
                 else:
-                    response = {"status": "error", "error": f"Unknown action: {action}"}
-
-                self.logger.info(f"Sending {action} response:\n{response}")
-
-                # serialize response
-                response_bytes = cast(
-                    bytes,
-                    msgpack.packb(response, default=msgpack_encoder, use_bin_type=True),
-                )
-
-                # send response: [client_id, request_id, response]
-                await self.socket.send_multipart(
-                    [client_id, request_id, response_bytes]
-                )
-
-                self.logger.info(
-                    f"Sent {action} response ({len(response_bytes)} bytes)"
-                )
+                    response = BaseResponse(
+                        success=False,
+                        error=f"Unknown action: {request_type}",
+                    )
 
             except Exception as e:
                 self.logger.error(f"Error processing request: {e}", exc_info=True)
-
-                # send error response
-                error_response = {"status": "error", "error": str(e)}
-                error_bytes = msgpack.packb(
-                    error_response, default=msgpack_encoder, use_bin_type=True
+                response = BaseResponse(
+                    success=False,
+                    error=str(e),
                 )
-                await self.socket.send_multipart([client_id, request_id, error_bytes])
 
-    async def _handle_health(self, _request: dict) -> dict:
-        return {"is_healthy": True}
+            # serialize response using Pydantic
+            response_bytes = cast(
+                bytes,
+                msgpack.packb(
+                    response.model_dump(mode="python"),
+                    default=msgpack_encoder,
+                    use_bin_type=True,
+                ),
+            )
 
-    async def _handle_run_rollout(self, request: dict) -> State:
-        input = RolloutInput(**request.get("input", {}))
-        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
-        model = request.get("model", "")
-        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
-        score = request.get("score", True)
-        state = await self.env.run_rollout(
-            input, client_config, model, sampling_args, score
-        )
-        # Remove non-serializable fields before sending over the wire
-        state.pop("client", None)
-        return state
+            # send response: [client_id, request_id, response]
+            await self.socket.send_multipart(
+                [client_id, request_id.encode(), response_bytes]
+            )
 
-    async def _handle_run_group(self, request: dict) -> list[State]:
-        group_inputs = [
-            RolloutInput(**input) for input in request.get("group_inputs", [])
-        ]
-        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
-        model = request.get("model", "")
-        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
-        score = request.get("score", True)
-        states = await self.env.run_group(
-            group_inputs, client_config, model, sampling_args, score
-        )
-        # remove non-serializable fields
-        for state in states:
-            state.pop("client", None)
-        return states
-
-    async def _handle_evaluate(self, request: dict) -> GenerateOutputs:
-        client_config = ClientConfig.model_construct(**request.get("client_config", {}))
-        model = request.get("model", "")
-        sampling_args = SamplingArgs(**request.get("sampling_args", {}))
-        num_examples = request.get("num_examples", -1)
-        rollouts_per_example = request.get("rollouts_per_example", 1)
-        max_concurrent = request.get("max_concurrent", -1)
-        results_path = request.get("results_path", None)
-        state_columns = request.get("state_columns", None)
-        save_results = request.get("save_results", False)
-        save_every = request.get("save_every", -1)
-        independent_scoring = request.get("independent_scoring", False)
-        results = await self.env.evaluate(
-            client_config,
-            model,
-            sampling_args,
-            num_examples,
-            rollouts_per_example,
-            max_concurrent,
-            results_path,
-            state_columns,
-            save_results,
-            save_every,
-            independent_scoring,
-        )
-        # Remove non-serializable client from each state
-        for state in results.get("state", []):
-            state.pop("client", None)
-        return results
+            self.logger.info(
+                f"Sent {response.__class__.__name__} (request_id={request_id}, {len(response_bytes)} bytes)"
+            )
 
 
 async def main():
