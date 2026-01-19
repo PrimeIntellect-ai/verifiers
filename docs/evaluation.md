@@ -12,6 +12,10 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Concurrency](#concurrency)
   - [Output and Saving](#output-and-saving)
 - [Environment Defaults](#environment-defaults)
+- [Multi-Environment Evaluation](#multi-environment-evaluation)
+  - [Comma-Separated Environments](#comma-separated-environments)
+  - [TOML Configuration](#toml-configuration)
+  - [Configuration Precedence](#configuration-precedence)
 
 Use `prime eval` to execute rollouts against any OpenAI-compatible model and report aggregate metrics.
 
@@ -32,12 +36,17 @@ prime eval run my-env -m gpt-4.1-mini -n 10
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `env_id` | (positional) | — | Environment module name (e.g., `my-env` or `gsm8k`) |
+| `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
-The `env_id` is converted to a Python module name (`my-env` → `my_env`) and imported. The module must be installed (via `vf-install` or `uv pip install`).
+The positional argument accepts three formats:
+- **Single environment**: `gsm8k` — evaluates one environment
+- **Comma-separated list**: `gsm8k,alphabet-sort` — evaluates multiple environments in parallel
+- **TOML config path**: `configs/eval/benchmark.toml` — evaluates environments defined in the config file
+
+Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
 The `--env-args` flag passes arguments to your `load_environment()` function:
 
@@ -149,4 +158,106 @@ num_examples = 100
 rollouts_per_example = 5
 ```
 
-These defaults are used when flags aren't explicitly provided. Priority order: CLI flags → environment defaults → global defaults.
+These defaults are used when higher-priority sources don't specify a value. The full priority order is:
+
+1. TOML per-environment settings (when using a config file)
+2. CLI flags
+3. Environment defaults (from `pyproject.toml`)
+4. Global defaults
+
+See [Configuration Precedence](#configuration-precedence) for more details on multi-environment evaluation.
+
+## Multi-Environment Evaluation
+
+You can evaluate multiple environments in parallel using `prime eval`. This is useful for running comprehensive benchmark suites.
+
+### Comma-Separated Environments
+
+The simplest way to evaluate multiple environments is to provide a comma-separated list of environment IDs:
+
+```bash
+prime eval run gsm8k,alphabet-sort -n 5 -r 3
+```
+
+All environments share the same CLI arguments. This approach works well when you want to evaluate the default settings for all environments or only change a few settings for all environments.
+
+```bash
+# Evaluate three environments with shared settings
+prime eval run gsm8k,math-python,wordle -m qwen3-235b-i -n 10 -r 5 -c 64
+```
+
+### TOML Configuration
+
+For fine-grained control over per-environment settings, use a TOML configuration file. This allows you to specify different parameters for each environment while still running them in parallel.
+
+```bash
+prime eval run configs/eval/my-benchmark.toml -m gpt-4.1-mini
+```
+
+The TOML file uses `[[env]]` sections to define each environment:
+
+```toml
+# configs/eval/my-benchmark.toml
+
+[[env]]
+env_id = "gsm8k"
+num_examples = 100
+rollouts_per_example = 5
+
+[[env]]
+env_id = "alphabet-sort"
+num_examples = 50
+rollouts_per_example = 3
+
+[[env]]
+env_id = "math-python"
+# Uses CLI args or defaults for num_examples and rollouts_per_example
+```
+
+Each `[[env]]` section must contain an `env_id` field. All other fields are optional and correspond to the same options available via CLI flags:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `env_id` | string | **Required.** Environment module name |
+| `env_args` | table | Arguments passed to `load_environment()` |
+| `num_examples` | integer | Number of dataset examples to evaluate |
+| `rollouts_per_example` | integer | Rollouts per example |
+| `extra_env_kwargs` | table | Arguments passed to environment constructor |
+
+Example with `env_args`:
+
+```toml
+[[env]]
+env_id = "math-python"
+num_examples = 50
+
+[env.env_args]
+difficulty = "hard"
+split = "test"
+```
+
+### Configuration Precedence
+
+Settings are resolved with the following priority order (highest to lowest):
+
+1. **TOML per-environment settings** — Values specified in `[[env]]` sections
+2. **CLI arguments** — Flags passed on the command line
+3. **Environment defaults** — Values from the environment's `pyproject.toml`
+4. **Global defaults** — Built-in defaults (`num_examples=5`, `rollouts_per_example=3`)
+
+This means TOML settings always take precedence over CLI arguments for the environments where they're specified, while environments without TOML settings fall back to CLI arguments:
+
+```toml
+[[env]]
+env_id = "gsm8k"
+num_examples = 100  # This env uses 100 examples
+
+[[env]]
+env_id = "alphabet-sort"
+# No num_examples specified — uses CLI arg
+```
+
+```bash
+# gsm8k uses 100 examples (from TOML), alphabet-sort uses 10 (from CLI)
+prime eval run configs/eval/mixed.toml -n 10
+```

@@ -236,7 +236,6 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     # logging
-    print_results: bool = False
     verbose: bool = False
     # saving
     state_columns: list[str] | None = None
@@ -244,3 +243,9 @@ class EvalConfig(BaseModel):
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+
+
+class MultiEvalConfig(BaseModel):
+    """Pydantic model for multi-environment evaluation configuration."""
+
+    env: list[EvalConfig]
