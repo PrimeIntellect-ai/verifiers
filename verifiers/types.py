@@ -236,7 +236,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
-    use_env_worker: bool = False
+    use_env_server: bool = False
     # logging
     verbose: bool = False
     # saving

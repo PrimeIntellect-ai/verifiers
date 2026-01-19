@@ -251,20 +251,20 @@ async def run_evaluation(env_idx: int, config: EvalConfig) -> GenerateOutputs:
     )
 
     # load environment
-    if config.use_env_worker:
+    if config.use_env_server:
         from verifiers.workers.client.zmq_env_client import ZMQEnvClient
         from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
         address = f"tcp://127.0.0.1:{5000 + env_idx}"
-        env_worker = Process(
+        env_server = Process(
             target=ZMQEnvServer.run_server,
             args=(config.env_id, config.env_args),
             kwargs=dict(address=address),
         )
-        env_worker.start()
+        env_server.start()
         env = ZMQEnvClient(address=address)
     else:
-        env_worker = None
+        env_server = None
         env = vf.load_environment(env_id=config.env_id, **config.env_args)
         if config.extra_env_kwargs:
             logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
@@ -298,14 +298,14 @@ async def run_evaluation(env_idx: int, config: EvalConfig) -> GenerateOutputs:
 
         return results
     finally:
-        # Terminate the env worker process if it was started
-        if env_worker is not None:
-            env_worker.terminate()
-            env_worker.join(timeout=5)
-            if env_worker.is_alive():
-                logger.warning("Env worker did not terminate gracefully, killing it")
-                env_worker.kill()
-                env_worker.join()
+        # Terminate the env server process if it was started
+        if env_server is not None:
+            env_server.terminate()
+            env_server.join(timeout=5)
+            if env_server.is_alive():
+                logger.warning("Env server did not terminate gracefully, killing it")
+                env_server.kill()
+                env_server.join()
 
 
 async def run_multi_evaluation(config: MultiEvalConfig) -> None:
