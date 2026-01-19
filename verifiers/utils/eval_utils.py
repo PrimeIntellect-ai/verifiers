@@ -244,7 +244,7 @@ def print_results(
             print_timing(task_results)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+async def run_evaluation(env_idx: int, config: EvalConfig) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
@@ -255,12 +255,14 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         from verifiers.workers.client.zmq_env_client import ZMQEnvClient
         from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
+        address = f"tcp://127.0.0.1:{5000 + env_idx}"
         env_worker = Process(
             target=ZMQEnvServer.run_server,
             args=(config.env_id, config.env_args),
+            kwargs=dict(address=address),
         )
         env_worker.start()
-        env = ZMQEnvClient()
+        env = ZMQEnvClient(address=address)
     else:
         env_worker = None
         env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -313,7 +315,10 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
 
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_evaluation(eval_config) for eval_config in config.env]
+        *[
+            run_evaluation(env_idx, eval_config)
+            for env_idx, eval_config in enumerate(config.env)
+        ]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()
