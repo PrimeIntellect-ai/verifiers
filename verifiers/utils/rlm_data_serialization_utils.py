@@ -28,6 +28,8 @@ class DataSerializer:
     dtype: str
     serialize: Callable[[Any], SerializedData]
     can_handle: Callable[[Any], bool] | None = None
+    serializer_code: str | None = None
+    serializer_function: str | None = None
     deserializer_code: str | None = None
     deserializer_function: str | None = None
 
@@ -163,6 +165,41 @@ def build_deserializer_spec(
     return deserializer_code, deserializer_function
 
 
+def build_serializer_spec(
+    serializer: Callable[[Any], Any] | None,
+    serializer_code: str | None,
+    serializer_function: str | None,
+    *,
+    strict: bool = False,
+) -> tuple[str | None, str | None]:
+    if serializer is not None and (serializer_code or serializer_function):
+        raise ValueError(
+            "Provide either a serializer callable or "
+            "serializer_code/serializer_function, not both."
+        )
+    if serializer is not None:
+        try:
+            source = inspect.getsource(serializer)
+        except OSError as exc:
+            if strict:
+                raise ValueError(
+                    "Unable to extract serializer source; pass serializer_code instead."
+                ) from exc
+            return None, None
+        source = textwrap.dedent(source)
+        name = getattr(serializer, "__name__", None)
+        if not name:
+            if strict:
+                raise ValueError(
+                    "Serializer must be a named function; pass serializer_code instead."
+                )
+            return None, None
+        return source, name
+    if (serializer_code is None) != (serializer_function is None):
+        raise ValueError("Provide both serializer_code and serializer_function.")
+    return serializer_code, serializer_function
+
+
 def build_custom_serializer(
     dtype: str,
     dump: Callable[[Any], bytes | str],
@@ -175,9 +212,14 @@ def build_custom_serializer(
     deserializer: Callable[[Any, dict[str, Any]], Any] | None = None,
     deserializer_code: str | None = None,
     deserializer_function: str | None = None,
+    serializer_code: str | None = None,
+    serializer_function: str | None = None,
 ) -> DataSerializer:
     deserializer_spec = build_deserializer_spec(
         deserializer, deserializer_code, deserializer_function
+    )
+    serializer_spec = build_serializer_spec(
+        dump, serializer_code, serializer_function, strict=False
     )
 
     def serialize(data: Any) -> SerializedData:
@@ -211,6 +253,8 @@ def build_custom_serializer(
         dtype=dtype,
         serialize=serialize,
         can_handle=can_handle,
+        serializer_code=serializer_spec[0],
+        serializer_function=serializer_spec[1],
         deserializer_code=deserializer_spec[0],
         deserializer_function=deserializer_spec[1],
     )
