@@ -187,13 +187,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
         sandbox_id = state["sandbox_id"]
 
         # Start the agent as a background job
-        background_job = await sandbox_client.start_background_job(
+        background_job: BackgroundJob = await sandbox_client.start_background_job(
             sandbox_id,
             self.run_command,
         )
-
-        # Store the job handle in state for polling
         state["background_job"] = background_job
+        state["agent_start_time"] = time.time()
 
         # Start the polling task
         state["completion_wait_task"] = asyncio.create_task(
@@ -211,48 +210,38 @@ class CliAgentEnv(vf.MultiTurnEnv):
             state["agent_completed"] = True
             return
 
-        start_time = time.time()
-        poll_interval = 1.0  # Poll every second
-
         try:
-            while True:
-                # Check timeout
-                elapsed = time.time() - start_time
-                if elapsed > self.timeout_seconds:
-                    logger.warning(f"Agent timed out after {elapsed:.1f}s")
-                    state["agent_completed"] = True
-                    state["agent_timed_out"] = True
-                    return
-
-                # Poll the background job status
-                try:
-                    status: BackgroundJobStatus = (
-                        await sandbox_client.get_background_job(
-                            sandbox_id, background_job
-                        )
-                    )
-                except Exception as e:
-                    logger.debug(f"Error polling job status: {e}")
-                    state["agent_completed"] = True
-                    return
-
-                if status.completed:
-                    state["agent_completed"] = True
-                    state["agent_exit_code"] = status.exit_code
-                    state["agent_stdout"] = status.stdout
-                    state["agent_stderr"] = status.stderr
-                    logger.debug(f"Agent completed with exit_code={status.exit_code}")
-                    return
-
-                await asyncio.sleep(poll_interval)
-
+            await asyncio.wait_for(
+                self.poll_job_completion(state, sandbox_id, background_job),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            state["agent_timed_out"] = True
         except asyncio.CancelledError:
             logger.debug("Completion wait task cancelled")
-            state["agent_completed"] = True
             raise
         except Exception as e:
-            logger.debug(f"Completion wait ended with error: {e}")
+            logger.debug(f"Completion wait ended: {e}")
+        finally:
             state["agent_completed"] = True
+
+    async def poll_job_completion(
+        self, state: State, sandbox_id: str, background_job: BackgroundJob
+    ) -> None:
+        """Poll until background job completes, capturing output."""
+        sandbox_client = AsyncSandboxClient()
+        while True:
+            status: BackgroundJobStatus = await sandbox_client.get_background_job(
+                sandbox_id, background_job
+            )
+            if status.completed:
+                state["agent_exit_code"] = status.exit_code
+                state["agent_stdout"] = status.stdout
+                state["agent_stderr"] = status.stderr
+                logger.debug(f"Agent completed with exit_code={status.exit_code}")
+                return
+            await asyncio.sleep(1)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""
