@@ -238,6 +238,7 @@ class EvalConfig(BaseModel):
     max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    max_retries: int = 0
     # logging
     print_results: bool = False
     verbose: bool = False

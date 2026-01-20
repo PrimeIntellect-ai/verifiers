@@ -45,7 +45,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
@@ -865,6 +865,7 @@ class Environment(ABC):
         save_every: int = -1,
         use_tqdm: bool = True,
         independent_scoring: bool = False,
+        max_retries: int = 0,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -898,7 +899,7 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    self.run_rollout(
+                    maybe_retry(self.run_rollout, max_retries=max_retries)(
                         input_item,
                         client,
                         model,
@@ -922,7 +923,7 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    self.run_group(
+                    maybe_retry(self.run_group, max_retries=max_retries)(
                         group,
                         client,
                         model,
@@ -1070,6 +1071,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        max_retries: int = 0,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1089,6 +1091,7 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            max_retries=max_retries,
             **kwargs,
         )
 
@@ -1107,6 +1110,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        max_retries: int = 0,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset synchronously.
@@ -1125,6 +1129,7 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            max_retries=max_retries,
         )
 
     # setters for use by trainers

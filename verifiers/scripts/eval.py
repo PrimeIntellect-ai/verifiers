@@ -240,6 +240,12 @@ def main():
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help="Max retries for transient infrastructure errors (default: 0)",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -343,6 +349,7 @@ def main():
         max_concurrent=args.max_concurrent,
         max_concurrent_generation=args.max_concurrent_generation,
         max_concurrent_scoring=args.max_concurrent_scoring,
+        max_retries=args.max_retries,
         # logging
         print_results=True,
         verbose=args.verbose,
