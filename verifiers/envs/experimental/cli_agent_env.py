@@ -288,31 +288,44 @@ touch /tmp/vf_complete
             model = state.get("model") or model
             oai_tools = intercept.get("tools") or oai_tools
 
-        # Handle streaming requests
-        if intercept and intercept.get("stream"):
-            response = await self._get_streaming_model_response(
-                state=state,
-                prompt=prompt,
-                intercept=intercept,
-                client=client,
-                model=model,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-            )
-        else:
-            response = await super().get_model_response(
-                state=state,
-                prompt=prompt,
-                client=client,
-                model=model,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
+        response: ModelResponse | None = None
+        error: BaseException | None = None
 
-        if intercept:
-            intercept["response_future"].set_result(response)
-            state["current_request_id"] = None
+        try:
+            # Handle streaming requests
+            if intercept and intercept.get("stream"):
+                response = await self._get_streaming_model_response(
+                    state=state,
+                    prompt=prompt,
+                    intercept=intercept,
+                    client=client,
+                    model=model,
+                    oai_tools=oai_tools,
+                    sampling_args=sampling_args,
+                )
+            else:
+                response = await super().get_model_response(
+                    state=state,
+                    prompt=prompt,
+                    client=client,
+                    model=model,
+                    oai_tools=oai_tools,
+                    sampling_args=sampling_args,
+                    message_type=message_type,
+                )
+        except BaseException as e:
+            error = e
+            raise
+        finally:
+            # Always unblock HTTP handler, even on exception
+            if intercept:
+                future = intercept.get("response_future")
+                if future and not future.done():
+                    if error is not None:
+                        future.set_exception(error)
+                    elif response is not None:
+                        future.set_result(response)
+                state["current_request_id"] = None
 
         return response
 
@@ -359,51 +372,61 @@ touch /tmp/vf_complete
         finish_reason = None
         completion_id = None
         created_time = int(time.time())
+        stream_ended = False
 
-        async for chunk in stream:
-            # Forward chunk to HTTP handler
-            await chunk_queue.put(chunk)
+        try:
+            async for chunk in stream:
+                # Forward chunk to HTTP handler
+                await chunk_queue.put(chunk)
 
-            # Accumulate data
-            if not completion_id and chunk.id:
-                completion_id = chunk.id
-            if chunk.created:
-                created_time = chunk.created
+                # Accumulate data
+                if not completion_id and chunk.id:
+                    completion_id = chunk.id
+                if chunk.created:
+                    created_time = chunk.created
 
-            if chunk.choices:
-                choice = chunk.choices[0]
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
 
-                delta = choice.delta
-                if delta:
-                    if delta.content:
-                        accumulated_content += delta.content
+                    delta = choice.delta
+                    if delta:
+                        if delta.content:
+                            accumulated_content += delta.content
 
-                    # Accumulate tool calls
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in accumulated_tool_calls:
-                                accumulated_tool_calls[idx] = {
-                                    "id": tc.id or "",
-                                    "type": tc.type or "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            if tc.id:
-                                accumulated_tool_calls[idx]["id"] = tc.id
-                            if tc.function:
-                                if tc.function.name:
-                                    accumulated_tool_calls[idx]["function"]["name"] = (
-                                        tc.function.name
-                                    )
-                                if tc.function.arguments:
-                                    accumulated_tool_calls[idx]["function"][
-                                        "arguments"
-                                    ] += tc.function.arguments
+                        # Accumulate tool calls
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        "id": tc.id or "",
+                                        "type": tc.type or "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                if tc.id:
+                                    accumulated_tool_calls[idx]["id"] = tc.id
+                                if tc.function:
+                                    if tc.function.name:
+                                        accumulated_tool_calls[idx]["function"][
+                                            "name"
+                                        ] = tc.function.name
+                                    if tc.function.arguments:
+                                        accumulated_tool_calls[idx]["function"][
+                                            "arguments"
+                                        ] += tc.function.arguments
 
-        # Signal end of stream
-        await chunk_queue.put(None)
+            # Signal end of stream
+            await chunk_queue.put(None)
+            stream_ended = True
+        finally:
+            # Always signal end of stream to unblock HTTP handler
+            if not stream_ended:
+                try:
+                    chunk_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
 
         # Build accumulated ChatCompletion
         tool_calls_list = None
