@@ -97,6 +97,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 logger.debug(f"Prime Tunnel started: {url}")
                 return url
             else:
+                assert self.tunnel.url is not None, "Tunnel started but URL is None"
                 return self.tunnel.url
 
     async def setup_state(self, state: State) -> State:
