@@ -550,3 +550,73 @@ class TestRenderStopErrorHandling:
             assert "RuntimeError" in call_args
             assert "caused by" not in call_args
             assert "something went wrong" in call_args
+
+
+class RetryCounterEnv(SimpleEnvironment):
+    """Environment that fails first N times with InfraError."""
+
+    def __init__(self, fail_count: int, **kwargs):
+        super().__init__(**kwargs)
+        self.fail_count = fail_count
+        self.call_counts: dict[int, int] = {}
+
+    async def setup_state(self, state, **kwargs):
+        example_id = state["example_id"]
+        self.call_counts.setdefault(example_id, 0)
+        self.call_counts[example_id] += 1
+
+        if self.call_counts[example_id] <= self.fail_count:
+            raise vf.InfraError(
+                f"Simulated failure {self.call_counts[example_id]}/{self.fail_count}"
+            )
+
+        return state
+
+
+class TestMaybeRetry:
+    """Test cases for maybe_retry functionality in Environment.generate()."""
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_after_transient_infra_error(self, mock_openai_client):
+        """InfraError on first 2 attempts, succeeds on 3rd with max_retries=3."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=2, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            )
+        ]
+        results = await env.generate(
+            inputs, client=mock_openai_client, model="test-model", max_retries=3
+        )
+
+        assert results["state"][0].get("error") is None
+        assert env.call_counts[0] == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_fails_after_max_retries_exhausted(self, mock_openai_client):
+        """InfraError persists after all retries exhausted."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=10, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            )
+        ]
+
+        with pytest.raises(vf.InfraError):
+            await env.generate(
+                inputs, client=mock_openai_client, model="test-model", max_retries=2
+            )
+
+        assert env.call_counts[0] == 3  # 1 initial + 2 retries
