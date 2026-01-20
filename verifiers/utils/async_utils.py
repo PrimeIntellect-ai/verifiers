@@ -109,16 +109,6 @@ def _raise_error_from_state(result):
                 raise err
 
 
-def _log_retry(retry_state):
-    """Log retry attempts at WARNING level."""
-    logger.warning(
-        "Retrying %s (attempt %s): %s",
-        retry_state.fn.__name__,
-        retry_state.attempt_number + 1,
-        retry_state.outcome.exception(),
-    )
-
-
 def maybe_retry(
     func: Callable[..., Coroutine[Any, Any, T]],
     max_retries: int = 0,
@@ -135,6 +125,15 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
+    def log_retry(retry_state):
+        logger.warning(
+            "Retrying %s (attempt %s/%s): %s",
+            retry_state.fn.__name__,
+            retry_state.attempt_number + 1,
+            max_retries + 1,
+            retry_state.outcome.exception(),
+        )
+
     async def wrapper(*args, **kwargs):
         result = await func(*args, **kwargs)
         _raise_error_from_state(result)
@@ -147,6 +146,6 @@ def maybe_retry(
         retry=tc.retry_if_exception_type(vf.InfraError),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
-        before_sleep=_log_retry,
+        before_sleep=log_retry,
         reraise=True,
     ).wraps(wrapper)
