@@ -640,11 +640,17 @@ touch /tmp/vf_complete
         # Stop HTTP interception server
         async with self.server_lock:
             if self.server_runner is not None:
-                await self.server_runner.cleanup()
-                self.server_runner = None
-                self.server_site = None
-                self.interception_server = None
-                logger.debug("Stopped HTTP interception server")
+                try:
+                    await self.server_runner.cleanup()
+                    logger.debug("Stopped HTTP interception server")
+                except RuntimeError as e:
+                    if "Event loop is closed" not in str(e):
+                        raise
+                    logger.debug("HTTP server cleanup skipped (event loop closed)")
+                finally:
+                    self.server_runner = None
+                    self.server_site = None
+                    self.interception_server = None
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
