@@ -16,9 +16,7 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message_tool_call import Function
 from prime_sandboxes import (
-    AdvancedConfigs,
-    AsyncSandboxClient,
-    CreateSandboxRequest,
+    AdvancedConfigs, AsyncSandboxClient, CreateSandboxRequest,
 )
 from prime_tunnel import Tunnel
 
@@ -193,14 +191,13 @@ echo $EXIT_CODE > /tmp/vf_exit_code
 touch /tmp/vf_complete
 """
 
-        # Run in background so this method can return
-        await sandbox_client.execute_command(
+        job = await sandbox_client.start_background_job(
             sandbox_id,
-            f"nohup bash -c {shlex.quote(wrapped_command)} "
-            f"> /tmp/agent_stdout.log 2> /tmp/agent_stderr.log &",
+            f"bash -c {shlex.quote(wrapped_command)}",
         )
+        state["bg_job"] = job
+        state["agent_start_time"] = time.time()
 
-        # Start background task that blocks until completion marker appears
         state["completion_wait_task"] = asyncio.create_task(
             self.wait_for_completion(state)
         )
@@ -208,21 +205,32 @@ touch /tmp/vf_complete
     async def wait_for_completion(self, state: State) -> None:
         """Block until agent completion marker appears, then set state flag."""
         sandbox_id = state.get("sandbox_id")
+        bg_job = state.get("bg_job")
         if not sandbox_id:
+            return
+        if not bg_job:
+            print("NO BG JOB")
             return
 
         try:
-            sandbox_client = AsyncSandboxClient()
-            # Block until /tmp/vf_complete exists (check every 0.1s in sandbox)
-            await sandbox_client.execute_command(
-                sandbox_id,
-                "while ! test -f /tmp/vf_complete; do sleep 0.1; done",
-                timeout=int(self.timeout_seconds),
+            await asyncio.wait_for(
+                self.poll_job_completion(state, sandbox_id, bg_job),
+                timeout=self.timeout_seconds
             )
-            state["agent_completed"] = True
+        except asyncio.TimeoutError:
+            print(f"Agent timeout after {self.timeout_seconds}s")
         except Exception as e:
             logger.debug(f"Completion wait ended: {e}")
+        finally:
             state["agent_completed"] = True
+
+    async def poll_job_completion(self, state: State, sandbox_id: str, bg_job) -> None:
+        sandbox_client = AsyncSandboxClient()
+        while True:
+            status = await sandbox_client.get_background_job(sandbox_id, bg_job)
+            if status.completed:
+                return
+            await asyncio.sleep(1)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""
@@ -466,23 +474,23 @@ touch /tmp/vf_complete
 
     def log_request(self, rollout_id: str, body: dict) -> None:
         logger.debug(f"[{rollout_id}] <- INTERCEPTED REQUEST")
-        for msg in body.get("messages", []):
-            logger.debug(
-                f"  [{msg.get('role', '?')}] {self.truncate(msg.get('content', ''))}"
-            )
-        if body.get("tools"):
-            logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
+        #for msg in body.get("messages", []):
+        #    logger.debug(
+        #        f"  [{msg.get('role', '?')}] {self.truncate(msg.get('content', ''))}"
+        #    )
+        #if body.get("tools"):
+        #    logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
 
     def log_response(self, rollout_id: str, response: dict) -> None:
         logger.debug(f"[{rollout_id}] -> RESPONSE")
         msg = response.get("choices", [{}])[0].get("message", {})
-        if msg.get("content"):
-            logger.debug(f"  [assistant] {self.truncate(msg['content'])}")
-        for tc in msg.get("tool_calls") or []:
-            func = tc.get("function", {})
-            logger.debug(
-                f"  [tool_call] {func.get('name')}({self.truncate(func.get('arguments', ''), 100)})"
-            )
+        #if msg.get("content"):
+        #    logger.debug(f"  [assistant] {self.truncate(msg['content'])}")
+        #for tc in msg.get("tool_calls") or []:
+        #    func = tc.get("function", {})
+        #    logger.debug(
+        #        f"  [tool_call] {func.get('name')}({self.truncate(func.get('arguments', ''), 100)})"
+        #    )
 
     async def ensure_interception_server(self):
         """Start shared HTTP server if needed"""
