@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 from time import perf_counter
-from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
+from typing import Any, AsyncContextManager, Awaitable, Callable, Optional, TypeVar
 
 import tenacity as tc
 
@@ -119,11 +119,11 @@ def _log_retry(retry_state):
 
 
 def maybe_retry(
-    func: Callable[..., T],
+    func: Callable[..., Awaitable[T]],
     max_retries: int = 0,
     initial: float = 1.0,
     max_wait: float = 60.0,
-) -> Callable[..., T]:
+) -> Callable[..., Awaitable[T]]:
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
     Re-raises vf.InfraError from state["error"] to trigger retry.
@@ -139,8 +139,8 @@ def maybe_retry(
         _raise_error_from_state(result)
         return result
 
-    wrapper.__name__ = func.__name__
-    wrapper.__qualname__ = func.__qualname__
+    wrapper.__name__ = getattr(func, "__name__", "unknown")
+    wrapper.__qualname__ = getattr(func, "__qualname__", "unknown")
 
     return tc.AsyncRetrying(
         stop=tc.stop_after_attempt(max_retries + 1),
