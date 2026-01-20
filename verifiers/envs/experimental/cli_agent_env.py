@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import shlex
 import time
 import uuid
 from typing import Any, cast
@@ -18,6 +17,8 @@ from openai.types.chat.chat_completion_message_tool_call import Function
 from prime_sandboxes import (
     AdvancedConfigs,
     AsyncSandboxClient,
+    BackgroundJob,
+    BackgroundJobStatus,
     CreateSandboxRequest,
 )
 from prime_tunnel import Tunnel
@@ -182,46 +183,75 @@ class CliAgentEnv(vf.MultiTurnEnv):
     async def start_agent(
         self, state: State, sandbox_client: AsyncSandboxClient
     ) -> None:
-        """Start the agent command with automatic completion detection."""
+        """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        # Wrap command: when it exits (success or failure), signal completion
-        wrapped_command = f"""
-{self.run_command}
-EXIT_CODE=$?
-echo $EXIT_CODE > /tmp/vf_exit_code
-touch /tmp/vf_complete
-"""
-
-        # Run in background so this method can return
-        await sandbox_client.execute_command(
+        # Start the agent as a background job
+        background_job = await sandbox_client.start_background_job(
             sandbox_id,
-            f"nohup bash -c {shlex.quote(wrapped_command)} "
-            f"> /tmp/agent_stdout.log 2> /tmp/agent_stderr.log &",
+            self.run_command,
         )
 
-        # Start background task that blocks until completion marker appears
+        # Store the job handle in state for polling
+        state["background_job"] = background_job
+
+        # Start the polling task
         state["completion_wait_task"] = asyncio.create_task(
-            self.wait_for_completion(state)
+            self.wait_for_completion(state, sandbox_client)
         )
 
-    async def wait_for_completion(self, state: State) -> None:
-        """Block until agent completion marker appears, then set state flag."""
+    async def wait_for_completion(
+        self, state: State, sandbox_client: AsyncSandboxClient
+    ) -> None:
+        """Poll for agent completion using background job API."""
         sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
+        background_job: BackgroundJob | None = state.get("background_job")
+
+        if not sandbox_id or not background_job:
+            state["agent_completed"] = True
             return
 
+        start_time = time.time()
+        poll_interval = 1.0  # Poll every second
+
         try:
-            sandbox_client = AsyncSandboxClient()
-            # Block until /tmp/vf_complete exists (check every 0.1s in sandbox)
-            await sandbox_client.execute_command(
-                sandbox_id,
-                "while ! test -f /tmp/vf_complete; do sleep 0.1; done",
-                timeout=int(self.timeout_seconds),
-            )
+            while True:
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed > self.timeout_seconds:
+                    logger.warning(f"Agent timed out after {elapsed:.1f}s")
+                    state["agent_completed"] = True
+                    state["agent_timed_out"] = True
+                    return
+
+                # Poll the background job status
+                try:
+                    status: BackgroundJobStatus = (
+                        await sandbox_client.get_background_job(
+                            sandbox_id, background_job
+                        )
+                    )
+                except Exception as e:
+                    logger.debug(f"Error polling job status: {e}")
+                    state["agent_completed"] = True
+                    return
+
+                if status.completed:
+                    state["agent_completed"] = True
+                    state["agent_exit_code"] = status.exit_code
+                    state["agent_stdout"] = status.stdout
+                    state["agent_stderr"] = status.stderr
+                    logger.debug(f"Agent completed with exit_code={status.exit_code}")
+                    return
+
+                await asyncio.sleep(poll_interval)
+
+        except asyncio.CancelledError:
+            logger.debug("Completion wait task cancelled")
             state["agent_completed"] = True
+            raise
         except Exception as e:
-            logger.debug(f"Completion wait ended: {e}")
+            logger.debug(f"Completion wait ended with error: {e}")
             state["agent_completed"] = True
 
     async def check_agent_completed(self, state: State) -> bool:
@@ -687,6 +717,8 @@ touch /tmp/vf_complete
                 await task
             except asyncio.CancelledError:
                 pass
+
+        state.pop("background_job", None)
 
         rollout_id = state.get("rollout_id")
         if rollout_id:
