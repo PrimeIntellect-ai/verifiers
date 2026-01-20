@@ -2010,14 +2010,13 @@ class RLMEnv(SandboxEnv):
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
 
-        async def llm_batch(prompts: list[str], **kwargs) -> list[str]:
+        async def llm_batch(prompts: list[str]) -> list[str]:
             """
             Make multiple sub-LLM calls in parallel.
 
             Args:
                 prompts: List of prompt strings (recommended). Message dicts or lists
                     of message dicts are also accepted for compatibility.
-                **kwargs: Additional arguments applied to all calls.
 
             Returns:
                 List of response contents in the same order as the input prompts.
@@ -2027,7 +2026,7 @@ class RLMEnv(SandboxEnv):
                 raise RuntimeError(
                     "llm_batch called outside of a tool request context."
                 )
-            results, _ = await self._root_llm_batch(context, prompts, **kwargs)
+            results, _ = await self._root_llm_batch(context, prompts)
             return results
 
         llm_batch.__name__ = "llm_batch"
@@ -2489,7 +2488,6 @@ class RLMEnv(SandboxEnv):
         self,
         context: dict[str, Any],
         prompts: list[Any],
-        **_kwargs,
     ) -> tuple[list[str], list[str]]:
         """Run a batch of sub-LLM calls for root REPL usage."""
         if not isinstance(prompts, list):
@@ -2876,8 +2874,13 @@ class RLMEnv(SandboxEnv):
                     prompts = kwargs.pop("prompts")
                 else:
                     raise ValueError("llm_batch requires a prompts argument.")
+                if kwargs:
+                    raise ValueError(
+                        "llm_batch does not accept extra keyword arguments: "
+                        + ", ".join(sorted(kwargs))
+                    )
                 result_value, print_lines = await self._root_llm_batch(
-                    root_tool_context, prompts, **kwargs
+                    root_tool_context, prompts
                 )
             else:
                 result_value = await maybe_await(tool_func, *args, **kwargs)
