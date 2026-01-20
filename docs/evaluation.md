@@ -117,8 +117,11 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
 | `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
 | `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
+| `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
+
+The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
 
 ### Output and Saving
 
