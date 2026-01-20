@@ -143,6 +143,7 @@ def maybe_retry(
     wrapper.__qualname__ = getattr(func, "__qualname__", "unknown")
 
     return tc.AsyncRetrying(
+        retry=tc.retry_if_exception_type(vf.InfraError),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
         before_sleep=_log_retry,
