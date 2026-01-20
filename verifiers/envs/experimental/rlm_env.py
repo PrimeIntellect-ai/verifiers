@@ -2027,7 +2027,8 @@ class RLMEnv(SandboxEnv):
                 raise RuntimeError(
                     "llm_batch called outside of a tool request context."
                 )
-            return await self._root_llm_batch(context, prompts, **kwargs)
+            results, _ = await self._root_llm_batch(context, prompts, **kwargs)
+            return results
 
         llm_batch.__name__ = "llm_batch"
         return [llm_batch]
@@ -2854,14 +2855,13 @@ class RLMEnv(SandboxEnv):
             return web.json_response({"error": str(e)}, status=400)
 
         parent_turn = context.get("current_turn", 0)
-        token = self._root_tool_context_var.set(
-            {
-                "state": state_ref,
-                "client": context.get("client"),
-                "sub_model": context.get("sub_model") or context.get("model"),
-                "parent_turn": parent_turn,
-            }
-        )
+        root_tool_context = {
+            "state": state_ref,
+            "client": context.get("client"),
+            "sub_model": context.get("sub_model") or context.get("model"),
+            "parent_turn": parent_turn,
+        }
+        token = self._root_tool_context_var.set(root_tool_context)
         try:
             _update_root_tool_metrics(state_ref, tool_name)
             tool_func = self.root_tool_map[tool_name]
@@ -2877,7 +2877,7 @@ class RLMEnv(SandboxEnv):
                 else:
                     raise ValueError("llm_batch requires a prompts argument.")
                 result_value, print_lines = await self._root_llm_batch(
-                    self._root_tool_context_var.get(), prompts, **kwargs
+                    root_tool_context, prompts, **kwargs
                 )
             else:
                 result_value = await maybe_await(tool_func, *args, **kwargs)
