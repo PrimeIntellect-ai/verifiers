@@ -492,12 +492,7 @@ class EvalTUI:
             num_examples = total_rollouts // config.rollouts_per_example
             n = f"{num_examples}x{config.rollouts_per_example} ({total_rollouts} rollouts)"
 
-            reward = (
-                f"{env_state.metrics.get('reward', 0):.3f}"
-                if "reward" in env_state.metrics
-                else "-"
-            )
-
+            reward = f"{env_state.reward:.3f}"
             elapsed = env_state.elapsed_time
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
