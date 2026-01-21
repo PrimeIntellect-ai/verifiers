@@ -1,40 +1,43 @@
 import argparse
-import subprocess
-from pathlib import Path
+
+from verifiers.utils.install_utils import (
+    install_from_hub,
+    install_from_local,
+    install_from_repo,
+    is_hub_env,
+)
 
 """
-Install a local environment
+Install a verifiers environment
 
 Usage:
-    vf-install <env_id> -p <path>
+    vf-install <env_id>                    # Install from Hub (owner/name) or local
+    vf-install <env_id> -p <path>          # Install from local path
+    vf-install <env_id> -r                 # Install from verifiers repo
 
-Options:
-    -h, --help    Show this help message and exit
-    -d, --local-dir-name <local_dir_name>    The name of the local directory to install the environment into.
-
+Examples:
+    vf-install primeintellect/gsm8k        # Install from Hub
+    vf-install gsm8k                       # Install from ./environments/gsm8k
+    vf-install gsm8k -p /path/to/envs      # Install from custom local path
+    vf-install gsm8k -r                    # Install from GitHub repo
 """
-
-
-def install_environment(env: str, path: str, from_repo: bool, branch: str):
-    env_folder = env.replace("-", "_")
-    env_name = env_folder.replace("_", "-")
-    if from_repo:
-        subprocess.run(
-            [
-                "uv",
-                "pip",
-                "install",
-                f"{env_name} @ git+https://github.com/PrimeIntellect-ai/verifiers.git@{branch}#subdirectory=environments/{env_folder}",
-            ]
-        )
-    else:
-        env_path = Path(path) / env_folder
-        subprocess.run(["uv", "pip", "install", "-e", env_path])
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("env", type=str, help="The environment id to install")
+    parser = argparse.ArgumentParser(
+        description="Install a verifiers environment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  vf-install primeintellect/gsm8k        Install from Environments Hub
+  vf-install gsm8k                       Install from ./environments/gsm8k
+  vf-install gsm8k -p /path/to/envs      Install from custom local path
+  vf-install gsm8k -r                    Install from GitHub repo
+        """,
+    )
+    parser.add_argument(
+        "env", type=str, help="Environment ID (owner/name for Hub, or local name)"
+    )
     parser.add_argument(
         "-p",
         "--path",
@@ -46,24 +49,27 @@ def main():
         "-r",
         "--from-repo",
         action="store_true",
-        help="Install from the Verifiers repo (default: False)",
+        help="Install from the verifiers GitHub repo",
         default=False,
     )
     parser.add_argument(
         "-b",
         "--branch",
         type=str,
-        help="Branch to install from if --from-repo is True (default: main)",
+        help="Branch to install from if --from-repo is set (default: main)",
         default="main",
     )
     args = parser.parse_args()
 
-    install_environment(
-        env=args.env,
-        path=args.path,
-        from_repo=args.from_repo,
-        branch=args.branch,
-    )
+    if args.from_repo:
+        success = install_from_repo(args.env, args.branch)
+    elif is_hub_env(args.env):
+        success = install_from_hub(args.env)
+    else:
+        success = install_from_local(args.env, args.path)
+
+    if not success:
+        exit(1)
 
 
 if __name__ == "__main__":

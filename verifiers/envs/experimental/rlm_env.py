@@ -73,6 +73,7 @@ from verifiers.utils.token_utils import (
     tokenize_vllm,
 )
 import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
+import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
 
 logger = logging.getLogger(__name__)
 
@@ -1750,11 +1751,14 @@ class RLMEnv(vf.StatefulToolEnv):
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
         current_messages.append(
-            {
-                "role": "user",
-                "content": "You've reached the maximum number of tool calls. "
-                "Based on the information gathered, provide your final answer inside \\boxed{}.",
-            }
+            cast(
+                ChatMessage,
+                {
+                    "role": "user",
+                    "content": "You've reached the maximum number of tool calls. "
+                    "Based on the information gathered, provide your final answer inside \\boxed{}.",
+                },
+            )
         )
 
         prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
@@ -1808,7 +1812,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
             if isinstance(prompt, str):
-                return [{"role": "user", "content": prompt}]
+                return [cast(ChatMessage, {"role": "user", "content": prompt})]
             if isinstance(prompt, dict):
                 if "role" in prompt and "content" in prompt:
                     return [cast(ChatMessage, prompt)]
@@ -1956,7 +1960,7 @@ class RLMEnv(vf.StatefulToolEnv):
         elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
         messages_with_system: ChatMessages = [
-            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
+            cast(ChatMessage, {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT}),
             *messages,
         ]
 
