@@ -866,6 +866,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -875,8 +876,6 @@ class Environment(ABC):
         """
         Generate rollouts for a set of inputs.
         """
-        on_log = on_log or self.logger.debug
-
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
@@ -921,6 +920,8 @@ class Environment(ABC):
                     )
                 )
                 tasks[task] = i
+            pbar_total = len(inputs_list)
+            pbar_desc = f"Processing {len(inputs_list)} rollouts"
         else:
             input_groups: dict[int, list[RolloutInput]] = {}
             for input_item in inputs_list:
@@ -942,41 +943,65 @@ class Environment(ABC):
                     )
                 )
                 tasks[task] = i
+            pbar_total = len(group_list)
+            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
+
+        # set up progress bar (only when use_tqdm=True and no external progress callback)
+        pbar = None
+        if use_tqdm and on_progress is None:
+            from tqdm import tqdm
+
+            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         # process tasks as they complete
-        completed_groups_or_rollouts = 0
-        total_groups_or_rollouts = len(tasks)
+        reward_sum, reward_count = 0, 0
+        groups_or_rollouts_completed = 0
         all_states: list[State] = []
-        for coro in asyncio.as_completed(tasks.keys()):
-            result = await coro
-            # normalize: independent_scoring returns State, group returns list[State]
-            new_states = [result] if independent_scoring else result
-            all_states.extend(new_states)
-            completed_groups_or_rollouts += 1
+        try:
+            for coro in asyncio.as_completed(tasks.keys()):
+                result = await coro
+                # normalize: independent_scoring returns State, group returns list[State]
+                states = [result] if independent_scoring else result
+                all_states.extend(states)
+                groups_or_rollouts_completed += 1
 
-            # call progress callback with all finished states and new states
-            if on_progress is not None:
-                on_progress(all_states, new_states)
+                # track reward for rolling average
+                for s in states:
+                    r = s.get("reward")
+                    if r is not None:
+                        reward_sum += r
+                        reward_count += 1
 
-            # save intermediate results
-            if (
-                save_results
-                and save_every > 0
-                and completed_groups_or_rollouts % save_every == 0
-            ):
-                temp_results = self._prepare_rollout_results(
-                    all_states,
-                    model,
-                    client,
-                    state_columns,
-                    results_path,
-                    gen_sampling_args,
-                    start_time,
-                )
-                on_log(
-                    f"Saving intermediate results ({completed_groups_or_rollouts}/{total_groups_or_rollouts} {('rollouts' if independent_scoring else 'groups')}) to {temp_results['metadata']['path_to_save']}"
-                )
-                save_rollout_results(temp_results)
+                # update progress bar or call callback
+                if pbar is not None:
+                    pbar.update(1)
+                    if reward_count > 0:
+                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
+                elif on_progress is not None:
+                    on_progress(all_states, states)
+
+                # save intermediate results
+                if (
+                    save_results
+                    and save_every > 0
+                    and groups_or_rollouts_completed % save_every == 0
+                ):
+                    temp_results = self._prepare_rollout_results(
+                        all_states,
+                        model,
+                        client,
+                        state_columns,
+                        results_path,
+                        gen_sampling_args,
+                        start_time,
+                    )
+                    self.logger.debug(
+                        f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                    )
+                    save_rollout_results(temp_results)
+        finally:
+            if pbar is not None:
+                pbar.close()
 
         # sort by example_id to ensure deterministic ordering regardless of completion order
         all_states.sort(key=lambda s: s.get("example_id", 0))
@@ -994,7 +1019,8 @@ class Environment(ABC):
         # save if requested
         if save_results:
             save_rollout_results(results)
-            on_log(f"Saved final results to {results['metadata']['path_to_save']}")
+            if on_log is not None:
+                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
 
         return results
 
@@ -1059,6 +1085,7 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -1082,6 +1109,7 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            use_tqdm=use_tqdm,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_start=on_start,
