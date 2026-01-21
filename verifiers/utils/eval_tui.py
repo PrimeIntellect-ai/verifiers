@@ -66,7 +66,7 @@ class EnvEvalState:
 class EvalTUIState:
     """Dynamic eval state for multiple envs."""
 
-    envs: dict[str, EnvEvalState] = field(default_factory=dict)
+    envs: dict[int, EnvEvalState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
 
     @property
@@ -80,16 +80,18 @@ class EvalTUIState:
 
 class EvalTUI:
     def __init__(self, configs: list[EvalConfig]):
-        self.configs: dict[str, EvalConfig] = {c.env_id: c for c in configs}
         self.state = EvalTUIState()
         self.console = Console()
         self._live: Live | None = None
         self._old_terminal_settings: list | None = None
 
-        # initialize env states
-        for config in configs:
+        # store configs by index to handle duplicate env_ids
+        self.configs: list[EvalConfig] = list(configs)
+
+        # initialize env states by index
+        for idx, config in enumerate(configs):
             total = config.num_examples * config.rollouts_per_example
-            self.state.envs[config.env_id] = EnvEvalState(
+            self.state.envs[idx] = EnvEvalState(
                 total=total,
                 num_examples=config.num_examples,
                 rollouts_per_example=config.rollouts_per_example,
@@ -97,7 +99,7 @@ class EvalTUI:
 
     def update_env_state(
         self,
-        env_id: str,
+        env_idx: int,
         status: Literal["pending", "running", "completed", "failed"] | None = None,
         progress: int | None = None,
         total: int | None = None,
@@ -110,8 +112,8 @@ class EvalTUI:
         log_message: str | None = None,
     ) -> None:
         """Update the state of a specific environment evaluation."""
-        assert env_id in self.state.envs
-        env_state = self.state.envs[env_id]
+        assert env_idx in self.state.envs
+        env_state = self.state.envs[env_idx]
 
         if status is not None:
             env_state.status = status
@@ -202,10 +204,10 @@ class EvalTUI:
 
         return table
 
-    def _make_env_panel(self, env_id: str) -> Panel:
+    def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
-        config = self.configs[env_id]
-        env_state = self.state.envs[env_id]
+        config = self.configs[env_idx]
+        env_state = self.state.envs[env_idx]
 
         # config info line
         config_line = Text()
@@ -319,7 +321,7 @@ class EvalTUI:
 
         # build title with env name only
         title = Text()
-        title.append(env_id, style="bold cyan")
+        title.append(config.env_id, style="bold cyan")
 
         return Panel(
             Group(*content_items),
@@ -331,13 +333,11 @@ class EvalTUI:
 
     def _make_env_stack(self) -> Group:
         """Create a vertical stack of environment panels."""
-        env_ids = list(self.state.envs.keys())
-
-        if not env_ids:
+        if not self.configs:
             return Group()
 
-        # create panels for each environment
-        panels = [self._make_env_panel(env_id) for env_id in env_ids]
+        # create panels for each environment by index
+        panels = [self._make_env_panel(idx) for idx in range(len(self.configs))]
 
         return Group(*panels)
 
@@ -477,8 +477,8 @@ class EvalTUI:
         table.add_column("Avg Reward", justify="center")
         table.add_column("Time", justify="center")
 
-        for env_id, env_state in self.state.envs.items():
-            config = self.configs[env_id]
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
             status_styles = {
                 "completed": "[green]DONE[/green]",
                 "failed": "[red]FAILED[/red]",
@@ -497,27 +497,28 @@ class EvalTUI:
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            table.add_row(env_id, status, n, reward, time_str)
+            table.add_row(config.env_id, status, n, reward, time_str)
 
         self.console.print(table)
 
         # print save paths if any
         saved_envs = [
-            (env_id, env_state)
-            for env_id, env_state in self.state.envs.items()
+            (idx, env_state)
+            for idx, env_state in self.state.envs.items()
             if env_state.save_path is not None
         ]
         if saved_envs:
             self.console.print()
             self.console.print("[bold]Results saved to:[/bold]")
-            for env_id, env_state in saved_envs:
+            for idx, env_state in saved_envs:
                 self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
 
         # print errors if any
-        for env_id, env_state in self.state.envs.items():
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
             if env_state.error:
                 self.console.print()
-                self.console.print(f"[red]Error in {env_id}:[/red]")
+                self.console.print(f"[red]Error in {config.env_id}:[/red]")
                 self.console.print(f"  {env_state.error}")
 
         self.console.print()

@@ -383,10 +383,10 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
     with vf.log_level(logging.CRITICAL):
         tui = EvalTUI(config.evals)
 
-        async def run_with_progress(env_config: EvalConfig) -> GenerateOutputs:
+        async def run_with_progress(
+            env_config: EvalConfig, env_idx: int
+        ) -> GenerateOutputs:
             """Run a single evaluation with TUI progress updates."""
-            env_id = env_config.env_id
-
             reward_accum = 0
             metrics_accum = defaultdict(float)
             error_accum = 0
@@ -395,7 +395,7 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                 # total is num_examples * rollouts_per_example
                 # compute actual num_examples (resolves -1 to actual count)
                 num_examples = total // env_config.rollouts_per_example
-                tui.update_env_state(env_id, total=total, num_examples=num_examples)
+                tui.update_env_state(env_idx, total=total, num_examples=num_examples)
 
             def on_progress(all_states: list[State], new_states: list[State]) -> None:
                 nonlocal error_accum, reward_accum, metrics_accum
@@ -422,7 +422,7 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                 error_rate = error_accum / completed
 
                 tui.update_env_state(
-                    env_id,
+                    env_idx,
                     progress=completed,
                     reward=reward,
                     metrics=metrics,
@@ -430,9 +430,9 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                 )
 
             def on_log(message: str) -> None:
-                tui.update_env_state(env_id, log_message=message)
+                tui.update_env_state(env_idx, log_message=message)
 
-            tui.update_env_state(env_id, status="running")
+            tui.update_env_state(env_idx, status="running")
             try:
                 result = await run_evaluation(
                     env_config,
@@ -449,21 +449,24 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                 )
 
                 tui.update_env_state(
-                    env_id,
+                    env_idx,
                     status="completed",
                     save_path=save_path,
                 )
 
                 return result
             except Exception as e:
-                tui.update_env_state(env_id, status="failed", error=str(e))
+                tui.update_env_state(env_idx, status="failed", error=str(e))
                 raise
 
         all_results: list[GenerateOutputs] = []
         try:
             async with tui:
                 results = await asyncio.gather(
-                    *[run_with_progress(env_config) for env_config in config.evals],
+                    *[
+                        run_with_progress(env_config, idx)
+                        for idx, env_config in enumerate(config.evals)
+                    ],
                     return_exceptions=True,
                 )
 
