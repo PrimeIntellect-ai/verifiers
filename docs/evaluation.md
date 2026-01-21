@@ -13,7 +13,6 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Output and Saving](#output-and-saving)
 - [Environment Defaults](#environment-defaults)
 - [Multi-Environment Evaluation](#multi-environment-evaluation)
-  - [Comma-Separated Environments](#comma-separated-environments)
   - [TOML Configuration](#toml-configuration)
   - [Configuration Precedence](#configuration-precedence)
 
@@ -41,10 +40,9 @@ prime eval run my-env -m gpt-4.1-mini -n 10
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
-The positional argument accepts three formats:
+The positional argument accepts two formats:
 - **Single environment**: `gsm8k` — evaluates one environment
-- **Comma-separated list**: `gsm8k,alphabet-sort` — evaluates multiple environments in parallel
-- **TOML config path**: `configs/eval/benchmark.toml` — evaluates environments defined in the config file
+- **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
@@ -172,22 +170,7 @@ See [Configuration Precedence](#configuration-precedence) for more details on mu
 
 ## Multi-Environment Evaluation
 
-You can evaluate multiple environments in parallel using `prime eval`. This is useful for running comprehensive benchmark suites.
-
-### Comma-Separated Environments
-
-The simplest way to evaluate multiple environments is to provide a comma-separated list of environment IDs:
-
-```bash
-prime eval run gsm8k,alphabet-sort -n 5 -r 3
-```
-
-All environments share the same CLI arguments. This approach works well when you want to evaluate the default settings for all environments or only change a few settings for all environments.
-
-```bash
-# Evaluate three environments with shared settings
-prime eval run gsm8k,math-python,wordle -m qwen3-235b-i -n 10 -r 5 -c 64
-```
+You can evaluate multiple environments using `prime eval` with a TOML configuration file. This is useful for running comprehensive benchmark suites.
 
 ### TOML Configuration
 
