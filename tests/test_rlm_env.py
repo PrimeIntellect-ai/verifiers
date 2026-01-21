@@ -203,7 +203,7 @@ class TestContextFilesystemSetup:
         assert result["rlm_fs_source"] == str(context_dir)
 
     @pytest.mark.asyncio
-    async def test_setup_state_writes_builtin_context_json(self, tmp_path: Path):
+    async def test_setup_state_writes_builtin_context_json(self):
         dataset = make_dataset({"context": {"a": 1}})
         env = build_env(dataset)
         env._ensure_interception_server = AsyncMock()
@@ -219,7 +219,7 @@ class TestContextFilesystemSetup:
         assert result["rlm_fs_has_data"] is True
 
     @pytest.mark.asyncio
-    async def test_setup_state_writes_builtin_context_text(self, tmp_path: Path):
+    async def test_setup_state_writes_builtin_context_text(self):
         dataset = make_dataset({"context": "hello"})
         env = build_env(dataset)
         env._ensure_interception_server = AsyncMock()
@@ -269,7 +269,7 @@ class TestContextFilesystemSetup:
             await env.setup_state(state)
 
     @pytest.mark.asyncio
-    async def test_setup_state_no_context_creates_empty_dir(self, tmp_path: Path):
+    async def test_setup_state_no_context_creates_empty_dir(self):
         dataset = make_dataset({})
         env = build_env(dataset)
         env._ensure_interception_server = AsyncMock()
