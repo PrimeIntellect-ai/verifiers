@@ -645,6 +645,354 @@ _RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
 )
 
 
+_RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
+    """
+    import base64
+    import json
+    import os
+    import pickle
+    import sys
+    import urllib.error
+    import urllib.request
+
+    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
+
+
+    def _decode_arg(raw: str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+
+
+    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
+        if not ROOT_TOOL_URL:
+            raise RuntimeError("Root tool URL not configured")
+        if ROOT_TOOL_SERIALIZATION != "pickle":
+            raise RuntimeError("Only pickle serialization is supported")
+
+        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+        payload = {
+            "tool_name": tool_name,
+            "serialization": "pickle",
+            "args": args_payload,
+            "kwargs": kwargs_payload,
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            ROOT_TOOL_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                resp_body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            try:
+                error_body = e.read().decode("utf-8")
+            except Exception:
+                error_body = str(e)
+            raise RuntimeError(error_body) from e
+
+        response_data = json.loads(resp_body)
+        if response_data.get("error"):
+            raise RuntimeError(response_data["error"])
+
+        result_payload = response_data.get("result", "")
+        return pickle.loads(base64.b64decode(result_payload))
+
+
+    def _print_result(result):
+        if isinstance(result, str):
+            sys.stdout.write(result)
+            if not result.endswith("\\n"):
+                sys.stdout.write("\\n")
+            return
+        try:
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.write("\\n")
+        except Exception:
+            sys.stdout.write(repr(result))
+            sys.stdout.write("\\n")
+
+
+    def _print_llm_batch_result(result_list):
+        for index, item in enumerate(result_list):
+            if index > 0:
+                sys.stdout.write("\\n")
+            if not isinstance(item, str):
+                try:
+                    item = json.dumps(item)
+                except Exception:
+                    item = repr(item)
+            sys.stdout.write(item)
+
+
+    def main():
+        argv = sys.argv[1:]
+        tool_name = None
+        use_lines = False
+        args = []
+        while argv:
+            token = argv.pop(0)
+            if token == "--tool":
+                if not argv:
+                    raise RuntimeError("--tool requires a name")
+                tool_name = argv.pop(0)
+            elif token == "--lines":
+                use_lines = True
+            else:
+                args.append(token)
+
+        if not tool_name:
+            raise RuntimeError("Tool name not provided")
+
+        if tool_name == "llm_batch":
+            if use_lines:
+                prompts = sys.stdin.read().splitlines()
+            else:
+                prompts = list(args)
+            result = _call_root_tool(tool_name, (prompts,), {})
+            if isinstance(result, list):
+                _print_llm_batch_result(result)
+            else:
+                _print_result(result)
+            return
+
+        parsed_args = tuple(_decode_arg(arg) for arg in args)
+        result = _call_root_tool(tool_name, parsed_args, {})
+        _print_result(result)
+
+
+    if __name__ == "__main__":
+        try:
+            main()
+        except Exception as exc:
+            sys.stderr.write(f"Error: {exc}\\n")
+            sys.exit(1)
+    """
+)
+
+
+_RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
+    """
+    import base64
+    import json
+    import os
+    import pty
+    import select
+    import subprocess
+    import sys
+    import time
+    import uuid
+    from pathlib import Path
+
+    COMMAND_FIFO = "{command_fifo}"
+    RESPONSE_FIFO = "{response_fifo}"
+    READY_FLAG = "{ready_flag}"
+    CONTEXT_FILE = "{context_file}"
+    ANSWER_FILE = "{answer_file}"
+    ROOT_TOOL_HELPER_SCRIPT = {root_tool_helper_script}
+    # Bash answer readiness/content are emitted via markers in stdout.
+
+    def ensure_fifo(path: str) -> None:
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkfifo(path)
+
+    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
+        ensure_fifo(fifo_path)
+
+    fs_root = None
+    if Path(CONTEXT_FILE).exists():
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+
+    if fs_root:
+        os.chdir(fs_root)
+
+    helper_path = os.path.join(os.path.dirname(CONTEXT_FILE), "rlm_root_tool.py")
+    Path(helper_path).write_text(ROOT_TOOL_HELPER_SCRIPT, encoding="utf-8")
+    try:
+        os.chmod(helper_path, 0o700)
+    except Exception:
+        pass
+
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
+
+    def _start_bash():
+        master_fd, slave_fd = pty.openpty()
+        env = os.environ.copy()
+        env.update(
+            {
+                "BASH_SILENCE_DEPRECATION_WARNING": "1",
+                "RLM_ROOT_TOOL_HELPER": helper_path,
+                "RLM_ROOT_TOOL_PYTHON": sys.executable,
+            }
+        )
+        process = subprocess.Popen(
+            ["bash", "--noprofile", "--norc"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            cwd=fs_root or None,
+        )
+        os.close(slave_fd)
+        init_marker = f"__RLM_INIT__{uuid.uuid4().hex}__"
+        init_lines = [
+            "stty -echo",
+            "export PS1=",
+            "export PS2=",
+            "export PROMPT_COMMAND=",
+            "export RLM_READY=",
+            "export RLM_CONTENT=",
+        ]
+        for tool_name in ROOT_TOOL_NAMES:
+            init_lines.append(
+                f'{tool_name}() {{ "$RLM_ROOT_TOOL_PYTHON" "$RLM_ROOT_TOOL_HELPER" --tool "{tool_name}" "$@"; }}'
+            )
+        init_lines.append(f'printf "\\n{init_marker}\\n"')
+        init_script = "\\n".join(init_lines) + "\\n"
+        os.write(master_fd, init_script.encode("utf-8"))
+        return process, master_fd, init_marker
+
+    process, master_fd, init_marker = _start_bash()
+
+    Path(READY_FLAG).write_text("ready", encoding="utf-8")
+
+    execution_count = 0
+
+    def _read_until_marker(marker: bytes) -> bytes:
+        buffer = b""
+        while True:
+            ready, _, _ = select.select([master_fd], [], [], 1.0)
+            if master_fd in ready:
+                chunk = os.read(master_fd, 4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                if marker in buffer:
+                    break
+        return buffer
+
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    try:
+        _read_until_marker(init_marker.encode("utf-8"))
+    except Exception:
+        pass
+
+    while True:
+        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
+            payload = command_file.read()
+        if not payload:
+            continue
+        request = json.loads(payload)
+        if request.get("shutdown"):
+            break
+
+        code = request.get("code", "")
+        seq = request.get("seq", 0)
+        execution_count += 1
+
+        marker = uuid.uuid4().hex
+        end_marker = f"__RLM_END__{marker}__"
+        env_marker = f"__RLM_ENV__{marker}__"
+        cmd = (
+            f"{code}\\n"
+            f'printf "\\n{end_marker}__%s\\n" "$?";'
+            f' printf "{env_marker}__%s__" "${{RLM_READY:-}}";'
+            f' printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n";'
+            f" printf '\\n'\\n"
+        )
+        try:
+            os.write(master_fd, cmd.encode("utf-8"))
+        except Exception as exc:
+            result = {
+                \"status\": \"error\",
+                \"stdout\": \"\",
+                \"stderr\": \"\",
+                \"result\": f\"Failed to write to bash session: {exc}\",
+                \"execution_count\": execution_count,
+                \"seq\": seq,
+                \"answer\": {\"ready\": False, \"content\": \"\"},
+            }
+            with open(RESPONSE_FIFO, \"w\", encoding=\"utf-8\") as response_file:
+                response_file.write(json.dumps(result))
+            continue
+
+        raw = _read_until_marker(env_marker.encode(\"utf-8\"))
+        text = raw.decode(\"utf-8\", errors=\"replace\")
+
+        output = text
+        exit_code = None
+        ready_val = \"\"
+        content_val = \"\"
+
+        end_idx = text.find(end_marker)
+        if end_idx != -1:
+            output = text[:end_idx]
+            after_end = text[end_idx + len(end_marker):]
+            if after_end.startswith(\"__\"):
+                after_end = after_end[2:]
+                exit_str = after_end.split(\"\\n\", 1)[0]
+                try:
+                    exit_code = int(exit_str.strip())
+                except Exception:
+                    exit_code = None
+
+        env_idx = text.find(env_marker)
+        if env_idx != -1:
+            after_env = text[env_idx + len(env_marker):]
+            if after_env.startswith(\"__\"):
+                after_env = after_env[2:]
+                parts = after_env.split(\"__\", 1)
+                if len(parts) == 2:
+                    ready_val = parts[0]
+                    content_b64 = parts[1].split(\"\\n\", 1)[0]
+                    if content_b64:
+                        try:
+                            content_val = base64.b64decode(content_b64).decode(
+                                \"utf-8\", errors=\"replace\"
+                            )
+                        except Exception:
+                            content_val = \"\"
+
+        answer = {\"ready\": _parse_bool(ready_val), \"content\": content_val}
+        Path(ANSWER_FILE).write_text(json.dumps(answer), encoding=\"utf-8\")
+
+        status = \"ok\"
+        if process.poll() is not None:
+            status = \"error\"
+            output = output + f\"\\nBash session exited with code {process.returncode}\\n\"
+
+        result = {
+            \"status\": status,
+            \"stdout\": output,
+            \"stderr\": \"\",
+            \"result\": None,
+            \"execution_count\": execution_count,
+            \"seq\": seq,
+            \"answer\": answer,
+        }
+
+        with open(RESPONSE_FIFO, \"w\", encoding=\"utf-8\") as response_file:
+            response_file.write(json.dumps(result))
+    """
+)
+
+
 def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
     base_dir = base_dir.rstrip("/") or base_dir
     return RLMWorkerPaths(
@@ -660,7 +1008,18 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
     )
 
 
-def _render_worker_script(paths: RLMWorkerPaths) -> str:
+def _render_worker_script(paths: RLMWorkerPaths, *, repl_language: str) -> str:
+    if repl_language == "bash":
+        script = _RLM_BASH_WORKER_SCRIPT_TEMPLATE
+        script = script.replace("{command_fifo}", paths.command_fifo)
+        script = script.replace("{response_fifo}", paths.response_fifo)
+        script = script.replace("{ready_flag}", paths.ready_flag)
+        script = script.replace("{context_file}", paths.context_file)
+        script = script.replace("{answer_file}", paths.answer_file)
+        script = script.replace(
+            "{root_tool_helper_script}", repr(_RLM_BASH_TOOL_HELPER_SCRIPT)
+        )
+        return script
     filesystem_jail_code = textwrap.dedent(inspect.getsource(rlm_jail_module))
     return _RLM_WORKER_SCRIPT_TEMPLATE.format(
         filesystem_jail_code=filesystem_jail_code,
@@ -717,6 +1076,45 @@ answer["ready"] = True
 1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+"""
+
+
+_RLM_BASH_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
+
+## Critical: This is an ITERATIVE environment
+
+You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
+
+Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
+
+## Filesystem Context
+{filesystem_summary}
+
+## Workflow
+
+**Step 1: Explore the filesystem**
+```bash
+pwd
+ls
+```
+Wait for output. Now you know the actual format.
+
+**Step 2: Build your answer**
+```bash
+export RLM_CONTENT="your current best answer"
+```
+
+**Step 3: Verify and finalize (only after reviewing output)**
+```bash
+printf "My answer: %s\\n" "$RLM_CONTENT"
+export RLM_READY=1
+```
+
+## Important Rules
+
+1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
+2. **One step at a time** - make small tool calls, see output, then continue
+3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
 """
 
 
@@ -876,7 +1274,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
             raise vf.SandboxError() from Exception("Local session not initialized")
         return self._sessions[rollout_id]
 
-    async def _ensure_venv(self, session: LocalRLMReplSession) -> str:
+    async def _ensure_venv(self, session: LocalRLMReplSession) -> str | None:
+        if self.env.repl_language == "bash":
+            return None
         venv_path = os.path.join(session.fs_root, ".venv")
         await self._create_venv(venv_path, force=True)
         await self._install_packages(venv_path)
@@ -955,9 +1355,11 @@ class LocalRLMExecutor(BaseRLMExecutor):
         )
 
     async def _start_worker(self, state: State, session: LocalRLMReplSession) -> None:
-        if not session.venv_path:
+        if self.env.repl_language == "python" and not session.venv_path:
             raise vf.SandboxError() from Exception("Local venv not initialized")
-        worker_script = _render_worker_script(session.paths)
+        worker_script = _render_worker_script(
+            session.paths, repl_language=self.env.repl_language
+        )
         Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
 
         env_vars = os.environ.copy()
@@ -979,7 +1381,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
             }
         )
 
-        python_path = self._venv_python(session.venv_path)
+        if self.env.repl_language == "python":
+            python_path = self._venv_python(session.venv_path)
+        else:
+            python_path = sys.executable
         with open(session.paths.log_file, "a", encoding="utf-8") as log_file:
             process = subprocess.Popen(
                 [python_path, "-u", session.paths.worker_path],
@@ -1077,6 +1482,7 @@ class RLMEnv(vf.StatefulToolEnv):
         context_key: Key in info containing legacy context data (default: "context")
         context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
+        repl_language: REPL language to use: "bash" or "python" (default: "bash")
         interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
         interception_port: Port for interception server (default: 8766)
         pip_install_packages: Space-separated packages to install in addition to requests
@@ -1116,6 +1522,7 @@ class RLMEnv(vf.StatefulToolEnv):
         context_key: str = "context",
         context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
+        repl_language: str = "bash",
         interception_host: str | None = None,
         interception_port: int = 8766,
         pip_install_packages: str = "",
@@ -1150,6 +1557,11 @@ class RLMEnv(vf.StatefulToolEnv):
                 "sub_tools were provided twice: use sub_tools=... only once."
             )
 
+        if repl_language not in {"bash", "python"}:
+            raise ValueError(
+                f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
+            )
+        self.repl_language = repl_language
         self.sub_model = sub_model
         self.shared_tools = tools or []
         self.root_only_tools = root_tools or []
@@ -1236,8 +1648,11 @@ class RLMEnv(vf.StatefulToolEnv):
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
         self._executor = LocalRLMExecutor(self)
 
-        # Add the Python REPL tool (state is injected via update_tool_args)
-        self.add_tool(self.call_python_repl, args_to_skip=["state"])
+        # Add the REPL tool (state is injected via update_tool_args)
+        if self.repl_language == "bash":
+            self.add_tool(self.call_bash_repl, args_to_skip=["state"])
+        else:
+            self.add_tool(self.call_python_repl, args_to_skip=["state"])
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -1311,6 +1726,8 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
+        if self.repl_language != "python":
+            return ""
         if not self.pip_install_packages:
             return ""
 
@@ -1376,9 +1793,14 @@ class RLMEnv(vf.StatefulToolEnv):
             return ""
 
         lines = ["\n## Root REPL Tools\n"]
-        lines.append(
-            "The root model can call the following tools inside the Python REPL:\n"
-        )
+        if self.repl_language == "bash":
+            lines.append(
+                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
+            )
+        else:
+            lines.append(
+                "The root model can call the following tools inside the Python REPL:\n"
+            )
 
         for oai_tool in self.root_oai_tools:
             func_def = oai_tool["function"]
@@ -2208,8 +2630,8 @@ class RLMEnv(vf.StatefulToolEnv):
         state: State,
         **kwargs,
     ) -> dict[str, Any]:
-        """Inject state into call_python_repl tool args."""
-        if tool_name == "call_python_repl":
+        """Inject state into REPL tool args."""
+        if tool_name in {"call_python_repl", "call_bash_repl"}:
             updated_args = dict(tool_args)
             updated_args["state"] = state
             return updated_args
@@ -2290,7 +2712,12 @@ class RLMEnv(vf.StatefulToolEnv):
             metadata=fs_metadata,
             has_data=fs_has_data,
         )
-        base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
+        if self.custom_system_prompt:
+            base_system_prompt = self.custom_system_prompt
+        elif self.repl_language == "bash":
+            base_system_prompt = _RLM_BASH_SYSTEM_PROMPT
+        else:
+            base_system_prompt = _RLM_SYSTEM_PROMPT
         if "{filesystem_summary}" in base_system_prompt:
             # Use replace instead of format to avoid conflict with curly braces from Python code
             base_system_prompt = base_system_prompt.replace(
@@ -2419,6 +2846,19 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
+        if self.repl_language == "bash":
+            stdout = result.get("stdout") or ""
+            stderr = result.get("stderr") or ""
+            result_text = result.get("result") or ""
+            output = f"{stdout}{stderr}"
+            if not output and result_text:
+                output = str(result_text)
+            if not output:
+                output = "(no output)"
+            if len(output) > self.max_output_length:
+                output = output[: self.max_output_length] + "\n... [output truncated]"
+            return output
+
         parts: list[str] = []
 
         stdout = (result.get("stdout") or "").rstrip()
@@ -2449,6 +2889,48 @@ class RLMEnv(vf.StatefulToolEnv):
     # =========================================================================
     # REPL Tool
     # =========================================================================
+
+    async def call_bash_repl(self, code: str, state: Any) -> str:
+        """
+        Execute Bash commands in a persistent REPL environment.
+
+        The Bash session maintains state across calls and provides access to:
+
+        - Files in the working directory (current working directory is the context root).
+        - `RLM_CONTENT`: Your current best answer (string).
+        - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
+
+        - `llm_batch` and other root tools: available as shell commands.
+
+        Args:
+            code: Bash code to execute in the persistent REPL
+
+        Returns:
+            Raw execution output (stdout/stderr combined)
+        """
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        execution_start = perf_counter()
+        result = await self._execute_code(code, state)
+        execution_time = perf_counter() - execution_start
+        output = self._format_execution_output(result)
+
+        state.setdefault("tool_call_timings", []).append(
+            {
+                "turn": state.get("turn", 0),
+                "execution_seconds": execution_time,
+            }
+        )
+        _update_rlm_repl_metrics(state, execution_time)
+
+        answer = result.get("answer", {})
+        if answer.get("ready", False):
+            state["final_answer"] = answer.get("content", "")
+            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
+
+        return output
 
     async def call_python_repl(self, code: str, state: Any) -> str:
         """

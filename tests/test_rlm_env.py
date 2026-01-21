@@ -1,16 +1,18 @@
 """Tests for the RLMEnv class (filesystem-based, local-only)."""
 
+import ast
 import base64
 import json
-import pickle
 import os
+import pickle
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
-from verifiers.envs.experimental.rlm_env import RLMEnv
+from verifiers.envs.experimental import rlm_env as rlm_module
+from verifiers.envs.experimental.rlm_env import RLMEnv, RLMWorkerPaths
 
 
 # =============================================================================
@@ -41,7 +43,12 @@ def build_env(dataset: Dataset, **kwargs) -> RLMEnv:
 @pytest.fixture
 def rlm_env() -> RLMEnv:
     dataset = make_dataset({})
-    return build_env(dataset, max_iterations=10, max_output_length=1000)
+    return build_env(
+        dataset,
+        max_iterations=10,
+        max_output_length=1000,
+        repl_language="python",
+    )
 
 
 @pytest.fixture
@@ -56,7 +63,21 @@ def rlm_env_with_sub_tools() -> RLMEnv:
 
     dataset = make_dataset({})
     return build_env(
-        dataset, sub_tools=[sample_tool, another_tool], sub_tool_max_turns=3
+        dataset,
+        sub_tools=[sample_tool, another_tool],
+        sub_tool_max_turns=3,
+        repl_language="python",
+    )
+
+
+@pytest.fixture
+def rlm_env_bash() -> RLMEnv:
+    dataset = make_dataset({})
+    return build_env(
+        dataset,
+        max_iterations=10,
+        max_output_length=1000,
+        repl_language="bash",
     )
 
 
@@ -347,15 +368,103 @@ class TestFilesystemCleanup:
             shutil.rmtree(rollout_dir, ignore_errors=True)
 
 
+class TestBashPrompt:
+    @pytest.mark.asyncio
+    async def test_bash_prompt_mentions_env_vars(self, rlm_env_bash):
+        env = rlm_env_bash
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "RLM_READY" in prompt
+            assert "RLM_CONTENT" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+
+class TestBashReplOutput:
+    @pytest.mark.asyncio
+    async def test_bash_output_is_raw(self, rlm_env_bash):
+        rlm_env_bash._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "warning",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {"trajectory": [], "context_warning_sent": False}
+        output = await rlm_env_bash.call_bash_repl("echo hi", state)
+
+        assert "output" in output
+        assert "warning" in output
+        assert "stderr:" not in output
+        assert "Out[" not in output
+        assert "[Execution time" not in output
+
+
+class TestBashWorkerScript:
+    def test_rendered_bash_worker_is_valid_python(self, tmp_path: Path):
+        paths = RLMWorkerPaths(
+            base_dir=str(tmp_path),
+            command_fifo=str(tmp_path / "cmd"),
+            response_fifo=str(tmp_path / "res"),
+            ready_flag=str(tmp_path / "ready"),
+            worker_path=str(tmp_path / "worker.py"),
+            worker_pid_file=str(tmp_path / "worker.pid"),
+            context_file=str(tmp_path / "context.json"),
+            answer_file=str(tmp_path / "answer.json"),
+            log_file=str(tmp_path / "worker.log"),
+        )
+        script = rlm_module._render_worker_script(paths, repl_language="bash")
+        ast.parse(script)
+
+    def test_bash_worker_escapes_exit_code_marker(self, tmp_path: Path):
+        paths = RLMWorkerPaths(
+            base_dir=str(tmp_path),
+            command_fifo=str(tmp_path / "cmd"),
+            response_fifo=str(tmp_path / "res"),
+            ready_flag=str(tmp_path / "ready"),
+            worker_path=str(tmp_path / "worker.py"),
+            worker_pid_file=str(tmp_path / "worker.pid"),
+            context_file=str(tmp_path / "context.json"),
+            answer_file=str(tmp_path / "answer.json"),
+            log_file=str(tmp_path / "worker.log"),
+        )
+        script = rlm_module._render_worker_script(paths, repl_language="bash")
+        assert '"$?"' in script
+
+
 # =============================================================================
 # 3. Initialization and Configuration
 # =============================================================================
 
 
 class TestRLMEnvInitialization:
-    def test_default_initialization(self):
+    def test_default_repl_language_is_bash(self):
         dataset = make_dataset({})
         env = build_env(dataset)
+
+        assert getattr(env, "repl_language", None) == "bash"
+        assert "call_bash_repl" in env.tool_map
+        assert "call_python_repl" not in env.tool_map
+
+    def test_python_repl_tool_registered(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="python")
+
+        assert "call_python_repl" in env.tool_map
+        assert "call_bash_repl" not in env.tool_map
+
+    def test_default_initialization(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="python")
 
         assert env.sub_model is None
         assert env.sub_tools == []
@@ -383,6 +492,7 @@ class TestRLMEnvInitialization:
             sub_llm_stagger_jitter_ms=5,
             context_key="custom_context",
             context_dir_key="custom_context_dir",
+            repl_language="python",
         )
 
         assert env.sub_model == "gpt-4"
@@ -398,7 +508,7 @@ class TestRLMEnvInitialization:
     def test_system_prompt_customization(self):
         custom_prompt = "You are a custom RLM assistant."
         dataset = make_dataset({})
-        env = build_env(dataset, system_prompt=custom_prompt)
+        env = build_env(dataset, system_prompt=custom_prompt, repl_language="python")
         assert env.custom_system_prompt == custom_prompt
 
     def test_bash_tool_removed(self, rlm_env):
