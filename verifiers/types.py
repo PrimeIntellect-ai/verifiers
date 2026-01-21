@@ -7,6 +7,8 @@ from typing import (
     Literal,
 )
 
+from datasets import Dataset
+
 from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
@@ -48,6 +50,7 @@ SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
+DatasetBuilder = Callable[[], Dataset]
 
 
 class TrajectoryStepTokens(TypedDict):
@@ -240,6 +243,7 @@ class EvalConfig(BaseModel):
     max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    max_retries: int = 0
     # logging
     verbose: bool = False
     use_tqdm: bool = True
@@ -251,7 +255,7 @@ class EvalConfig(BaseModel):
     hf_hub_dataset_name: str | None = None
 
 
-class MultiEvalConfig(BaseModel):
-    """Pydantic model for multi-environment evaluation configuration."""
+class EvalRunConfig(BaseModel):
+    """Pydantic model for evaluation run configuration."""
 
-    env: list[EvalConfig]
+    evals: list[EvalConfig]

@@ -21,10 +21,10 @@ import verifiers as vf
 from verifiers.types import (
     Endpoints,
     EvalConfig,
+    EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
-    MultiEvalConfig,
     ProgressCallback,
     StartCallback,
     State,
@@ -75,13 +75,27 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
-def is_toml_config(path: str) -> bool:
-    """Checks if a path is a valid TOML config file."""
-    return Path(path).is_file() and Path(path).suffix == ".toml"
-
-
 def load_toml_config(path: Path) -> list[dict]:
-    """Loads and validates a TOML config file."""
+    """Loads and validates a TOML config file.
+
+    Config format supports global defaults at the top level, with per-eval overrides:
+
+        # Global defaults (optional)
+        model = "openai/gpt-4.1-mini"
+        num_examples = 10
+
+        [[eval]]
+        env_id = "gsm8k"
+
+        [[eval]]
+        env_id = "math-python"
+        num_examples = 5  # overrides global default
+
+    Minimal config (just a single eval):
+
+        [[eval]]
+        env_id = "gsm8k"
+    """
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
@@ -89,25 +103,48 @@ def load_toml_config(path: Path) -> list[dict]:
         raw_config = tomllib.load(f)
 
     # validate schema
-    env_list: list[dict] = raw_config.get("env", [])
-    if not env_list:
+    eval_list = raw_config.get("eval", [])
+    if not isinstance(eval_list, list):
         raise ValueError(
-            f"Config file must contain at least one [[env]] section: {path}"
+            f"Config file uses [eval] but should use [[eval]] (double brackets) "
+            f"for array of tables: {path}"
+        )
+    if not eval_list:
+        raise ValueError(
+            f"Config file must contain at least one [[eval]] section: {path}"
         )
 
-    if not all("env_id" in e for e in env_list):
-        raise ValueError(f"All [[env]] sections must contain an env_id field: {path}")
+    if not all("env_id" in e for e in eval_list):
+        raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
+
+    # extract global defaults (everything except 'eval' key)
+    global_defaults = {k: v for k, v in raw_config.items() if k != "eval"}
 
     valid_fields = set(EvalConfig.model_fields.keys())
-    for env in env_list:
-        invalid_fields = set(env.keys()) - valid_fields
-        if invalid_fields:
+
+    # validate global fields
+    if global_defaults:
+        invalid_global = set(global_defaults.keys()) - valid_fields
+        if invalid_global:
             raise ValueError(
-                f"Invalid field(s) {invalid_fields} for {env.get('env_id', 'unknown')}. "
+                f"Invalid global field(s) {invalid_global}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
 
-    return env_list
+    # merge global defaults with per-eval configs
+    merged_eval_list: list[dict] = []
+    for eval_config in eval_list:
+        invalid_fields = set(eval_config.keys()) - valid_fields
+        if invalid_fields:
+            raise ValueError(
+                f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+        # global defaults, then per-eval overrides
+        merged = {**global_defaults, **eval_config}
+        merged_eval_list.append(merged)
+
+    return merged_eval_list
 
 
 def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
@@ -288,6 +325,7 @@ async def run_evaluation(
         save_results=config.save_results,
         save_every=config.save_every,
         independent_scoring=config.independent_scoring,
+        max_retries=config.max_retries,
         on_start=on_start,
         on_progress=on_progress,
         on_log=on_log,
@@ -298,57 +336,14 @@ async def run_evaluation(
     return results
 
 
-async def run_multi_evaluation(config: MultiEvalConfig) -> None:
+async def run_evaluations(config: EvalRunConfig) -> None:
     # load event loop lag monitor
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor.run_in_background()
 
-    async def run_with_progress(env_config: EvalConfig) -> GenerateOutputs:
-        if env_config.use_tqdm:
-            from tqdm import tqdm
-
-            # Delay pbar creation until first callback (when generate actually starts)
-            pbar: tqdm | None = None
-            reward_accum = 0
-
-            def tqdm_callback(all_states: list[State], new_states: list[State]) -> None:
-                nonlocal reward_accum
-                nonlocal pbar
-
-                completed = len(all_states)
-                if pbar is None:
-                    # Create pbar on first callback
-                    if env_config.independent_scoring:
-                        pbar_total = (
-                            env_config.num_examples * env_config.rollouts_per_example
-                        )
-                        pbar_desc = (
-                            f"Processing {pbar_total} {env_config.env_id} rollouts"
-                        )
-                    else:
-                        pbar_total = env_config.num_examples
-                        pbar_desc = f"Processing {pbar_total} {env_config.env_id} groups ({env_config.num_examples * env_config.rollouts_per_example} total rollouts)"
-                    pbar = tqdm(
-                        total=pbar_total, desc=pbar_desc, postfix=dict(reward="?")
-                    )
-                pbar.update()
-
-                for s in new_states:
-                    reward = s.get("reward")
-                    if reward is not None:
-                        reward_accum += reward
-
-                pbar.set_postfix(reward=f"{reward_accum / completed:.3f}")
-
-            on_progress = tqdm_callback
-        else:
-            on_progress = None
-        result = await run_evaluation(env_config, on_progress=on_progress)
-        return result
-
     start_time = time.time()
     all_results = await asyncio.gather(
-        *[run_with_progress(env_config) for env_config in config.env]
+        *[run_evaluation(eval_config) for eval_config in config.evals]
     )
     end_time = time.time()
     event_loop_lags = event_loop_lag_monitor.get_lags()
@@ -370,7 +365,7 @@ async def run_multi_evaluation(config: MultiEvalConfig) -> None:
         )
 
 
-async def run_multi_evaluation_tui(config: MultiEvalConfig) -> None:
+async def run_evaluations_tui(config: EvalRunConfig) -> None:
     """Run multi-environment evaluation with a TUI display."""
 
     from verifiers.utils.eval_tui import EvalTUI, is_tty
@@ -378,11 +373,12 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> None:
     # fall back to non-tui mode if not a tty
     if not is_tty():
         logger.info("Not a TTY, falling back to standard output")
-        await run_multi_evaluation(config)
+        await run_evaluations(config)
+        return
 
     # critical level to suppress logging
     with vf.log_level(logging.CRITICAL):
-        tui = EvalTUI(config.env)
+        tui = EvalTUI(config.evals)
 
         async def run_with_progress(env_config: EvalConfig) -> GenerateOutputs:
             """Run a single evaluation with TUI progress updates."""
@@ -464,7 +460,7 @@ async def run_multi_evaluation_tui(config: MultiEvalConfig) -> None:
         try:
             async with tui:
                 results = await asyncio.gather(
-                    *[run_with_progress(env_config) for env_config in config.env],
+                    *[run_with_progress(env_config) for env_config in config.evals],
                     return_exceptions=True,
                 )
 
