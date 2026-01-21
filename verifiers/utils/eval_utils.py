@@ -459,22 +459,15 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                 tui.update_env_state(env_idx, status="failed", error=str(e))
                 raise
 
-        all_results: list[GenerateOutputs] = []
         try:
             async with tui:
-                results = await asyncio.gather(
+                await asyncio.gather(
                     *[
                         run_with_progress(env_config, idx)
                         for idx, env_config in enumerate(config.evals)
                     ],
                     return_exceptions=True,
                 )
-
-                for result in results:
-                    if isinstance(result, Exception):
-                        pass  # error already shown via update_env_state, so skip here
-                    else:
-                        all_results.append(cast(GenerateOutputs, result))
 
                 tui.refresh()
                 await tui.wait_for_exit()
