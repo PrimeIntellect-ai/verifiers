@@ -409,7 +409,7 @@ async def run_evaluations_tui(config: EvalRunConfig) -> None:
                     reward = s.get("reward")
                     if reward is not None:
                         reward_accum += reward
-                    state_metrics = s.get("metrics", {})
+                    state_metrics = s.get("metrics") or {}
                     for name, value in state_metrics.items():
                         if value is not None:
                             metrics_accum[name] += value
