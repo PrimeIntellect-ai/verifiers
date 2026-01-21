@@ -8,12 +8,13 @@ Based on: https://www.alexzhang.dev/blog/recursive-language-models
 
 Architecture:
 - REPL loop runs in the framework (MultiTurnEnv pattern)
-- Code execution backend can be sandboxed or local (persistent Python worker)
+- Code execution runs locally in a persistent Python worker
 - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
 Key features:
 - Works with any dataset that has a normal prompt
-- Optional large input data can be provided in info["context"]
+- Optional input data can be provided via info["context_dir"] (directory) or
+  legacy info["context"] (builtin data written to a file)
 - Root model only sees query, not full input data (unless it peeks via code)
 - Model can make recursive sub-LLM calls via llm_batch() function
 - Final answer returned via answer variable
@@ -22,12 +23,12 @@ Key features:
 import asyncio
 import base64
 import contextvars
+import inspect
 import json
 import logging
 import os
 import pickle
 import random
-import shlex
 import shutil
 import signal
 import subprocess
@@ -39,7 +40,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -48,14 +49,7 @@ else:
 
 from aiohttp import web
 from openai.types.chat import ChatCompletion
-from prime_sandboxes import CommandTimeoutError
-
 import verifiers as vf
-from verifiers.envs.sandbox_env import (
-    SandboxCreationError,
-    SandboxEnv,
-    SandboxNotReadyError,
-)
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatMessage,
@@ -73,20 +67,12 @@ from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
 )
-from verifiers.utils.rlm_data_serialization_utils import (
-    DataSerializer,
-    PreparedContextData,
-    SerializerRegistry,
-    build_default_serializer_registry,
-    deserialize_builtin,
-    prepare_context_data,
-)
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.token_utils import (
     prepare_sampling_args_for_token_prompts,
     tokenize_vllm,
 )
-from verifiers.utils.tunnel_utils import TunnelPool
+import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +151,6 @@ class RLMWorkerPaths:
     command_fifo: str
     response_fifo: str
     ready_flag: str
-    install_done_flag: str
     worker_path: str
     worker_pid_file: str
     context_file: str
@@ -178,7 +163,6 @@ class RLMWorkerPaths:
             "command_fifo": self.command_fifo,
             "response_fifo": self.response_fifo,
             "ready_flag": self.ready_flag,
-            "install_done_flag": self.install_done_flag,
             "worker_path": self.worker_path,
             "worker_pid_file": self.worker_pid_file,
             "context_file": self.context_file,
@@ -190,8 +174,10 @@ class RLMWorkerPaths:
 @dataclass
 class LocalRLMReplSession:
     rollout_id: str
-    temp_dir: tempfile.TemporaryDirectory
+    rollout_dir: str
     paths: RLMWorkerPaths
+    fs_root: str
+    control_dir: str
     worker_process: subprocess.Popen | None = None
     venv_path: str | None = None
 
@@ -406,23 +392,25 @@ class SubLLMResult(TypedDict):
     max_turns_reached: bool
 
 
-# Worker script that runs inside the sandbox - handles code execution only
+# Worker script that runs locally - handles code execution only
 # The REPL loop is managed by the framework, not this script
-_RLM_WORKER_SCRIPT = textwrap.dedent(
+_RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
     """
     import ast
     import base64
     import contextlib
     import io
     import json
-    import math
     import os
     import pickle
     import sys
+    import sysconfig
     import time
     import traceback
     from pathlib import Path
     import requests
+
+    {filesystem_jail_code}
 
     COMMAND_FIFO = "{command_fifo}"
     RESPONSE_FIFO = "{response_fifo}"
@@ -435,15 +423,12 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
-    SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
     SUB_LLM_STAGGER_MS = int(os.environ.get("RLM_SUB_LLM_STAGGER_MS", "0"))
     SUB_LLM_STAGGER_JITTER_MS = int(
         os.environ.get("RLM_SUB_LLM_STAGGER_JITTER_MS", "0")
     )
-    if SANDBOX_TIMEOUT > 0:
-        SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)
 
-    # Guardrails for user code execution (best-effort, not a sandbox)
+    # Guardrails for user code execution (best-effort, not an OS sandbox)
     def _parse_disallowed(raw: str) -> list[str]:
         if not raw:
             return []
@@ -457,12 +442,6 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         _parse_disallowed(os.environ.get("RLM_DISALLOWED_BUILTINS", ""))
     )
 
-    def _is_disallowed_module(name: str) -> bool:
-        for blocked in DISALLOWED_MODULES:
-            if name == blocked or name.startswith(blocked + "."):
-                return True
-        return False
-
     def _build_restricted_builtins() -> dict:
         builtins_obj = __builtins__
         if not isinstance(builtins_obj, dict):
@@ -475,10 +454,11 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             def _restricted_import(
                 name, globals=None, locals=None, fromlist=(), level=0
             ):
-                if _is_disallowed_module(name):
-                    raise ImportError(
-                        f"Import of '{{name}}' is blocked by RLM policy"
-                    )
+                for blocked in DISALLOWED_MODULES:
+                    if name == blocked or name.startswith(blocked + "."):
+                        raise ImportError(
+                            f"Import of '{{name}}' is blocked by RLM policy"
+                        )
                 if original_import is None:
                     raise ImportError("Import mechanism unavailable")
                 return original_import(name, globals, locals, fromlist, level)
@@ -498,54 +478,41 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
         ensure_fifo(fifo_path)
 
-    # Load extra_data from file (written by setup_state)
-    extra_data = None
+    # Load filesystem context from file (written by setup_state)
+    fs_root = None
+    fs_metadata = {{}}
+    allowed_paths = []
+    def _get_stdlib_paths() -> list:
+        paths = []
+        try:
+            config_paths = sysconfig.get_paths()
+        except Exception:
+            return paths
+        for key in ("stdlib", "platstdlib"):
+            value = config_paths.get(key)
+            if value:
+                paths.append(value)
+        return paths
+
     if Path(CONTEXT_FILE).exists():
         with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            _full_context = json.load(f)
-            data_spec = _full_context.get("input_data_spec") or {{}}
-            if data_spec:
-                payload_path = data_spec.get("payload_path")
-                payload_encoding = data_spec.get("payload_encoding")
-                payload = None
-                if not payload_path:
-                    raise ValueError("input_data_spec is missing payload_path")
-                if payload_encoding:
-                    with open(payload_path, "r", encoding=payload_encoding) as pf:
-                        payload = pf.read()
-                else:
-                    with open(payload_path, "rb") as pf:
-                        payload = pf.read()
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+            fs_metadata = context.get("fs_metadata") or {{}}
+            allowed_paths = context.get("allowed_paths") or []
+            for stdlib_path in _get_stdlib_paths():
+                if stdlib_path not in allowed_paths:
+                    allowed_paths.append(stdlib_path)
 
-                dtype = data_spec.get("dtype", "")
-                deserializer_code = data_spec.get("deserializer_code")
-                deserializer_function = data_spec.get("deserializer_function")
-
-                if deserializer_code and deserializer_function:
-                    namespace = {{}}
-                    exec(deserializer_code, namespace)
-                    if deserializer_function not in namespace:
-                        raise ValueError(
-                            "Deserializer function '"
-                            + str(deserializer_function)
-                            + "' not found"
-                        )
-                    extra_data = namespace[deserializer_function](payload, data_spec)
-                elif dtype == "text":
-                    extra_data = payload
-                elif dtype == "json":
-                    if isinstance(payload, bytes):
-                        payload = payload.decode("utf-8")
-                    if isinstance(payload, str):
-                        extra_data = json.loads(payload)
-                    else:
-                        extra_data = payload
-                else:
-                    raise ValueError(
-                        "No deserializer provided for dtype '" + str(dtype) + "'."
-                    )
-            else:
-                extra_data = _full_context.get("input_data")
+    if fs_root:
+        os.chdir(fs_root)
+        jail = FilesystemJail(
+            fs_root,
+            allowed_paths=allowed_paths,
+            disallowed_modules=DISALLOWED_MODULES,
+            disallowed_builtins=DISALLOWED_BUILTINS,
+        )
+        jail.install()
 
     # Initialize answer structure
     answer = {{"ready": False, "content": ""}}
@@ -554,205 +521,27 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             answer = json.load(f)
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
-    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "rlm")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
     ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
-    ROOT_TOOL_SERIALIZERS_RAW = os.environ.get("RLM_ROOT_TOOL_SERIALIZERS", "[]")
     try:
         ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
     except Exception:
         ROOT_TOOL_NAMES = []
-    try:
-        ROOT_TOOL_SERIALIZERS = json.loads(ROOT_TOOL_SERIALIZERS_RAW)
-    except Exception:
-        ROOT_TOOL_SERIALIZERS = []
-    ROOT_TOOL_SERIALIZER_FUNCS = []
-    for spec in ROOT_TOOL_SERIALIZERS:
-        serializer_code = spec.get("serializer_code")
-        serializer_function = spec.get("serializer_function")
-        if serializer_code and serializer_function:
-            namespace = {{}}
-            exec(serializer_code, namespace)
-            if serializer_function in namespace:
-                ROOT_TOOL_SERIALIZER_FUNCS.append(
-                    (spec, namespace[serializer_function])
-                )
-
-    def _is_builtin_data(value):
-        if value is None:
-            return True
-        if isinstance(value, (bool, int, float, str, bytes, bytearray, complex, range)):
-            return True
-        if isinstance(value, slice):
-            return True
-        if isinstance(value, memoryview):
-            return True
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return all(_is_builtin_data(item) for item in value)
-        if isinstance(value, dict):
-            return all(
-                _is_builtin_data(k) and _is_builtin_data(v) for k, v in value.items()
-            )
-        return False
-
-    def _encode_builtin_value(value):
-        if value is None or isinstance(value, (bool, int, str)):
-            return value
-        if isinstance(value, float):
-            if math.isfinite(value):
-                return value
-            if math.isnan(value):
-                return {{"__rlm_builtin__": "float", "value": "nan"}}
-            if value > 0:
-                return {{"__rlm_builtin__": "float", "value": "inf"}}
-            return {{"__rlm_builtin__": "float", "value": "-inf"}}
-        if isinstance(value, bytes):
-            return {{
-                "__rlm_builtin__": "bytes",
-                "data": base64.b64encode(value).decode("ascii"),
-            }}
-        if isinstance(value, bytearray):
-            return {{
-                "__rlm_builtin__": "bytearray",
-                "data": base64.b64encode(bytes(value)).decode("ascii"),
-            }}
-        if isinstance(value, memoryview):
-            return {{
-                "__rlm_builtin__": "memoryview",
-                "data": base64.b64encode(value.tobytes()).decode("ascii"),
-            }}
-        if isinstance(value, complex):
-            return {{"__rlm_builtin__": "complex", "real": value.real, "imag": value.imag}}
-        if isinstance(value, range):
-            return {{
-                "__rlm_builtin__": "range",
-                "args": [value.start, value.stop, value.step],
-            }}
-        if isinstance(value, slice):
-            return {{
-                "__rlm_builtin__": "slice",
-                "args": [value.start, value.stop, value.step],
-            }}
-        if isinstance(value, tuple):
-            return {{
-                "__rlm_builtin__": "tuple",
-                "items": [_encode_builtin_value(item) for item in value],
-            }}
-        if isinstance(value, set):
-            return {{
-                "__rlm_builtin__": "set",
-                "items": [_encode_builtin_value(item) for item in value],
-            }}
-        if isinstance(value, frozenset):
-            return {{
-                "__rlm_builtin__": "frozenset",
-                "items": [_encode_builtin_value(item) for item in value],
-            }}
-        if isinstance(value, list):
-            return [_encode_builtin_value(item) for item in value]
-        if isinstance(value, dict):
-            if all(isinstance(key, str) for key in value) and "__rlm_builtin__" not in value:
-                return {{
-                    key: _encode_builtin_value(item) for key, item in value.items()
-                }}
-            return {{
-                "__rlm_builtin__": "dict",
-                "items": [
-                    [_encode_builtin_value(key), _encode_builtin_value(item)]
-                    for key, item in value.items()
-                ],
-            }}
-        raise ValueError(f"Unsupported builtin type: {{type(value)}}")
-
-    def _serialize_value(value):
-        if isinstance(value, str):
-            payload = value.encode("utf-8")
-            return {{
-                "dtype": "text",
-                "payload_b64": base64.b64encode(payload).decode("ascii"),
-                "payload_encoding": "utf-8",
-            }}
-        if _is_builtin_data(value):
-            payload = json.dumps(
-                _encode_builtin_value(value), ensure_ascii=True, allow_nan=False
-            ).encode("utf-8")
-            return {{
-                "dtype": "builtin",
-                "payload_b64": base64.b64encode(payload).decode("ascii"),
-                "payload_encoding": "utf-8",
-            }}
-        for spec, serializer_func in ROOT_TOOL_SERIALIZER_FUNCS:
-            try:
-                payload_value = serializer_func(value)
-            except Exception:
-                continue
-            if isinstance(payload_value, str):
-                encoding = spec.get("encoding") or "utf-8"
-                payload = payload_value.encode(encoding)
-            elif isinstance(payload_value, (bytes, bytearray)):
-                encoding = spec.get("encoding")
-                payload = bytes(payload_value)
-            else:
-                raise ValueError(
-                    "Tool serializer must return bytes or str, got "
-                    + str(type(payload_value))
-                )
-            return {{
-                "dtype": spec.get("dtype", ""),
-                "format": spec.get("format"),
-                "payload_b64": base64.b64encode(payload).decode("ascii"),
-                "payload_encoding": encoding,
-                "deserializer_code": spec.get("deserializer_code"),
-                "deserializer_function": spec.get("deserializer_function"),
-            }}
-        raise ValueError(
-            "Unsupported tool argument type for sandbox execution. "
-            "Provide a serializer or use local execution."
-        )
-
-    def _deserialize_value(spec):
-        payload = base64.b64decode(spec.get("payload_b64", ""))
-        dtype = spec.get("dtype", "")
-        deserializer_code = spec.get("deserializer_code")
-        deserializer_function = spec.get("deserializer_function")
-        if deserializer_code and deserializer_function:
-            namespace = {{}}
-            exec(deserializer_code, namespace)
-            if deserializer_function not in namespace:
-                raise ValueError(
-                    "Deserializer function '"
-                    + str(deserializer_function)
-                    + "' not found"
-                )
-            return namespace[deserializer_function](payload, spec)
-        if dtype == "text":
-            encoding = spec.get("payload_encoding") or "utf-8"
-            return payload.decode(encoding)
-        if dtype == "json":
-            return json.loads(payload.decode("utf-8"))
-        raise ValueError(f"Unsupported tool response dtype: {{dtype}}")
 
     def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
         if not ROOT_TOOL_URL:
             raise RuntimeError("Root tool URL not configured")
+        if ROOT_TOOL_SERIALIZATION != "pickle":
+            raise RuntimeError("Only pickle serialization is supported")
 
-        if ROOT_TOOL_SERIALIZATION == "pickle":
-            args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
-            kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
-            payload = {{
-                "tool_name": tool_name,
-                "serialization": "pickle",
-                "args": args_payload,
-                "kwargs": kwargs_payload,
-            }}
-        else:
-            payload = {{
-                "tool_name": tool_name,
-                "serialization": "rlm",
-                "args": [_serialize_value(value) for value in args],
-                "kwargs": {{
-                    key: _serialize_value(value) for key, value in kwargs.items()
-                }},
-            }}
+        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+        payload = {{
+            "tool_name": tool_name,
+            "serialization": "pickle",
+            "args": args_payload,
+            "kwargs": kwargs_payload,
+        }}
 
         resp = requests.post(
             ROOT_TOOL_URL,
@@ -766,9 +555,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
                 print(line)
         if data.get("error"):
             raise RuntimeError(data["error"])
-        if ROOT_TOOL_SERIALIZATION == "pickle":
-            return pickle.loads(base64.b64decode(data.get("result", "")))
-        return _deserialize_value(data.get("result", {{}}))
+        return pickle.loads(base64.b64decode(data.get("result", "")))
 
     def _make_root_tool(name: str):
         def _tool(*args, **kwargs):
@@ -778,12 +565,14 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         return _tool
 
     restricted_builtins = _build_restricted_builtins()
+    extra_data = fs_root
 
     # Persistent execution namespace
     namespace: dict[str, object] = {{
         "__name__": "__main__",
         "__builtins__": restricted_builtins,
         "extra_data": extra_data,
+        "fs_metadata": fs_metadata,
         "answer": answer,
     }}
     for tool_name in ROOT_TOOL_NAMES:
@@ -856,98 +645,6 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
 )
 
 
-_RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
-    """
-    bash -lc '
-    set -euo pipefail
-
-    command_fifo="{command_fifo}"
-    response_fifo="{response_fifo}"
-    ready_flag="{ready_flag}"
-    install_done_flag="{install_done_flag}"
-    worker_path="{worker_path}"
-    worker_pid_file="{worker_pid_file}"
-
-    rm -f "$command_fifo" "$response_fifo" "$ready_flag" "$install_done_flag" "$worker_pid_file"
-
-    # Write worker script but do NOT start it yet
-    # Worker will be started by setup_state after context/env vars are set
-    python - <<'PY'
-import base64
-from pathlib import Path
-
-Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
-PY
-
-    tail -f /dev/null
-    '
-    """
-)
-
-
-def _make_ready_wait_script(
-    ready_flag: str,
-    max_wait_seconds: int,
-    error_message: str = "RLM worker failed to start",
-) -> str:
-    """Generate a ready wait script with configurable timeout."""
-    # Each iteration sleeps 0.05 seconds, so calculate iterations needed
-    iterations = max(1, int(max_wait_seconds / 0.05))
-    return textwrap.dedent(
-        f"""
-        bash -lc '
-        for i in $(seq 1 {iterations}); do
-          if [ -f "{ready_flag}" ]; then
-            exit 0
-          fi
-          sleep 0.05
-        done
-        echo "{error_message}" >&2
-        exit 1
-        '
-        """
-    )
-
-
-def _make_worker_ready_wait_script(
-    ready_flag: str,
-    pid_file: str,
-    log_file: str,
-    max_wait_seconds: int,
-) -> str:
-    """Wait for worker ready flag or fail fast if the worker process exits."""
-    iterations = max(1, int(max_wait_seconds / 0.1))
-    return textwrap.dedent(
-        f"""
-        bash -lc '
-        for i in $(seq 1 {iterations}); do
-          if [ -f "{ready_flag}" ]; then
-            exit 0
-          fi
-          if [ -f "{pid_file}" ]; then
-            pid=$(cat "{pid_file}" 2>/dev/null || true)
-            if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-              echo "RLM worker exited" >&2
-              if [ -f "{log_file}" ]; then
-                echo "---LOG---" >&2
-                tail -n 200 "{log_file}" >&2
-              fi
-              exit 1
-            fi
-          fi
-          sleep 0.1
-        done
-        echo "RLM worker failed to start" >&2
-        if [ -f "{log_file}" ]; then
-          echo "---LOG---" >&2
-          tail -n 200 "{log_file}" >&2
-        fi
-        exit 1
-        '
-        """
-    )
-
-
 def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
     base_dir = base_dir.rstrip("/") or base_dir
     return RLMWorkerPaths(
@@ -955,7 +652,6 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
         command_fifo=os.path.join(base_dir, "rlm_cmd"),
         response_fifo=os.path.join(base_dir, "rlm_res"),
         ready_flag=os.path.join(base_dir, "rlm_ready"),
-        install_done_flag=os.path.join(base_dir, "rlm_install_done"),
         worker_path=os.path.join(base_dir, "rlm_worker.py"),
         worker_pid_file=os.path.join(base_dir, "rlm_worker.pid"),
         context_file=os.path.join(base_dir, "rlm_context.json"),
@@ -965,7 +661,9 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
 
 
 def _render_worker_script(paths: RLMWorkerPaths) -> str:
-    return _RLM_WORKER_SCRIPT.format(
+    filesystem_jail_code = textwrap.dedent(inspect.getsource(rlm_jail_module))
+    return _RLM_WORKER_SCRIPT_TEMPLATE.format(
+        filesystem_jail_code=filesystem_jail_code,
         command_fifo=paths.command_fifo,
         response_fifo=paths.response_fifo,
         ready_flag=paths.ready_flag,
@@ -990,15 +688,16 @@ You will write code, see its output, then write more code based on what you lear
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
 
-## Input Data Metadata
-{metadata_summary}
+## Filesystem Context
+{filesystem_summary}
 
 ## Workflow
 
-**Step 1: Explore the data**
+**Step 1: Explore the filesystem**
 ```python
-print(type(extra_data))
-print(extra_data[:500] if isinstance(extra_data, str) else extra_data[:3])
+import os
+print(os.getcwd())
+print(os.listdir("."))
 ```
 Wait for output. Now you know the actual format.
 
@@ -1025,10 +724,7 @@ class BaseRLMExecutor:
     def __init__(self, env: "RLMEnv") -> None:
         self.env = env
 
-    async def get_payload_dir(self, state: State) -> str | None:
-        return None
-
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+    async def setup(self, state: State) -> None:
         raise NotImplementedError
 
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
@@ -1047,366 +743,25 @@ class BaseRLMExecutor:
         return None
 
 
-class SandboxRLMExecutor(BaseRLMExecutor):
-    def __init__(self, env: "RLMEnv") -> None:
-        super().__init__(env)
-        self._paths = env._sandbox_paths
-
-    async def get_payload_dir(self, state: State) -> str | None:
-        return self._paths.base_dir
-
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
-        state["rlm_paths"] = self._paths.to_dict()
-        max_sandbox_retries = 5
-        for attempt in range(max_sandbox_retries):
-            try:
-                await self._prepare_sandbox_and_start_worker(state, prepared)
-                return
-            except vf.SandboxError as e:
-                cause_text = str(e.__cause__ or e)
-                lower_cause = cause_text.lower()
-                retryable = (
-                    isinstance(e, SandboxNotReadyError)
-                    or "worker failed to start" in lower_cause
-                    or "sandbox_not_ready" in lower_cause
-                    or "timeout during sandbox creation" in lower_cause
-                )
-                if retryable and attempt < max_sandbox_retries - 1:
-                    logger.warning(
-                        "Sandbox startup failed (attempt %s/%s): %s. Recreating sandbox...",
-                        attempt + 1,
-                        max_sandbox_retries,
-                        cause_text,
-                    )
-                    state = await self._recreate_sandbox(state)
-                else:
-                    raise
-
-    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox ID not set")
-        payload_json = json.dumps(payload)
-        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
-        command = textwrap.dedent(
-            f"""
-            python3 - <<'PY'
-import base64
-import json
-import sys
-
-data = base64.b64decode('{payload_b64}').decode('utf-8')
-with open('{self._paths.command_fifo}', 'w', encoding='utf-8') as command_file:
-    command_file.write(data)
-with open('{self._paths.response_fifo}', 'r', encoding='utf-8') as response_file:
-    sys.stdout.write(response_file.read())
-PY
-            """
-        )
-        try:
-            result = await self.env.sandbox_client.execute_command(
-                sandbox_id, command, timeout=self.env.code_execution_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.warning(
-                "Code execution timed out after %ss", self.env.code_execution_timeout
-            )
-            raise RLMCodeExecutionTimeout from e
-        except Exception as e:
-            logger.error(f"Sandbox error during code execution: {e}")
-            raise vf.SandboxError() from e
-        return RLMExecResult(
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            exit_code=getattr(result, "exit_code", None),
-        )
-
-    async def read_answer(self, state: State) -> str:
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return ""
-        try:
-            result = await self._execute_command_with_retry(
-                sandbox_id,
-                f'cat {self._paths.answer_file} 2>/dev/null || echo \'{{"content": ""}}\'',
-            )
-            return json.loads(result.stdout.strip()).get("content", "")
-        except Exception:
-            return ""
-
-    async def recover_from_timeout(self, state: State) -> bool:
-        context_dict = state.get("rlm_context")
-        if not context_dict:
-            logger.error("Cannot recover from timeout: missing rlm_context in state")
-            return False
-        try:
-            state = await self._recreate_sandbox(state)
-            prepared = PreparedContextData(
-                context_dict=context_dict,
-                payload_bytes=state.get("rlm_payload_bytes"),
-                payload_path=state.get("rlm_payload_path"),
-                payload_name=state.get("rlm_payload_name"),
-            )
-            await self._prepare_sandbox_and_start_worker(state, prepared)
-        except Exception as e:
-            logger.error(f"Failed to recover from code timeout: {e}")
-            return False
-        state["rlm_worker_ready"] = True
-        state["_exec_seq"] = 0
-        return True
-
-    async def cleanup(self, state: State) -> None:
-        return None
-
-    async def _execute_command_with_retry(
-        self, sandbox_id: str, command: str, timeout: int | None = None
-    ):
-        """Execute command with retry logic for transient sandbox errors."""
-        effective_timeout = timeout or self.env.timeout_per_command_seconds
-        start = perf_counter()
-        logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
-        try:
-            result = await self.env.with_retry(self.env.sandbox_client.execute_command)(
-                sandbox_id, command, timeout=effective_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.debug(
-                f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
-            )
-            raise vf.SandboxError() from e
-        except Exception as e:
-            raise vf.SandboxError() from e
-        elapsed = perf_counter() - start
-        logger.debug(f"Command completed in {elapsed:.1f}s")
-        return result
-
-    async def _write_json_to_sandbox(
-        self, sandbox_id: str, data: dict, file_path: str, filename: str
-    ) -> None:
-        data_bytes = json.dumps(data).encode("utf-8")
-        await self.env.with_retry(self.env.sandbox_client.upload_bytes)(
-            sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
-        )
-
-    async def upload_file_to_sandbox(
-        self, sandbox_id: str, data: bytes, file_path: str, filename: str | None
-    ) -> None:
-        import tempfile
-
-        tmp_path = None
-        try:
-            suffix = f"-{filename}" if filename else ""
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                tmp_path = Path(tmp_file.name)
-                tmp_file.write(data)
-            await self.env.with_retry(self.env.sandbox_client.upload_file)(
-                sandbox_id, file_path, str(tmp_path)
-            )
-        finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
-
-    async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
-        wait_script = _make_worker_ready_wait_script(
-            self._paths.ready_flag,
-            self._paths.worker_pid_file,
-            self._paths.log_file,
-            self.env.max_startup_wait_seconds,
-        )
-        timeout = self.env.max_startup_wait_seconds + 10
-        result = await self._execute_command_with_retry(
-            sandbox_id, wait_script, timeout=timeout
-        )
-        stderr = result.stderr or ""
-        stdout = result.stdout or ""
-        if (
-            "RLM worker failed to start" in stdout
-            or "RLM worker failed to start" in stderr
-            or "RLM worker exited" in stdout
-            or "RLM worker exited" in stderr
-        ):
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                (
-                    f"ls -la {self._paths.base_dir}/rlm* 2>&1; echo '---PID---'; "
-                    f"cat {self._paths.worker_pid_file} 2>&1 || echo 'no pid'; "
-                    "echo '---LOG---'; "
-                    f"cat {self._paths.log_file} 2>&1 || echo 'no log'; "
-                    "echo '---PS---'; ps aux 2>&1"
-                ),
-            )
-            logger.error(
-                f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
-            )
-            raise vf.SandboxError() from Exception(
-                f"RLM worker failed to start: {debug_result.stdout[:500]}"
-            )
-
-    async def _wait_for_install_done(self, sandbox_id: str) -> None:
-        install_wait_seconds = self.env._compute_install_wait_seconds()
-        packages = ["requests"]
-        extra_packages = [
-            p.strip() for p in self.env.pip_install_packages.split() if p.strip()
-        ]
-        packages.extend(extra_packages)
-        if not packages:
-            return
-        install_cmd = " ".join(packages)
-        timeout = install_wait_seconds + 10
-        install_script = textwrap.dedent(
-            f"""
-            bash -lc '
-            set -euo pipefail
-            rm -f "{self._paths.install_done_flag}"
-            pip install -q {install_cmd} 2>&1 | tee /tmp/rlm_pip.log
-            touch "{self._paths.install_done_flag}"
-            '
-            """
-        )
-        result = await self._execute_command_with_retry(
-            sandbox_id, install_script, timeout=timeout
-        )
-        exit_code = getattr(result, "exit_code", 0)
-        if (
-            isinstance(exit_code, int)
-            and not isinstance(exit_code, bool)
-            and exit_code != 0
-        ):
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                (
-                    "echo '---PIP LOG---'; tail -n 200 /tmp/rlm_pip.log 2>&1 || "
-                    "echo 'no pip log'"
-                ),
-            )
-            logger.error(
-                "RLM pip install failed (exit_code=%s). Log tail:\n%s",
-                exit_code,
-                debug_result.stdout,
-            )
-            raise vf.SandboxError() from Exception("RLM pip install failed")
-
-    async def _start_worker(self, state: State) -> None:
-        sandbox_id = state["sandbox_id"]
-        interception_url = state["interception_url"]
-        root_tool_url = state.get("root_tool_url", "")
-
-        sub_llm_timeout = self.env.sub_llm_timeout
-        disallowed_modules = shlex.quote(self.env.disallowed_modules)
-        disallowed_builtins = shlex.quote(self.env.disallowed_builtins)
-        root_tool_names = shlex.quote(json.dumps(self.env.root_tool_names))
-        root_tool_serialization = shlex.quote(self.env.root_tool_serialization)
-        root_tool_serializers = shlex.quote(self.env.root_tool_serializers_json)
-        script_wait_iterations = max(1, int(self.env.max_startup_wait_seconds / 0.1))
-        await self._wait_for_install_done(sandbox_id)
-        start_worker_cmd = f"""
-export RLM_INTERCEPTION_URL="{interception_url}"
-export RLM_ROOT_TOOL_URL="{root_tool_url}"
-export RLM_ROOT_TOOL_NAMES={root_tool_names}
-export RLM_ROOT_TOOL_SERIALIZATION={root_tool_serialization}
-export RLM_ROOT_TOOL_SERIALIZERS={root_tool_serializers}
-export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
-export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
-export RLM_SUB_LLM_STAGGER_MS="{self.env.sub_llm_stagger_ms}"
-export RLM_SUB_LLM_STAGGER_JITTER_MS="{self.env.sub_llm_stagger_jitter_ms}"
-export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
-export RLM_SANDBOX_TIMEOUT="{self.env.code_execution_timeout}"
-export RLM_DISALLOWED_MODULES={disallowed_modules}
-export RLM_DISALLOWED_BUILTINS={disallowed_builtins}
-
-sync 2>/dev/null || true
-for i in $(seq 1 {script_wait_iterations}); do
-    if [ -f "{self._paths.worker_path}" ]; then
-        break
-    fi
-    sleep 0.1
-done
-
-        if [ ! -f "{self._paths.worker_path}" ]; then
-            echo "Worker script not found - pip install may have failed or timed out" >&2
-            exit 1
-        fi
-
-        sleep 0.2
-
-        nohup python -u {self._paths.worker_path} >> {self._paths.log_file} 2>&1 &
-        echo $! > {self._paths.worker_pid_file}
-"""
-        start_worker_timeout = self.env.max_startup_wait_seconds + 30
-        await self._execute_command_with_retry(
-            sandbox_id, start_worker_cmd, timeout=start_worker_timeout
-        )
-        await self._wait_for_worker_ready(sandbox_id)
-
-    async def _prepare_sandbox_and_start_worker(
-        self, state: State, prepared: "PreparedContextData"
-    ) -> None:
-        sandbox_id = state["sandbox_id"]
-        try:
-            await self.env.sandbox_client.wait_for_creation(sandbox_id)
-        except Exception as e:
-            raise SandboxNotReadyError(e)
-        if prepared.payload_bytes is not None and prepared.payload_path:
-            await self.upload_file_to_sandbox(
-                sandbox_id,
-                prepared.payload_bytes,
-                prepared.payload_path,
-                prepared.payload_name,
-            )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            prepared.context_dict,
-            self._paths.context_file,
-            "rlm_context.json",
-        )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            {"ready": False, "content": ""},
-            self._paths.answer_file,
-            "rlm_answer.json",
-        )
-        await self._start_worker(state)
-
-    async def _recreate_sandbox(self, state: State) -> State:
-        old_sandbox_id = state.get("sandbox_id")
-        if old_sandbox_id:
-            self.env.active_sandboxes.discard(old_sandbox_id)
-            try:
-                await self.env.sandbox_client.delete(old_sandbox_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
-
-        await asyncio.sleep(1)
-
-        request = self.env.get_sandbox_request(state)
-        try:
-            sandbox = await self.env.with_retry(self.env.sandbox_client.create)(request)
-        except Exception as e:
-            raise SandboxCreationError(e)
-        self.env.active_sandboxes.add(sandbox.id)
-        logger.debug(f"Created replacement sandbox {sandbox.id}")
-        state["sandbox_id"] = sandbox.id
-        return state
-
-
 class LocalRLMExecutor(BaseRLMExecutor):
     def __init__(self, env: "RLMEnv") -> None:
         super().__init__(env)
         self._sessions: dict[str, LocalRLMReplSession] = {}
-        self._venv_lock = asyncio.Lock()
-        self._instance_venv_path: str | None = None
-        self._instance_venv_ready = False
+        self._retained_dirs: set[str] = set()
 
-    async def get_payload_dir(self, state: State) -> str | None:
+    def create_rollout_dirs(self, state: State) -> None:
         session = self._get_or_create_session(state)
-        return session.paths.base_dir
+        state["rlm_rollout_dir"] = session.rollout_dir
+        state["rlm_fs_root"] = session.fs_root
+        state["rlm_control_dir"] = session.control_dir
+        state["rlm_paths"] = session.paths.to_dict()
 
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+    async def setup(self, state: State) -> None:
         session = self._get_or_create_session(state)
         venv_path = await self._ensure_venv(session)
         session.venv_path = venv_path
 
-        await self._write_local_files(session, prepared)
+        await self._write_local_files(session, state)
         await self._start_worker(state, session)
 
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
@@ -1459,13 +814,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
             return False
         try:
             self._stop_worker(session)
-            prepared = PreparedContextData(
-                context_dict=state.get("rlm_context", {}),
-                payload_bytes=state.get("rlm_payload_bytes"),
-                payload_path=state.get("rlm_payload_path"),
-                payload_name=state.get("rlm_payload_name"),
-            )
-            await self._write_local_files(session, prepared)
+            await self._write_local_files(session, state)
             await self._start_worker(state, session)
         except Exception as e:
             logger.error(f"Failed to recover from code timeout: {e}")
@@ -1482,11 +831,12 @@ class LocalRLMExecutor(BaseRLMExecutor):
         if not session:
             return
         self._stop_worker(session)
-        session.temp_dir.cleanup()
+        if state.get("retain_filesystem_after_rollout", False):
+            self._retained_dirs.add(session.rollout_dir)
+        else:
+            await asyncio.to_thread(shutil.rmtree, session.rollout_dir, True)
 
     async def teardown(self) -> None:
-        if self.env.execution_backend != "local":
-            return
         if self._sessions:
             sessions = list(self._sessions.values())
             self._sessions.clear()
@@ -1494,24 +844,8 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 try:
                     self._stop_worker(session)
                 finally:
-                    session.temp_dir.cleanup()
-        if self.env.local_venv_scope != "instance":
-            return
-        if self._instance_venv_path:
-            if sys.is_finalizing():
-                shutil.rmtree(self._instance_venv_path, True)
-            else:
-                try:
-                    await asyncio.to_thread(
-                        shutil.rmtree, self._instance_venv_path, True
-                    )
-                except RuntimeError as e:
-                    if "cannot schedule new futures" in str(e).lower():
-                        shutil.rmtree(self._instance_venv_path, True)
-                    else:
-                        raise
-            self._instance_venv_path = None
-            self._instance_venv_ready = False
+                    if session.rollout_dir not in self._retained_dirs:
+                        shutil.rmtree(session.rollout_dir, True)
 
     def _get_or_create_session(self, state: State) -> LocalRLMReplSession:
         rollout_id = state.get("rollout_id")
@@ -1520,15 +854,20 @@ class LocalRLMExecutor(BaseRLMExecutor):
         session = self._sessions.get(rollout_id)
         if session:
             return session
-        temp_dir = tempfile.TemporaryDirectory(prefix=f"rlm_{rollout_id}_")
-        paths = _build_worker_paths(temp_dir.name)
+        rollout_dir = Path(tempfile.mkdtemp(prefix=f"rlm_rollout_{rollout_id}_"))
+        fs_root = rollout_dir / "rlm_fs"
+        control_dir = rollout_dir / "rlm_control"
+        fs_root.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(parents=True, exist_ok=True)
+        paths = _build_worker_paths(str(control_dir))
         session = LocalRLMReplSession(
             rollout_id=rollout_id,
-            temp_dir=temp_dir,
+            rollout_dir=str(rollout_dir),
             paths=paths,
+            fs_root=str(fs_root),
+            control_dir=str(control_dir),
         )
         self._sessions[rollout_id] = session
-        state["rlm_paths"] = paths.to_dict()
         return session
 
     def _get_session(self, state: State) -> LocalRLMReplSession:
@@ -1538,21 +877,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
         return self._sessions[rollout_id]
 
     async def _ensure_venv(self, session: LocalRLMReplSession) -> str:
-        if self.env.local_venv_scope == "rollout":
-            venv_path = os.path.join(session.paths.base_dir, ".venv")
-            await self._create_venv(venv_path, force=True)
-            await self._install_packages(venv_path)
-            return venv_path
-
-        async with self._venv_lock:
-            if self._instance_venv_ready and self._instance_venv_path:
-                return self._instance_venv_path
-            venv_path = self._instance_venv_path or tempfile.mkdtemp(prefix="rlm_venv_")
-            await self._create_venv(venv_path, force=not self._instance_venv_ready)
-            await self._install_packages(venv_path)
-            self._instance_venv_path = venv_path
-            self._instance_venv_ready = True
-            return venv_path
+        venv_path = os.path.join(session.fs_root, ".venv")
+        await self._create_venv(venv_path, force=True)
+        await self._install_packages(venv_path)
+        return venv_path
 
     async def _create_venv(self, venv_path: str, force: bool) -> None:
         if force and os.path.exists(venv_path):
@@ -1604,15 +932,23 @@ class LocalRLMExecutor(BaseRLMExecutor):
         return os.path.join(venv_path, "bin", "python")
 
     async def _write_local_files(
-        self, session: LocalRLMReplSession, prepared: "PreparedContextData"
+        self, session: LocalRLMReplSession, state: State
     ) -> None:
-        Path(session.paths.base_dir).mkdir(parents=True, exist_ok=True)
-        if prepared.payload_bytes is not None and prepared.payload_path:
-            payload_path = Path(prepared.payload_path)
-            payload_path.parent.mkdir(parents=True, exist_ok=True)
-            payload_path.write_bytes(prepared.payload_bytes)
+        Path(session.control_dir).mkdir(parents=True, exist_ok=True)
+        allowed_paths = [
+            session.paths.command_fifo,
+            session.paths.response_fifo,
+            session.paths.ready_flag,
+            session.paths.context_file,
+            session.paths.answer_file,
+        ]
+        context = {
+            "fs_root": state.get("rlm_fs_root"),
+            "fs_metadata": state.get("rlm_fs_metadata") or {},
+            "allowed_paths": allowed_paths,
+        }
         Path(session.paths.context_file).write_text(
-            json.dumps(prepared.context_dict), encoding="utf-8"
+            json.dumps(context), encoding="utf-8"
         )
         Path(session.paths.answer_file).write_text(
             json.dumps({"ready": False, "content": ""}), encoding="utf-8"
@@ -1631,7 +967,6 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
                 "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
                 "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
-                "RLM_ROOT_TOOL_SERIALIZERS": self.env.root_tool_serializers_json,
                 "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
                 "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
                 "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
@@ -1639,7 +974,6 @@ class LocalRLMExecutor(BaseRLMExecutor):
                     self.env.sub_llm_stagger_jitter_ms
                 ),
                 "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
-                "RLM_SANDBOX_TIMEOUT": str(self.env.code_execution_timeout),
                 "RLM_DISALLOWED_MODULES": self.env.disallowed_modules,
                 "RLM_DISALLOWED_BUILTINS": self.env.disallowed_builtins,
             }
@@ -1704,22 +1038,23 @@ class LocalRLMExecutor(BaseRLMExecutor):
         session.worker_process = None
 
 
-class RLMEnv(SandboxEnv):
+class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
 
-    Extends SandboxEnv to provide a Python REPL environment where the model can:
-    - Interact with large input data stored as a variable (`extra_data`)
+    Extends StatefulToolEnv to provide a Python REPL environment where the model can:
+    - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
-    - Code execution runs in a sandbox or locally (persistent Python worker)
+    - Code execution runs locally in a persistent Python worker
     - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
     Works with any dataset that has a normal prompt. Input data can optionally
-    be provided in info[context_key] for large data that shouldn't be in the prompt.
+    be provided via info[context_dir_key] (directory path) or info[context_key]
+    (legacy builtin data written to a file).
 
     Args:
         tools: List of tools shared by both the root REPL and sub-LLMs.
@@ -1739,16 +1074,10 @@ class RLMEnv(SandboxEnv):
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         sub_llm_stagger_ms: Optional fixed per-call stagger delay (ms) within llm_batch.
         sub_llm_stagger_jitter_ms: Optional random jitter (ms) added to stagger delay.
-        context_key: Key in info containing optional input data (default: "context")
-        context_dtype: Optional dtype override for input data serialization.
-                   If set, must match a supported serializer dtype.
-        data_serializers: Optional list of custom serializers provided by the designer.
-                   These are registered on top of the default registry (text/json),
-                   overriding by dtype if there are conflicts.
-        serializer_registry: Optional explicit serializer registry. If provided,
-                   data_serializers must be None and this registry is used as-is.
+        context_key: Key in info containing legacy context data (default: "context")
+        context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
-        interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
+        interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
         interception_port: Port for interception server (default: 8766)
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
@@ -1765,26 +1094,12 @@ class RLMEnv(SandboxEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
-        execution_backend: Where code execution runs. "sandbox" (default) preserves
-                   existing behavior; "local" runs on the host without tunnels.
-        local_venv_scope: For local execution, whether to create one uv venv per
-                   env instance ("instance", default) or per rollout ("rollout").
-        disallowed_modules: Space-separated module names that user code may not import
-                   (best-effort guardrail). Defaults to blocking common filesystem modules.
-        disallowed_builtins: Space-separated builtin names removed from user code
-                   execution (best-effort guardrail). Defaults to "open".
-        **kwargs: Additional arguments passed to SandboxEnv
+        retain_filesystem_after_rollout: If True, keep filesystem after rollout.
+        filesystem_copy_max_bytes: Optional max bytes for context directory copy.
+        disallowed_modules: Space-separated module names that user code may not import.
+        disallowed_builtins: Space-separated builtin names removed from user code execution.
+        **kwargs: Additional arguments passed to StatefulToolEnv
     """
-
-    # Worker file paths
-    _WORKER_PATH = "/tmp/rlm_worker.py"
-    _COMMAND_FIFO = "/tmp/rlm_cmd"
-    _RESPONSE_FIFO = "/tmp/rlm_res"
-    _READY_FLAG = "/tmp/rlm_ready"
-    _INSTALL_DONE_FLAG = "/tmp/rlm_install_done"
-    _WORKER_PID_FILE = "/tmp/rlm_worker.pid"
-    _CONTEXT_FILE = "/tmp/rlm_context.json"
-    _ANSWER_FILE = "/tmp/rlm_answer.json"
 
     def __init__(
         self,
@@ -1799,9 +1114,7 @@ class RLMEnv(SandboxEnv):
         sub_llm_stagger_ms: int = 200,
         sub_llm_stagger_jitter_ms: int = 50,
         context_key: str = "context",
-        context_dtype: str | None = None,
-        data_serializers: list[DataSerializer] | None = None,
-        serializer_registry: SerializerRegistry | None = None,
+        context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
         interception_host: str | None = None,
         interception_port: int = 8766,
@@ -1811,10 +1124,10 @@ class RLMEnv(SandboxEnv):
         context_warning_threshold: float = 0.80,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
-        execution_backend: Literal["sandbox", "local"] = "sandbox",
-        local_venv_scope: Literal["instance", "rollout"] = "instance",
-        disallowed_modules: str = ("os sys pathlib shutil glob tempfile io builtins"),
-        disallowed_builtins: str = "open",
+        retain_filesystem_after_rollout: bool = False,
+        filesystem_copy_max_bytes: int | None = 1_000_000_000,
+        disallowed_modules: str = "",
+        disallowed_builtins: str = "",
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -1848,23 +1161,9 @@ class RLMEnv(SandboxEnv):
         self.sub_llm_stagger_ms = sub_llm_stagger_ms
         self.sub_llm_stagger_jitter_ms = sub_llm_stagger_jitter_ms
         self.context_key = context_key
-        self.context_dtype = context_dtype
-        if serializer_registry is not None and data_serializers is not None:
-            raise ValueError(
-                "Provide either serializer_registry or data_serializers, not both."
-            )
-        if serializer_registry is not None:
-            self.serializer_registry = serializer_registry
-        else:
-            registry = build_default_serializer_registry()
-            for serializer in data_serializers or []:
-                registry.register(serializer, allow_override=True)
-            self.serializer_registry = registry
-        self.data_serializers = self.serializer_registry.all()
+        self.context_dir_key = context_dir_key
         self.custom_system_prompt = system_prompt
-        if execution_backend == "local" and interception_host is None:
-            interception_host = "127.0.0.1"
-        self.interception_host = interception_host
+        self.interception_host = interception_host or "127.0.0.1"
         self.interception_port = interception_port
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
@@ -1872,19 +1171,13 @@ class RLMEnv(SandboxEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
-        self.execution_backend = execution_backend
-        self.local_venv_scope = local_venv_scope
         self.disallowed_modules = disallowed_modules
         self.disallowed_builtins = disallowed_builtins
-        if self.execution_backend not in ("sandbox", "local"):
-            raise ValueError("execution_backend must be 'sandbox' or 'local'.")
-        if self.local_venv_scope not in ("instance", "rollout"):
-            raise ValueError("local_venv_scope must be 'instance' or 'rollout'.")
-        self._interception_bind_host = (
-            "127.0.0.1" if execution_backend == "local" else "0.0.0.0"
-        )
-        # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
-        # This ensures server responds before sandbox worker's HTTP request times out
+        self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
+        self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
+        self._interception_bind_host = self.interception_host
+        # Server-side timeout for LLM API calls (shorter than worker HTTP timeout)
+        # This ensures server responds before the worker request times out
         (
             self.sub_llm_api_timeout,
             self.sub_llm_timeout,
@@ -1920,28 +1213,9 @@ class RLMEnv(SandboxEnv):
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
         self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
-        self.root_tool_serialization = (
-            "pickle" if execution_backend == "local" else "rlm"
-        )
-        self.root_tool_serializer_specs = self._build_root_tool_serializer_specs()
-        self.root_tool_serializers_json = json.dumps(self.root_tool_serializer_specs)
+        self.root_tool_serialization = "pickle"
         self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
             contextvars.ContextVar("rlm_root_tool_context", default=None)
-        )
-
-        self._sandbox_paths = _build_worker_paths("/tmp")
-        worker_script = _render_worker_script(self._sandbox_paths)
-        worker_b64 = base64.b64encode(worker_script.encode("utf-8")).decode("utf-8")
-
-        start_command = _RLM_START_COMMAND_TEMPLATE.format(
-            command_fifo=self._sandbox_paths.command_fifo,
-            response_fifo=self._sandbox_paths.response_fifo,
-            ready_flag=self._sandbox_paths.ready_flag,
-            install_done_flag=self._sandbox_paths.install_done_flag,
-            worker_path=self._sandbox_paths.worker_path,
-            worker_pid_file=self._sandbox_paths.worker_pid_file,
-            worker_b64=worker_b64,
-            pip_install_packages=pip_install_packages,
         )
 
         # Interception server state (shared across rollouts)
@@ -1950,36 +1224,20 @@ class RLMEnv(SandboxEnv):
         self._server_runner: Any = None
         self._server_site: Any = None
 
-        # Tunnel pool for exposing interception server to sandboxes
-        self._tunnel_pool: TunnelPool | None = (
-            TunnelPool(port=interception_port)
-            if execution_backend == "sandbox" and interception_host is None
-            else None
-        )
-
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
         super().__init__(
-            sandbox_name="rlm-env",
-            start_command=start_command,
+            tools=[],
             max_turns=max_iterations,
             rubric=rubric,
             **kwargs,
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
-        self._executor = (
-            LocalRLMExecutor(self)
-            if self.execution_backend == "local"
-            else SandboxRLMExecutor(self)
-        )
+        self._executor = LocalRLMExecutor(self)
 
-        # Remove bash tool from parent - we use our own REPL tool
-        if hasattr(self, "tool_map") and "bash" in self.tool_map:
-            self.remove_tool(self.bash)
-
-        # Add the Python REPL tool (sandbox_id and state are injected via update_tool_args)
-        self.add_tool(self.call_python_repl, args_to_skip=["sandbox_id", "state"])
+        # Add the Python REPL tool (state is injected via update_tool_args)
+        self.add_tool(self.call_python_repl, args_to_skip=["state"])
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -2043,30 +1301,6 @@ class RLMEnv(SandboxEnv):
             llm_batch.__name__ = "llm_batch"
             return llm_batch
         raise ValueError(f"Unsupported fixed tool schema: {name}")
-
-    def _build_root_tool_serializer_specs(self) -> list[dict[str, Any]]:
-        """Build serializer specs for sandbox tool argument serialization."""
-        specs: list[dict[str, Any]] = []
-        for serializer in self.serializer_registry.all():
-            dtype = serializer.dtype
-            if dtype in {"text", "json", "builtin"}:
-                continue
-            if not serializer.serializer_code or not serializer.serializer_function:
-                continue
-            if not serializer.deserializer_code or not serializer.deserializer_function:
-                continue
-            specs.append(
-                {
-                    "dtype": dtype,
-                    "format": None,
-                    "encoding": None,
-                    "serializer_code": serializer.serializer_code,
-                    "serializer_function": serializer.serializer_function,
-                    "deserializer_code": serializer.deserializer_code,
-                    "deserializer_function": serializer.deserializer_function,
-                }
-            )
-        return specs
 
     def _compute_install_wait_seconds(self) -> int:
         """Estimate how long to wait for pip installs based on package count."""
@@ -2172,16 +1406,83 @@ class RLMEnv(SandboxEnv):
 
         return "\n".join(lines)
 
-    def _generate_metadata_documentation(self, metadata: dict[str, Any]) -> str:
-        """Generate a concise summary of input data metadata for the system prompt."""
-        if not metadata:
-            return "No input data metadata available."
+    def _compute_fs_metadata(
+        self, fs_root: str, *, disallow_symlinks: bool = False
+    ) -> dict[str, int]:
+        file_count = 0
+        total_size = 0
+        for root, dirs, files in os.walk(fs_root, followlinks=False):
+            if disallow_symlinks:
+                for name in [*dirs, *files]:
+                    path = os.path.join(root, name)
+                    if os.path.islink(path):
+                        raise ValueError(
+                            f"context_dir contains a symlink, which is not allowed: {path}"
+                        )
+            for name in files:
+                file_count += 1
+                path = os.path.join(root, name)
+                try:
+                    total_size += os.path.getsize(path)
+                except OSError:
+                    continue
+        return {
+            "file_count": file_count,
+            "total_size": total_size,
+            "total_bytes": total_size,
+        }
 
-        lines = ["The environment contains the following input data in `extra_data`:"]
-        for key, value in metadata.items():
-            # Format key for better readability
-            display_key = key.replace("_", " ").title()
-            lines.append(f"- **{display_key}**: `{value}`")
+    def _copy_context_directory(self, src: str, dst: str) -> None:
+        src_path = os.fspath(src)
+        if not os.path.isdir(src_path):
+            raise ValueError(f"context_dir must be a directory: {src_path}")
+        size_limit = self.filesystem_copy_max_bytes
+        if os.path.islink(src_path):
+            raise ValueError(f"context_dir cannot be a symlink: {src_path}")
+        if size_limit is not None:
+            metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
+            total_size = metadata.get("total_size", 0)
+            if total_size > size_limit:
+                raise ValueError(
+                    "Context directory exceeds size limit: "
+                    f"{total_size} bytes > {size_limit} bytes."
+                )
+        else:
+            self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        shutil.copytree(src_path, dst, dirs_exist_ok=True)
+
+    def _write_builtin_context(self, context_data: Any, fs_root: str) -> None:
+        if isinstance(context_data, str):
+            path = os.path.join(fs_root, "context.txt")
+            Path(path).write_text(context_data, encoding="utf-8")
+            return
+        try:
+            payload = json.dumps(context_data, ensure_ascii=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Legacy context data must be JSON-serializable or a raw string."
+            ) from exc
+        path = os.path.join(fs_root, "context.json")
+        Path(path).write_text(payload, encoding="utf-8")
+
+    def _generate_filesystem_summary(
+        self, *, fs_root: str, metadata: dict[str, Any], has_data: bool
+    ) -> str:
+        """Generate a concise summary of filesystem context for the system prompt."""
+        lines = [f"Working directory: {fs_root}"]
+        if has_data:
+            file_count = metadata.get("file_count")
+            total_size = metadata.get("total_size", metadata.get("total_bytes"))
+            if file_count is not None:
+                lines.append(f"File count: {file_count}")
+            if total_size is not None:
+                lines.append(f"Total size (bytes): {total_size}")
+        else:
+            lines.append(
+                "No extra data was provided. The working directory exists but is empty."
+            )
+            lines.append("You can still use this directory for any files you create.")
+        lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
     @staticmethod
@@ -2602,7 +1903,7 @@ class RLMEnv(SandboxEnv):
         return contents, summary_lines
 
     # =========================================================================
-    # Interception Server (for sub-LLM calls from sandbox code)
+    # Interception Server (for sub-LLM calls from worker code)
     # =========================================================================
 
     async def _ensure_interception_server(self):
@@ -2641,67 +1942,6 @@ class RLMEnv(SandboxEnv):
             logger.debug(
                 f"Started RLM interception server on port {self.interception_port}"
             )
-
-    def _deserialize_tool_payload(self, spec: dict[str, Any]) -> Any:
-        payload_b64 = spec.get("payload_b64", "")
-        if not isinstance(payload_b64, str):
-            raise ValueError("Tool payload must include base64-encoded bytes.")
-        try:
-            payload = base64.b64decode(payload_b64)
-        except Exception as exc:
-            raise ValueError("Failed to decode tool payload.") from exc
-
-        dtype = spec.get("dtype", "")
-        deserializer_code = spec.get("deserializer_code")
-        deserializer_function = spec.get("deserializer_function")
-        if deserializer_code and deserializer_function:
-            namespace: dict[str, Any] = {}
-            exec(deserializer_code, namespace)
-            if deserializer_function not in namespace:
-                raise ValueError(
-                    f"Deserializer function '{deserializer_function}' not found."
-                )
-            return namespace[deserializer_function](payload, spec)
-        if dtype == "text":
-            encoding = spec.get("payload_encoding") or "utf-8"
-            return payload.decode(encoding)
-        if dtype == "json":
-            return json.loads(payload.decode("utf-8"))
-        if dtype == "builtin":
-            return deserialize_builtin(payload, spec)
-        raise ValueError(f"Unsupported tool payload dtype: {dtype}")
-
-    def _serialize_tool_result(self, value: Any) -> dict[str, Any]:
-        return self._serialize_tool_value(value)
-
-    def _serialize_tool_value(self, value: Any) -> dict[str, Any]:
-        serializer = self.serializer_registry.resolve(value, None)
-        serialized = serializer.serialize(value)
-        if serialized.inline_data is not None:
-            raise ValueError("Inline tool payloads are not supported.")
-        if serialized.file_bytes is None:
-            raise ValueError("Tool result serialization produced no bytes.")
-
-        deserializer_code = serialized.deserializer_code or serializer.deserializer_code
-        deserializer_function = (
-            serialized.deserializer_function or serializer.deserializer_function
-        )
-        if serialized.dtype not in {"text", "json"} and not (
-            deserializer_code and deserializer_function
-        ):
-            raise ValueError(
-                "Tool serialization requires a deserializer for custom dtypes."
-            )
-
-        return {
-            "dtype": serialized.dtype,
-            "format": serialized.format,
-            "payload_b64": base64.b64encode(serialized.file_bytes).decode("ascii"),
-            "payload_encoding": serialized.encoding,
-            "deserializer_code": deserializer_code,
-            "deserializer_function": deserializer_function,
-            "metadata": serialized.metadata,
-        }
 
     async def _run_sub_llm_request(
         self,
@@ -2803,7 +2043,7 @@ class RLMEnv(SandboxEnv):
         }
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
-        """Handle root tool requests from sandbox/local worker."""
+        """Handle root tool requests from worker."""
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -2815,7 +2055,7 @@ class RLMEnv(SandboxEnv):
             return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
         tool_name = request_body.get("tool_name", "")
-        serialization = request_body.get("serialization", "rlm")
+        serialization = request_body.get("serialization", "pickle")
         if not tool_name:
             return web.json_response({"error": "Tool name not provided"}, status=400)
         if tool_name not in self.root_tool_map:
@@ -2828,27 +2068,14 @@ class RLMEnv(SandboxEnv):
             return web.json_response({"error": "State not available"}, status=500)
 
         try:
-            if serialization == "pickle":
-                args = pickle.loads(base64.b64decode(request_body.get("args", "")))
-                kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
-                if not isinstance(args, tuple):
-                    raise ValueError("Pickle args payload must be a tuple.")
-                if not isinstance(kwargs, dict):
-                    raise ValueError("Pickle kwargs payload must be a dict.")
-            elif serialization == "rlm":
-                args_spec = request_body.get("args", [])
-                kwargs_spec = request_body.get("kwargs", {})
-                if not isinstance(args_spec, list):
-                    raise ValueError("Tool args must be a list.")
-                if not isinstance(kwargs_spec, dict):
-                    raise ValueError("Tool kwargs must be a dict.")
-                args = tuple(self._deserialize_tool_payload(spec) for spec in args_spec)
-                kwargs = {
-                    key: self._deserialize_tool_payload(spec)
-                    for key, spec in kwargs_spec.items()
-                }
-            else:
-                raise ValueError(f"Unsupported tool serialization: {serialization}")
+            if serialization != "pickle":
+                raise ValueError("Only pickle serialization is supported.")
+            args = pickle.loads(base64.b64decode(request_body.get("args", "")))
+            kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
+            if not isinstance(args, tuple):
+                raise ValueError("Pickle args payload must be a tuple.")
+            if not isinstance(kwargs, dict):
+                raise ValueError("Pickle kwargs payload must be a dict.")
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
 
@@ -2890,15 +2117,7 @@ class RLMEnv(SandboxEnv):
         finally:
             self._root_tool_context_var.reset(token)
 
-        if serialization == "pickle":
-            result_payload = base64.b64encode(pickle.dumps(result_value)).decode(
-                "ascii"
-            )
-        else:
-            try:
-                result_payload = self._serialize_tool_result(result_value)
-            except Exception as e:
-                return web.json_response({"error": str(e)}, status=500)
+        result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
 
         response_body: dict[str, Any] = {"result": result_payload}
         if print_lines:
@@ -2906,7 +2125,7 @@ class RLMEnv(SandboxEnv):
         return web.json_response(response_body)
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
-        """Handle sub-LLM requests from sandbox code."""
+        """Handle sub-LLM requests from worker code."""
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -2949,12 +2168,6 @@ class RLMEnv(SandboxEnv):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    @vf.teardown
-    async def teardown_tunnels(self):
-        """Stop all cloudflared tunnel processes."""
-        if self._tunnel_pool:
-            self._tunnel_pool.teardown()
-
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
         async with self._server_lock:
@@ -2992,10 +2205,9 @@ class RLMEnv(SandboxEnv):
         state: State,
         **kwargs,
     ) -> dict[str, Any]:
-        """Inject sandbox_id and state into call_python_repl tool args."""
+        """Inject state into call_python_repl tool args."""
         if tool_name == "call_python_repl":
             updated_args = dict(tool_args)
-            updated_args["sandbox_id"] = state.get("sandbox_id")
             updated_args["state"] = state
             return updated_args
         else:
@@ -3006,22 +2218,19 @@ class RLMEnv(SandboxEnv):
     async def _setup_interception_and_register(
         self, state: State, rollout_id: str
     ) -> State:
-        """Start interception server, configure tunnel, and register rollout."""
+        """Start interception server and register rollout."""
         await self._ensure_interception_server()
 
-        if self._tunnel_pool:
-            tunnel_url = await self._tunnel_pool.get_tunnel_url(
-                len(self.active_rollouts)
-            )
-            interception_url = f"{tunnel_url}/rollout/{rollout_id}/v1/chat/completions"
-            root_tool_url = f"{tunnel_url}/rollout/{rollout_id}/v1/rlm/tools"
-        else:
-            tunnel_url = None
-            interception_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/chat/completions"
-            root_tool_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/rlm/tools"
+        interception_url = (
+            f"http://{self.interception_host}:{self.interception_port}"
+            f"/rollout/{rollout_id}/v1/chat/completions"
+        )
+        root_tool_url = (
+            f"http://{self.interception_host}:{self.interception_port}"
+            f"/rollout/{rollout_id}/v1/rlm/tools"
+        )
 
         state["interception_url"] = interception_url
-        state["tunnel_url"] = tunnel_url
         state["root_tool_url"] = root_tool_url
 
         self.active_rollouts[rollout_id] = {
@@ -3033,60 +2242,60 @@ class RLMEnv(SandboxEnv):
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
-        """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
-        # 1. Create sandbox via parent (sandbox backend only)
-        if self.execution_backend == "sandbox":
-            state = await super().setup_state(state, **kwargs)
-            sandbox_id = state.get("sandbox_id")
-            if not sandbox_id:
-                raise vf.SandboxError() from Exception("Sandbox ID not set")
-        else:
-            state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
-            state["sandbox_state"] = {
-                "ready": False,
-                "ready_wait_time": 0.0,
-                "command_execution_times": [],
-            }
+        """Setup worker, filesystem context, and interception for sub-LLM calls."""
+        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
 
-        # 2. Setup interception, tunnels, and register rollout
+        # 1. Setup interception and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
 
-        # 3. Build context
-        info = state.get("info", {})
-        context_data = info.get(self.context_key, None)
-        disk_size_gb = getattr(self.sandbox_request, "disk_size_gb", None)
-        max_payload_bytes = None
-        if isinstance(disk_size_gb, (int, float)) and disk_size_gb > 0:
-            max_payload_bytes = int(disk_size_gb * 1024**3)
+        # 2. Create rollout directories
+        self._executor.create_rollout_dirs(state)
 
-        payload_dir = await self._executor.get_payload_dir(state)
-        prepared_context = prepare_context_data(
-            context_data,
-            self.context_dtype,
-            self.serializer_registry,
-            max_payload_bytes,
-            payload_dir=payload_dir,
+        # 3. Build filesystem context
+        info = state.get("info") or {}
+        if not isinstance(info, dict):
+            info = {}
+        fs_root = state.get("rlm_fs_root")
+        if not fs_root:
+            raise ValueError("RLM filesystem root not initialized")
+        fs_has_data = False
+        fs_source: str | None = None
+
+        context_dir = info.get(self.context_dir_key)
+        if context_dir:
+            fs_source = str(context_dir)
+            self._copy_context_directory(fs_source, fs_root)
+            fs_has_data = True
+        else:
+            context_data = info.get(self.context_key, None)
+            if context_data is not None:
+                fs_has_data = True
+                self._write_builtin_context(context_data, fs_root)
+
+        fs_metadata = self._compute_fs_metadata(fs_root)
+        state["rlm_fs_root"] = fs_root
+        state["rlm_fs_source"] = fs_source
+        state["rlm_fs_metadata"] = fs_metadata
+        state["rlm_fs_has_data"] = fs_has_data
+        state["retain_filesystem_after_rollout"] = self.retain_filesystem_after_rollout
+
+        filesystem_summary = self._generate_filesystem_summary(
+            fs_root=fs_root,
+            metadata=fs_metadata,
+            has_data=fs_has_data,
         )
-        context_dict = prepared_context.context_dict
-        state["rlm_context"] = context_dict
-        state["rlm_payload_bytes"] = prepared_context.payload_bytes
-        state["rlm_payload_path"] = prepared_context.payload_path
-        state["rlm_payload_name"] = prepared_context.payload_name
-
-        metadata = context_dict.get("input_data_metadata", {})
-        metadata_summary = self._generate_metadata_documentation(metadata)
         base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
-        if "{metadata_summary}" in base_system_prompt:
+        if "{filesystem_summary}" in base_system_prompt:
             # Use replace instead of format to avoid conflict with curly braces from Python code
             base_system_prompt = base_system_prompt.replace(
-                "{metadata_summary}", metadata_summary
+                "{filesystem_summary}", filesystem_summary
             )
         else:
             # If custom prompt doesn't have placeholder, prepend it
-            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+            base_system_prompt = f"{filesystem_summary}\n\n{base_system_prompt}"
 
         packages_docs = self._generate_packages_documentation()
         root_tools_docs = self._generate_root_tools_documentation()
@@ -3107,7 +2316,7 @@ class RLMEnv(SandboxEnv):
         state["rlm_sub_tools"] = [_tool_display_name(tool) for tool in self.sub_tools]
 
         # 4. Prepare backend and start worker
-        await self._executor.setup(state, prepared_context)
+        await self._executor.setup(state)
 
         state["rlm_worker_ready"] = True
 
@@ -3129,9 +2338,7 @@ class RLMEnv(SandboxEnv):
         """Attempt to recover from a code execution timeout via the active backend."""
         return await self._executor.recover_from_timeout(state)
 
-    async def _execute_code(
-        self, sandbox_id: str | None, code: str, state: State
-    ) -> dict[str, Any]:
+    async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
         """Execute code in worker and return result."""
         # Increment and track sequence number for this execution
         seq = state.get("_exec_seq", 0) + 1
@@ -3149,9 +2356,9 @@ class RLMEnv(SandboxEnv):
                 raise vf.SandboxError() from e
             recovered = await self._recover_from_code_timeout(state)
             recovery_note = (
-                " The sandbox was restarted and the REPL state was reset."
+                " The worker was restarted and the REPL state was reset."
                 if recovered
-                else " Failed to restart the sandbox; the REPL may be unusable."
+                else " Failed to restart the worker; the REPL may be unusable."
             )
             # Return error to model so it can try more efficient code
             return {
@@ -3240,21 +2447,21 @@ class RLMEnv(SandboxEnv):
     # REPL Tool
     # =========================================================================
 
-    async def call_python_repl(
-        self, code: str, sandbox_id: str | None, state: Any
-    ) -> str:
+    async def call_python_repl(self, code: str, state: Any) -> str:
         """
         Execute Python code in a persistent REPL environment.
 
         The REPL maintains state across calls and provides access to:
 
-        - `extra_data`: The actual input data you need to process.
+        - Files in the working directory (current working directory is the context root).
+        - `extra_data`: The working directory path (string) for convenience.
+        - `fs_metadata`: Metadata about the filesystem context (file_count, total_size).
 
         - `answer`: A dictionary for your final answer:
           - `answer["content"]`: Your answer (string) - update this as you work
           - `answer["ready"]`: Set to `True` to finish (terminates execution immediately)
 
-        - `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
+        - `llm_batch(prompts)`: Make sub-LLM calls for help with subtasks
           - Takes a list of prompts, returns a list of answers (same order)
           - Useful for semantic understanding, summarization, complex reasoning
           - Prints metadata summary showing tokens and tool calls per sub-LLM
@@ -3271,7 +2478,7 @@ class RLMEnv(SandboxEnv):
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
         # Time the full tool call execution
         execution_start = perf_counter()
-        result = await self._execute_code(sandbox_id, code, state)
+        result = await self._execute_code(code, state)
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
@@ -3373,7 +2580,7 @@ class RLMEnv(SandboxEnv):
     # =========================================================================
 
     async def _ensure_final_answer(self, state: State) -> None:
-        """Read final answer from sandbox if not already set."""
+        """Read final answer from worker if not already set."""
         if "final_answer" in state:
             return
         state["final_answer"] = await self._executor.read_answer(state)
@@ -3404,17 +2611,11 @@ class RLMEnv(SandboxEnv):
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
 
-        # Release tunnel
-        if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
-            await self._tunnel_pool.release_tunnel(tunnel_url)
-
         try:
             await self._executor.cleanup(state)
         finally:
             if not self.active_rollouts:
                 await self._teardown_interception_server()
-                if self._tunnel_pool:
-                    self._tunnel_pool.teardown()
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
@@ -3445,5 +2646,5 @@ class RLMEnv(SandboxEnv):
         state["completion"] = full_conversation[len(state["prompt"]) :]
 
     async def post_rollout(self, state: State):
-        """Read final answer from sandbox if not already set."""
+        """Read final answer from worker if not already set."""
         await self._ensure_final_answer(state)

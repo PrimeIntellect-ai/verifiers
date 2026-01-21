@@ -764,4 +764,4 @@ Newer and more experimental environment classes include:
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
 - **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
-- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Supports `execution_backend="sandbox"` (default) or `"local"` for host execution. User code runs in a Python REPL with a best-effort guardrail that blocks common filesystem modules and `open` by default; customize via `disallowed_modules`/`disallowed_builtins`.
+- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Execution is local-only and uses a filesystem-based context: a provided `context_dir` is copied into the working directory, or legacy JSON-serializable `context` data is written to `context.json`/`context.txt`. User code runs in a Python REPL with a best-effort filesystem jail that restricts access to the working directory; customize additional guardrails via `disallowed_modules`/`disallowed_builtins`.
