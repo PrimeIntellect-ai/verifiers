@@ -3119,6 +3119,31 @@ class RLMEnv(vf.StatefulToolEnv):
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
+        # Inject context limit warning if approaching limit
+        if self.max_seq_len and not state.get("context_warning_sent"):
+            trajectory = state.get("trajectory", [])
+            last_main = next(
+                (
+                    step
+                    for step in reversed(trajectory)
+                    if not step.get("extras", {}).get("is_sub_llm_call")
+                ),
+                None,
+            )
+            response = last_main.get("response") if last_main else None
+            usage = getattr(response, "usage", None) if response else None
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
+            warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
+
+            if prompt_tokens >= warning_threshold:
+                state["context_warning_sent"] = True
+                pct = prompt_tokens / self.max_seq_len
+                output += (
+                    f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
+                    f"{self.max_seq_len:,} tokens ({pct:.0%}). Please finalize your answer "
+                    "soon by setting RLM_READY=1."
+                )
+
         return output
 
     async def call_python_repl(self, code: str, state: Any) -> str:

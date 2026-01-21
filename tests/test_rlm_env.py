@@ -467,6 +467,7 @@ class TestBashToolHelper:
         }
         captured_payload: dict | None = None
         with patch("urllib.request.urlopen") as mock_urlopen:
+
             def _capture_request(req, timeout=300):
                 nonlocal captured_payload
                 data = json.loads(req.data.decode("utf-8"))
@@ -491,18 +492,25 @@ class TestBashToolHelper:
             mock_urlopen.return_value.__enter__.return_value = response
             mock_urlopen.side_effect = _capture_request
             namespace = {"__name__": "__main__"}
-            with patch.dict(os.environ, env, clear=False), patch(
-                "sys.argv", ["rlm_root_tool.py", *argv]
-            ), patch("sys.stdin", io.StringIO(stdin_data)), contextlib.redirect_stdout(
-                stdout_buffer
-            ), contextlib.redirect_stderr(stderr_buffer):
+            with (
+                patch.dict(os.environ, env, clear=False),
+                patch("sys.argv", ["rlm_root_tool.py", *argv]),
+                patch("sys.stdin", io.StringIO(stdin_data)),
+                contextlib.redirect_stdout(stdout_buffer),
+                contextlib.redirect_stderr(stderr_buffer),
+            ):
                 try:
                     exec(helper_source, namespace, namespace)
                 except SystemExit as exc:
                     code = exc.code if isinstance(exc.code, int) else 1
                 else:
                     code = 0
-        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), code, captured_payload
+        return (
+            stdout_buffer.getvalue(),
+            stderr_buffer.getvalue(),
+            code,
+            captured_payload,
+        )
 
     def test_llm_batch_json_arg(self):
         payload = json.dumps({"prompts": ["alpha", "beta"]})
@@ -880,6 +888,36 @@ class TestContextLimitWarning:
         assert "8,000" in output
         assert "10,000" in output
         assert "80%" in output
+        assert state["context_warning_sent"] is True
+
+    @pytest.mark.asyncio
+    async def test_bash_warning_at_threshold(self, rlm_env_bash):
+        rlm_env_bash.max_seq_len = 10000
+        rlm_env_bash._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        mock_response = MagicMock()
+        mock_response.usage = MagicMock(prompt_tokens=8000)
+        state = {
+            "trajectory": [{"response": mock_response}],
+            "context_warning_sent": False,
+        }
+
+        output = await rlm_env_bash.call_bash_repl("echo test", state)
+
+        assert "[CONTEXT LIMIT WARNING]" in output
+        assert "8,000" in output
+        assert "10,000" in output
+        assert "80%" in output
+        assert "RLM_READY=1" in output
         assert state["context_warning_sent"] is True
 
 
