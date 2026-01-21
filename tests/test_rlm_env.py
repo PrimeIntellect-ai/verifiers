@@ -191,17 +191,20 @@ class TestContextFilesystemSetup:
         }
         result = await env.setup_state(state)
 
-        fs_root = Path(result["rlm_fs_root"])
-        control_dir = Path(result["rlm_control_dir"])
-        rollout_dir = Path(result["rlm_rollout_dir"])
+        try:
+            fs_root = Path(result["rlm_fs_root"])
+            control_dir = Path(result["rlm_control_dir"])
+            rollout_dir = Path(result["rlm_rollout_dir"])
 
-        assert fs_root.is_dir()
-        assert (fs_root / "data.txt").read_text(encoding="utf-8") == "hello"
-        assert fs_root.parent == control_dir.parent == rollout_dir
-        assert fs_root.name == "rlm_fs"
-        assert control_dir.name == "rlm_control"
-        assert result["rlm_fs_has_data"] is True
-        assert result["rlm_fs_source"] == str(context_dir)
+            assert fs_root.is_dir()
+            assert (fs_root / "data.txt").read_text(encoding="utf-8") == "hello"
+            assert fs_root.parent == control_dir.parent == rollout_dir
+            assert fs_root.name == "rlm_fs"
+            assert control_dir.name == "rlm_control"
+            assert result["rlm_fs_has_data"] is True
+            assert result["rlm_fs_source"] == str(context_dir)
+        finally:
+            await env.cleanup_rlm_state(result)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_json(self):
@@ -212,12 +215,14 @@ class TestContextFilesystemSetup:
 
         state = {"info": {"context": {"a": 1}}, "model": "m", "client": MagicMock()}
         result = await env.setup_state(state)
-
-        fs_root = Path(result["rlm_fs_root"])
-        context_file = fs_root / "context.json"
-        assert context_file.exists()
-        assert json.loads(context_file.read_text(encoding="utf-8")) == {"a": 1}
-        assert result["rlm_fs_has_data"] is True
+        try:
+            fs_root = Path(result["rlm_fs_root"])
+            context_file = fs_root / "context.json"
+            assert context_file.exists()
+            assert json.loads(context_file.read_text(encoding="utf-8")) == {"a": 1}
+            assert result["rlm_fs_has_data"] is True
+        finally:
+            await env.cleanup_rlm_state(result)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_text(self):
@@ -228,12 +233,14 @@ class TestContextFilesystemSetup:
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
         result = await env.setup_state(state)
-
-        fs_root = Path(result["rlm_fs_root"])
-        context_file = fs_root / "context.txt"
-        assert context_file.exists()
-        assert context_file.read_text(encoding="utf-8") == "hello"
-        assert result["rlm_fs_has_data"] is True
+        try:
+            fs_root = Path(result["rlm_fs_root"])
+            context_file = fs_root / "context.txt"
+            assert context_file.exists()
+            assert context_file.read_text(encoding="utf-8") == "hello"
+            assert result["rlm_fs_has_data"] is True
+        finally:
+            await env.cleanup_rlm_state(result)
 
     @pytest.mark.asyncio
     async def test_setup_state_rejects_symlinks(self, tmp_path: Path):
@@ -278,11 +285,13 @@ class TestContextFilesystemSetup:
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
         result = await env.setup_state(state)
-
-        fs_root = Path(result["rlm_fs_root"])
-        assert fs_root.exists()
-        assert list(fs_root.iterdir()) == []
-        assert result["rlm_fs_has_data"] is False
+        try:
+            fs_root = Path(result["rlm_fs_root"])
+            assert fs_root.exists()
+            assert list(fs_root.iterdir()) == []
+            assert result["rlm_fs_has_data"] is False
+        finally:
+            await env.cleanup_rlm_state(result)
 
     @pytest.mark.asyncio
     async def test_system_prompt_mentions_working_dir_and_empty_context(self):
@@ -293,12 +302,14 @@ class TestContextFilesystemSetup:
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
         result = await env.setup_state(state)
-
-        prompt = result["rlm_system_prompt"]
-        fs_root = result["rlm_fs_root"]
-        assert f"Working directory: {fs_root}" in prompt
-        assert "No extra data was provided" in prompt
-        assert "can still use this directory" in prompt
+        try:
+            prompt = result["rlm_system_prompt"]
+            fs_root = result["rlm_fs_root"]
+            assert f"Working directory: {fs_root}" in prompt
+            assert "No extra data was provided" in prompt
+            assert "can still use this directory" in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
 
 
 class TestFilesystemCleanup:
@@ -459,32 +470,38 @@ class TestToolSplitConfiguration:
 
         state = {"info": {}, "model": "test-model", "client": MagicMock()}
         result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "Root REPL Tools" in prompt
+            assert "Sub-LLM Tools" in prompt
 
-        prompt = result["rlm_system_prompt"]
-        assert "Root REPL Tools" in prompt
-        assert "Sub-LLM Tools" in prompt
+            root_index = prompt.find("Root REPL Tools")
+            sub_index = prompt.find("Sub-LLM Tools")
+            assert root_index != -1
+            assert sub_index != -1
+            assert root_index < sub_index
 
-        root_index = prompt.find("Root REPL Tools")
-        sub_index = prompt.find("Sub-LLM Tools")
-        assert root_index != -1
-        assert sub_index != -1
-        assert root_index < sub_index
+            root_section = prompt[root_index:sub_index]
+            sub_section = prompt[sub_index:]
 
-        root_section = prompt[root_index:sub_index]
-        sub_section = prompt[sub_index:]
+            assert "llm_batch" in root_section
+            assert root_section.find("llm_batch") < root_section.find("shared_tool")
+            assert root_section.find("shared_tool") < root_section.find("root_tool")
 
-        assert "llm_batch" in root_section
-        assert root_section.find("llm_batch") < root_section.find("shared_tool")
-        assert root_section.find("shared_tool") < root_section.find("root_tool")
+            assert "shared_tool" in sub_section
+            assert "sub_tool" in sub_section
+            assert "root_tool" not in sub_section
+            assert sub_section.find("shared_tool") < sub_section.find("sub_tool")
 
-        assert "shared_tool" in sub_section
-        assert "sub_tool" in sub_section
-        assert "root_tool" not in sub_section
-        assert sub_section.find("shared_tool") < sub_section.find("sub_tool")
-
-        assert result["rlm_shared_tools"] == ["shared_tool"]
-        assert result["rlm_root_tools"] == ["llm_batch", "shared_tool", "root_tool"]
-        assert result["rlm_sub_tools"] == ["shared_tool", "sub_tool"]
+            assert result["rlm_shared_tools"] == ["shared_tool"]
+            assert result["rlm_root_tools"] == [
+                "llm_batch",
+                "shared_tool",
+                "root_tool",
+            ]
+            assert result["rlm_sub_tools"] == ["shared_tool", "sub_tool"]
+        finally:
+            await env.cleanup_rlm_state(result)
 
 
 # =============================================================================
