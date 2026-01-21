@@ -98,9 +98,9 @@
 - The bash worker is a Python script that:
   - Creates a PTY and runs bash --noprofile --norc in fs_root.
   - Defines root tool functions in the bash session (llm_batch + root tools).
-  - For each command, emits a hidden end-marker and a hidden env-marker,
-    then reads the PTY until the markers arrive.
-  - Strips markers before returning output.
+  - For each command, emits a hidden end-marker and a hidden env-marker.
+  - Reads until the env-marker newline to ensure full content capture.
+  - Strips markers and returns RLM_READY and RLM_CONTENT in the JSON response.
 
 ### Exit Codes
 - Non-zero exit codes do not automatically change the output.

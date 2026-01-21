@@ -881,8 +881,11 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
                 if not chunk:
                     break
                 buffer += chunk
-                if marker in buffer:
-                    break
+                marker_idx = buffer.find(marker)
+                if marker_idx != -1:
+                    tail = buffer[marker_idx + len(marker) :]
+                    if b"\\n" in tail:
+                        break
         return buffer
 
     def _parse_bool(value: str) -> bool:
@@ -1382,7 +1385,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
         )
 
         if self.env.repl_language == "python":
-            python_path = self._venv_python(session.venv_path)
+            venv_path = session.venv_path
+            if venv_path is None:
+                raise vf.SandboxError() from Exception("Local venv not initialized")
+            python_path = self._venv_python(venv_path)
         else:
             python_path = sys.executable
         with open(session.paths.log_file, "a", encoding="utf-8") as log_file:

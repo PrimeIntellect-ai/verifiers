@@ -439,6 +439,7 @@ class TestBashWorkerScript:
         )
         script = rlm_module._render_worker_script(paths, repl_language="bash")
         assert '"$?"' in script
+        assert "__RLM_ENV__" in script
 
 
 # =============================================================================
