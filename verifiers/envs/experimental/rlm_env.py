@@ -1068,25 +1068,25 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
             os.write(master_fd, cmd.encode("utf-8"))
         except Exception as exc:
             result = {
-                \"status\": \"error\",
-                \"stdout\": \"\",
-                \"stderr\": \"\",
-                \"result\": f\"Failed to write to bash session: {exc}\",
-                \"execution_count\": execution_count,
-                \"seq\": seq,
-                \"answer\": {\"ready\": False, \"content\": \"\"},
+                "status": "error",
+                "stdout": "",
+                "stderr": "",
+                "result": f"Failed to write to bash session: {exc}",
+                "execution_count": execution_count,
+                "seq": seq,
+                "answer": {"ready": False, "content": ""},
             }
-            with open(RESPONSE_FIFO, \"w\", encoding=\"utf-8\") as response_file:
+            with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
                 response_file.write(json.dumps(result))
             continue
 
-        raw = _read_until_marker(env_marker.encode(\"utf-8\"))
-        text = raw.decode(\"utf-8\", errors=\"replace\")
+        raw = _read_until_marker(env_marker.encode("utf-8"))
+        text = raw.decode("utf-8", errors="replace")
 
         output = text
         exit_code = None
-        ready_val = \"\"
-        content_val = \"\"
+        ready_val = ""
+        content_val = ""
 
         end_idx = text.find(end_marker)
         if end_idx != -1:
@@ -1103,39 +1103,39 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
         env_idx = text.find(env_marker)
         if env_idx != -1:
             after_env = text[env_idx + len(env_marker):]
-            if after_env.startswith(\"__\"):
+            if after_env.startswith("__"):
                 after_env = after_env[2:]
-                parts = after_env.split(\"__\", 1)
+                parts = after_env.split("__", 1)
                 if len(parts) == 2:
                     ready_val = parts[0]
-                    content_b64 = parts[1].split(\"\\n\", 1)[0]
+                    content_b64 = parts[1].split("\\n", 1)[0]
                     if content_b64:
                         try:
                             content_val = base64.b64decode(content_b64).decode(
-                                \"utf-8\", errors=\"replace\"
+                                "utf-8", errors="replace"
                             )
                         except Exception:
-                            content_val = \"\"
+                            content_val = ""
 
-        answer = {\"ready\": _parse_bool(ready_val), \"content\": content_val}
-        Path(ANSWER_FILE).write_text(json.dumps(answer), encoding=\"utf-8\")
+        answer = {"ready": _parse_bool(ready_val), "content": content_val}
+        Path(ANSWER_FILE).write_text(json.dumps(answer), encoding="utf-8")
 
-        status = \"ok\"
+        status = "ok"
         if process.poll() is not None:
-            status = \"error\"
-            output = output + f\"\\nBash session exited with code {process.returncode}\\n\"
+            status = "error"
+            output = output + f"\\nBash session exited with code {process.returncode}\\n"
 
         result = {
-            \"status\": status,
-            \"stdout\": output,
-            \"stderr\": \"\",
-            \"result\": None,
-            \"execution_count\": execution_count,
-            \"seq\": seq,
-            \"answer\": answer,
+            "status": status,
+            "stdout": output,
+            "stderr": "",
+            "result": None,
+            "execution_count": execution_count,
+            "seq": seq,
+            "answer": answer,
         }
 
-        with open(RESPONSE_FIFO, \"w\", encoding=\"utf-8\") as response_file:
+        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
             response_file.write(json.dumps(result))
     """
 )
@@ -2007,8 +2007,8 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.repl_language == "bash":
             lines.append(
                 "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
-                "structured args/kwargs, use `tool_name --json '{\"args\": [...], "
-                "\"kwargs\": {...}}'` or provide the JSON via stdin."
+                'structured args/kwargs, use `tool_name --json \'{"args": [...], '
+                '"kwargs": {...}}\'` or provide the JSON via stdin.'
             )
             lines.append(
                 "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
