@@ -128,8 +128,11 @@ def install_from_hub(env_id: str) -> bool:
         response.raise_for_status()
         data = response.json()
         details = data.get("data", data)
-    except requests.HTTPError as e:
+    except requests.RequestException as e:
         logger.error(f"Failed to fetch environment details: {e}")
+        return False
+    except ValueError as e:
+        logger.error(f"Invalid response from Environments Hub: {e}")
         return False
 
     simple_index_url = details.get("simple_index_url")
