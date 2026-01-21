@@ -4,6 +4,7 @@ import base64
 import json
 import pickle
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -328,8 +329,11 @@ class TestFilesystemCleanup:
         rollout_dir = Path(result["rlm_rollout_dir"])
         assert rollout_dir.exists()
 
-        await env.cleanup_rlm_state(result)
-        assert rollout_dir.exists()
+        try:
+            await env.cleanup_rlm_state(result)
+            assert rollout_dir.exists()
+        finally:
+            shutil.rmtree(rollout_dir, ignore_errors=True)
 
 
 # =============================================================================
