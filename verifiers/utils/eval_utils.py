@@ -99,7 +99,12 @@ def load_toml_config(path: Path) -> list[dict]:
         raw_config = tomllib.load(f)
 
     # validate schema
-    eval_list: list[dict] = raw_config.get("eval", [])
+    eval_list = raw_config.get("eval", [])
+    if not isinstance(eval_list, list):
+        raise ValueError(
+            f"Config file uses [eval] but should use [[eval]] (double brackets) "
+            f"for array of tables: {path}"
+        )
     if not eval_list:
         raise ValueError(
             f"Config file must contain at least one [[eval]] section: {path}"
