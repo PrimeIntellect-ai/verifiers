@@ -20,7 +20,7 @@ Environment for running custom agent code inside sandboxes. Intercepts the agent
 
 ## RLMEnv
 
-Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a Python REPL and can spawn sub-LLM calls to process chunks of the context recursively. Execution is local-only; extra context is provided as a filesystem (either a copied `context_dir` or JSON-serializable `context` written to `context.json`/`context.txt`). User code is restricted to the working directory via a best-effort filesystem jail; customize additional guardrails via `disallowed_modules` and `disallowed_builtins`.
+Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a REPL (`repl_language="bash"` by default, or `repl_language="python"` for the Python REPL) and can spawn sub-LLM calls to process chunks of the context recursively. Execution is local-only; extra context is provided as a filesystem (either a copied `context_dir` or JSON-serializable `context` written to `context.json`/`context.txt`). Python mode uses a best-effort filesystem jail; customize additional guardrails via `disallowed_modules` and `disallowed_builtins`.
 
 Tool split:
 
@@ -28,4 +28,4 @@ Tool split:
 - `root_tools`: REPL-only tools (host-executed)
 - `sub_tools`: tools exposed to sub-LLMs
 
-`llm_batch` is a fixed root tool and always available.
+`llm_batch` is a fixed root tool and always available (callable as a shell command in Bash mode, or a Python function in Python mode).

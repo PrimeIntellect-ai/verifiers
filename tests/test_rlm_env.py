@@ -2,6 +2,8 @@
 
 import ast
 import base64
+import contextlib
+import io
 import json
 import os
 import pickle
@@ -33,6 +35,13 @@ def make_dataset(info: dict) -> Dataset:
 def build_env(dataset: Dataset, **kwargs) -> RLMEnv:
     with patch("verifiers.envs.environment.signal.signal"):
         return RLMEnv(dataset=dataset, **kwargs)
+
+
+def extract_bash_helper_source() -> str:
+    template = rlm_module._RLM_BASH_TOOL_HELPER_SCRIPT
+    if "def main" in template:
+        return template
+    return template
 
 
 # =============================================================================
@@ -440,6 +449,163 @@ class TestBashWorkerScript:
         script = rlm_module._render_worker_script(paths, repl_language="bash")
         assert '"$?"' in script
         assert "__RLM_ENV__" in script
+
+
+class TestBashToolHelper:
+    def _run_helper(
+        self, argv: list[str], stdin_data: str = ""
+    ) -> tuple[str, str, int, dict | None]:
+        helper_source = extract_bash_helper_source()
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        env = {
+            "RLM_ROOT_TOOL_URL": "http://example.invalid/",
+            "RLM_ROOT_TOOL_SERIALIZATION": "pickle",
+        }
+        captured_payload: dict | None = None
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            def _capture_request(req, timeout=300):
+                nonlocal captured_payload
+                data = json.loads(req.data.decode("utf-8"))
+                args = list(pickle.loads(base64.b64decode(data["args"])))
+                kwargs = pickle.loads(base64.b64decode(data["kwargs"]))
+                captured_payload = {
+                    "tool_name": data.get("tool_name"),
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+                return response
+
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.__exit__.return_value = None
+            response.read.return_value = json.dumps(
+                {
+                    "result": base64.b64encode(pickle.dumps(["ok"])).decode("ascii"),
+                    "error": None,
+                }
+            ).encode("utf-8")
+            mock_urlopen.return_value.__enter__.return_value = response
+            mock_urlopen.side_effect = _capture_request
+            namespace = {"__name__": "__main__"}
+            with patch.dict(os.environ, env, clear=False), patch(
+                "sys.argv", ["rlm_root_tool.py", *argv]
+            ), patch("sys.stdin", io.StringIO(stdin_data)), contextlib.redirect_stdout(
+                stdout_buffer
+            ), contextlib.redirect_stderr(stderr_buffer):
+                try:
+                    exec(helper_source, namespace, namespace)
+                except SystemExit as exc:
+                    code = exc.code if isinstance(exc.code, int) else 1
+                else:
+                    code = 0
+        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), code, captured_payload
+
+    def test_llm_batch_json_arg(self):
+        payload = json.dumps({"prompts": ["alpha", "beta"]})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "llm_batch", "--json", payload]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "ok" in stdout
+        assert captured is not None
+        assert captured["tool_name"] == "llm_batch"
+        assert captured["args"][0] == ["alpha", "beta"]
+        assert captured["kwargs"] == {}
+
+    def test_tool_json_args_kwargs(self):
+        payload = json.dumps({"args": [1, 2], "kwargs": {"x": "y"}})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", payload]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "ok" in stdout
+        assert captured is not None
+        assert captured["tool_name"] == "other_tool"
+        assert captured["args"] == [1, 2]
+        assert captured["kwargs"] == {"x": "y"}
+
+    def test_llm_batch_positional_args(self):
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "llm_batch", "first", "second"]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "ok" in stdout
+        assert captured is not None
+        assert captured["args"][0] == ["first", "second"]
+
+    def test_llm_batch_json_stdin(self):
+        payload = json.dumps({"prompts": ["stdin"]})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "llm_batch", "--json"], stdin_data=payload
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "ok" in stdout
+        assert captured is not None
+        assert captured["args"][0] == ["stdin"]
+
+    def test_tool_json_kwargs_only(self):
+        payload = json.dumps({"flag": True, "name": "test"})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", payload]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert captured is not None
+        assert captured["args"] == []
+        assert captured["kwargs"] == {"flag": True, "name": "test"}
+
+    def test_tool_json_list_args(self):
+        payload = json.dumps([1, "two", False])
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", payload]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert captured is not None
+        assert captured["args"] == [1, "two", False]
+        assert captured["kwargs"] == {}
+
+    def test_tool_json_scalar_arg(self):
+        payload = json.dumps("solo")
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", payload]
+        )
+        assert code == 0
+        assert stderr == ""
+        assert captured is not None
+        assert captured["args"] == ["solo"]
+        assert captured["kwargs"] == {}
+
+    def test_tool_json_extra_args_error(self):
+        payload = json.dumps({"args": [1]})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", payload, "extra"]
+        )
+        assert code != 0
+        assert "does not accept extra args" in stderr
+        assert captured is None
+
+    def test_llm_batch_json_extra_args_error(self):
+        payload = json.dumps({"prompts": ["x"]})
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "llm_batch", "--json", payload, "extra"]
+        )
+        assert code != 0
+        assert "does not accept extra args" in stderr
+        assert captured is None
+
+    def test_tool_json_invalid_error(self):
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "other_tool", "--json", "{invalid"]
+        )
+        assert code != 0
+        assert "Invalid JSON payload" in stderr
+        assert captured is None
 
 
 # =============================================================================

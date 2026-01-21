@@ -732,10 +732,45 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             sys.stdout.write(item)
 
 
+    def _load_json_payload(json_payload):
+        raw = json_payload
+        if raw is None and not sys.stdin.isatty():
+            raw = sys.stdin.read().strip()
+        if not raw:
+            raise RuntimeError("Missing JSON payload.")
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            raise RuntimeError(f"Invalid JSON payload: {exc}") from exc
+
+
+    def _coerce_args_kwargs(data):
+        if isinstance(data, dict):
+            if "args" in data or "kwargs" in data:
+                args = data.get("args", [])
+                kwargs = data.get("kwargs", {})
+            else:
+                args = []
+                kwargs = data
+        elif isinstance(data, list):
+            args = data
+            kwargs = {}
+        else:
+            args = [data]
+            kwargs = {}
+        if not isinstance(args, (list, tuple)):
+            raise RuntimeError("JSON args must be a list.")
+        if not isinstance(kwargs, dict):
+            raise RuntimeError("JSON kwargs must be an object.")
+        return list(args), kwargs
+
+
     def main():
         argv = sys.argv[1:]
         tool_name = None
         use_lines = False
+        use_json = False
+        json_payload = None
         args = []
         while argv:
             token = argv.pop(0)
@@ -745,6 +780,10 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 tool_name = argv.pop(0)
             elif token == "--lines":
                 use_lines = True
+            elif token == "--json":
+                use_json = True
+                if argv and not argv[0].startswith("--"):
+                    json_payload = argv.pop(0)
             else:
                 args.append(token)
 
@@ -752,15 +791,79 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             raise RuntimeError("Tool name not provided")
 
         if tool_name == "llm_batch":
-            if use_lines:
+            def _coerce_prompts(data):
+                if isinstance(data, dict):
+                    if "prompts" in data:
+                        return data["prompts"]
+                    if "messages" in data:
+                        return data["messages"]
+                    if "prompt" in data:
+                        return [data["prompt"]]
+                    return [data]
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, str):
+                    return [data]
+                return [data]
+
+            prompts = []
+            if use_json:
+                if args:
+                    raise RuntimeError("llm_batch --json does not accept extra args.")
+                data = _load_json_payload(json_payload)
+                if isinstance(data, dict) and "prompts" in data:
+                    prompts = data["prompts"]
+                elif isinstance(data, dict) and ("args" in data or "kwargs" in data):
+                    parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
+                    if "prompts" in parsed_kwargs:
+                        prompts = parsed_kwargs["prompts"]
+                    elif parsed_args:
+                        prompts = parsed_args
+                    else:
+                        raise RuntimeError(
+                            "llm_batch --json requires 'prompts' or non-empty 'args'."
+                        )
+                else:
+                    prompts = _coerce_prompts(data)
+            elif use_lines:
                 prompts = sys.stdin.read().splitlines()
-            else:
-                prompts = list(args)
+            elif args:
+                if len(args) == 1:
+                    raw_arg = args[0].strip()
+                    if raw_arg.startswith("{") or raw_arg.startswith("["):
+                        try:
+                            data = json.loads(raw_arg)
+                        except Exception:
+                            prompts = [args[0]]
+                        else:
+                            prompts = _coerce_prompts(data)
+                    else:
+                        prompts = list(args)
+                else:
+                    prompts = list(args)
+            elif not sys.stdin.isatty():
+                raw = sys.stdin.read().strip()
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        prompts = [raw]
+                    else:
+                        prompts = _coerce_prompts(data)
             result = _call_root_tool(tool_name, (prompts,), {})
             if isinstance(result, list):
                 _print_llm_batch_result(result)
             else:
                 _print_result(result)
+            return
+
+        if use_json:
+            if args:
+                raise RuntimeError("--json does not accept extra args.")
+            data = _load_json_payload(json_payload)
+            parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
+            result = _call_root_tool(tool_name, tuple(parsed_args), parsed_kwargs)
+            _print_result(result)
             return
 
         parsed_args = tuple(_decode_arg(arg) for arg in args)
@@ -1118,6 +1221,11 @@ export RLM_READY=1
 1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
+4. **Tool usage in Bash**:
+   - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
+   - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
+     (or provide the JSON via stdin).
+   - `llm_batch` accepts `--json` with `{"prompts":[...]}`
 """
 
 
@@ -1830,6 +1938,15 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append(
             "These tools run on the host and are only accessible from within the REPL."
         )
+        if self.repl_language == "bash":
+            lines.append(
+                "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
+                "structured args/kwargs, use `tool_name --json '{\"args\": [...], "
+                "\"kwargs\": {...}}'` or provide the JSON via stdin."
+            )
+            lines.append(
+                "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
+            )
         lines.append("")
 
         return "\n".join(lines)
