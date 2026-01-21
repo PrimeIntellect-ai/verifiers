@@ -37,6 +37,7 @@ import tempfile
 import textwrap
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -1257,6 +1258,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
         super().__init__(env)
         self._sessions: dict[str, LocalRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
+        self._io_executor = ThreadPoolExecutor(max_workers=4)
 
     def create_rollout_dirs(self, state: State) -> None:
         session = self._get_or_create_session(state)
@@ -1293,7 +1295,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         try:
             raw = await asyncio.wait_for(
-                asyncio.to_thread(_do_io),
+                asyncio.get_running_loop().run_in_executor(self._io_executor, _do_io),
                 timeout=self.env.code_execution_timeout,
             )
         except asyncio.TimeoutError as e:
@@ -1355,6 +1357,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 finally:
                     if session.rollout_dir not in self._retained_dirs:
                         shutil.rmtree(session.rollout_dir, True)
+        self._io_executor.shutdown(wait=False, cancel_futures=True)
 
     def _get_or_create_session(self, state: State) -> LocalRLMReplSession:
         rollout_id = state.get("rollout_id")
