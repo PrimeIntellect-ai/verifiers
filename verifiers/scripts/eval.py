@@ -4,9 +4,8 @@ import importlib.resources
 import json
 import logging
 import os
-from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 try:
     import tomllib  # type: ignore[unresolved-import]
@@ -14,28 +13,33 @@ except ImportError:
     import tomli as tomllib  # type: ignore[unresolved-import]
 
 from verifiers import setup_logging
-from verifiers.types import ClientConfig, EvalConfig, MultiEvalConfig
+from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
-    run_multi_evaluation,
+    run_evaluations,
 )
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_ENV_DIR_PATH = "./environments"
+DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.py"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
+DEFAULT_MAX_CONCURRENT = 32
+DEFAULT_SAVE_EVERY = -1
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
-def get_env_eval_defaults(env_id: str) -> Dict[str, Any]:
+def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from environment package's pyproject.toml.
 
     Returns dict with 'num_examples' and 'rollouts_per_example' keys if found,
     otherwise returns empty dict. All errors are silently handled.
     """
-    defaults: Dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     module_name = env_id.replace("-", "_").split("/")[-1]
 
     try:
@@ -77,10 +81,10 @@ def get_env_eval_defaults(env_id: str) -> Dict[str, Any]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "env_id_or_path",
+        "env_id_or_config",
         type=str,
         default="gsm8k",
-        help="Environment module name(s) (comma-separated) or path to TOML config.",
+        help="Environment module name or path to TOML config file.",
     )
     parser.add_argument(
         "--env-args",
@@ -93,21 +97,21 @@ def main():
         "--env-dir-path",
         "-p",
         type=str,
-        default="./environments",
+        default=DEFAULT_ENV_DIR_PATH,
         help="Path to environments directory",
     )
     parser.add_argument(
         "--endpoints-path",
         "-e",
         type=str,
-        default="./configs/endpoints.py",
+        default=DEFAULT_ENDPOINTS_PATH,
         help="Path to API endpoints registry",
     )
     parser.add_argument(
         "--model",
         "-m",
         type=str,
-        default="openai/gpt-4.1-mini",
+        default=DEFAULT_MODEL,
         help="Name of model to evaluate",
     )
     parser.add_argument(
@@ -154,7 +158,7 @@ def main():
         "--max-concurrent",
         "-c",
         type=int,
-        default=32,
+        default=DEFAULT_MAX_CONCURRENT,
         help="Maximum number of concurrent requests",
     )
     parser.add_argument(
@@ -213,13 +217,12 @@ def main():
         action="store_true",
         help="Save results to disk",
     )
-    # save every n rollouts
     parser.add_argument(
         "--save-every",
         "-f",
         type=int,
-        default=-1,
-        help="Save dataset every n rollouts",
+        default=DEFAULT_SAVE_EVERY,
+        help="Save dataset every n rollouts (-1 to disable)",
     )
     parser.add_argument(
         "--independent-scoring",
@@ -249,63 +252,56 @@ def main():
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=0,
+        help="Max retries for transient infrastructure errors (default: 0)",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
-    # resolve env_id_or_path: TOML config > comma-separated list > single env ID
-    if args.env_id_or_path.endswith(".toml"):
-        # path looks like a TOML config file
-        path = Path(args.env_id_or_path)
+    # Build raw configs: both paths produce list[dict]
+    if args.env_id_or_config.endswith(".toml"):
+        path = Path(args.env_id_or_config)
         if not path.is_file():
             raise FileNotFoundError(
                 f"TOML config file not found: {path}\nPlease check the path is correct."
             )
-        raw_multi_env_config = load_toml_config(path)
-    elif "," in args.env_id_or_path:
-        # multi-env eval via comma-separated list
-        env_ids = [
-            env_id.strip()
-            for env_id in args.env_id_or_path.split(",")
-            if env_id.strip()
-        ]
-        if not env_ids:
-            raise ValueError(
-                f"No valid env_ids found in comma-separated list {args.env_id_or_path!r}"
-            )
-        raw_multi_env_config = [{"env_id": env_id} for env_id in env_ids]
+        raw_eval_configs = load_toml_config(path)
     else:
-        # single-eval env
-        raw_multi_env_config = [{"env_id": args.env_id_or_path}]
+        # CLI path: convert args to dict
+        raw_config = {"env_id": args.env_id_or_config}
+        raw_config.update(vars(args))
+        raw_eval_configs = [raw_config]
 
-    def resolve_eval_config(raw_env_config: dict) -> EvalConfig:
-        """Resolve per-env eval config. TOML > CLI > Env Defaults > Global Defaults"""
-        assert "env_id" in raw_env_config
-        env_id = raw_env_config.pop("env_id")
+    def build_eval_config(raw: dict) -> EvalConfig:
+        """Build EvalConfig from a raw config dict."""
+        env_id = raw["env_id"]
 
-        # toml > cli overrides
-        env_args = deepcopy(args)
-        for key, val in raw_env_config.items():
-            setattr(env_args, key, val)
-
+        # Resolve num_examples and rollouts_per_example with env defaults
         env_defaults = get_env_eval_defaults(env_id)
+        raw_num_examples = raw.get("num_examples")
+        raw_rollouts = raw.get("rollouts_per_example")
+
         num_examples = (
-            env_args.num_examples
-            if env_args.num_examples is not None
+            raw_num_examples
+            if raw_num_examples is not None
             else env_defaults.get("num_examples", DEFAULT_NUM_EXAMPLES)
         )
         rollouts_per_example = (
-            env_args.rollouts_per_example
-            if env_args.rollouts_per_example is not None
+            raw_rollouts
+            if raw_rollouts is not None
             else env_defaults.get("rollouts_per_example", DEFAULT_ROLLOUTS_PER_EXAMPLE)
         )
 
-        if env_args.num_examples is None:
+        if raw_num_examples is None:
             source = (
                 "pyproject.toml" if "num_examples" in env_defaults else "global default"
             )
             logger.debug(f"Using num_examples={num_examples} from {source}")
-        if env_args.rollouts_per_example is None:
+        if raw_rollouts is None:
             source = (
                 "pyproject.toml"
                 if "rollouts_per_example" in env_defaults
@@ -315,26 +311,30 @@ def main():
                 f"Using rollouts_per_example={rollouts_per_example} from {source}"
             )
 
-        # load endpoints and get model config
-        endpoints = load_endpoints(env_args.endpoints_path)
-        api_key_override = env_args.api_key_var is not None
-        api_base_url_override = env_args.api_base_url is not None
+        # Resolve model and endpoint config
+        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
+        endpoints = load_endpoints(endpoints_path)
 
-        # use local variable to avoid mutating args.model across loop iterations
-        model = env_args.model
-        if env_args.model in endpoints:
-            endpoint = endpoints[env_args.model]
-            api_key_var = env_args.api_key_var if api_key_override else endpoint["key"]
+        raw_model = raw.get("model", DEFAULT_MODEL)
+        raw_api_key_var = raw.get("api_key_var")
+        raw_api_base_url = raw.get("api_base_url")
+
+        api_key_override = raw_api_key_var is not None
+        api_base_url_override = raw_api_base_url is not None
+
+        if raw_model in endpoints:
+            endpoint = endpoints[raw_model]
+            api_key_var = raw_api_key_var if api_key_override else endpoint["key"]
             api_base_url = (
-                env_args.api_base_url if api_base_url_override else endpoint["url"]
+                raw_api_base_url if api_base_url_override else endpoint["url"]
             )
             model = endpoint["model"]
             if api_key_override or api_base_url_override:
                 logger.debug(
-                    "Using endpoint registry for model '%s' with CLI overrides (key: %s, url: %s)",
+                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s)",
                     model,
-                    "cli" if api_key_override else "registry",
-                    "cli" if api_base_url_override else "registry",
+                    "override" if api_key_override else "registry",
+                    "override" if api_base_url_override else "registry",
                 )
             else:
                 logger.debug(
@@ -343,31 +343,28 @@ def main():
                 )
         else:
             logger.debug(
-                "Model '%s' not found in endpoint registry, using command-line arguments",
-                model,
+                "Model '%s' not found in endpoint registry, using defaults",
+                raw_model,
             )
-            api_key_var = (
-                env_args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
-            )
+            model = raw_model
+            api_key_var = raw_api_key_var if api_key_override else DEFAULT_API_KEY_VAR
             api_base_url = (
-                env_args.api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
+                raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
             )
 
-        # merge sampling args with precedence to JSON payload over explicit flags
+        # Merge sampling args
         merged_sampling_args: dict = {}
-        if env_args.sampling_args is not None:
-            merged_sampling_args.update(env_args.sampling_args)
+        if raw.get("sampling_args") is not None:
+            merged_sampling_args.update(raw["sampling_args"])
         if "max_tokens" not in merged_sampling_args:
-            merged_sampling_args["max_tokens"] = env_args.max_tokens
-        if (
-            env_args.temperature is not None
-            and "temperature" not in merged_sampling_args
-        ):
-            merged_sampling_args["temperature"] = env_args.temperature
+            merged_sampling_args["max_tokens"] = raw.get("max_tokens")
+        raw_temp = raw.get("temperature")
+        if raw_temp is not None and "temperature" not in merged_sampling_args:
+            merged_sampling_args["temperature"] = raw_temp
 
-        # Build headers from repeated --header flags
-        merged_headers: Dict[str, str] = {}
-        for h in env_args.header or []:
+        # Build headers
+        merged_headers: dict[str, str] = {}
+        for h in raw.get("header") or []:
             if ":" not in h:
                 raise ValueError(f"--header must be 'Name: Value', got: {h!r}")
             k, v = h.split(":", 1)
@@ -376,49 +373,42 @@ def main():
                 raise ValueError("--header name cannot be empty")
             merged_headers[k] = v
 
+        assert api_key_var is not None
+        assert api_base_url is not None
         client_config = ClientConfig(
             api_key_var=api_key_var,
             api_base_url=api_base_url,
             extra_headers=merged_headers,
         )
 
-        # run evaluation
-        eval_config = EvalConfig(
-            # environment
+        return EvalConfig(
             env_id=env_id,
-            env_args=env_args.env_args,
-            env_dir_path=env_args.env_dir_path,
-            extra_env_kwargs=env_args.extra_env_kwargs,
-            # evaluation
+            env_args=raw.get("env_args", {}),
+            env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            extra_env_kwargs=raw.get("extra_env_kwargs", {}),
             model=model,
             client_config=client_config,
             sampling_args=merged_sampling_args,
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
-            max_concurrent=env_args.max_concurrent,
-            max_concurrent_generation=env_args.max_concurrent_generation,
-            max_concurrent_scoring=env_args.max_concurrent_scoring,
-            # logging
-            verbose=env_args.verbose,
-            # saving
-            state_columns=env_args.state_columns,
-            save_results=env_args.save_results,
-            save_every=env_args.save_every,
-            independent_scoring=env_args.independent_scoring,
-            save_to_hf_hub=env_args.save_to_hf_hub,
-            hf_hub_dataset_name=env_args.hf_hub_dataset_name,
+            max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
+            max_concurrent_generation=raw.get("max_concurrent_generation"),
+            max_concurrent_scoring=raw.get("max_concurrent_scoring"),
+            verbose=raw.get("verbose", False),
+            state_columns=raw.get("state_columns", []),
+            save_results=raw.get("save_results", False),
+            save_every=raw.get("save_every", DEFAULT_SAVE_EVERY),
+            independent_scoring=raw.get("independent_scoring", False),
+            save_to_hf_hub=raw.get("save_to_hf_hub", False),
+            hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
         )
 
-        return eval_config
+    eval_configs = [build_eval_config(raw) for raw in raw_eval_configs]
+    for config in eval_configs:
+        logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
-    eval_configs: list[EvalConfig] = []
-    for raw_env_config in raw_multi_env_config:
-        eval_config = resolve_eval_config(raw_env_config)
-        eval_configs.append(eval_config)
-        logger.debug(f"Evaluation config: {eval_config.model_dump_json(indent=2)}")
-
-    multi_eval_config = MultiEvalConfig(env=eval_configs)
-    asyncio.run(run_multi_evaluation(multi_eval_config))
+    eval_run_config = EvalRunConfig(evals=eval_configs)
+    asyncio.run(run_evaluations(eval_run_config))
 
 
 if __name__ == "__main__":

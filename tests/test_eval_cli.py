@@ -93,7 +93,7 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
         capture_all_configs: if True, returns list of all configs (for multi-env)
     """
     base_args = {
-        "env_id_or_path": "dummy-env",
+        "env_id_or_config": "dummy-env",
         "env_args": {},
         "env_dir_path": "./environments",
         "endpoints_path": "./configs/endpoints.py",
@@ -119,6 +119,7 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
         "save_to_hf_hub": False,
         "hf_hub_dataset_name": "",
         "extra_env_kwargs": {},
+        "max_retries": 0,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)
@@ -173,7 +174,7 @@ def test_cli_single_env_id(monkeypatch):
     captured = _run_cli(
         monkeypatch,
         {
-            "env_id_or_path": "env1",
+            "env_id_or_config": "env1",
         },
     )
 
@@ -250,98 +251,10 @@ def test_cli_temperature_not_added_when_none(monkeypatch):
     assert "temperature" not in sa
 
 
-def test_cli_comma_separated_env_ids(monkeypatch):
-    """CLI with comma-separated env IDs creates multiple eval configs."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "env1,env2,env3",
-            "num_examples": 5,
-            "rollouts_per_example": 3,
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    assert configs[0].env_id == "env1"
-    assert configs[1].env_id == "env2"
-    assert configs[2].env_id == "env3"
-
-
-def test_cli_comma_separated_with_spaces(monkeypatch):
-    """CLI handles spaces around commas in env IDs."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "env1 , env2 , env3",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    assert configs[0].env_id == "env1"
-    assert configs[1].env_id == "env2"
-    assert configs[2].env_id == "env3"
-
-
-def test_cli_comma_separated_with_org_prefix(monkeypatch):
-    """CLI handles org/env format in comma-separated list."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "org/env1,org/env2",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 2
-    assert configs[0].env_id == "org/env1"
-    assert configs[1].env_id == "org/env2"
-
-
-def test_cli_comma_separated_shared_args(monkeypatch):
-    """All comma-separated envs inherit shared CLI args."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "env1,env2,env3",
-            "num_examples": 10,
-            "rollouts_per_example": 4,
-            "max_concurrent": 16,
-            "max_tokens": 512,
-            "temperature": 0.7,
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 3
-    for config in configs:
-        assert config.num_examples == 10
-        assert config.rollouts_per_example == 4
-        assert config.max_concurrent == 16
-        assert config.sampling_args["max_tokens"] == 512
-        assert config.sampling_args["temperature"] == 0.7
-
-
-def test_cli_comma_separated_ignores_empty_entries(monkeypatch):
-    """CLI ignores empty entries from trailing/double commas."""
-    captured = _run_cli(
-        monkeypatch,
-        {
-            "env_id_or_path": "gsm8k,,alphabet-sort,",
-        },
-    )
-
-    configs = captured["configs"]
-    assert len(configs) == 2
-    assert configs[0].env_id == "gsm8k"
-    assert configs[1].env_id == "alphabet-sort"
-
-
-def test_load_toml_config_single_env():
+def test_load_toml_config_single_eval():
     """Single env loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\n')
+        f.write('[[eval]]\nenv_id = "env1"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
         assert len(result) == 1
@@ -351,7 +264,7 @@ def test_load_toml_config_single_env():
 def test_load_toml_config_multi_env():
     """Multiple envs load correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
+        f.write('[[eval]]\nenv_id = "env1"\n\n[[eval]]\nenv_id = "env2"\n')
         f.flush()
         result = load_toml_config(Path(f.name))
         assert len(result) == 2
@@ -363,7 +276,7 @@ def test_load_toml_config_with_env_args():
     """Multiple sections with env_args field loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env1"\n[env.env_args]\nsplit = "train"\nmax_examples = 100\n'
+            '[[eval]]\nenv_id = "env1"\n[eval.env_args]\nsplit = "train"\nmax_examples = 100\n'
         )
         f.flush()
         result = load_toml_config(Path(f.name))
@@ -374,7 +287,7 @@ def test_load_toml_config_with_env_args():
 
 
 def test_load_toml_config_missing_env_section():
-    """TOML without [[env]] section raises ValueError."""
+    """TOML without [[eval]] section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write('model = "env1"\nmax_tokens = 100\n')
         f.flush()
@@ -382,37 +295,37 @@ def test_load_toml_config_missing_env_section():
             load_toml_config(Path(f.name))
 
 
-def test_load_toml_config_empty_env_list():
-    """Empty env list raises ValueError."""
+def test_load_toml_config_empty_eval_list():
+    """Empty eval list raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write("env = []\n")
+        f.write("eval = []\n")
         f.flush()
         with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_missing_env_id():
-    """[[env]] without env_id field raises ValueError."""
+    """[[eval]] without env_id field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nname = "env1"\n')
+        f.write('[[eval]]\nname = "env1"\n')
         f.flush()
         with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_partial_missing_env_id():
-    """Some [[env]] sections missing env_id raises ValueError."""
+    """Some [[eval]] sections missing env_id raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nname = "env2"\n')
+        f.write('[[eval]]\nenv_id = "env1"\n\n[[eval]]\nname = "env2"\n')
         f.flush()
         with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
 
 
 def test_load_toml_config_invalid_field():
-    """[[env]] with invalid field raises ValueError."""
+    """[[eval]] with invalid field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\ninvalid_field = "value"\n')
+        f.write('[[eval]]\nenv_id = "env1"\ninvalid_field = "value"\n')
         f.flush()
         with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
@@ -421,12 +334,12 @@ def test_load_toml_config_invalid_field():
 def test_cli_multi_env_via_toml_config(monkeypatch):
     """CLI with TOML config creates multiple eval configs."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
+        f.write('[[eval]]\nenv_id = "env1"\n\n[[eval]]\nenv_id = "env2"\n')
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
+                "env_id_or_config": f.name,
                 "num_examples": 5,
                 "rollouts_per_example": 2,
             },
@@ -439,42 +352,43 @@ def test_cli_multi_env_via_toml_config(monkeypatch):
     assert configs[1].env_id == "env2"
 
 
-def test_cli_multi_env_shares_common_args(monkeypatch):
-    """All env configs in multi-env inherit common CLI args."""
+def test_cli_toml_ignores_cli_args(monkeypatch):
+    """TOML config ignores CLI args, uses defaults for unspecified values."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env1"\n\n[[env]]\nenv_id = "env2"\n')
+        f.write('[[eval]]\nenv_id = "env1"\n\n[[eval]]\nenv_id = "env2"\n')
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
-                "num_examples": 10,
-                "rollouts_per_example": 4,
-                "max_concurrent": 16,
-                "max_tokens": 512,
+                "env_id_or_config": f.name,
+                "num_examples": 10,  # CLI arg ignored
+                "rollouts_per_example": 4,  # CLI arg ignored
+                "max_concurrent": 16,  # CLI arg ignored
+                "max_tokens": 512,  # CLI arg ignored
             },
         )
 
     configs = captured["configs"]
     for config in configs:
-        assert config.num_examples == 10
-        assert config.rollouts_per_example == 4
-        assert config.max_concurrent == 16
-        assert config.sampling_args["max_tokens"] == 512
+        # Uses global defaults, not CLI args
+        assert config.num_examples == 5  # DEFAULT_NUM_EXAMPLES
+        assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
+        assert config.max_concurrent == 32  # default
+        assert config.sampling_args["max_tokens"] is None  # default
 
 
 def test_cli_toml_per_env_num_examples(monkeypatch):
     """TOML per-env num_examples is used when CLI arg not provided."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env1"\nnum_examples = 10\n\n'
-            '[[env]]\nenv_id = "env2"\nnum_examples = 20\n'
+            '[[eval]]\nenv_id = "env1"\nnum_examples = 10\n\n'
+            '[[eval]]\nenv_id = "env2"\nnum_examples = 20\n'
         )
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
+                "env_id_or_config": f.name,
                 "num_examples": None,  # not provided via CLI
                 "rollouts_per_example": 1,
             },
@@ -492,14 +406,14 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch):
     """TOML per-env rollouts_per_example is used when CLI arg not provided."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env1"\nrollouts_per_example = 3\n\n'
-            '[[env]]\nenv_id = "env2"\nrollouts_per_example = 5\n'
+            '[[eval]]\nenv_id = "env1"\nrollouts_per_example = 3\n\n'
+            '[[eval]]\nenv_id = "env2"\nrollouts_per_example = 5\n'
         )
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
+                "env_id_or_config": f.name,
                 "num_examples": 1,
                 "rollouts_per_example": None,  # not provided via CLI
             },
@@ -511,76 +425,113 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch):
     assert configs[1].rollouts_per_example == 5
 
 
-def test_cli_toml_per_env_overrides_cli_args(monkeypatch):
-    """TOML per-env settings take precedence over CLI args."""
+def test_cli_toml_per_eval_settings_used(monkeypatch):
+    """TOML per-eval settings are used (CLI args ignored when using config)."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env-a"\nnum_examples = 100\nrollouts_per_example = 10\n\n'
-            '[[env]]\nenv_id = "env-b"\nnum_examples = 200\nrollouts_per_example = 20\n'
+            '[[eval]]\nenv_id = "env-a"\nnum_examples = 100\nrollouts_per_example = 10\n\n'
+            '[[eval]]\nenv_id = "env-b"\nnum_examples = 200\nrollouts_per_example = 20\n'
         )
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
-                "num_examples": 5,  # CLI arg (lower priority)
-                "rollouts_per_example": 2,  # CLI arg (lower priority)
+                "env_id_or_config": f.name,
+                "num_examples": 5,  # CLI arg ignored
+                "rollouts_per_example": 2,  # CLI arg ignored
             },
         )
 
     configs = captured["configs"]
-    # TOML per-env settings should override CLI args
+    # TOML per-eval settings are used
     assert configs[0].num_examples == 100
     assert configs[0].rollouts_per_example == 10
     assert configs[1].num_examples == 200
     assert configs[1].rollouts_per_example == 20
 
 
-def test_cli_toml_mixed_per_env_and_cli_fallback(monkeypatch):
-    """TOML with some envs having settings, others fall back to CLI args."""
+def test_cli_toml_mixed_per_env_and_defaults_fallback(monkeypatch):
+    """TOML with some evals having settings, others fall back to global defaults."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[env]]\nenv_id = "env-with-settings"\nnum_examples = 15\nrollouts_per_example = 4\n\n'
-            '[[env]]\nenv_id = "env-without-settings"\n'
+            '[[eval]]\nenv_id = "env-with-settings"\nnum_examples = 15\nrollouts_per_example = 4\n\n'
+            '[[eval]]\nenv_id = "env-without-settings"\n'
         )
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
-                "num_examples": 10,  # CLI fallback for envs without TOML settings
-                "rollouts_per_example": 2,  # CLI fallback
+                "env_id_or_config": f.name,
+                "num_examples": 10,  # CLI arg ignored when using config
+                "rollouts_per_example": 2,  # CLI arg ignored when using config
             },
         )
 
     configs = captured["configs"]
     assert len(configs) == 2
-    # First env uses TOML settings (takes precedence over CLI)
+    # First env uses TOML per-eval settings
     assert configs[0].env_id == "env-with-settings"
     assert configs[0].num_examples == 15
     assert configs[0].rollouts_per_example == 4
-    # Second env uses CLI args as fallback
+    # Second env uses global defaults (CLI args ignored)
     assert configs[1].env_id == "env-without-settings"
-    assert configs[1].num_examples == 10
-    assert configs[1].rollouts_per_example == 2
+    assert configs[1].num_examples == 5  # DEFAULT_NUM_EXAMPLES
+    assert configs[1].rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
 
 
 def test_cli_toml_without_settings_uses_defaults(monkeypatch):
-    """TOML envs without settings and no CLI args use global defaults."""
+    """TOML evals without settings use global defaults."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[env]]\nenv_id = "env-a"\n\n[[env]]\nenv_id = "env-b"\n')
+        f.write('[[eval]]\nenv_id = "env-a"\n\n[[eval]]\nenv_id = "env-b"\n')
         f.flush()
         captured = _run_cli(
             monkeypatch,
             {
-                "env_id_or_path": f.name,
+                "env_id_or_config": f.name,
                 "num_examples": None,
                 "rollouts_per_example": None,
             },
         )
 
     configs = captured["configs"]
-    # Both envs use global defaults
+    # Both evals use global defaults
     for config in configs:
         assert config.num_examples == 5  # DEFAULT_NUM_EXAMPLES
         assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
+
+
+def test_load_toml_config_global_values_with_per_eval_override():
+    """Global values at top of config are inherited by evals, with per-eval overrides."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'model = "gpt-5"\n'
+            "num_examples = 100\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env2"\n'
+            "num_examples = 50\n"
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert len(result) == 2
+    # First eval inherits global values
+    assert result[0]["env_id"] == "env1"
+    assert result[0]["model"] == "gpt-5"
+    assert result[0]["num_examples"] == 100
+    # Second eval has per-eval override for num_examples
+    assert result[1]["env_id"] == "env2"
+    assert result[1]["model"] == "gpt-5"  # still inherits global
+    assert result[1]["num_examples"] == 50  # per-eval override
+
+
+def test_load_toml_config_invalid_global_field():
+    """Invalid global field raises ValueError."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('invalid_global = "value"\n\n[[eval]]\nenv_id = "env1"\n')
+        f.flush()
+        with pytest.raises(ValueError):
+            load_toml_config(Path(f.name))

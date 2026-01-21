@@ -12,6 +12,7 @@ from .decorators import (  # noqa # isort: skip
     stop,
     teardown,
 )
+from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
@@ -44,6 +45,7 @@ from .utils.logging_utils import (
 setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
+    "DatasetBuilder",
     "Parser",
     "ThinkParser",
     "MaybeThinkParser",

@@ -1,7 +1,10 @@
-[[env]]
+# Global defaults (optional)
+model = "openai/gpt-4.1-mini"
+
+[[eval]]
 env_id = "gsm8k"
 num_examples = 1
 rollouts_per_example = 1
 
-[[env]]
+[[eval]]
 env_id = "alphabet-sort"

@@ -13,6 +13,7 @@ import verifiers as vf
 from verifiers.utils.rlm_data_serialization_utils import (
     DataSerializer,
     SerializedData,
+    build_custom_serializer,
     build_default_data_serializers,
     build_builtin_serializer,
     deserialize_builtin,
@@ -224,7 +225,7 @@ class TestGenerateSubToolsDocumentation:
     def test_generate_docs_for_tools(self, rlm_env_with_sub_tools):
         """Generate proper markdown documentation for tools."""
         docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
-        assert "Sub-Agent Tools" in docs
+        assert "Sub-LLM Tools" in docs
         assert "sample_tool" in docs
         assert "another_tool" in docs
         assert "Add two numbers" in docs
@@ -455,6 +456,168 @@ class TestRLMEnvInitialization:
             assert env._tunnel_pool is None
 
             env.active_sandboxes.clear()
+
+
+class TestToolSplitConfiguration:
+    """Tests for root/sub tool split configuration and docs."""
+
+    def test_tool_name_collision_raises(self, mock_sandbox_client, mock_dataset):
+        """Different tools with same name should error."""
+
+        def tool_a() -> str:
+            return "a"
+
+        def tool_b() -> str:
+            return "b"
+
+        tool_b.__name__ = tool_a.__name__
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            with pytest.raises(ValueError, match="collision"):
+                RLMEnv(dataset=mock_dataset, tools=[tool_a, tool_b])
+
+    def test_fixed_tool_override_raises(self, mock_sandbox_client, mock_dataset):
+        """User tools cannot override fixed tools like llm_batch."""
+
+        def llm_batch() -> str:  # pragma: no cover - name collision test
+            return "override"
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            with pytest.raises(ValueError, match="llm_batch"):
+                RLMEnv(dataset=mock_dataset, tools=[llm_batch])
+
+    def test_tools_not_exposed_as_openai_tools(self, mock_sandbox_client, mock_dataset):
+        """Root tools should not appear in oai_tools (root uses REPL only)."""
+
+        def shared_tool() -> str:
+            return "shared"
+
+        def root_tool() -> str:
+            return "root"
+
+        def sub_tool() -> str:
+            return "sub"
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                tools=[shared_tool],
+                root_tools=[root_tool],
+                sub_tools=[sub_tool],
+            )
+
+        tool_names = {tool["function"]["name"] for tool in env.oai_tools}
+        assert "shared_tool" not in tool_names
+        assert "root_tool" not in tool_names
+        assert "sub_tool" not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_root_and_sub_tools_documented_and_ordered(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """System prompt documents root and sub tools with deterministic order."""
+
+        def shared_tool() -> str:
+            """Shared tool."""
+            return "shared"
+
+        def root_tool() -> str:
+            """Root-only tool."""
+            return "root"
+
+        def sub_tool() -> str:
+            """Sub-only tool."""
+            return "sub"
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+            patch("verifiers.envs.environment.signal.signal"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                tools=[shared_tool],
+                root_tools=[root_tool],
+                sub_tools=[sub_tool],
+                execution_backend="local",
+                interception_port=1234,
+            )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "test-model", "client": MagicMock()}
+        result = await env.setup_state(state)
+
+        prompt = result["rlm_system_prompt"]
+        assert "Root REPL Tools" in prompt
+        assert "Sub-LLM Tools" in prompt
+
+        root_index = prompt.find("Root REPL Tools")
+        sub_index = prompt.find("Sub-LLM Tools")
+        assert root_index != -1
+        assert sub_index != -1
+        assert root_index < sub_index
+
+        root_section = prompt[root_index:sub_index]
+        sub_section = prompt[sub_index:]
+
+        assert "llm_batch" in root_section
+        assert root_section.find("llm_batch") < root_section.find("shared_tool")
+        assert root_section.find("shared_tool") < root_section.find("root_tool")
+
+        assert "shared_tool" in sub_section
+        assert "sub_tool" in sub_section
+        assert "root_tool" not in sub_section
+        assert sub_section.find("shared_tool") < sub_section.find("sub_tool")
+
+        assert result["rlm_shared_tools"] == ["shared_tool"]
+        assert result["rlm_root_tools"] == ["llm_batch", "shared_tool", "root_tool"]
+        assert result["rlm_sub_tools"] == ["shared_tool", "sub_tool"]
+
+    @pytest.mark.asyncio
+    async def test_shared_tool_deduped_in_root_and_sub(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        """Shared tool in multiple lists should dedupe without duplication."""
+
+        def shared_tool() -> str:
+            return "shared"
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+            patch("verifiers.envs.environment.signal.signal"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                tools=[shared_tool],
+                root_tools=[shared_tool],
+                sub_tools=[shared_tool],
+                execution_backend="local",
+                interception_port=1234,
+            )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "test-model", "client": MagicMock()}
+        result = await env.setup_state(state)
+
+        assert result["rlm_root_tools"].count("shared_tool") == 1
+        assert result["rlm_sub_tools"].count("shared_tool") == 1
 
 
 # =============================================================================
@@ -946,6 +1109,115 @@ class TestDataSerialization:
         assert values[2] == float("-inf")
 
 
+class TestRootToolSerialization:
+    """Tests for root tool arg/result serialization reuse."""
+
+    class CustomPayload:
+        def __init__(self, value: str):
+            self.value = value
+
+        def __eq__(self, other):
+            return getattr(other, "value", object()) == self.value
+
+    @staticmethod
+    def _build_custom_serializer():
+        def dump_custom(data: "TestRootToolSerialization.CustomPayload") -> bytes:
+            import json
+
+            return json.dumps({"value": data.value}).encode("utf-8")
+
+        def deserialize_custom(payload, _spec):
+            import json
+            import types
+
+            if isinstance(payload, str):
+                payload = payload.encode("utf-8")
+            if isinstance(payload, bytes):
+                data = json.loads(payload.decode("utf-8"))
+                return types.SimpleNamespace(value=data["value"])
+            return payload
+
+        return build_custom_serializer(
+            dtype="custom_payload",
+            dump=dump_custom,
+            can_handle=lambda value: hasattr(value, "value"),
+            file_name="custom_payload.json",
+            format="json",
+            deserializer=deserialize_custom,
+        )
+
+    def test_root_tool_serialization_roundtrip(self, mock_sandbox_client, mock_dataset):
+        serializer = self._build_custom_serializer()
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                data_serializers=[serializer],
+            )
+
+        payload = self.CustomPayload("hello")
+        spec = env._serialize_tool_value(payload)
+        assert spec["dtype"] == "custom_payload"
+        assert spec.get("deserializer_code")
+        assert spec.get("deserializer_function")
+
+        decoded = env._deserialize_tool_payload(spec)
+        assert decoded == payload
+
+    @pytest.mark.asyncio
+    async def test_root_tool_request_uses_serializer_registry(
+        self, mock_sandbox_client, mock_dataset
+    ):
+        serializer = self._build_custom_serializer()
+
+        def echo_tool(value):
+            return value
+
+        with (
+            patch("verifiers.envs.sandbox_env.AsyncSandboxClient") as mock_client_cls,
+            patch("verifiers.envs.sandbox_env.CreateSandboxRequest"),
+        ):
+            mock_client_cls.return_value = mock_sandbox_client
+            env = RLMEnv(
+                dataset=mock_dataset,
+                root_tools=[echo_tool],
+                data_serializers=[serializer],
+            )
+
+        rollout_id = "rlm_root_tool_test"
+        state = {}
+        env.active_rollouts[rollout_id] = {
+            "client": MagicMock(),
+            "model": "test-model",
+            "sub_model": "test-model",
+            "state": state,
+        }
+
+        value = self.CustomPayload("payload")
+        arg_spec = env._serialize_tool_value(value)
+        mock_request = MagicMock()
+        mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.json = AsyncMock(
+            return_value={
+                "tool_name": "echo_tool",
+                "serialization": "rlm",
+                "args": [arg_spec],
+                "kwargs": {},
+            }
+        )
+
+        response = await env._handle_root_tool_request(mock_request)
+        assert response.status == 200
+        response_data = json.loads(response.text)
+        result_spec = response_data["result"]
+
+        decoded = env._deserialize_tool_payload(result_spec)
+        assert decoded == value
+
+
 class TestCleanupRLMState:
     """Tests for cleanup_rlm_state method."""
 
@@ -1009,14 +1281,18 @@ class TestGetPromptMessages:
         else:
             base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
         packages_docs = rlm_env._generate_packages_documentation()
+        root_tools_docs = rlm_env._generate_root_tools_documentation()
         sub_tools_docs = rlm_env._generate_sub_tools_documentation()
-        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
+        system_prompt = (
+            base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+        )
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "What is 2+2?"}],
             "rlm_context": {"input_data_metadata": {}},
             "rlm_system_prompt": system_prompt,
             "rlm_packages_docs": packages_docs,
+            "rlm_root_tools_docs": root_tools_docs,
             "rlm_sub_tools_docs": sub_tools_docs,
         }
 
@@ -1039,20 +1315,24 @@ class TestGetPromptMessages:
         else:
             base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
         packages_docs = rlm_env_with_sub_tools._generate_packages_documentation()
+        root_tools_docs = rlm_env_with_sub_tools._generate_root_tools_documentation()
         sub_tools_docs = rlm_env_with_sub_tools._generate_sub_tools_documentation()
-        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
+        system_prompt = (
+            base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+        )
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Test"}],
             "rlm_context": {"input_data_metadata": {}},
             "rlm_system_prompt": system_prompt,
             "rlm_packages_docs": packages_docs,
+            "rlm_root_tools_docs": root_tools_docs,
             "rlm_sub_tools_docs": sub_tools_docs,
         }
 
         messages = await rlm_env_with_sub_tools.get_prompt_messages(state)
 
-        assert "Sub-Agent Tools" in messages[0]["content"]
+        assert "Sub-LLM Tools" in messages[0]["content"]
         assert "sample_tool" in messages[0]["content"]
 
     @pytest.mark.asyncio
@@ -1069,14 +1349,18 @@ class TestGetPromptMessages:
         else:
             base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
         packages_docs = rlm_env._generate_packages_documentation()
+        root_tools_docs = rlm_env._generate_root_tools_documentation()
         sub_tools_docs = rlm_env._generate_sub_tools_documentation()
-        system_prompt = base_system_prompt + packages_docs + sub_tools_docs
+        system_prompt = (
+            base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+        )
         state = {
             "trajectory": [],
             "prompt": "What is 2+2?",
             "rlm_context": {"input_data_metadata": {}},
             "rlm_system_prompt": system_prompt,
             "rlm_packages_docs": packages_docs,
+            "rlm_root_tools_docs": root_tools_docs,
             "rlm_sub_tools_docs": sub_tools_docs,
         }
 

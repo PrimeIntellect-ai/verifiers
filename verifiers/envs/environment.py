@@ -34,6 +34,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
     Messages,
@@ -44,7 +45,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
@@ -67,8 +68,8 @@ class Environment(ABC):
 
     def __init__(
         self,
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
+        dataset: Dataset | DatasetBuilder | None = None,
+        eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
         few_shot: list[ChatMessage] | None = None,
         parser: Parser | None = None,
@@ -100,45 +101,40 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
+        self.map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_score_rollouts(score_rollouts)
 
-        if self.message_type == "chat":
-            if dataset is not None:
-                self.dataset = self._format_dataset(
-                    dataset, self.system_prompt, self.few_shot, map_kwargs=map_kwargs
-                )
+        if self.message_type != "chat" and (self.system_prompt or self.few_shot):
+            raise ValueError(
+                'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
+                'Please use message_type="chat" instead, or pre-format your dataset '
+                'to contain a "prompt" column.'
+            )
+
+        # Dataset sources (builders) and built datasets
+        # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
+        self.dataset: Dataset | None = None
+        self.eval_dataset: Dataset | None = None
+
+        if dataset is not None:
+            if callable(dataset):
+                self.dataset_source: DatasetBuilder | None = dataset
             else:
-                self.dataset = None
-            if eval_dataset is not None:
-                self.eval_dataset = self._format_dataset(
-                    eval_dataset,
-                    self.system_prompt,
-                    self.few_shot,
-                    map_kwargs=map_kwargs,
-                )
-            else:
-                self.eval_dataset = None
+                self.dataset_source = lambda ds=dataset: ds
+                self.build_dataset()  # Eagerly build for raw datasets (backwards compat)
         else:
-            if self.system_prompt or self.few_shot:
-                raise ValueError(
-                    'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
-                    'Please use message_type="chat" instead, or pre-format your dataset '
-                    'to contain a "prompt" column.'
-                )
-            if dataset is not None:
-                self.dataset = self._format_completion_dataset(
-                    dataset, map_kwargs=map_kwargs
-                )
+            self.dataset_source = None
+
+        if eval_dataset is not None:
+            if callable(eval_dataset):
+                self.eval_dataset_source: DatasetBuilder | None = eval_dataset
             else:
-                self.dataset = None
-            if eval_dataset is not None:
-                self.eval_dataset = self._format_completion_dataset(
-                    eval_dataset, map_kwargs=map_kwargs
-                )
-            else:
-                self.eval_dataset = None
+                self.eval_dataset_source = lambda ds=eval_dataset: ds
+                self.build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
+        else:
+            self.eval_dataset_source = None
 
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
@@ -153,7 +149,12 @@ class Environment(ABC):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-        if self.dataset is None and self.eval_dataset is None:
+        if (
+            self.dataset_source is None
+            and self.eval_dataset_source is None
+            and self.dataset is None
+            and self.eval_dataset is None
+        ):
             raise ValueError("Either dataset or eval_dataset must be provided")
         self.rollouts_per_example = None
         self._stop_conditions: list[StopCondition] = []
@@ -324,20 +325,53 @@ class Environment(ABC):
         dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
+    def _format_dataset_source(self, dataset: Dataset) -> Dataset:
+        """Format a dataset based on message_type."""
+        if self.message_type == "chat":
+            return self._format_dataset(
+                dataset,
+                self.system_prompt,
+                self.few_shot,
+                map_kwargs=self.map_kwargs,
+            )
+        else:
+            return self._format_completion_dataset(dataset, map_kwargs=self.map_kwargs)
+
+    def build_dataset(self) -> Dataset | None:
+        """Build and cache the training dataset from source if needed."""
+        if self.dataset is not None:
+            return self.dataset
+        if self.dataset_source is None:
+            return None
+        built = self.dataset_source()
+        self.dataset = self._format_dataset_source(built)
+        return self.dataset
+
+    def build_eval_dataset(self) -> Dataset | None:
+        """Build and cache the evaluation dataset from source if needed."""
+        if self.eval_dataset is not None:
+            return self.eval_dataset
+        if self.eval_dataset_source is None:
+            return None
+        built = self.eval_dataset_source()
+        self.eval_dataset = self._format_dataset_source(built)
+        return self.eval_dataset
+
     @final
     def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+        self.build_dataset()
         if self.dataset is None:
             raise ValueError("dataset is not set")
         if seed is not None:
             self.dataset = self.dataset.shuffle(seed=seed)
         if n > 0:
-            # Cap n to the length of the dataset to prevent IndexError
             n = min(n, len(self.dataset))
             return self.dataset.select(range(n))
         return self.dataset
 
     @final
     def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+        self.build_eval_dataset()
         if self.eval_dataset is None:
             self.logger.warning(
                 "eval_dataset is not set, falling back to train dataset"
@@ -346,7 +380,6 @@ class Environment(ABC):
         if seed is not None:
             self.eval_dataset = self.eval_dataset.shuffle(seed=seed)
         if n > 0:
-            # Cap n to the length of the dataset to prevent IndexError
             n = min(n, len(self.eval_dataset))
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
@@ -832,6 +865,7 @@ class Environment(ABC):
         save_every: int = -1,
         use_tqdm: bool = True,
         independent_scoring: bool = False,
+        max_retries: int = 0,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -865,7 +899,7 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    self.run_rollout(
+                    maybe_retry(self.run_rollout, max_retries=max_retries)(
                         input_item,
                         client,
                         model,
@@ -889,7 +923,7 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    self.run_group(
+                    maybe_retry(self.run_group, max_retries=max_retries)(
                         group,
                         client,
                         model,
@@ -1015,12 +1049,8 @@ class Environment(ABC):
     def _get_eval_inputs(
         self, num_examples: int = -1, rollouts_per_example: int = 1
     ) -> List[RolloutInput]:
-        if self.eval_dataset is None:
-            self.logger.info("eval_dataset is not set, falling back to train dataset")
-            assert self.dataset is not None
-            inputs = self.get_dataset(n=num_examples)
-        else:
-            inputs = self.get_eval_dataset(n=num_examples)
+        # get_eval_dataset handles fallback to train dataset if no eval source exists
+        inputs = self.get_eval_dataset(n=num_examples)
         assert inputs is not None, "No dataset found"
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
@@ -1041,6 +1071,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        max_retries: int = 0,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1060,6 +1091,7 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            max_retries=max_retries,
             **kwargs,
         )
 
@@ -1078,6 +1110,7 @@ class Environment(ABC):
         save_results: bool = False,
         save_every: int = -1,
         independent_scoring: bool = False,
+        max_retries: int = 0,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset synchronously.
@@ -1096,6 +1129,7 @@ class Environment(ABC):
             save_results=save_results,
             save_every=save_every,
             independent_scoring=independent_scoring,
+            max_retries=max_retries,
         )
 
     # setters for use by trainers

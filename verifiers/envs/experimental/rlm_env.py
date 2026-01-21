@@ -21,9 +21,12 @@ Key features:
 
 import asyncio
 import base64
+import contextvars
 import json
 import logging
 import os
+import pickle
+import random
 import shlex
 import shutil
 import signal
@@ -75,6 +78,7 @@ from verifiers.utils.rlm_data_serialization_utils import (
     PreparedContextData,
     SerializerRegistry,
     build_default_serializer_registry,
+    deserialize_builtin,
     prepare_context_data,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
@@ -85,6 +89,70 @@ from verifiers.utils.token_utils import (
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
+
+_FIXED_REPL_TOOL_NAMES = frozenset({"llm_batch"})
+
+
+def _tool_display_name(tool: Callable) -> str:
+    return getattr(tool, "__name__", tool.__class__.__name__)
+
+
+def _dedupe_tools(
+    tools: list[Callable],
+    *,
+    context: str,
+    reserved_names: set[str] | None = None,
+) -> tuple[list[Callable], dict[str, Callable]]:
+    deduped: list[Callable] = []
+    seen: dict[str, Callable] = {}
+    for tool in tools:
+        name = _tool_display_name(tool)
+        if reserved_names and name in reserved_names:
+            raise ValueError(f"Tool '{name}' is reserved and cannot be overridden.")
+        if name in seen:
+            if seen[name] is not tool:
+                raise ValueError(
+                    f"Tool name collision in {context}: '{name}' is defined by both "
+                    f"{seen[name]!r} and {tool!r}. Rename or remove one."
+                )
+            continue
+        seen[name] = tool
+        deduped.append(tool)
+    return deduped, seen
+
+
+def _merge_tool_lists(
+    *,
+    fixed_tools: list[Callable],
+    shared_tools: list[Callable],
+    role_tools: list[Callable],
+    context: str,
+    reserved_names: set[str],
+) -> tuple[list[Callable], dict[str, Callable]]:
+    fixed, fixed_map = _dedupe_tools(
+        fixed_tools,
+        context=f"{context} fixed tools",
+        reserved_names=set(),
+    )
+    merged = list(fixed)
+    deduped_shared, _ = _dedupe_tools(
+        shared_tools,
+        context=f"{context} shared tools",
+        reserved_names=reserved_names,
+    )
+    merged.extend(deduped_shared)
+    deduped_role, _ = _dedupe_tools(
+        role_tools,
+        context=f"{context} tools",
+        reserved_names=reserved_names,
+    )
+    merged.extend(deduped_role)
+    deduped_all, deduped_map = _dedupe_tools(
+        merged,
+        context=context,
+        reserved_names=set(),
+    )
+    return deduped_all, deduped_map
 
 
 class RLMCodeExecutionTimeout(Exception):
@@ -169,6 +237,8 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("repl_total_time_seconds", 0.0)
     state.setdefault("repl_call_count", 0)
     state.setdefault("repl_mean_time_seconds", 0.0)
+    state.setdefault("root_tool_call_count", 0)
+    state.setdefault("root_tool_calls", {})
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -233,8 +303,16 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
         state["main_rlm_completion_tokens"] += completion_tokens
 
 
+def _update_root_tool_metrics(state: State, tool_name: str) -> None:
+    _ensure_rlm_metric_state(state)
+    state["root_tool_call_count"] += 1
+    tool_calls: dict[str, int] = state.get("root_tool_calls", {})
+    tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
+    state["root_tool_calls"] = tool_calls
+
+
 class RLMMonitorRubric(vf.Rubric):
-    def __init__(self, **kwargs):
+    def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.sub_llm_call_count)
         self.add_metric(self.sub_llm_total_turns)
@@ -250,6 +328,9 @@ class RLMMonitorRubric(vf.Rubric):
         self.add_metric(self.repl_total_time_seconds)
         self.add_metric(self.repl_call_count)
         self.add_metric(self.repl_mean_time_seconds)
+        self.add_metric(self.root_tool_call_count)
+        for tool_name in root_tool_names or []:
+            self.add_metric(self._make_root_tool_metric(tool_name))
 
     async def sub_llm_call_count(self, state: State) -> int:
         return state["sub_llm_call_count"]
@@ -293,6 +374,17 @@ class RLMMonitorRubric(vf.Rubric):
     async def repl_mean_time_seconds(self, state: State) -> float:
         return state["repl_mean_time_seconds"]
 
+    async def root_tool_call_count(self, state: State) -> int:
+        return state["root_tool_call_count"]
+
+    def _make_root_tool_metric(self, tool_name: str):
+        async def root_tool_metric(state: State) -> int:
+            tool_calls: dict[str, int] = state.get("root_tool_calls", {})
+            return int(tool_calls.get(tool_name, 0))
+
+        root_tool_metric.__name__ = f"{tool_name}_root_calls"
+        return root_tool_metric
+
 
 class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
@@ -317,18 +409,19 @@ class SubLLMResult(TypedDict):
 # Worker script that runs inside the sandbox - handles code execution only
 # The REPL loop is managed by the framework, not this script
 _RLM_WORKER_SCRIPT = textwrap.dedent(
-    '''
+    """
     import ast
+    import base64
     import contextlib
     import io
     import json
+    import math
     import os
-    import random
+    import pickle
     import sys
     import time
     import traceback
     from pathlib import Path
-    from concurrent.futures import ThreadPoolExecutor
     import requests
 
     COMMAND_FIFO = "{command_fifo}"
@@ -460,110 +553,229 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
             answer = json.load(f)
 
-    def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
-        """Make a single sub-LLM call via interception server.
-        
-        Returns a dict with 'content' and 'metadata' keys (including 'elapsed_seconds').
-        """
-        from time import perf_counter
-        import uuid
-        start_time = perf_counter()
-        
-        if not INTERCEPTION_URL:
-            return {{
-                "content": "Error: Sub-LLM interception URL not configured",
-                "metadata": {{"error": True, "elapsed_seconds": 0.0}},
-            }}
-        
-        try:
-            request_id = uuid.uuid4().hex[:8]
-            payload = {{
-                "model": SUB_MODEL or "default",
-                "messages": [{{"role": "user", "content": prompt}}],
-                "_batch_id": batch_id,
-                "_request_id": request_id,
-            }}
-            # Add any extra kwargs
-            for k, v in kwargs.items():
-                if k not in ("model", "messages", "_batch_id", "_request_id"):
-                    payload[k] = v
-            
-            resp = requests.post(
-                INTERCEPTION_URL,
-                json=payload,
-                timeout=SUB_LLM_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
-            metadata = data.get("_rlm_metadata", {{}})
-            elapsed = perf_counter() - start_time
-            metadata["elapsed_seconds"] = elapsed
-            return {{"content": content, "metadata": metadata}}
-        except Exception as e:
-            elapsed = perf_counter() - start_time
-            return {{
-                "content": f"Error in sub-LLM call: {{e}}",
-                "metadata": {{"error": True, "elapsed_seconds": elapsed}},
-            }}
-
-    def llm_batch(prompts: list, **kwargs) -> list:
-        """
-        Make multiple sub-LLM calls in parallel.
-        
-        Prints a summary of each call's metadata (including timing), then returns the list of responses.
-        
-        Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
-        Sandbox timeout is available via SANDBOX_TIMEOUT env var.
-        
-        Args:
-            prompts: List of prompts for the sub-LLMs
-            **kwargs: Additional arguments applied to all calls
-        
-        Returns:
-            List of response contents in the same order as the input prompts
-        """
-        from time import perf_counter
-        import uuid
-        batch_start = perf_counter()
-        batch_id = uuid.uuid4().hex[:8]
-        with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
-            futures = []
-            for i, prompt in enumerate(prompts):
-                jitter_ms = (
-                    random.random() * SUB_LLM_STAGGER_JITTER_MS
-                    if SUB_LLM_STAGGER_JITTER_MS > 0
-                    else 0.0
+    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "rlm")
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    ROOT_TOOL_SERIALIZERS_RAW = os.environ.get("RLM_ROOT_TOOL_SERIALIZERS", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
+    try:
+        ROOT_TOOL_SERIALIZERS = json.loads(ROOT_TOOL_SERIALIZERS_RAW)
+    except Exception:
+        ROOT_TOOL_SERIALIZERS = []
+    ROOT_TOOL_SERIALIZER_FUNCS = []
+    for spec in ROOT_TOOL_SERIALIZERS:
+        serializer_code = spec.get("serializer_code")
+        serializer_function = spec.get("serializer_function")
+        if serializer_code and serializer_function:
+            namespace = {{}}
+            exec(serializer_code, namespace)
+            if serializer_function in namespace:
+                ROOT_TOOL_SERIALIZER_FUNCS.append(
+                    (spec, namespace[serializer_function])
                 )
-                delay_s = max(0.0, (i * SUB_LLM_STAGGER_MS + jitter_ms) / 1000.0)
 
-                def _call_with_delay(
-                    p=prompt, d=delay_s, b=batch_id, kw=kwargs
-                ):
-                    if d:
-                        time.sleep(d)
-                    return _single_llm_call(p, b, **kw)
+    def _is_builtin_data(value):
+        if value is None:
+            return True
+        if isinstance(value, (bool, int, float, str, bytes, bytearray, complex, range)):
+            return True
+        if isinstance(value, slice):
+            return True
+        if isinstance(value, memoryview):
+            return True
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return all(_is_builtin_data(item) for item in value)
+        if isinstance(value, dict):
+            return all(
+                _is_builtin_data(k) and _is_builtin_data(v) for k, v in value.items()
+            )
+        return False
 
-                futures.append(executor.submit(_call_with_delay))
-            results = [f.result() for f in futures]
-        batch_elapsed = perf_counter() - batch_start
-        
-        # Print metadata summary with timing
-        print(f"llm_batch: {{len(results)}} call(s) in {{batch_elapsed:.2f}}s")
-        for i, r in enumerate(results):
-            meta = r.get("metadata", {{}})
-            elapsed = meta.get("elapsed_seconds", 0.0)
-            if meta.get("error"):
-                print(f"  [{{i}}]: error ({{elapsed:.2f}}s)")
+    def _encode_builtin_value(value):
+        if value is None or isinstance(value, (bool, int, str)):
+            return value
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return value
+            if math.isnan(value):
+                return {{"__rlm_builtin__": "float", "value": "nan"}}
+            if value > 0:
+                return {{"__rlm_builtin__": "float", "value": "inf"}}
+            return {{"__rlm_builtin__": "float", "value": "-inf"}}
+        if isinstance(value, bytes):
+            return {{
+                "__rlm_builtin__": "bytes",
+                "data": base64.b64encode(value).decode("ascii"),
+            }}
+        if isinstance(value, bytearray):
+            return {{
+                "__rlm_builtin__": "bytearray",
+                "data": base64.b64encode(bytes(value)).decode("ascii"),
+            }}
+        if isinstance(value, memoryview):
+            return {{
+                "__rlm_builtin__": "memoryview",
+                "data": base64.b64encode(value.tobytes()).decode("ascii"),
+            }}
+        if isinstance(value, complex):
+            return {{"__rlm_builtin__": "complex", "real": value.real, "imag": value.imag}}
+        if isinstance(value, range):
+            return {{
+                "__rlm_builtin__": "range",
+                "args": [value.start, value.stop, value.step],
+            }}
+        if isinstance(value, slice):
+            return {{
+                "__rlm_builtin__": "slice",
+                "args": [value.start, value.stop, value.step],
+            }}
+        if isinstance(value, tuple):
+            return {{
+                "__rlm_builtin__": "tuple",
+                "items": [_encode_builtin_value(item) for item in value],
+            }}
+        if isinstance(value, set):
+            return {{
+                "__rlm_builtin__": "set",
+                "items": [_encode_builtin_value(item) for item in value],
+            }}
+        if isinstance(value, frozenset):
+            return {{
+                "__rlm_builtin__": "frozenset",
+                "items": [_encode_builtin_value(item) for item in value],
+            }}
+        if isinstance(value, list):
+            return [_encode_builtin_value(item) for item in value]
+        if isinstance(value, dict):
+            if all(isinstance(key, str) for key in value) and "__rlm_builtin__" not in value:
+                return {{
+                    key: _encode_builtin_value(item) for key, item in value.items()
+                }}
+            return {{
+                "__rlm_builtin__": "dict",
+                "items": [
+                    [_encode_builtin_value(key), _encode_builtin_value(item)]
+                    for key, item in value.items()
+                ],
+            }}
+        raise ValueError(f"Unsupported builtin type: {{type(value)}}")
+
+    def _serialize_value(value):
+        if isinstance(value, str):
+            payload = value.encode("utf-8")
+            return {{
+                "dtype": "text",
+                "payload_b64": base64.b64encode(payload).decode("ascii"),
+                "payload_encoding": "utf-8",
+            }}
+        if _is_builtin_data(value):
+            payload = json.dumps(
+                _encode_builtin_value(value), ensure_ascii=True, allow_nan=False
+            ).encode("utf-8")
+            return {{
+                "dtype": "builtin",
+                "payload_b64": base64.b64encode(payload).decode("ascii"),
+                "payload_encoding": "utf-8",
+            }}
+        for spec, serializer_func in ROOT_TOOL_SERIALIZER_FUNCS:
+            try:
+                payload_value = serializer_func(value)
+            except Exception:
+                continue
+            if isinstance(payload_value, str):
+                encoding = spec.get("encoding") or "utf-8"
+                payload = payload_value.encode(encoding)
+            elif isinstance(payload_value, (bytes, bytearray)):
+                encoding = spec.get("encoding")
+                payload = bytes(payload_value)
             else:
-                tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
-                tool_calls = meta.get("tool_call_count", 0)
-                max_turns = meta.get("max_turns_reached", False)
-                status = "⚠ max turns" if max_turns else "✓"
-                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls, {{elapsed:.2f}}s {{status}}")
-        
-        # Return just the content
-        return [r.get("content", "") for r in results]
+                raise ValueError(
+                    "Tool serializer must return bytes or str, got "
+                    + str(type(payload_value))
+                )
+            return {{
+                "dtype": spec.get("dtype", ""),
+                "format": spec.get("format"),
+                "payload_b64": base64.b64encode(payload).decode("ascii"),
+                "payload_encoding": encoding,
+                "deserializer_code": spec.get("deserializer_code"),
+                "deserializer_function": spec.get("deserializer_function"),
+            }}
+        raise ValueError(
+            "Unsupported tool argument type for sandbox execution. "
+            "Provide a serializer or use local execution."
+        )
+
+    def _deserialize_value(spec):
+        payload = base64.b64decode(spec.get("payload_b64", ""))
+        dtype = spec.get("dtype", "")
+        deserializer_code = spec.get("deserializer_code")
+        deserializer_function = spec.get("deserializer_function")
+        if deserializer_code and deserializer_function:
+            namespace = {{}}
+            exec(deserializer_code, namespace)
+            if deserializer_function not in namespace:
+                raise ValueError(
+                    "Deserializer function '"
+                    + str(deserializer_function)
+                    + "' not found"
+                )
+            return namespace[deserializer_function](payload, spec)
+        if dtype == "text":
+            encoding = spec.get("payload_encoding") or "utf-8"
+            return payload.decode(encoding)
+        if dtype == "json":
+            return json.loads(payload.decode("utf-8"))
+        raise ValueError(f"Unsupported tool response dtype: {{dtype}}")
+
+    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
+        if not ROOT_TOOL_URL:
+            raise RuntimeError("Root tool URL not configured")
+
+        if ROOT_TOOL_SERIALIZATION == "pickle":
+            args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+            kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+            payload = {{
+                "tool_name": tool_name,
+                "serialization": "pickle",
+                "args": args_payload,
+                "kwargs": kwargs_payload,
+            }}
+        else:
+            payload = {{
+                "tool_name": tool_name,
+                "serialization": "rlm",
+                "args": [_serialize_value(value) for value in args],
+                "kwargs": {{
+                    key: _serialize_value(value) for key, value in kwargs.items()
+                }},
+            }}
+
+        resp = requests.post(
+            ROOT_TOOL_URL,
+            json=payload,
+            timeout=SUB_LLM_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("print_lines"):
+            for line in data["print_lines"]:
+                print(line)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        if ROOT_TOOL_SERIALIZATION == "pickle":
+            return pickle.loads(base64.b64decode(data.get("result", "")))
+        return _deserialize_value(data.get("result", {{}}))
+
+    def _make_root_tool(name: str):
+        def _tool(*args, **kwargs):
+            return _call_root_tool(name, args, kwargs)
+
+        _tool.__name__ = name
+        return _tool
 
     restricted_builtins = _build_restricted_builtins()
 
@@ -573,8 +785,9 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         "__builtins__": restricted_builtins,
         "extra_data": extra_data,
         "answer": answer,
-        "llm_batch": llm_batch,
     }}
+    for tool_name in ROOT_TOOL_NAMES:
+        namespace[tool_name] = _make_root_tool(tool_name)
 
     # Signal ready
     Path(READY_FLAG).write_text("ready", encoding="utf-8")
@@ -639,7 +852,7 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         
         with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
             response_file.write(json.dumps(result))
-    '''
+    """
 )
 
 
@@ -1076,14 +1289,22 @@ PY
     async def _start_worker(self, state: State) -> None:
         sandbox_id = state["sandbox_id"]
         interception_url = state["interception_url"]
+        root_tool_url = state.get("root_tool_url", "")
 
         sub_llm_timeout = self.env.sub_llm_timeout
         disallowed_modules = shlex.quote(self.env.disallowed_modules)
         disallowed_builtins = shlex.quote(self.env.disallowed_builtins)
+        root_tool_names = shlex.quote(json.dumps(self.env.root_tool_names))
+        root_tool_serialization = shlex.quote(self.env.root_tool_serialization)
+        root_tool_serializers = shlex.quote(self.env.root_tool_serializers_json)
         script_wait_iterations = max(1, int(self.env.max_startup_wait_seconds / 0.1))
         await self._wait_for_install_done(sandbox_id)
         start_worker_cmd = f"""
 export RLM_INTERCEPTION_URL="{interception_url}"
+export RLM_ROOT_TOOL_URL="{root_tool_url}"
+export RLM_ROOT_TOOL_NAMES={root_tool_names}
+export RLM_ROOT_TOOL_SERIALIZATION={root_tool_serialization}
+export RLM_ROOT_TOOL_SERIALIZERS={root_tool_serializers}
 export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
 export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
 export RLM_SUB_LLM_STAGGER_MS="{self.env.sub_llm_stagger_ms}"
@@ -1407,6 +1628,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
         env_vars.update(
             {
                 "RLM_INTERCEPTION_URL": state["interception_url"],
+                "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+                "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
+                "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
+                "RLM_ROOT_TOOL_SERIALIZERS": self.env.root_tool_serializers_json,
                 "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
                 "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
                 "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
@@ -1497,9 +1722,17 @@ class RLMEnv(SandboxEnv):
     be provided in info[context_key] for large data that shouldn't be in the prompt.
 
     Args:
+        tools: List of tools shared by both the root REPL and sub-LLMs.
+                   These are added first in the tool documentation order.
+        root_tools: List of tools available only to the root REPL.
+                   The root model can call these inside the REPL as Python functions.
+        sub_tools: List of tools available only to sub-LLMs.
+                   Sub-LLMs access these via standard tool calling.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
-        sub_tools: List of Python functions that sub-LLMs can use as tools.
-                   These tools are NOT available to the root model.
+        (Ordering) The root tool list is: fixed tools (e.g. llm_batch), then `tools`,
+                   then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
+                   Each list is deduplicated by tool name. If two different tools
+                   share a name within a list, initialization raises an error.
         sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
@@ -1555,6 +1788,8 @@ class RLMEnv(SandboxEnv):
 
     def __init__(
         self,
+        tools: list[Callable] | None = None,
+        root_tools: list[Callable] | None = None,
         sub_model: str | None = None,
         sub_tools: list[Callable] | None = None,
         sub_tool_max_turns: int = 5,
@@ -1583,8 +1818,29 @@ class RLMEnv(SandboxEnv):
         rubric: Rubric | None = None,
         **kwargs,
     ):
+        if tools is None and "tools" in kwargs:
+            tools = kwargs.pop("tools")
+        elif tools is not None and "tools" in kwargs:
+            raise ValueError("Tools were provided twice: use tools=... only once.")
+
+        if root_tools is None and "root_tools" in kwargs:
+            root_tools = kwargs.pop("root_tools")
+        elif root_tools is not None and "root_tools" in kwargs:
+            raise ValueError(
+                "root_tools were provided twice: use root_tools=... only once."
+            )
+
+        if sub_tools is None and "sub_tools" in kwargs:
+            sub_tools = kwargs.pop("sub_tools")
+        elif sub_tools is not None and "sub_tools" in kwargs:
+            raise ValueError(
+                "sub_tools were provided twice: use sub_tools=... only once."
+            )
+
         self.sub_model = sub_model
-        self.sub_tools = sub_tools or []
+        self.shared_tools = tools or []
+        self.root_only_tools = root_tools or []
+        self.sub_only_tools = sub_tools or []
         self.sub_tool_max_turns = sub_tool_max_turns
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
@@ -1634,12 +1890,44 @@ class RLMEnv(SandboxEnv):
             self.sub_llm_timeout,
         ) = self._compute_sub_llm_timeouts()
 
-        # Convert sub_tools to OAI format (reusing existing infrastructure)
+        fixed_root_tools = self._build_fixed_root_tools()
+        self.root_tools, self.root_tool_map = _merge_tool_lists(
+            fixed_tools=fixed_root_tools,
+            shared_tools=self.shared_tools,
+            role_tools=self.root_only_tools,
+            context="root tools",
+            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+        )
+        self.sub_tools, self.sub_tool_map = _merge_tool_lists(
+            fixed_tools=[],
+            shared_tools=self.shared_tools,
+            role_tools=self.sub_only_tools,
+            context="sub-LLM tools",
+            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+        )
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
-        self.sub_tool_map = {
-            getattr(tool, "__name__", tool.__class__.__name__): tool
-            for tool in self.sub_tools
-        }
+        self.root_tool_doc_funcs: list[Callable] = []
+        for tool in self.root_tools:
+            name = _tool_display_name(tool)
+            if name in _FIXED_REPL_TOOL_NAMES:
+                self.root_tool_doc_funcs.append(
+                    self._build_fixed_root_tool_schema(name)
+                )
+            else:
+                self.root_tool_doc_funcs.append(tool)
+        self.root_oai_tools = [
+            convert_func_to_oai_tool(tool) for tool in self.root_tool_doc_funcs
+        ]
+        self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
+        self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
+        self.root_tool_serialization = (
+            "pickle" if execution_backend == "local" else "rlm"
+        )
+        self.root_tool_serializer_specs = self._build_root_tool_serializer_specs()
+        self.root_tool_serializers_json = json.dumps(self.root_tool_serializer_specs)
+        self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar("rlm_root_tool_context", default=None)
+        )
 
         self._sandbox_paths = _build_worker_paths("/tmp")
         worker_script = _render_worker_script(self._sandbox_paths)
@@ -1679,7 +1967,7 @@ class RLMEnv(SandboxEnv):
             rubric=rubric,
             **kwargs,
         )
-        self.add_rubric(RLMMonitorRubric())
+        self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
         self._executor = (
             LocalRLMExecutor(self)
             if self.execution_backend == "local"
@@ -1719,6 +2007,67 @@ class RLMEnv(SandboxEnv):
 
         return api_timeout, worker_timeout
 
+    def _build_fixed_root_tools(self) -> list[Callable]:
+        """Return the fixed root REPL tools (non-overridable)."""
+
+        async def llm_batch(prompts: list[str]) -> list[str]:
+            """
+            Make multiple sub-LLM calls in parallel.
+
+            Args:
+                prompts: List of prompt strings (recommended). Message dicts or lists
+                    of message dicts are also accepted for compatibility.
+
+            Returns:
+                List of response contents in the same order as the input prompts.
+            """
+            context = self._root_tool_context_var.get()
+            if context is None:
+                raise RuntimeError(
+                    "llm_batch called outside of a tool request context."
+                )
+            results, _ = await self._root_llm_batch(context, prompts)
+            return results
+
+        llm_batch.__name__ = "llm_batch"
+        return [llm_batch]
+
+    def _build_fixed_root_tool_schema(self, name: str) -> Callable:
+        """Return a schema-only stub for fixed root tools."""
+        if name == "llm_batch":
+
+            def llm_batch(prompts: list[str]) -> list[str]:
+                """Make multiple sub-LLM calls in parallel."""
+                raise RuntimeError("llm_batch schema stub should not be executed.")
+
+            llm_batch.__name__ = "llm_batch"
+            return llm_batch
+        raise ValueError(f"Unsupported fixed tool schema: {name}")
+
+    def _build_root_tool_serializer_specs(self) -> list[dict[str, Any]]:
+        """Build serializer specs for sandbox tool argument serialization."""
+        specs: list[dict[str, Any]] = []
+        for serializer in self.serializer_registry.all():
+            dtype = serializer.dtype
+            if dtype in {"text", "json", "builtin"}:
+                continue
+            if not serializer.serializer_code or not serializer.serializer_function:
+                continue
+            if not serializer.deserializer_code or not serializer.deserializer_function:
+                continue
+            specs.append(
+                {
+                    "dtype": dtype,
+                    "format": None,
+                    "encoding": None,
+                    "serializer_code": serializer.serializer_code,
+                    "serializer_function": serializer.serializer_function,
+                    "deserializer_code": serializer.deserializer_code,
+                    "deserializer_function": serializer.deserializer_function,
+                }
+            )
+        return specs
+
     def _compute_install_wait_seconds(self) -> int:
         """Estimate how long to wait for pip installs based on package count."""
         packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
@@ -1752,7 +2101,7 @@ class RLMEnv(SandboxEnv):
         if not self.sub_tools:
             return ""
 
-        lines = ["\n## Sub-Agent Tools\n"]
+        lines = ["\n## Sub-LLM Tools\n"]
         lines.append(
             "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
         )
@@ -1784,6 +2133,42 @@ class RLMEnv(SandboxEnv):
             "You do NOT need to manage tool calls yourself - just describe the task "
             "in your prompt.\n"
         )
+
+        return "\n".join(lines)
+
+    def _generate_root_tools_documentation(self) -> str:
+        """Generate documentation for root REPL tools to include in system prompt."""
+        if not self.root_tools:
+            return ""
+
+        lines = ["\n## Root REPL Tools\n"]
+        lines.append(
+            "The root model can call the following tools inside the Python REPL:\n"
+        )
+
+        for oai_tool in self.root_oai_tools:
+            func_def = oai_tool["function"]
+            name = func_def["name"]
+            desc = func_def.get("description", "No description")
+            params = cast(
+                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
+            )
+
+            lines.append(f"### `{name}`")
+            lines.append(f"{desc}\n")
+
+            if params:
+                lines.append("**Parameters:**")
+                for param_name, param_info in params.items():
+                    param_type = param_info.get("type", "any")
+                    param_desc = param_info.get("description", "")
+                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
+                lines.append("")
+
+        lines.append(
+            "These tools run on the host and are only accessible from within the REPL."
+        )
+        lines.append("")
 
         return "\n".join(lines)
 
@@ -2099,6 +2484,123 @@ class RLMEnv(SandboxEnv):
             max_turns_reached=True,
         )
 
+    async def _root_llm_batch(
+        self,
+        context: dict[str, Any],
+        prompts: list[Any],
+    ) -> tuple[list[str], list[str]]:
+        """Run a batch of sub-LLM calls for root REPL usage."""
+        if not isinstance(prompts, list):
+            raise ValueError("llm_batch expects a list of prompts.")
+
+        client = context.get("client")
+        sub_model = context.get("sub_model") or context.get("model")
+        state_ref = context.get("state")
+        parent_turn = context.get("parent_turn", 0)
+        if not client or not sub_model or state_ref is None:
+            raise RuntimeError("Sub-LLM context is not available.")
+
+        batch_start = perf_counter()
+        batch_id = uuid.uuid4().hex[:8]
+        results: list[dict[str, Any] | None] = [None] * len(prompts)
+        semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
+
+        def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
+            if isinstance(prompt, str):
+                return [{"role": "user", "content": prompt}]
+            if isinstance(prompt, dict):
+                if "role" in prompt and "content" in prompt:
+                    return [cast(ChatMessage, prompt)]
+                raise ValueError(
+                    "llm_batch prompt at index "
+                    + str(index)
+                    + " must be a string or message dict with 'role' and 'content'."
+                )
+            if isinstance(prompt, (list, tuple)):
+                if all(isinstance(item, dict) for item in prompt):
+                    return [cast(ChatMessage, item) for item in prompt]
+                raise ValueError(
+                    "llm_batch prompt at index "
+                    + str(index)
+                    + " must be a list of message dicts."
+                )
+            raise ValueError(
+                "llm_batch prompt at index "
+                + str(index)
+                + " must be a string, message dict, or list of message dicts."
+            )
+
+        async def _call_one(index: int, prompt: Any) -> None:
+            jitter_ms = (
+                random.random() * self.sub_llm_stagger_jitter_ms
+                if self.sub_llm_stagger_jitter_ms > 0
+                else 0.0
+            )
+            delay_s = max(0.0, (index * self.sub_llm_stagger_ms + jitter_ms) / 1000.0)
+            if delay_s:
+                await asyncio.sleep(delay_s)
+
+            async with semaphore:
+                request_id = uuid.uuid4().hex[:8]
+                start_time = perf_counter()
+                try:
+                    messages = _coerce_prompt_messages(prompt, index)
+                    response_dict = await self._run_sub_llm_request(
+                        state_ref=state_ref,
+                        client=client,
+                        sub_model=sub_model,
+                        messages=messages,
+                        batch_id=batch_id,
+                        request_id=request_id,
+                        parent_turn=parent_turn,
+                    )
+                    elapsed = perf_counter() - start_time
+                    response_dict.setdefault("_rlm_metadata", {})["elapsed_seconds"] = (
+                        elapsed
+                    )
+                except Exception as exc:
+                    elapsed = perf_counter() - start_time
+                    response_dict = {
+                        "choices": [
+                            {"message": {"content": f"Error in sub-LLM call: {exc}"}}
+                        ],
+                        "_rlm_metadata": {
+                            "error": True,
+                            "elapsed_seconds": elapsed,
+                        },
+                    }
+                results[index] = response_dict
+
+        await asyncio.gather(
+            *[_call_one(i, prompt) for i, prompt in enumerate(prompts)]
+        )
+
+        batch_elapsed = perf_counter() - batch_start
+        summary_lines = [f"llm_batch: {len(prompts)} call(s) in {batch_elapsed:.2f}s"]
+        contents: list[str] = []
+        for index, result in enumerate(results):
+            if not result:
+                contents.append("")
+                summary_lines.append(f"  [{index}]: error (0.00s)")
+                continue
+            message = result.get("choices", [{}])[0].get("message", {})
+            contents.append(message.get("content", ""))
+            meta = result.get("_rlm_metadata", {})
+            elapsed = meta.get("elapsed_seconds", 0.0)
+            if meta.get("error"):
+                summary_lines.append(f"  [{index}]: error ({elapsed:.2f}s)")
+                continue
+            tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
+            tool_calls = meta.get("tool_call_count", 0)
+            max_turns = meta.get("max_turns_reached", False)
+            status = "⚠ max turns" if max_turns else "✓"
+            summary_lines.append(
+                f"  [{index}]: {tokens} tokens, {tool_calls} tool calls, "
+                f"{elapsed:.2f}s {status}"
+            )
+
+        return contents, summary_lines
+
     # =========================================================================
     # Interception Server (for sub-LLM calls from sandbox code)
     # =========================================================================
@@ -2113,6 +2615,10 @@ class RLMEnv(SandboxEnv):
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self._handle_sub_llm_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/rlm/tools",
+                self._handle_root_tool_request,
             )
 
             runner = web.AppRunner(app)
@@ -2135,6 +2641,269 @@ class RLMEnv(SandboxEnv):
             logger.debug(
                 f"Started RLM interception server on port {self.interception_port}"
             )
+
+    def _deserialize_tool_payload(self, spec: dict[str, Any]) -> Any:
+        payload_b64 = spec.get("payload_b64", "")
+        if not isinstance(payload_b64, str):
+            raise ValueError("Tool payload must include base64-encoded bytes.")
+        try:
+            payload = base64.b64decode(payload_b64)
+        except Exception as exc:
+            raise ValueError("Failed to decode tool payload.") from exc
+
+        dtype = spec.get("dtype", "")
+        deserializer_code = spec.get("deserializer_code")
+        deserializer_function = spec.get("deserializer_function")
+        if deserializer_code and deserializer_function:
+            namespace: dict[str, Any] = {}
+            exec(deserializer_code, namespace)
+            if deserializer_function not in namespace:
+                raise ValueError(
+                    f"Deserializer function '{deserializer_function}' not found."
+                )
+            return namespace[deserializer_function](payload, spec)
+        if dtype == "text":
+            encoding = spec.get("payload_encoding") or "utf-8"
+            return payload.decode(encoding)
+        if dtype == "json":
+            return json.loads(payload.decode("utf-8"))
+        if dtype == "builtin":
+            return deserialize_builtin(payload, spec)
+        raise ValueError(f"Unsupported tool payload dtype: {dtype}")
+
+    def _serialize_tool_result(self, value: Any) -> dict[str, Any]:
+        return self._serialize_tool_value(value)
+
+    def _serialize_tool_value(self, value: Any) -> dict[str, Any]:
+        serializer = self.serializer_registry.resolve(value, None)
+        serialized = serializer.serialize(value)
+        if serialized.inline_data is not None:
+            raise ValueError("Inline tool payloads are not supported.")
+        if serialized.file_bytes is None:
+            raise ValueError("Tool result serialization produced no bytes.")
+
+        deserializer_code = serialized.deserializer_code or serializer.deserializer_code
+        deserializer_function = (
+            serialized.deserializer_function or serializer.deserializer_function
+        )
+        if serialized.dtype not in {"text", "json"} and not (
+            deserializer_code and deserializer_function
+        ):
+            raise ValueError(
+                "Tool serialization requires a deserializer for custom dtypes."
+            )
+
+        return {
+            "dtype": serialized.dtype,
+            "format": serialized.format,
+            "payload_b64": base64.b64encode(serialized.file_bytes).decode("ascii"),
+            "payload_encoding": serialized.encoding,
+            "deserializer_code": deserializer_code,
+            "deserializer_function": deserializer_function,
+            "metadata": serialized.metadata,
+        }
+
+    async def _run_sub_llm_request(
+        self,
+        *,
+        state_ref: State,
+        client: Any,
+        sub_model: str,
+        messages: ChatMessages,
+        batch_id: str,
+        request_id: str,
+        parent_turn: int,
+        elapsed_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        messages_with_system: ChatMessages = [
+            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
+            *messages,
+        ]
+
+        result = await self._run_sub_llm(
+            state_ref, client, sub_model, messages_with_system
+        )
+        final_content = result["final_content"]
+        prompt_tokens = result["total_prompt_tokens"]
+        completion_tokens = result["total_completion_tokens"]
+        tool_call_count = result["tool_call_count"]
+        num_turns = result["num_turns"]
+        max_turns_reached = result["max_turns_reached"]
+        turns = result["turns"]
+
+        boxed_content = extract_boxed_answer(final_content)
+
+        timestamp = time.time()
+        total_sub_turns = len(turns)
+        for sub_turn_index, turn in enumerate(turns):
+            extras = {
+                "is_sub_llm_call": True,
+                "parent_turn": parent_turn,
+                "batch_id": batch_id,
+                "request_id": request_id,
+                "sub_turn_index": sub_turn_index,
+                "total_sub_turns": total_sub_turns,
+                "timestamp": timestamp,
+                "tool_call_count": turn["tool_call_count"],
+            }
+
+            if self.include_sub_llm_in_trajectory:
+                tokens = await parse_response_tokens(
+                    turn["response"], "chat", self.max_seq_len
+                )
+                completion_messages = await parse_response_messages(
+                    turn["response"], "chat"
+                )
+                response_is_truncated = await parse_is_truncated(
+                    turn["response"], "chat"
+                )
+                is_truncated = response_is_truncated or (
+                    tokens is not None and bool(tokens.get("is_truncated"))
+                )
+
+                trajectory_step = TrajectoryStep(
+                    prompt=cast(Messages, turn["prompt_messages"]),
+                    completion=completion_messages,
+                    response=turn["response"],
+                    tokens=tokens,
+                    reward=None,
+                    advantage=None,
+                    is_truncated=is_truncated,
+                    trajectory_id=f"{batch_id}_{request_id}",
+                    extras=extras,
+                )
+                await self.add_trajectory_step(state_ref, trajectory_step)
+            else:
+                trajectory_step = TrajectoryStep(
+                    prompt=cast(Messages, turn["prompt_messages"]),
+                    completion=[],
+                    response=turn["response"],
+                    tokens=None,
+                    reward=None,
+                    advantage=None,
+                    is_truncated=False,
+                    trajectory_id=f"{batch_id}_{request_id}",
+                    extras=extras,
+                )
+                update_rlm_metrics_from_step(state_ref, trajectory_step)
+
+        metadata = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "tool_call_count": tool_call_count,
+            "num_turns": num_turns,
+            "max_turns_reached": max_turns_reached,
+        }
+        if elapsed_seconds is not None:
+            metadata["elapsed_seconds"] = elapsed_seconds
+
+        return {
+            "choices": [{"message": {"content": boxed_content}}],
+            "_rlm_metadata": metadata,
+        }
+
+    async def _handle_root_tool_request(self, request: Any) -> Any:
+        """Handle root tool requests from sandbox/local worker."""
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+
+        tool_name = request_body.get("tool_name", "")
+        serialization = request_body.get("serialization", "rlm")
+        if not tool_name:
+            return web.json_response({"error": "Tool name not provided"}, status=400)
+        if tool_name not in self.root_tool_map:
+            return web.json_response(
+                {"error": f"Tool '{tool_name}' not found"}, status=404
+            )
+
+        state_ref = context.get("state")
+        if state_ref is None:
+            return web.json_response({"error": "State not available"}, status=500)
+
+        try:
+            if serialization == "pickle":
+                args = pickle.loads(base64.b64decode(request_body.get("args", "")))
+                kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
+                if not isinstance(args, tuple):
+                    raise ValueError("Pickle args payload must be a tuple.")
+                if not isinstance(kwargs, dict):
+                    raise ValueError("Pickle kwargs payload must be a dict.")
+            elif serialization == "rlm":
+                args_spec = request_body.get("args", [])
+                kwargs_spec = request_body.get("kwargs", {})
+                if not isinstance(args_spec, list):
+                    raise ValueError("Tool args must be a list.")
+                if not isinstance(kwargs_spec, dict):
+                    raise ValueError("Tool kwargs must be a dict.")
+                args = tuple(self._deserialize_tool_payload(spec) for spec in args_spec)
+                kwargs = {
+                    key: self._deserialize_tool_payload(spec)
+                    for key, spec in kwargs_spec.items()
+                }
+            else:
+                raise ValueError(f"Unsupported tool serialization: {serialization}")
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        parent_turn = context.get("current_turn", 0)
+        root_tool_context = {
+            "state": state_ref,
+            "client": context.get("client"),
+            "sub_model": context.get("sub_model") or context.get("model"),
+            "parent_turn": parent_turn,
+        }
+        token = self._root_tool_context_var.set(root_tool_context)
+        try:
+            _update_root_tool_metrics(state_ref, tool_name)
+            tool_func = self.root_tool_map[tool_name]
+            if tool_name == "llm_batch":
+                if args and "prompts" in kwargs:
+                    raise ValueError("llm_batch received prompts twice.")
+                if args:
+                    if len(args) != 1:
+                        raise ValueError("llm_batch expects a single prompts argument.")
+                    prompts = args[0]
+                elif "prompts" in kwargs:
+                    prompts = kwargs.pop("prompts")
+                else:
+                    raise ValueError("llm_batch requires a prompts argument.")
+                if kwargs:
+                    raise ValueError(
+                        "llm_batch does not accept extra keyword arguments: "
+                        + ", ".join(sorted(kwargs))
+                    )
+                result_value, print_lines = await self._root_llm_batch(
+                    root_tool_context, prompts
+                )
+            else:
+                result_value = await maybe_await(tool_func, *args, **kwargs)
+                print_lines = None
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        finally:
+            self._root_tool_context_var.reset(token)
+
+        if serialization == "pickle":
+            result_payload = base64.b64encode(pickle.dumps(result_value)).decode(
+                "ascii"
+            )
+        else:
+            try:
+                result_payload = self._serialize_tool_result(result_value)
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+
+        response_body: dict[str, Any] = {"result": result_payload}
+        if print_lines:
+            response_body["print_lines"] = print_lines
+        return web.json_response(response_body)
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from sandbox code."""
@@ -2161,106 +2930,21 @@ class RLMEnv(SandboxEnv):
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
 
-        # Prepend system message with \boxed{} instruction
-        messages_with_system: ChatMessages = [
-            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
-            *messages,
-        ]
-
         state_ref = context.get("state") if context else None
+        if state_ref is None:
+            return web.json_response({"error": "State not available"}, status=500)
 
+        parent_turn = context.get("current_turn", 0)
         try:
-            # Run sub-LLM call (handles both with-tools and no-tools cases)
-            if state_ref is None:
-                return web.json_response({"error": "State not available"}, status=500)
-            result = await self._run_sub_llm(
-                state_ref, client, sub_model, messages_with_system
+            response_dict = await self._run_sub_llm_request(
+                state_ref=state_ref,
+                client=client,
+                sub_model=sub_model,
+                messages=messages,
+                batch_id=batch_id,
+                request_id=request_id,
+                parent_turn=parent_turn,
             )
-            final_content = result["final_content"]
-            prompt_tokens = result["total_prompt_tokens"]
-            completion_tokens = result["total_completion_tokens"]
-            tool_call_count = result["tool_call_count"]
-            num_turns = result["num_turns"]
-            max_turns_reached = result["max_turns_reached"]
-            turns = result["turns"]
-
-            # Extract boxed answer for response to sandbox
-            boxed_content = extract_boxed_answer(final_content)
-
-            parent_turn = context.get("current_turn", 0)
-            timestamp = time.time()
-
-            total_sub_turns = len(turns)
-            for sub_turn_index, turn in enumerate(turns):
-                extras = {
-                    "is_sub_llm_call": True,
-                    "parent_turn": parent_turn,
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "sub_turn_index": sub_turn_index,
-                    "total_sub_turns": total_sub_turns,
-                    "timestamp": timestamp,
-                    "tool_call_count": turn["tool_call_count"],
-                }
-
-                if self.include_sub_llm_in_trajectory:
-                    # Parse tokens from response
-                    tokens = await parse_response_tokens(
-                        turn["response"], "chat", self.max_seq_len
-                    )
-                    # Parse completion messages
-                    completion_messages = await parse_response_messages(
-                        turn["response"], "chat"
-                    )
-                    # Check if response was truncated
-                    response_is_truncated = await parse_is_truncated(
-                        turn["response"], "chat"
-                    )
-                    is_truncated = response_is_truncated or (
-                        tokens is not None and bool(tokens.get("is_truncated"))
-                    )
-
-                    trajectory_step = TrajectoryStep(
-                        prompt=cast(Messages, turn["prompt_messages"]),
-                        completion=completion_messages,
-                        response=turn["response"],
-                        tokens=tokens,
-                        reward=None,
-                        advantage=None,
-                        is_truncated=is_truncated,
-                        trajectory_id=f"{batch_id}_{request_id}",
-                        extras=extras,
-                    )
-                    if state_ref is not None:
-                        await self.add_trajectory_step(state_ref, trajectory_step)
-                else:
-                    if state_ref is None:
-                        continue
-                    trajectory_step = TrajectoryStep(
-                        prompt=cast(Messages, turn["prompt_messages"]),
-                        completion=[],
-                        response=turn["response"],
-                        tokens=None,
-                        reward=None,
-                        advantage=None,
-                        is_truncated=False,
-                        trajectory_id=f"{batch_id}_{request_id}",
-                        extras=extras,
-                    )
-                    update_rlm_metrics_from_step(state_ref, trajectory_step)
-
-            # Build response dict for sandbox
-            response_dict = {
-                "choices": [{"message": {"content": boxed_content}}],
-                "_rlm_metadata": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "tool_call_count": tool_call_count,
-                    "num_turns": num_turns,
-                    "max_turns_reached": max_turns_reached,
-                },
-            }
-
             return web.json_response(response_dict)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -2330,12 +3014,15 @@ class RLMEnv(SandboxEnv):
                 len(self.active_rollouts)
             )
             interception_url = f"{tunnel_url}/rollout/{rollout_id}/v1/chat/completions"
+            root_tool_url = f"{tunnel_url}/rollout/{rollout_id}/v1/rlm/tools"
         else:
             tunnel_url = None
             interception_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/chat/completions"
+            root_tool_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/rlm/tools"
 
         state["interception_url"] = interception_url
         state["tunnel_url"] = tunnel_url
+        state["root_tool_url"] = root_tool_url
 
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
@@ -2402,10 +3089,22 @@ class RLMEnv(SandboxEnv):
             base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
 
         packages_docs = self._generate_packages_documentation()
+        root_tools_docs = self._generate_root_tools_documentation()
         sub_tools_docs = self._generate_sub_tools_documentation()
-        state["rlm_system_prompt"] = base_system_prompt + packages_docs + sub_tools_docs
+        state["rlm_system_prompt"] = (
+            base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+        )
         state["rlm_packages_docs"] = packages_docs
+        state["rlm_root_tools_docs"] = root_tools_docs
         state["rlm_sub_tools_docs"] = sub_tools_docs
+        deduped_shared, _ = _dedupe_tools(
+            self.shared_tools, context="shared tools", reserved_names=set()
+        )
+        state["rlm_shared_tools"] = [
+            _tool_display_name(tool) for tool in deduped_shared
+        ]
+        state["rlm_root_tools"] = [_tool_display_name(tool) for tool in self.root_tools]
+        state["rlm_sub_tools"] = [_tool_display_name(tool) for tool in self.sub_tools]
 
         # 4. Prepare backend and start worker
         await self._executor.setup(state, prepared_context)
@@ -2640,8 +3339,14 @@ class RLMEnv(SandboxEnv):
 
             system_prompt = state.get("rlm_system_prompt")
             packages_docs = state.get("rlm_packages_docs")
+            root_tools_docs = state.get("rlm_root_tools_docs")
             sub_tools_docs = state.get("rlm_sub_tools_docs")
-            if system_prompt is None or packages_docs is None or sub_tools_docs is None:
+            if (
+                system_prompt is None
+                or packages_docs is None
+                or root_tools_docs is None
+                or sub_tools_docs is None
+            ):
                 raise ValueError("RLM setup_state must run before get_prompt_messages")
 
             messages = list(prompt)
@@ -2651,7 +3356,12 @@ class RLMEnv(SandboxEnv):
                 # Append packages and tool docs to existing system prompt
                 messages[0] = {
                     "role": "system",
-                    "content": messages[0]["content"] + packages_docs + sub_tools_docs,
+                    "content": (
+                        messages[0]["content"]
+                        + packages_docs
+                        + root_tools_docs
+                        + sub_tools_docs
+                    ),
                 }
             return cast(Messages, messages)
         else:
