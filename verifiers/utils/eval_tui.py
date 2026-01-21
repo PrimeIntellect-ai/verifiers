@@ -84,6 +84,7 @@ class EvalTUI:
         self.state = EvalTUIState()
         self.console = Console()
         self._live: Live | None = None
+        self._old_terminal_settings: list | None = None
 
         # initialize env states
         for config in configs:
@@ -395,6 +396,11 @@ class EvalTUI:
         fd = sys.stdin.fileno()
         old_settings = termios_module.tcgetattr(fd)
 
+        def drain_escape_sequence() -> None:
+            """Consume remaining chars of an escape sequence (mouse events, etc)."""
+            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                sys.stdin.read(1)
+
         try:
             # use cbreak mode (not raw) - allows single char input without corrupting display
             tty_module.setcbreak(fd)
@@ -407,15 +413,38 @@ class EvalTUI:
                 # use select to check for input without blocking
                 if select_module.select([sys.stdin], [], [], 0)[0]:
                     char = sys.stdin.read(1)
-                    # exit on q, Q, enter, or escape
-                    if char in ("q", "Q", "\r", "\n", "\x1b"):
+
+                    # handle escape sequences (mouse scroll, arrow keys, etc)
+                    if char == "\x1b":
+                        # check if more chars follow (escape sequence vs standalone Esc)
+                        if select_module.select([sys.stdin], [], [], 0.05)[0]:
+                            # escape sequence - drain it and ignore
+                            drain_escape_sequence()
+                            continue
+                        else:
+                            # standalone Escape key - exit
+                            break
+
+                    # exit on q, Q, or enter
+                    if char in ("q", "Q", "\r", "\n"):
                         break
         finally:
             # restore terminal settings
             termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     async def __aenter__(self) -> "EvalTUI":
-        """Start the Live display."""
+        """Start the Live display using alternate screen mode."""
+        # disable terminal echo to prevent scroll/arrow keys from displaying
+        if HAS_TERMINAL_CONTROL and sys.stdin.isatty():
+            import termios
+
+            fd = sys.stdin.fileno()
+            self._old_terminal_settings = termios.tcgetattr(fd)
+            new_settings = termios.tcgetattr(fd)
+            # disable echo (ECHO flag in lflags)
+            new_settings[3] = new_settings[3] & ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+
         self._live = Live(
             self._make_layout(),
             console=self.console,
@@ -426,10 +455,18 @@ class EvalTUI:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Stop the Live display."""
+        """Stop the Live display and restore terminal settings."""
         if self._live:
             self._live.__exit__(exc_type, exc_val, exc_tb)
             self._live = None
+
+        # restore terminal settings
+        if self._old_terminal_settings is not None:
+            import termios
+
+            fd = sys.stdin.fileno()
+            termios.tcsetattr(fd, termios.TCSADRAIN, self._old_terminal_settings)
+            self._old_terminal_settings = None
 
     def print_final_summary(self) -> None:
         """Print a summary after the TUI closes."""

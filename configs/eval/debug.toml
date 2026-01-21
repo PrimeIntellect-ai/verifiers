@@ -1,8 +1,16 @@
-model = "openai/gpt-5-mini"
+model = "openai/gpt-4.1-mini"
+save_results = true
+save_every = 10
 
 [[eval]]
 env_id = "primeintellect/wiki-search"
 
+[[eval]]
+env_id = "gsm8k"
+num_examples = 20
+rollouts_per_example = 1
+sampling_args = { max_tokens = 1024 }
+independent_scoring = true
 
 [[eval]]
-env_id = "primeintellect/math-python"
+env_id = "alphabet-sort"
