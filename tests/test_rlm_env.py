@@ -453,7 +453,10 @@ class TestBashWorkerScript:
 
 class TestBashToolHelper:
     def _run_helper(
-        self, argv: list[str], stdin_data: str = ""
+        self,
+        argv: list[str],
+        stdin_data: str = "",
+        response_data: dict | None = None,
     ) -> tuple[str, str, int, dict | None]:
         helper_source = extract_bash_helper_source()
         stdout_buffer = io.StringIO()
@@ -479,12 +482,12 @@ class TestBashToolHelper:
             response = MagicMock()
             response.__enter__.return_value = response
             response.__exit__.return_value = None
-            response.read.return_value = json.dumps(
-                {
+            if response_data is None:
+                response_data = {
                     "result": base64.b64encode(pickle.dumps(["ok"])).decode("ascii"),
                     "error": None,
                 }
-            ).encode("utf-8")
+            response.read.return_value = json.dumps(response_data).encode("utf-8")
             mock_urlopen.return_value.__enter__.return_value = response
             mock_urlopen.side_effect = _capture_request
             namespace = {"__name__": "__main__"}
@@ -606,6 +609,30 @@ class TestBashToolHelper:
         assert code != 0
         assert "Invalid JSON payload" in stderr
         assert captured is None
+
+    def test_llm_batch_output_headers_with_metadata(self):
+        payload = json.dumps({"prompts": ["one", "two"]})
+        response_data = {
+            "result": base64.b64encode(pickle.dumps(["first", "second"])).decode(
+                "ascii"
+            ),
+            "error": None,
+            "print_lines": [
+                "llm_batch: 2 call(s) in 0.10s",
+                "  [0]: 5 tokens, 0 tool calls, 0.01s ✓",
+                "  [1]: 6 tokens, 1 tool calls, 0.02s ✓",
+            ],
+        }
+        stdout, stderr, code, captured = self._run_helper(
+            ["--tool", "llm_batch", "--json", payload], response_data=response_data
+        )
+        assert code == 0
+        assert stderr == ""
+        assert "llm_batch: 2 call(s) in 0.10s" in stdout
+        assert "----- llm_batch[0]" in stdout
+        assert "----- llm_batch[1]" in stdout
+        assert "first" in stdout
+        assert "second" in stdout
 
 
 # =============================================================================

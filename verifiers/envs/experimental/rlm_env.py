@@ -704,7 +704,9 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             raise RuntimeError(response_data["error"])
 
         result_payload = response_data.get("result", "")
-        return pickle.loads(base64.b64decode(result_payload))
+        result = pickle.loads(base64.b64decode(result_payload))
+        print_lines = response_data.get("print_lines") or []
+        return result, print_lines
 
 
     def _print_result(result):
@@ -721,16 +723,44 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             sys.stdout.write("\\n")
 
 
-    def _print_llm_batch_result(result_list):
+    def _print_lines(lines):
+        for line in lines:
+            text = str(line)
+            sys.stdout.write(text)
+            if not text.endswith("\\n"):
+                sys.stdout.write("\\n")
+
+
+    def _split_batch_lines(lines):
+        summary = []
+        per_item = {}
+        for line in lines:
+            text = str(line).strip()
+            if text.startswith("[") and "]:" in text:
+                idx_text = text[1 : text.index("]")]
+                if idx_text.isdigit():
+                    per_item[int(idx_text)] = text[text.index("]:") + 2 :].strip()
+                    continue
+            summary.append(text)
+        return summary, per_item
+
+
+    def _print_llm_batch_result(result_list, per_item_meta=None):
         for index, item in enumerate(result_list):
             if index > 0:
                 sys.stdout.write("\\n")
+            header = f"----- llm_batch[{index}]"
+            if per_item_meta and index in per_item_meta:
+                header = f"{header} ({per_item_meta[index]})"
+            sys.stdout.write(f"{header} -----\\n")
             if not isinstance(item, str):
                 try:
                     item = json.dumps(item)
                 except Exception:
                     item = repr(item)
             sys.stdout.write(item)
+            if not item.endswith("\\n"):
+                sys.stdout.write("\\n")
 
 
     def _load_json_payload(json_payload):
@@ -851,10 +881,15 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result = _call_root_tool(tool_name, (prompts,), {})
+            result, print_lines = _call_root_tool(tool_name, (prompts,), {})
+            summary_lines, per_item = _split_batch_lines(print_lines)
+            if summary_lines:
+                _print_lines(summary_lines)
             if isinstance(result, list):
-                _print_llm_batch_result(result)
+                _print_llm_batch_result(result, per_item_meta=per_item)
             else:
+                if print_lines:
+                    _print_lines(print_lines)
                 _print_result(result)
             return
 
@@ -863,12 +898,18 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 raise RuntimeError("--json does not accept extra args.")
             data = _load_json_payload(json_payload)
             parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
-            result = _call_root_tool(tool_name, tuple(parsed_args), parsed_kwargs)
+            result, print_lines = _call_root_tool(
+                tool_name, tuple(parsed_args), parsed_kwargs
+            )
+            if print_lines:
+                _print_lines(print_lines)
             _print_result(result)
             return
 
         parsed_args = tuple(_decode_arg(arg) for arg in args)
-        result = _call_root_tool(tool_name, parsed_args, {})
+        result, print_lines = _call_root_tool(tool_name, parsed_args, {})
+        if print_lines:
+            _print_lines(print_lines)
         _print_result(result)
 
 
