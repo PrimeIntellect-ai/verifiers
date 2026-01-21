@@ -81,11 +81,11 @@ from verifiers.utils.rlm_data_serialization_utils import (
     deserialize_builtin,
     prepare_context_data,
 )
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.token_utils import (
     prepare_sampling_args_for_token_prompts,
     tokenize_vllm,
 )
+from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.tunnel_utils import TunnelPool
 
 logger = logging.getLogger(__name__)
@@ -2449,11 +2449,14 @@ class RLMEnv(SandboxEnv):
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
         current_messages.append(
-            {
-                "role": "user",
-                "content": "You've reached the maximum number of tool calls. "
-                "Based on the information gathered, provide your final answer inside \\boxed{}.",
-            }
+            cast(
+                ChatMessage,
+                {
+                    "role": "user",
+                    "content": "You've reached the maximum number of tool calls. "
+                    "Based on the information gathered, provide your final answer inside \\boxed{}.",
+                },
+            )
         )
 
         prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
@@ -2507,7 +2510,7 @@ class RLMEnv(SandboxEnv):
 
         def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
             if isinstance(prompt, str):
-                return [{"role": "user", "content": prompt}]
+                return [cast(ChatMessage, {"role": "user", "content": prompt})]
             if isinstance(prompt, dict):
                 if "role" in prompt and "content" in prompt:
                     return [cast(ChatMessage, prompt)]
@@ -2716,7 +2719,7 @@ class RLMEnv(SandboxEnv):
         elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
         messages_with_system: ChatMessages = [
-            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
+            cast(ChatMessage, {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT}),
             *messages,
         ]
 

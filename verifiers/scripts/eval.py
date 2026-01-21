@@ -19,6 +19,7 @@ from verifiers.utils.eval_utils import (
     load_toml_config,
     run_evaluations,
 )
+from verifiers.utils.install_utils import check_hub_env_installed
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +403,19 @@ def main():
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
         )
+
+    # Check Hub environments are installed before running
+    missing_envs = []
+    for raw in raw_eval_configs:
+        env_id = raw["env_id"]
+        if not check_hub_env_installed(env_id):
+            missing_envs.append(env_id)
+
+    if missing_envs:
+        logger.error("Missing environments. Install them first:")
+        for env_id in missing_envs:
+            logger.error(f"  prime env install {env_id}")
+        raise SystemExit(1)
 
     eval_configs = [build_eval_config(raw) for raw in raw_eval_configs]
     for config in eval_configs:
