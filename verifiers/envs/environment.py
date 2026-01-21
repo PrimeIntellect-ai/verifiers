@@ -995,9 +995,10 @@ class Environment(ABC):
                         gen_sampling_args,
                         start_time,
                     )
-                    self.logger.debug(
-                        f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
-                    )
+                    save_msg = f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                    self.logger.debug(save_msg)
+                    if on_log is not None:
+                        on_log(save_msg)
                     save_rollout_results(temp_results)
         finally:
             if pbar is not None:

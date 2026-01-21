@@ -135,6 +135,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
+| `--tui` | — | false | Show live-updating TUI for multi-env evals |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--save-every` | `-f` | -1 | Save checkpoint every N rollouts |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
