@@ -159,9 +159,6 @@ class EvalTUI:
         self, reward: float, metrics: dict[str, float], error_rate: float
     ) -> Table | None:
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
-        if not metrics:
-            return None
-
         metrics = {"reward": reward, **metrics}
 
         # build the left-aligned metrics text
