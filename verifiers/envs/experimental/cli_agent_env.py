@@ -93,7 +93,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         """Get tunnel URL, starting the tunnel if needed."""
         async with self.tunnel_lock:
             if self.tunnel is None:
-                self.tunnel = Tunnel(local_port=self.interception_port)
+                if logger.isEnabledFor(logging.DEBUG):
+                    self.tunnel = Tunnel(
+                        local_port=self.interception_port,
+                        log_level="debug",
+                        log_file="/tmp/tunnel-debug.log",
+                    )
+                else:
+                    self.tunnel = Tunnel(local_port=self.interception_port)
                 url = await self.tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
                 return url
