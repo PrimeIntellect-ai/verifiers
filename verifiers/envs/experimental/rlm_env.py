@@ -1343,11 +1343,33 @@ class LocalRLMExecutor(BaseRLMExecutor):
             logger.warning(
                 "Code execution timed out after %ss", self.env.code_execution_timeout
             )
+            self._unblock_response_fifo(session, payload.get("seq", 0))
             raise RLMCodeExecutionTimeout from e
         except Exception as e:
             raise vf.SandboxError() from e
 
         return RLMExecResult(stdout=raw, stderr="")
+
+    def _unblock_response_fifo(self, session: LocalRLMReplSession, seq: int) -> None:
+        """Best-effort write to the response FIFO to unblock a stuck reader thread."""
+        payload = {
+            "status": "error",
+            "stdout": "",
+            "stderr": "",
+            "result": "Unblocked timed-out FIFO read.",
+            "execution_count": 0,
+            "seq": seq,
+            "answer": {"ready": False, "content": ""},
+        }
+        try:
+            fd = os.open(session.paths.response_fifo, os.O_RDWR | os.O_NONBLOCK)
+        except Exception:
+            return
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as response_file:
+                response_file.write(json.dumps(payload))
+        except Exception:
+            pass
 
     async def read_answer(self, state: State) -> str:
         session = self._sessions.get(state.get("rollout_id", ""))
