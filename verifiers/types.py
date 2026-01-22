@@ -159,6 +159,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
+    tools: list[ChatCompletionToolParam] | None
 
 
 class GenerateOutputs(TypedDict):
