@@ -97,7 +97,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
                     self.tunnel = Tunnel(
                         local_port=self.interception_port,
                         log_level="debug",
-                        log_file="/tmp/tunnel-debug.log",
                     )
                 else:
                     self.tunnel = Tunnel(local_port=self.interception_port)
