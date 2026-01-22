@@ -46,8 +46,7 @@ def load_environment(
         page_id_to_title[pid] = title
         page_id_to_content[pid] = content
 
-    # Lazy ChromaDB initialization - only initialize when first tool call happens
-    # This avoids SQLite file locking issues when multiple processes load the environment
+    # lazy chroma initialization (once across all env instances)
     _chroma_state: dict = {"collection": None, "initialized": False}
 
     def _get_collection():
@@ -115,7 +114,7 @@ def load_environment(
         example:
             "basketball" -> [{"page_id": "basketball", "title": "Basketball"}, {"page_id": "basketball_rules", "title": "Basketball Rules"}, ...]
         """
-        collection = _get_collection()  # Lazy init on first tool call
+        collection = _get_collection()  # lazy init on first earch call
         async with _get_chroma_semaphore():
             results = await asyncio.to_thread(
                 collection.query, query_texts=[query], n_results=10
