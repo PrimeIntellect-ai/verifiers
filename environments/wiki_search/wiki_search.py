@@ -47,7 +47,7 @@ def load_environment(
         page_id_to_content[pid] = content
 
     # lazy chroma initialization (once across all env instances)
-    _chroma_state: dict = {"collection": None, "initialized": False}
+    _chroma_state: dict = {"collection": None}
 
     def _get_collection():
         if _chroma_state["collection"] is None:
@@ -61,10 +61,7 @@ def load_environment(
                 name="wiki_titles",
                 embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
             )
-            # Initialize chroma with missing pages on first access
-            if not _chroma_state["initialized"]:
-                _init_chroma(_chroma_state["collection"])
-                _chroma_state["initialized"] = True
+            _init_chroma(_chroma_state["collection"])
         return _chroma_state["collection"]
 
     def _init_chroma(collection) -> None:
