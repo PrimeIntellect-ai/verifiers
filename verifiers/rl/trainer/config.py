@@ -198,6 +198,12 @@ class RLConfig(TrainingArguments):
         default=8000,
         metadata={"help": "Port of the vLLM server to connect to."},
     )
+    vllm_group_port: int = field(
+        default=51216,
+        metadata={
+            "help": "Port for vLLM weight synchronization (StatelessProcessGroup)."
+        },
+    )
     vllm_server_timeout: float = field(
         default=300.0,
         metadata={

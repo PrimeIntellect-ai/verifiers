@@ -91,7 +91,10 @@ class RLTrainer(Trainer):
             host = args.vllm_server_host
             port = args.vllm_server_port
             self.client = VLLMClient(
-                host=host, port=port, connection_timeout=args.vllm_server_timeout
+                host=host,
+                port=port,
+                group_port=args.vllm_group_port,
+                connection_timeout=args.vllm_server_timeout,
             )
             self.client.init_communicator()
             vllm_base_url = f"http://{host}:{port}/v1"
