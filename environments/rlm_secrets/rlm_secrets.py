@@ -438,9 +438,12 @@ async def correct_filesystem_state(state: State) -> float:
     except Exception:
         return 0.0
     finally:
-        # Clean up the filesystem now that we've checked it
-        if fs_root and os.path.exists(fs_root):
-            shutil.rmtree(fs_root, ignore_errors=True)
+        # Clean up the entire rollout directory (parent of fs_root)
+        # fs_root is rollout_dir/rlm_fs, so we need to delete the parent
+        if fs_root:
+            rollout_dir = os.path.dirname(fs_root)
+            if rollout_dir and os.path.exists(rollout_dir):
+                shutil.rmtree(rollout_dir, ignore_errors=True)
 
 
 def load_environment(
