@@ -28,7 +28,6 @@ import os
 import random
 import shutil
 import string
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +48,19 @@ def generate_random_code(length: int = 16) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=length))
 
 
+def generate_random_uuid() -> str:
+    """Generate a UUID-format string using seeded random (reproducible)."""
+    hex_chars = "0123456789abcdef"
+    parts = [
+        "".join(random.choices(hex_chars, k=8)),
+        "".join(random.choices(hex_chars, k=4)),
+        "".join(random.choices(hex_chars, k=4)),
+        "".join(random.choices(hex_chars, k=4)),
+        "".join(random.choices(hex_chars, k=12)),
+    ]
+    return "-".join(parts)
+
+
 def generate_puzzle(num_files: int = 4, seed: int | None = None) -> dict[str, Any]:
     """
     Generate a puzzle configuration.
@@ -65,7 +77,7 @@ def generate_puzzle(num_files: int = 4, seed: int | None = None) -> dict[str, An
         random.seed(seed)
 
     filenames = [generate_random_filename() for _ in range(num_files)]
-    contents = [str(uuid.uuid4()) for _ in range(num_files)]
+    contents = [generate_random_uuid() for _ in range(num_files)]
 
     # correct_order[i] = the sorted position (0-indexed) of filenames[i]
     positions = list(range(num_files))
