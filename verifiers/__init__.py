@@ -68,6 +68,10 @@ __all__ = [
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    # Scaffolds
+    "Scaffold",
+    "MCPScaffold",
+    "ToolScaffold",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -107,6 +111,10 @@ _LAZY_IMPORTS = {
     "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
     "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
+    # Scaffolds
+    "Scaffold": "verifiers.scaffolds:Scaffold",
+    "MCPScaffold": "verifiers.scaffolds:MCPScaffold",
+    "ToolScaffold": "verifiers.scaffolds:ToolScaffold",
 }
 
 
@@ -145,3 +153,4 @@ if TYPE_CHECKING:
         get_model_and_tokenizer,
     )
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .scaffolds import MCPScaffold, Scaffold, ToolScaffold  # noqa: F401
