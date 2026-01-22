@@ -817,7 +817,6 @@ class Environment(ABC):
         )
 
         def _tools_key(tools: list | None) -> str:
-            """Create a hashable key for a tools list."""
             if not tools:
                 return ""
             return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
@@ -826,7 +825,6 @@ class Environment(ABC):
         unique_tool_sets = set(_tools_key(t) for t in all_tools)
         tools_vary = len(unique_tool_sets) > 1
 
-        # Store tools in metadata only if uniform, otherwise None (check per-sample)
         if tools_vary:
             metadata_tools = None
         else:
