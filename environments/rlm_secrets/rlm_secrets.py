@@ -61,7 +61,7 @@ def generate_random_uuid() -> str:
     return "-".join(parts)
 
 
-def generate_puzzle(num_files: int = 4, seed: int | None = None) -> dict[str, Any]:
+def generate_puzzle(num_files: int = 4) -> dict[str, Any]:
     """
     Generate a puzzle configuration.
 
@@ -73,9 +73,6 @@ def generate_puzzle(num_files: int = 4, seed: int | None = None) -> dict[str, An
     - codes: dict mapping filename -> decryption code
     - num_files: number of files in the puzzle
     """
-    if seed is not None:
-        random.seed(seed)
-
     filenames = [generate_random_filename() for _ in range(num_files)]
     contents = [generate_random_uuid() for _ in range(num_files)]
 
@@ -308,7 +305,6 @@ class RLMSecretsEnv(RLMEnv):
 def build_dataset(
     num_examples: int = 100,
     num_files: int = 4,
-    seed: int = 42,
 ) -> Dataset:
     """
     Build a dataset of puzzle instances.
@@ -321,11 +317,10 @@ def build_dataset(
     Returns:
         Dataset with prompt, answer, and info columns
     """
-    random.seed(seed)
     rows = []
 
     for i in range(num_examples):
-        puzzle = generate_puzzle(num_files=num_files, seed=seed + i)
+        puzzle = generate_puzzle(num_files=num_files)
 
         prompt = [
             {
@@ -476,17 +471,15 @@ def load_environment(
     Returns:
         Configured RLMSecretsEnv instance
     """
-    seed = seed or random.randint(1000, 100_000_000)
+    random.seed(seed or random.randint(1000, 100_000_000))
     train_dataset = build_dataset(
         num_examples=num_train_examples,
         num_files=num_files,
-        seed=seed,
     )
 
     eval_dataset = build_dataset(
         num_examples=num_eval_examples,
         num_files=num_files,
-        seed=seed + 10000,
     )
 
     rubric = vf.Rubric(
