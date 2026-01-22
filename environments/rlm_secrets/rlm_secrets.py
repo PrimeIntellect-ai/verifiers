@@ -448,7 +448,7 @@ def load_environment(
     num_eval_examples: int = 20,
     num_files: int = 4,
     max_turns: int = 50,
-    seed: int = 42,
+    seed: int | None = None,
     repl_language: str = "bash",
     sub_tool_max_turns: int = 3,
     max_sub_llm_parallelism: int = 5,
@@ -473,6 +473,7 @@ def load_environment(
     Returns:
         Configured RLMSecretsEnv instance
     """
+    seed = seed or random.randint(1000, 100_000_000)
     train_dataset = build_dataset(
         num_examples=num_train_examples,
         num_files=num_files,
