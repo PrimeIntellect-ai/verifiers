@@ -374,8 +374,7 @@ async def correct_answer(state: State, answer: str) -> float:
     """
     final_answer = state.get("final_answer", "")
 
-    # Check if the correct answer appears in the final answer
-    if answer and answer in str(final_answer):
+    if str(final_answer).strip() == answer:
         return 1.0
 
     return 0.0
