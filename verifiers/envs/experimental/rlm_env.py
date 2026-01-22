@@ -3263,13 +3263,14 @@ class RLMEnv(vf.StatefulToolEnv):
             for msg in messages:
                 if msg.get("role") != "user":
                     continue
-                content = msg.get("content")
+                msg_mut = cast(dict[str, Any], msg)
+                content = msg_mut.get("content")
                 if isinstance(content, str) or content is None:
                     text = content or ""
                     if text.startswith("<RLM_SCAFFOLDING>"):
                         inserted = True
                         break
-                    msg["content"] = scaffold + text
+                    msg_mut["content"] = scaffold + text
                 elif isinstance(content, list):
                     if (
                         content
@@ -3281,9 +3282,9 @@ class RLMEnv(vf.StatefulToolEnv):
                     ):
                         inserted = True
                         break
-                    msg["content"] = [{"type": "text", "text": scaffold}, *content]
+                    msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
                 elif isinstance(content, dict):
-                    msg["content"] = [
+                    msg_mut["content"] = [
                         {"type": "text", "text": scaffold},
                         content,
                     ]
