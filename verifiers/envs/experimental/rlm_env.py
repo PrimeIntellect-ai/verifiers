@@ -3238,7 +3238,7 @@ class RLMEnv(vf.StatefulToolEnv):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
         if len(state["trajectory"]) == 0:
-            # First turn: add system prompt
+            # First turn: inject RLM scaffolding into the first user message
             prompt = state.get("prompt", [])
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
@@ -3255,20 +3255,46 @@ class RLMEnv(vf.StatefulToolEnv):
             ):
                 raise ValueError("RLM setup_state must run before get_prompt_messages")
 
-            messages = list(prompt)
-            if not messages or messages[0].get("role") != "system":
-                messages.insert(0, {"role": "system", "content": system_prompt})
-            else:
-                # Append packages and tool docs to existing system prompt
-                messages[0] = {
-                    "role": "system",
-                    "content": (
-                        messages[0]["content"]
-                        + packages_docs
-                        + root_tools_docs
-                        + sub_tools_docs
-                    ),
-                }
+            messages = [cast(ChatMessage, dict(m)) for m in prompt]
+            scaffold = (
+                "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
+            )
+            inserted = False
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str) or content is None:
+                    text = content or ""
+                    if text.startswith("<RLM_SCAFFOLDING>"):
+                        inserted = True
+                        break
+                    msg["content"] = scaffold + text
+                elif isinstance(content, list):
+                    if (
+                        content
+                        and isinstance(content[0], dict)
+                        and content[0].get("type") == "text"
+                        and str(content[0].get("text", "")).startswith(
+                            "<RLM_SCAFFOLDING>"
+                        )
+                    ):
+                        inserted = True
+                        break
+                    msg["content"] = [{"type": "text", "text": scaffold}, *content]
+                elif isinstance(content, dict):
+                    msg["content"] = [
+                        {"type": "text", "text": scaffold},
+                        content,
+                    ]
+                inserted = True
+                break
+
+            if not inserted:
+                messages.append(
+                    cast(ChatMessage, {"role": "user", "content": scaffold})
+                )
+
             return cast(Messages, messages)
         else:
             # Subsequent turns: use parent implementation
