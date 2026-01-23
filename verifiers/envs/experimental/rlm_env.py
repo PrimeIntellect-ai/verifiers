@@ -1436,13 +1436,16 @@ _RLM_SANDBOX_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
             f'export RLM_READY="${{RLM_READY:-}}"\\n'
             f'export RLM_CONTENT="${{RLM_CONTENT-}}"\\n'
             f"{TOOL_DEF_SCRIPT}\\n"
-            f"__RLM_STATUS=0\\n"
-            f"(\\n{code}\\n)\\n"
-            f"__RLM_STATUS=$?\\n"
-            f'printf "\\n{end_marker}__%s\\n" "$__RLM_STATUS"\\n'
-            f'printf "{env_marker}__%s__" "${{RLM_READY:-}}"\\n'
-            f'printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n"\\n'
-            f'printf "\\n{pwd_marker}__%s\\n" "$PWD"\\n'
+            f"(\\n"
+            f"trap '"
+            f'__RLM_STATUS=$?; '
+            f'printf "\\n{end_marker}__%s\\n" "$__RLM_STATUS"; '
+            f'printf "{env_marker}__%s__" "${{RLM_READY:-}}"; '
+            f'printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n"; '
+            f'printf "\\n{pwd_marker}__%s\\n" "$PWD"'
+            f"' EXIT\\n"
+            f"{code}\\n"
+            f")\\n"
         )
 
         env = os.environ.copy()
