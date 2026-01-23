@@ -78,14 +78,15 @@ class Scaffold:
         self.max_seq_len = max_seq_len
         self.oai_tools = oai_tools
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._setup_complete = False
 
     async def setup(self):
-        """Initialize scaffold resources. Override in subclasses."""
-        pass
+        """Initialize scaffold resources. Override in subclasses. Idempotent."""
+        self._setup_complete = True
 
     async def teardown(self):
-        """Clean up scaffold resources. Override in subclasses."""
-        pass
+        """Clean up scaffold resources. Override in subclasses. Idempotent."""
+        self._setup_complete = False
 
     def _normalize_sampling_args(self, sampling_args: SamplingArgs) -> SamplingArgs:
         """Normalize sampling arguments for the API call."""
@@ -394,7 +395,9 @@ class MCPScaffold(Scaffold):
         self._setup_complete = True
 
     async def teardown(self):
-        """Disconnect from MCP servers."""
+        """Disconnect from MCP servers. Idempotent."""
+        if not self._setup_complete:
+            return
         for connection in self._connections.values():
             await connection.disconnect()
         self._connections.clear()

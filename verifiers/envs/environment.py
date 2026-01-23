@@ -154,6 +154,7 @@ class Environment(ABC):
         self._stop_conditions: list[StopCondition] = []
         self._cleanup_handlers: list[RolloutCleanup] = []
         self._teardown_handlers: list[EnvironmentTeardown] = []
+        self._scaffolds: list["Scaffold"] = []  # Track scaffolds for lifecycle management
 
         self.__post_init__()
 
@@ -446,6 +447,12 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+
+        # Register scaffold for lifecycle management and call setup
+        if scaffold not in self._scaffolds:
+            self._scaffolds.append(scaffold)
+        await scaffold.setup()  # Idempotent - scaffold tracks _setup_complete
+
         # Store scaffold in state for concurrency safety (see docstring)
         state["scaffold"] = scaffold
         # Also store client/model/sampling_args for backwards compat (some code reads these)
@@ -497,8 +504,17 @@ class Environment(ABC):
 
     async def _teardown(self):
         """
-        Tear down environment resources.
+        Tear down environment resources, including scaffolds.
         """
+        # Teardown all registered scaffolds
+        for scaffold in self._scaffolds:
+            try:
+                await scaffold.teardown()
+            except Exception as e:
+                self.logger.warning(f"Error tearing down scaffold: {e}")
+        self._scaffolds.clear()
+
+        # Run custom teardown handlers
         for handler in self._teardown_handlers:
             await handler()
 

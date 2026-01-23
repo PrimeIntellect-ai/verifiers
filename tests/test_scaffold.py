@@ -592,3 +592,184 @@ class TestScaffoldEnvironmentIntegration:
         # Backwards compat: client/model should also be stored
         assert state["client"] is mock_openai_client
         assert state["model"] == "test-model"
+
+
+# ============================================================================
+# Scaffold Lifecycle Tests
+# ============================================================================
+
+
+class TestScaffoldLifecycle:
+    """Tests for scaffold lifecycle management by environments."""
+
+    @pytest.mark.asyncio
+    async def test_setup_called_on_init_state(self, mock_openai_client, sample_dataset):
+        """Test that scaffold.setup() is called when env.init_state() is called."""
+        env = vf.SingleTurnEnv(dataset=sample_dataset)
+
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        assert not scaffold._setup_complete
+
+        ds = env.get_dataset()
+        example = ds[0]
+        await env.init_state(RolloutInput(**example), scaffold)
+
+        assert scaffold._setup_complete
+
+    @pytest.mark.asyncio
+    async def test_scaffold_registered_with_env(self, mock_openai_client, sample_dataset):
+        """Test that scaffold is registered in env._scaffolds."""
+        env = vf.SingleTurnEnv(dataset=sample_dataset)
+
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        assert len(env._scaffolds) == 0
+
+        ds = env.get_dataset()
+        example = ds[0]
+        await env.init_state(RolloutInput(**example), scaffold)
+
+        assert scaffold in env._scaffolds
+        assert len(env._scaffolds) == 1
+
+    @pytest.mark.asyncio
+    async def test_scaffold_not_duplicated_on_multiple_init(
+        self, mock_openai_client, sample_dataset
+    ):
+        """Test that same scaffold isn't added twice to env._scaffolds."""
+        env = vf.SingleTurnEnv(dataset=sample_dataset)
+
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        ds = env.get_dataset()
+        example = ds[0]
+
+        # Call init_state multiple times with same scaffold
+        await env.init_state(RolloutInput(**example), scaffold)
+        await env.init_state(RolloutInput(**example), scaffold)
+        await env.init_state(RolloutInput(**example), scaffold)
+
+        # Should only be registered once
+        assert len(env._scaffolds) == 1
+
+    @pytest.mark.asyncio
+    async def test_teardown_called_on_env_teardown(
+        self, mock_openai_client, sample_dataset
+    ):
+        """Test that scaffold.teardown() is called when env._teardown() is called."""
+        env = vf.SingleTurnEnv(dataset=sample_dataset)
+
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        ds = env.get_dataset()
+        example = ds[0]
+        await env.init_state(RolloutInput(**example), scaffold)
+
+        assert scaffold._setup_complete
+
+        # Trigger env teardown
+        await env._teardown()
+
+        assert not scaffold._setup_complete
+        assert len(env._scaffolds) == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_scaffolds_all_torn_down(
+        self, mock_openai_client, sample_dataset
+    ):
+        """Test that all scaffolds are torn down when env tears down."""
+        env = vf.SingleTurnEnv(dataset=sample_dataset)
+
+        scaffold1 = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+        scaffold2 = Scaffold(
+            client=mock_openai_client,
+            model="test-model-2",
+            sampling_args={},
+        )
+
+        ds = env.get_dataset()
+        example = ds[0]
+
+        await env.init_state(RolloutInput(**example), scaffold1)
+        await env.init_state(RolloutInput(**example), scaffold2)
+
+        assert len(env._scaffolds) == 2
+        assert scaffold1._setup_complete
+        assert scaffold2._setup_complete
+
+        await env._teardown()
+
+        assert not scaffold1._setup_complete
+        assert not scaffold2._setup_complete
+        assert len(env._scaffolds) == 0
+
+    @pytest.mark.asyncio
+    async def test_setup_is_idempotent(self, mock_openai_client):
+        """Test that scaffold.setup() can be called multiple times safely."""
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        await scaffold.setup()
+        assert scaffold._setup_complete
+
+        # Call again - should not raise
+        await scaffold.setup()
+        assert scaffold._setup_complete
+
+    @pytest.mark.asyncio
+    async def test_teardown_is_idempotent(self, mock_openai_client):
+        """Test that scaffold.teardown() can be called multiple times safely."""
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        await scaffold.setup()
+        assert scaffold._setup_complete
+
+        await scaffold.teardown()
+        assert not scaffold._setup_complete
+
+        # Call again - should not raise
+        await scaffold.teardown()
+        assert not scaffold._setup_complete
+
+    @pytest.mark.asyncio
+    async def test_teardown_without_setup_is_safe(self, mock_openai_client):
+        """Test that calling teardown without setup is safe."""
+        scaffold = Scaffold(
+            client=mock_openai_client,
+            model="test-model",
+            sampling_args={},
+        )
+
+        assert not scaffold._setup_complete
+
+        # Should not raise
+        await scaffold.teardown()
+        assert not scaffold._setup_complete
