@@ -1,6 +1,7 @@
 """Tests for the base Environment class."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -19,6 +20,9 @@ from verifiers.types import (
 )
 from verifiers.utils.eval_utils import make_dataset as build_dataset
 
+if TYPE_CHECKING:
+    from verifiers.scaffolds import Scaffold
+
 
 # Create a concrete implementation for testing the abstract base class
 class SimpleEnvironment(Environment):
@@ -28,15 +32,9 @@ class SimpleEnvironment(Environment):
         """Setup state for SimpleEnvironment."""
         return state
 
-    async def rollout(
-        self,
-        input: RolloutInput,
-        client,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ):
+    async def rollout(self, input: RolloutInput, scaffold: "Scaffold"):
         """Simple test rollout implementation."""
-        state = await self.init_state(input, client=client, model=model)
+        state = await self.init_state(input, scaffold)
         state = await self.setup_state(state)
 
         prompt_messages = state["prompt"]

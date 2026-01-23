@@ -2,13 +2,12 @@ import time
 from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 
 from datasets import Dataset, concatenate_datasets
-from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import RolloutInput
 
 if TYPE_CHECKING:
-    pass
+    from verifiers.scaffolds import Scaffold
 
 
 class EnvGroupRubric(vf.Rubric):
@@ -266,12 +265,14 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
+        scaffold: "Scaffold | None" = None,
+        # Legacy parameters for backwards compatibility
+        client=None,
+        model: str | None = None,
+        sampling_args=None,
     ) -> vf.State:
         env = self.get_env_for_task(input["task"])
-        return await env.rollout(input, client, model, sampling_args)
+        return await env.rollout(input, scaffold, client=client, model=model, sampling_args=sampling_args)
 
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])

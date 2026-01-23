@@ -1,6 +1,5 @@
 import asyncio
 import atexit
-import functools
 import inspect
 import json
 import logging
@@ -25,8 +24,7 @@ from typing import (
 )
 
 from datasets import Dataset
-from openai import AsyncOpenAI, BadRequestError, OpenAI
-from openai.types.chat import ChatCompletion
+from openai import AsyncOpenAI, OpenAI
 
 import verifiers as vf
 from verifiers.parsers.parser import Parser
@@ -51,17 +49,10 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.eval_utils import make_dataset, save_rollout_results
-from verifiers.utils.message_utils import (
-    strip_nones_from_content,
-)
 from verifiers.utils.path_utils import get_results_path
-from verifiers.utils.token_utils import (
-    get_prompt_ids,
-    prepare_sampling_args_for_token_prompts,
-)
 
 if TYPE_CHECKING:
-    pass
+    from verifiers.scaffolds import Scaffold
 
 
 class Environment(ABC):
@@ -391,257 +382,76 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages,
-        client: AsyncOpenAI | None = None,
-        model: str | None = None,
-        oai_tools: list[ChatCompletionToolParam] | None = None,
-        sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
     ) -> ModelResponse:
         """
-        Get model response for a given prompt (chat or completion).
+        Get model response for a given prompt.
 
-        Convenience function for wrapping (chat, completion) API calls.
-        Returns special error messages for context length issues.
-
-        If interleaved_rollouts is set, the model response is obtained by
-        calling a custom token-in endpoint. Note, that this only works if the
-        inference server implements this endpoint.  Currently, this is a
-        hand-crafted feature for PRIME-RL's vLLM server extension, and is not
-        recommended for general use.
+        Delegates to the scaffold stored in state. The scaffold handles all
+        complexity including tool loops, error handling, and interleaved rollouts.
         """
+        scaffold = state.get("scaffold")
+        if scaffold is None:
+            raise ValueError("No scaffold in state. Was init_state() called?")
 
-        def resolve_optional_args(
-            client: AsyncOpenAI | None,
-            model: str | None,
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs | None,
-            message_type: MessageType | None,
-        ) -> tuple[
-            AsyncOpenAI,
-            str,
-            list[ChatCompletionToolParam] | None,
-            SamplingArgs,
-            MessageType,
-        ]:
-            """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
-            model = model or state["model"]
-            assert client is not None and model is not None
-            oai_tools = oai_tools or state["oai_tools"]
-            sampling_args = cast(
-                SamplingArgs, sampling_args or state["sampling_args"] or {}
-            )
-            message_type = message_type or self.message_type
-            return client, model, oai_tools, sampling_args, message_type
+        result = await scaffold.generate(prompt, state)
 
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
-            """
-            Normalize sampling arguments. Mainly does 2 things:
-            - if max_tokens is provided for chat, rename to max_completion_tokens
-            - drop any None-valued entries to avoid sending to the client
-            """
-            if "max_tokens" in sampling_args:
-                if sampling_args["max_tokens"] is None:
-                    sampling_args.pop("max_tokens")
-                elif message_type == "chat":
-                    sampling_args["max_completion_tokens"] = sampling_args.pop(
-                        "max_tokens"
-                    )
-            if (
-                "max_completion_tokens" in sampling_args
-                and sampling_args["max_completion_tokens"] is None
-            ):
-                sampling_args.pop("max_completion_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
+        # Store scaffold metadata in state for metrics
+        if "scaffold_tool_calls" not in state:
+            state["scaffold_tool_calls"] = 0
+        state["scaffold_tool_calls"] += result.tool_calls_made
+        state["scaffold_messages"] = result.messages
 
-        def handle_overlong_prompt(func):
-            """Decorator to handle overlong prompt errors from the model API."""
-
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    # in case of making a request with an overlong prompt, e.g
-                    # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
-                    # in all other case we raise a generic model error
-                    raise vf.ModelError from e
-
-            return wrapper
-
-        @handle_overlong_prompt
-        async def get_model_response_with_messages(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """Convenience function for wrapping (chat, completion) API calls."""
-            if message_type == "chat":
-                assert isinstance(prompt, list)
-                prompt = strip_nones_from_content(prompt)
-                # --- detect audio parts and force text-only modality if caller didn't set one ---
-                has_audio = False
-                try:
-                    for m in prompt:
-                        c = m.get("content")
-                        if isinstance(c, list):
-                            for p in c:
-                                if isinstance(p, dict) and str(
-                                    p.get("type", "")
-                                ).startswith("input_audio"):
-                                    has_audio = True
-                                    break
-                        if has_audio:
-                            break
-                except Exception:
-                    has_audio = False
-                if has_audio and "modalities" not in sampling_args:
-                    sampling_args = {
-                        **sampling_args,
-                        "modalities": ["text"],
-                    }
-
-                if oai_tools:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        tools=oai_tools,
-                        **sampling_args,
-                    )
-                else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        **sampling_args,
-                    )
-                return response
-            elif message_type == "completion":
-                if oai_tools:
-                    raise ValueError(
-                        "oai_tools are not supported for completion tasks."
-                    )
-                assert isinstance(prompt, str)
-                response = await client.completions.create(
-                    model=model, prompt=prompt, **sampling_args
-                )
-                return response
-
-        @handle_overlong_prompt
-        async def get_model_response_with_tokens(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            prompt_ids: list[int],
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """
-            Get a model response with pre-tokenized prompt from custom
-            /v1/chat/completions/tokens endpoint (only available in PRIME-RL's
-            vLLM server extension)
-            """
-            assert message_type == "chat", (
-                "get_model_response_with_tokens is only supported for chat tasks."
-            )
-
-            extra_body = sampling_args.pop("extra_body", {})
-            body = dict(
-                model=model,
-                messages=prompt,
-                tools=oai_tools,
-                tokens=prompt_ids,
-                **sampling_args,
-                **extra_body,
-            )
-
-            return await client.post(
-                "/chat/completions/tokens",
-                body=body,
-                cast_to=ChatCompletion,
-            )
-
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
-        )
-        sampling_args = normalize_sampling_args(sampling_args)
-        if self.interleaved_rollouts:
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
-
-        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
-            prompt_ids = await get_prompt_ids(state, prompt, client)
-            response = await get_model_response_with_tokens(
-                client=client,
-                model=model,
-                prompt=prompt,
-                prompt_ids=prompt_ids,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
-        else:
-            response = await get_model_response_with_messages(
-                client=client,
-                model=model,
-                prompt=prompt,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
-
-        # Some providers (e.g. OpenRouter) may return None for response or response.choices
-        if response is None:
-            raise vf.EmptyModelResponseError from ValueError(
-                "Model returned no response"
-            )
-        if response.choices is None:
-            raise vf.EmptyModelResponseError from ValueError(
-                "Model returned no response choices"
-            )
-        return response
+        return result.response
 
     @final
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
+        scaffold: "Scaffold | None" = None,
+        # Legacy parameters for backwards compatibility with tests
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         """
         Create initial state from dataset row.
-        Environment-agnostic - just stores the data.
 
-        Creates State with input fields in "input" RolloutInput for structured access,
-        but State's forwarding behavior allows backward-compatible direct access.
+        NOTE: Scaffold is stored in state (not on self) to support concurrent
+        generate() calls with different scaffolds on the same environment instance.
+        This is a pragmatic choice for concurrency safety - conceptually scaffold
+        is a runtime dependency, not rollout state, but storing it in state
+        ensures each rollout uses the correct scaffold.
+
+        For backwards compatibility, also accepts client/model/sampling_args directly,
+        which will create a bare scaffold internally.
         """
+        # Handle backwards compat: create scaffold from legacy params if needed
+        if scaffold is None:
+            if client is not None and model is not None:
+                from verifiers.scaffolds import Scaffold
+                scaffold = Scaffold(
+                    client=client,
+                    model=model,
+                    sampling_args=sampling_args,
+                    interleaved_rollouts=self.interleaved_rollouts,
+                    max_seq_len=self.max_seq_len,
+                    oai_tools=self.oai_tools,
+                )
+            else:
+                raise ValueError("Must provide scaffold or both client and model")
+
         state_input = deepcopy(input)
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
-        state["client"] = client
-        state["model"] = model
-        state["sampling_args"] = sampling_args
+        # Store scaffold in state for concurrency safety (see docstring)
+        state["scaffold"] = scaffold
+        # Also store client/model/sampling_args for backwards compat (some code reads these)
+        state["client"] = scaffold.client
+        state["model"] = scaffold.model
+        state["sampling_args"] = scaffold.sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
         state["oai_tools"] = None
@@ -669,13 +479,13 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
+        scaffold: "Scaffold | None" = None,
+        # Legacy parameters for backwards compatibility
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
-        """
-        Run a rollout for a given input.
-        """
+        """Run a rollout for a given input using the provided scaffold."""
         pass
 
     async def _cleanup(self, state: State):
@@ -726,21 +536,14 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        gen_sampling_args: SamplingArgs,
+        scaffold: "Scaffold",
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager | None = None,
         score: bool = False,
     ) -> State:
         """Generate and, optionally, score a rollout."""
         async with gen_sem:
-            state = await self.rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-            )
+            state = await self.rollout(input, scaffold)
         if score:
             assert score_sem is not None
             if self.score_rollouts:
@@ -753,23 +556,14 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
-        model: str,
-        gen_sampling_args: SamplingArgs,
+        scaffold: "Scaffold",
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
         score: bool = True,
-        **kwargs,
     ) -> list[State]:
         """Generate and, optionally, score one group."""
         rollout_tasks = [
-            self.run_rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-                gen_sem,
-            )
+            self.run_rollout(input, scaffold, gen_sem)
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
@@ -856,9 +650,10 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
-        model: str,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
         sampling_args: SamplingArgs | None = None,
+        scaffold: "Scaffold | None" = None,
         max_concurrent: int = -1,
         max_concurrent_generation: int | None = None,
         max_concurrent_scoring: int | None = None,
@@ -875,7 +670,35 @@ class Environment(ABC):
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
+
+        Can be called with either:
+        - scaffold: A Scaffold object that manages LLM interaction
+        - client, model: Direct OpenAI client and model name (creates bare Scaffold internally)
+
+        Internally, a Scaffold is always used. When client/model are provided directly,
+        a bare Scaffold is created automatically for backwards compatibility.
         """
+        # Always use a scaffold - create bare scaffold if not provided
+        if scaffold is None:
+            if client is None or model is None:
+                raise ValueError(
+                    "Must provide either 'scaffold' or both 'client' and 'model'"
+                )
+            from verifiers.scaffolds import Scaffold
+            scaffold = Scaffold(
+                client=client,
+                model=model,
+                sampling_args=sampling_args,
+                interleaved_rollouts=self.interleaved_rollouts,
+                max_seq_len=self.max_seq_len,
+                oai_tools=self.oai_tools,
+            )
+
+        # Extract client/model from scaffold for use in metadata
+        client = scaffold.client
+        model = scaffold.model
+        if sampling_args is None:
+            sampling_args = scaffold.sampling_args
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
@@ -911,9 +734,7 @@ class Environment(ABC):
                 task = asyncio.create_task(
                     maybe_retry(self.run_rollout, max_retries=max_retries)(
                         input_item,
-                        client,
-                        model,
-                        gen_sampling_args,
+                        scaffold,
                         gen_sem,
                         score_sem,
                         score=True,
@@ -935,9 +756,7 @@ class Environment(ABC):
                 task = asyncio.create_task(
                     maybe_retry(self.run_group, max_retries=max_retries)(
                         group,
-                        client,
-                        model,
-                        gen_sampling_args,
+                        scaffold,
                         gen_sem,
                         score_sem,
                     )

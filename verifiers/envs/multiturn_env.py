@@ -1,15 +1,12 @@
 import logging
 from abc import abstractmethod
-from typing import final
-
-from openai import AsyncOpenAI
+from typing import TYPE_CHECKING, final
 
 import verifiers as vf
 from verifiers.types import (
     Messages,
     ModelResponse,
     RolloutInput,
-    SamplingArgs,
     State,
     TrajectoryStep,
 )
@@ -19,6 +16,9 @@ from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
 )
+
+if TYPE_CHECKING:
+    from verifiers.scaffolds import Scaffold
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,17 @@ class MultiTurnEnv(vf.Environment):
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
+
+        # If scaffold made tool calls (e.g., ToolScaffold), use scaffold_messages
+        # to include the full tool loop in completion for training
+        scaffold_tool_calls = state.get("scaffold_tool_calls", 0)
+        scaffold_messages = state.get("scaffold_messages")
+        if scaffold_tool_calls > 0 and scaffold_messages:
+            # scaffold_messages includes prompt, completion is everything after
+            state["completion"] = scaffold_messages[len(state["prompt"]):]
+            return
+
+        # Default: build from trajectory
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
         full_conversation = concat_messages([last_prompt, last_completion])
@@ -129,11 +140,24 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
+        scaffold: "Scaffold | None" = None,
+        # Legacy parameters for backwards compatibility
+        client=None,
+        model: str | None = None,
+        sampling_args=None,
     ) -> State:
-        state = await self.init_state(input, client, model, sampling_args)
+        # Handle backwards compat
+        if scaffold is None and client is not None and model is not None:
+            from verifiers.scaffolds import Scaffold
+            scaffold = Scaffold(
+                client=client,
+                model=model,
+                sampling_args=sampling_args,
+                interleaved_rollouts=self.interleaved_rollouts,
+                max_seq_len=self.max_seq_len,
+                oai_tools=self.oai_tools,
+            )
+        state = await self.init_state(input, scaffold)
         try:
             state = await self.setup_state(state)
         except vf.Error as e:

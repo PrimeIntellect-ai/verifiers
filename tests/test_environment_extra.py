@@ -39,13 +39,21 @@ class DummyEnvironment(Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client,
-        model: str,
+        scaffold: "vf.Scaffold | None" = None,
+        # Legacy parameters for backwards compatibility
+        client=None,
+        model: str | None = None,
         sampling_args: SamplingArgs | None = None,
     ):
-        state = await self.init_state(
-            input, client=client, model=model, sampling_args=sampling_args
-        )
+        # Handle backwards compat: create scaffold from legacy params if needed
+        if scaffold is None and client is not None and model is not None:
+            from verifiers.scaffolds import Scaffold
+            scaffold = Scaffold(
+                client=client,
+                model=model,
+                sampling_args=sampling_args,
+            )
+        state = await self.init_state(input, scaffold)
         state = await self.setup_state(state)
 
         prompt_messages = state["prompt"]
