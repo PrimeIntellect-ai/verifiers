@@ -120,7 +120,41 @@ def load_toml_config(path: Path) -> list[dict]:
     # extract global defaults (everything except 'eval' key)
     global_defaults = {k: v for k, v in raw_config.items() if k != "eval"}
 
-    valid_fields = set(EvalConfig.model_fields.keys())
+    # valid fields mirror cli args, not evalconfig
+    # TODO: properly tie EvalConfig to CLI
+    valid_fields = {
+        # environment
+        "env_id",
+        "env_args",
+        "env_dir_path",
+        "endpoints_path",
+        "extra_env_kwargs",
+        # model/client
+        "model",
+        "api_key_var",
+        "api_base_url",
+        "header",
+        # sampling
+        "sampling_args",
+        "max_tokens",
+        "temperature",
+        # evaluation
+        "num_examples",
+        "rollouts_per_example",
+        "max_concurrent",
+        "max_concurrent_generation",
+        "max_concurrent_scoring",
+        "independent_scoring",
+        "max_retries",
+        # logging
+        "verbose",
+        # saving
+        "state_columns",
+        "save_results",
+        "save_every",
+        "save_to_hf_hub",
+        "hf_hub_dataset_name",
+    }
 
     # validate global fields
     if global_defaults:
