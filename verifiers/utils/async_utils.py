@@ -1,8 +1,8 @@
 import asyncio
 import inspect
 import logging
-from time import perf_counter
 from collections.abc import Coroutine
+from time import perf_counter
 from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
 
 import tenacity as tc
@@ -143,7 +143,7 @@ def maybe_retry(
     wrapper.__qualname__ = getattr(func, "__qualname__", "unknown")
 
     return tc.AsyncRetrying(
-        retry=tc.retry_if_exception_type(vf.InfraError),
+        retry=tc.retry_if_exception_type((vf.InfraError, vf.InvalidModelResponseError)),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
         before_sleep=log_retry,
