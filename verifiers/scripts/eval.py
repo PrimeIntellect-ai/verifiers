@@ -21,6 +21,7 @@ from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
+    run_evaluations,
     run_evaluations_tui,
 )
 from verifiers.utils.install_utils import check_hub_env_installed
@@ -265,6 +266,13 @@ def main():
         help="Use TUI mode for live evaluation display",
     )
     parser.add_argument(
+        "--debug",
+        "-d",
+        default=False,
+        action="store_true",
+        help="Disable Rich display; use normal logging and tqdm progress instead",
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=0,
@@ -434,8 +442,10 @@ def main():
         logger.debug(f"Evaluation config: {config.model_dump_json(indent=2)}")
 
     eval_run_config = EvalRunConfig(evals=eval_configs)
-    # Always use Rich display; --tui flag controls screen mode (alternate screen vs in-place)
-    asyncio.run(run_evaluations_tui(eval_run_config, tui_mode=args.tui))
+    if args.debug:
+        asyncio.run(run_evaluations(eval_run_config))
+    else:
+        asyncio.run(run_evaluations_tui(eval_run_config, tui_mode=args.tui))
 
 
 if __name__ == "__main__":

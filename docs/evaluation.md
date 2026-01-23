@@ -136,6 +136,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
+| `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--save-results` | `-s` | false | Save results to disk |
 | `--save-every` | `-f` | -1 | Save checkpoint every N rollouts |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
