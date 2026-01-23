@@ -2067,9 +2067,12 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         if not session.sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
 
-        sandbox_root = f"/tmp/rlm_{session.rollout_id}"
-        sandbox_fs_root = f"{sandbox_root}/rlm_fs"
-        sandbox_control_dir = f"{sandbox_root}/rlm_control"
+        sandbox_fs_root = state.get("rlm_fs_root_remote")
+        sandbox_control_dir = state.get("rlm_control_dir_remote")
+        if not sandbox_fs_root or not sandbox_control_dir:
+            sandbox_root = f"/tmp/rlm_{session.rollout_id}"
+            sandbox_fs_root = f"{sandbox_root}/rlm_fs"
+            sandbox_control_dir = f"{sandbox_root}/rlm_control"
 
         mkdir_cmd = f"mkdir -p {sandbox_fs_root} {sandbox_control_dir}"
         await self._execute_sandbox_command(
@@ -2088,9 +2091,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
 
         state["rlm_fs_staging_root"] = session.local_fs_root
         state["rlm_control_dir_local"] = session.local_control_dir
-        state["rlm_fs_root"] = sandbox_fs_root
-        state["rlm_control_dir"] = sandbox_control_dir
-        state["rlm_paths"] = session.paths.to_dict()
+        state["rlm_fs_root_remote"] = sandbox_fs_root
+        state["rlm_control_dir_remote"] = sandbox_control_dir
+        state["rlm_paths_remote"] = session.paths.to_dict()
 
     async def setup(self, state: State) -> None:
         session = self._get_session(state)
@@ -2265,7 +2268,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
     ) -> None:
         assert session.paths is not None
         context = {
-            "fs_root": state.get("rlm_fs_root"),
+            "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
             "fs_metadata": state.get("rlm_fs_metadata") or {},
             "allowed_paths": [
                 session.paths.command_fifo,
@@ -3823,6 +3826,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
+        if self.execution_backend == "sandbox":
+            state["rlm_fs_root_remote"] = f"/tmp/rlm_{rollout_id}/rlm_fs"
+            state["rlm_control_dir_remote"] = f"/tmp/rlm_{rollout_id}/rlm_control"
 
         # 1. Setup interception and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
@@ -3858,11 +3864,14 @@ class RLMEnv(vf.StatefulToolEnv):
         state["rlm_fs_has_data"] = fs_has_data
         state["retain_filesystem_after_rollout"] = self.retain_filesystem_after_rollout
 
-        # Sandbox backend may upload filesystem and update fs_root in state.
-        await self._executor.prepare_filesystem(state)
+        fs_root_for_prompt = (
+            state.get("rlm_fs_root_remote")
+            if self.execution_backend == "sandbox"
+            else fs_root
+        )
 
         filesystem_summary = self._generate_filesystem_summary(
-            fs_root=state.get("rlm_fs_root") or fs_root,
+            fs_root=fs_root_for_prompt or fs_root,
             metadata=fs_metadata,
             has_data=fs_has_data,
         )
@@ -3899,10 +3908,12 @@ class RLMEnv(vf.StatefulToolEnv):
         state["rlm_root_tools"] = [_tool_display_name(tool) for tool in self.root_tools]
         state["rlm_sub_tools"] = [_tool_display_name(tool) for tool in self.sub_tools]
 
-        # 4. Prepare backend and start worker
-        await self._executor.setup(state)
-
-        state["rlm_worker_ready"] = True
+        # 4. Prepare backend and start worker (defer for sandbox to allow env setup)
+        if self.execution_backend != "sandbox":
+            await self._executor.setup(state)
+            state["rlm_worker_ready"] = True
+        else:
+            state["rlm_worker_ready"] = False
 
         # Initialize context warning flag (feature enabled if max_seq_len is set)
         state["context_warning_sent"] = False
@@ -3924,6 +3935,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
         """Execute code in worker and return result."""
+        if not state.get("rlm_worker_ready", False):
+            await self._executor.prepare_filesystem(state)
+            await self._executor.setup(state)
+            state["rlm_worker_ready"] = True
         # Increment and track sequence number for this execution
         seq = state.get("_exec_seq", 0) + 1
         state["_exec_seq"] = seq

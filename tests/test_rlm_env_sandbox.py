@@ -220,9 +220,11 @@ class TestSandboxFilesystemProvisioning:
         executor._upload_directory.assert_awaited_once()
 
         assert state["rlm_fs_staging_root"] == str(fs_root)
-        assert state["rlm_fs_root"].startswith("/tmp/rlm_rlm_test/rlm_fs")
-        assert state["rlm_control_dir"].startswith("/tmp/rlm_rlm_test/rlm_control")
-        assert state["rlm_paths"]["base_dir"].startswith(
+        assert state["rlm_fs_root_remote"].startswith("/tmp/rlm_rlm_test/rlm_fs")
+        assert state["rlm_control_dir_remote"].startswith(
+            "/tmp/rlm_rlm_test/rlm_control"
+        )
+        assert state["rlm_paths_remote"]["base_dir"].startswith(
             "/tmp/rlm_rlm_test/rlm_control"
         )
 
