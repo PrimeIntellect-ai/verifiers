@@ -82,12 +82,12 @@ def load_environment(
     tasks: list[str] | None = None,
     agent_workdir: str = "/app",
     docker_image: str = "python:3.11-slim",
-    timeout_seconds: float = 3600.0,
+    timeout_seconds: float = 900.0,
     cpu_cores: int = 2,
     memory_gb: int = 4,
     disk_size_gb: int = 10,
     timeout_minutes: int = 120,
-    max_turns: int = -1,
+    max_turns: int = 4,
 ) -> OpenCodeHarborEnv:
     return OpenCodeHarborEnv(
         dataset_path=dataset_path,
@@ -100,4 +100,4 @@ def load_environment(
         disk_size_gb=disk_size_gb,
         timeout_minutes=timeout_minutes,
         max_turns=max_turns,
-    )h
+    )
