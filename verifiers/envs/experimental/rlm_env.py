@@ -676,6 +676,9 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
     ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
+    ROOT_TOOL_USER_AGENT = os.environ.get(
+        "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
+    )
 
 
     def _decode_arg(raw: str):
@@ -704,7 +707,11 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         req = urllib.request.Request(
             ROOT_TOOL_URL,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": ROOT_TOOL_USER_AGENT,
+            },
             method="POST",
         )
         try:
