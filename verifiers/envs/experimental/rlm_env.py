@@ -2253,11 +2253,12 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             return
         pkg_list = " ".join(packages)
         cmd = f"bash -lc 'pip install -q {pkg_list}'"
-        await self._execute_sandbox_command(
+        result = await self._execute_sandbox_command(
             session.sandbox_id,
             cmd,
             timeout=self.env._compute_install_wait_seconds(),
         )
+        self._raise_on_command_error(result, "pip install")
 
     async def _write_sandbox_files(
         self, session: SandboxRLMReplSession, state: State
@@ -2326,16 +2327,17 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             bash -lc <<'BASH'
             rm -f "{session.paths.command_fifo}" "{session.paths.response_fifo}" \
                 "{session.paths.ready_flag}" "{session.paths.worker_pid_file}"
-            {export_cmd}python -u "{session.paths.worker_path}" &
+            {export_cmd}python -u "{session.paths.worker_path}" > "{session.paths.log_file}" 2>&1 &
             echo $! > "{session.paths.worker_pid_file}"
             BASH
             """
         )
-        await self._execute_sandbox_command(
+        result = await self._execute_sandbox_command(
             session.sandbox_id,
             cmd,
             timeout=self.env.max_startup_wait_seconds,
         )
+        self._raise_on_command_error(result, "start worker")
         await self._wait_for_ready(session)
 
     async def _wait_for_ready(self, session: SandboxRLMReplSession) -> None:
@@ -2347,11 +2349,25 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             "sleep 0.1; "
             "done; exit 1'"
         )
-        await self._execute_sandbox_command(
-            session.sandbox_id,
-            cmd,
-            timeout=self.env.max_startup_wait_seconds,
-        )
+        try:
+            result = await self._execute_sandbox_command(
+                session.sandbox_id,
+                cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        except CommandTimeoutError as exc:
+            log_tail = await self._read_worker_log_tail(session)
+            raise vf.SandboxError(
+                "RLM worker failed to become ready before timeout."
+                + (f"\nLog tail:\n{log_tail}" if log_tail else "")
+            ) from exc
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code != 0:
+            log_tail = await self._read_worker_log_tail(session)
+            raise vf.SandboxError(
+                "RLM worker failed to become ready."
+                + (f"\nLog tail:\n{log_tail}" if log_tail else "")
+            )
 
     async def _stop_worker(self, session: SandboxRLMReplSession) -> None:
         if not session.sandbox_id or not session.paths:
@@ -2371,6 +2387,35 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             )
         except Exception:
             pass
+
+    def _raise_on_command_error(self, result: Any, context: str) -> None:
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code == 0 or exit_code is None:
+            return
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        detail = ""
+        if stdout:
+            detail += f"\nstdout:\n{stdout}"
+        if stderr:
+            detail += f"\nstderr:\n{stderr}"
+        raise vf.SandboxError() from RuntimeError(
+            f"{context} failed with exit code {exit_code}.{detail}"
+        )
+
+    async def _read_worker_log_tail(self, session: SandboxRLMReplSession) -> str:
+        if not session.sandbox_id or not session.paths:
+            return ""
+        cmd = f"bash -lc 'tail -n 200 \"{session.paths.log_file}\" 2>/dev/null || true'"
+        try:
+            result = await self._execute_sandbox_command(
+                session.sandbox_id,
+                cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        except Exception:
+            return ""
+        return (getattr(result, "stdout", "") or "").strip()
 
     async def _send_worker_request(
         self, session: SandboxRLMReplSession, payload: dict[str, Any]
