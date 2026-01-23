@@ -52,7 +52,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.eval_utils import make_dataset, save_rollout_results
+from verifiers.utils.eval_utils import build_results, save_rollout_results
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
@@ -1235,7 +1235,7 @@ class Environment(ABC):
         """Set the score rollouts flag for this environment."""
         self.score_rollouts = score_rollouts
 
-    make_dataset = staticmethod(make_dataset)
+    make_dataset = staticmethod(build_results)  # backwards compatibility
 
 
 _EnvT = TypeVar("_EnvT", bound=Environment)

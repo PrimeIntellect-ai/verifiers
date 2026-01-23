@@ -4,9 +4,8 @@ import json
 import logging
 import time
 from collections import Counter, defaultdict
-from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -14,8 +13,7 @@ except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
 import numpy as np
-from datasets import Dataset, disable_progress_bar, enable_progress_bar
-from datasets.utils import logging as ds_logging
+from datasets import Dataset
 
 import verifiers as vf
 from verifiers.types import (
@@ -513,14 +511,6 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     display.print_final_summary()
 
 
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
-
-
 def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     metadata = results["metadata"]
     dataset_name = (
@@ -535,65 +525,89 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results["completion"]]
-    clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results["info"])
-    save_answer = any(answer != "" for answer in results["answer"])
-    errors = [s.get("error") for s in results["state"]]
-    results_dict = {
-        "example_id": results["example_id"],
-        "prompt": clean_prompts,
-        "completion": clean_completions,
-        "task": results["task"],
-        "reward": results["reward"],
-        "error": [repr(e) if e is not None else None for e in errors],
-        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
-        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
-    }
-    if save_info:
-        results_dict["info"] = results["info"]
-    if save_answer:
-        results_dict["answer"] = results["answer"]
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        results_dict[k] = v
-
-    # Add selected state columns if specified
-    state_columns = results["metadata"]["state_columns"]
-    if state_columns:
-        for col in state_columns:
-            if col == "responses":
-                results_dict[col] = [
-                    [r.model_dump() for r in s.get(col, [])] for s in results["state"]
-                ]
-            else:
-                results_dict[col] = [s.get(col) for s in results["state"]]
-
-    return Dataset.from_dict(results_dict)
+def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    """Converts a list of dicts (row-ordered dataset) to a dict of lists (col-ordered dataset)."""
+    return {k: [d[k] for d in list_of_dicts] for k in list_of_dicts[0]}
 
 
-@contextmanager
-def quiet_datasets():
-    prev_level = ds_logging.get_verbosity()
-    ds_logging.set_verbosity(ds_logging.WARNING)
-    disable_progress_bar()
-    try:
-        yield
-    finally:
-        ds_logging.set_verbosity(prev_level)
-        enable_progress_bar()
+def to_row_order(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    """Converts a dict of lists (col-ordered dataset) to a list of dicts (row-ordered dataset)."""
+    return [
+        {k: v for k, v in zip(dict_of_lists.keys(), values)}
+        for values in zip(*dict_of_lists.values())
+    ]
 
 
-def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    with quiet_datasets():
-        dataset.to_json(path_to_save / "results.jsonl")
-    with open(path_to_save / "metadata.json", "w") as f:
-        json.dump(metadata_dict, f)
+def build_results(results: GenerateOutputs) -> list[dict]:
+    """Builds list of results to save to disk from GenerateOutputs."""
+    raw_results_list = to_row_order(cast(dict[str, list[Any]], results))
+    metadata = cast(GenerateMetadata, results["metadata"])
+    state_columns = metadata.get("state_columns", [])
+    results_list = []
+    for raw_result in raw_results_list:
+        try:
+            clean_prompt = sanitize_tool_calls(
+                messages_to_printable(raw_result["prompt"])
+            )
+            clean_completion = sanitize_tool_calls(
+                messages_to_printable(raw_result["completion"])
+            )
+
+            result_dict = {
+                "example_id": raw_result["example_id"],
+                "prompt": clean_prompt,
+                "completion": clean_completion,
+                "task": raw_result["task"],
+                "reward": raw_result["reward"],
+                "error": raw_result["state"].get("error"),
+                "generation_ms": raw_result["state"]["timing"]["generation_ms"],
+                "scoring_ms": raw_result["state"]["timing"]["scoring_ms"],
+                "total_ms": raw_result["state"]["timing"]["total_ms"],
+                **{k: v for k, v in raw_result["state"]["metrics"].items()},
+            }
+
+            if raw_result.get("info"):
+                result_dict["info"] = raw_result["info"]
+            if raw_result.get("answer"):
+                result_dict["answer"] = raw_result["answer"]
+
+            # add selected state columns if specified
+            for col in state_columns:
+                result_dict[col] = raw_result["state"].get(col)
+
+            results_list.append(result_dict)
+        except Exception as e:
+            logger.error(
+                f"Skipping saving result for example {raw_result['example_id']}: {repr(e)}"
+            )
+
+    return results_list
+
+
+def build_metadata(metadata: GenerateMetadata) -> dict:
+    """Builds metadata dict to save from GenerateMetadata."""
+    metadata_dict = dict(metadata)
+    metadata_dict.pop("path_to_save")
+    metadata_dict.pop("date")
+
+    return metadata_dict
+
+
+def save_to_disk(results_dict: list[dict], metadata_dict: dict, path_to_save: Path):
+    path_to_save.mkdir(parents=True, exist_ok=True)
+
+    def save_results(results_list: list[dict], path: Path):
+        with open(path, "w") as f:
+            for result in results_list:
+                json.dump(result, f)
+                f.write("\n")
+
+    def save_metadata(metadata_dict: dict, path: Path):
+        with open(path, "w") as f:
+            json.dump(metadata_dict, f)
+
+    save_results(results_dict, path_to_save / "results.jsonl")
+    save_metadata(metadata_dict, path_to_save / "metadata.json")
 
 
 def save_rollout_results(
@@ -603,11 +617,14 @@ def save_rollout_results(
 ):
     path_to_save = results["metadata"]["path_to_save"]
     path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    dataset = make_dataset(results)
-    metadata_dict = sanitize_metadata(results["metadata"])
-    save_to_disk(dataset, metadata_dict, path_to_save)
+    results_list = build_results(results)
+    metadata_dict = build_metadata(results["metadata"])
+    save_to_disk(results_list, metadata_dict, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
-        dataset.push_to_hub(dataset_name)
-        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
+        try:
+            Dataset.from_list(results_list).push_to_hub(dataset_name)
+            logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
+        except Exception as e:
+            logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")
