@@ -881,6 +881,8 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
         use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
@@ -1033,7 +1035,7 @@ class Environment(ABC):
 
         # save if requested
         if save_results:
-            save_rollout_results(results)
+            save_rollout_results(results, push_to_hf_hub, hf_hub_dataset_name)
             if on_log is not None:
                 on_log(f"Saved final results to {results['metadata']['path_to_save']}")
 
@@ -1100,6 +1102,8 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
         use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
@@ -1124,6 +1128,8 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            push_to_hf_hub=push_to_hf_hub,
+            hf_hub_dataset_name=hf_hub_dataset_name,
             use_tqdm=use_tqdm,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
@@ -1147,6 +1153,8 @@ class Environment(ABC):
         state_columns: list[str] | None = None,
         save_results: bool = False,
         save_every: int = -1,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
     ) -> GenerateOutputs:
@@ -1166,6 +1174,8 @@ class Environment(ABC):
             state_columns=state_columns,
             save_results=save_results,
             save_every=save_every,
+            push_to_hf_hub=push_to_hf_hub,
+            hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
         )
