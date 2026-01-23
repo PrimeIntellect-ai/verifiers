@@ -62,6 +62,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        labels: list[str] | None = None,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -82,6 +83,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
+        self.labels = labels
         self.active_rollouts: dict[str, dict[str, Any]] = {}
         self.intercepts: dict[str, dict[str, Any]] = {}  # request_id -> intercept data
         self.interception_server: Any = None
@@ -142,6 +144,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             environment_vars=env_vars,
             team_id=self.team_id,
             advanced_configs=self.advanced_configs,
+            labels=self.labels if self.labels else [],
         )
         logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "

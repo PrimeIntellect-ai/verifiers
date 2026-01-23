@@ -132,6 +132,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        labels: list[str] | None = None,
         max_retries: int = 5,
         base_delay: float = 0.5,
         backoff_factor: float = 2.0,
@@ -166,6 +167,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             environment_vars=environment_vars,
             team_id=team_id,
             advanced_configs=advanced_configs,
+            labels=labels if labels else [],
         )
         self.active_sandboxes = set()
         self.with_retry = tc.AsyncRetrying(
