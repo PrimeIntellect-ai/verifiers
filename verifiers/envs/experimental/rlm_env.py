@@ -2180,7 +2180,28 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         if retain:
             self._retained_dirs.add(session.local_rollout_dir)
             if session.sandbox_id:
-                self._retained_sandboxes.add(session.sandbox_id)
+                sandbox_fs_root = session.sandbox_fs_root or state.get(
+                    "rlm_fs_root_remote"
+                )
+                if sandbox_fs_root:
+                    try:
+                        await self._download_directory(
+                            session.sandbox_id,
+                            sandbox_fs_root,
+                            session.local_fs_root,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to sync sandbox filesystem for rollout %s: %s",
+                            rollout_id,
+                            e,
+                        )
+                try:
+                    await self._delete_sandbox(session.sandbox_id)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete sandbox {session.sandbox_id}: {e}"
+                    )
             return
 
         try:
@@ -2492,6 +2513,45 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 timeout=self.env.max_startup_wait_seconds,
             )
         finally:
+            if tar_path and tar_path.exists():
+                try:
+                    tar_path.unlink()
+                except Exception:
+                    pass
+
+    async def _download_directory(
+        self, sandbox_id: str, remote_dir: str, local_dir: str
+    ) -> None:
+        local_path = Path(local_dir)
+        tar_path = None
+        remote_tar = f"/tmp/rlm_download_{uuid.uuid4().hex}.tar.gz"
+        try:
+            create_cmd = f'bash -lc \'tar -czf "{remote_tar}" -C "{remote_dir}" .\''
+            await self._execute_sandbox_command(
+                sandbox_id,
+                create_cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+            tar_path = Path(tmp.name)
+            tmp.close()
+            await self._sandbox_client.download_file(
+                sandbox_id, remote_tar, str(tar_path)
+            )
+            if local_path.exists():
+                shutil.rmtree(local_path, True)
+            local_path.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(local_path)
+        finally:
+            try:
+                await self._execute_sandbox_command(
+                    sandbox_id,
+                    f"bash -lc 'rm -f \"{remote_tar}\"'",
+                    timeout=self.env.max_startup_wait_seconds,
+                )
+            except Exception:
+                pass
             if tar_path and tar_path.exists():
                 try:
                     tar_path.unlink()
