@@ -487,6 +487,14 @@ def sanitize_metadata(metadata: GenerateMetadata) -> dict:
     return metadata_dict
 
 
+def serialize_info(info: dict) -> str:
+    try:
+        return json.dumps(info)
+    except Exception as e:
+        logger.warning(f"Error serializing {info}: {e}")
+        return ""
+
+
 def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     metadata = results["metadata"]
     dataset_name = (
@@ -521,7 +529,7 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
     }
     if save_info:
-        results_dict["info"] = results["info"]
+        results_dict["info"] = [serialize_info(info) for info in results["info"]]
     if save_answer:
         results_dict["answer"] = results["answer"]
     for k in results["metrics"]:
