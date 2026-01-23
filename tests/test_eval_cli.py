@@ -120,6 +120,7 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
         "extra_env_kwargs": {},
         "max_retries": 0,
         "tui": False,
+        "debug": False,
     }
     base_args.update(overrides)
     args_namespace = SimpleNamespace(**base_args)
