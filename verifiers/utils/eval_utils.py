@@ -1,13 +1,10 @@
 import asyncio
 import importlib.util
-import json
 import logging
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import cast
-
-from verifiers.utils.save_utils import to_col_order
+from typing import Any, cast
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -15,18 +12,15 @@ except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
 import numpy as np
-from datasets import Dataset
 
 import verifiers as vf
 from verifiers.types import (
     Endpoints,
     EvalConfig,
     EvalRunConfig,
-    GenerateMetadata,
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
-    RolloutOutput,
     StartCallback,
     State,
 )
@@ -34,7 +28,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -180,6 +174,11 @@ def load_toml_config(path: Path) -> list[dict]:
         merged_eval_list.append(merged)
 
     return merged_eval_list
+
+
+def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
+    """Convert a list of dictionaries to a dictionary of lists, ordered by the keys of the first dictionary."""
+    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
 
 
 def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
@@ -497,82 +496,3 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
     # print final summary after exit
     display.print_final_summary()
-
-
-def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
-    """Auto-generates a dataset name."""
-    metadata = outputs["metadata"]
-    dataset_name = (
-        metadata["env_id"]
-        + "_"
-        + metadata["model"].replace("/", "_")
-        + "_n"
-        + str(metadata["num_examples"])
-        + "_r"
-        + str(metadata["rollouts_per_example"])
-    )
-    return dataset_name
-
-
-def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
-    """Sanitizes a list of rollouts before saving to disk."""
-
-    def sanitize_rollout(rollout: RolloutOutput) -> dict:
-        sanitized_rollout = dict(rollout)
-        sanitized_rollout["prompt"] = sanitize_tool_calls(
-            messages_to_printable(rollout["prompt"])
-        )
-        sanitized_rollout["completion"] = sanitize_tool_calls(
-            messages_to_printable(rollout["completion"])
-        )
-        sanitized_rollout["error"] = repr(rollout.get("error"))
-        return sanitized_rollout
-
-    return [sanitize_rollout(rollout) for rollout in rollouts]
-
-
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    """Sanitizes metadata before saving to disk."""
-
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
-
-
-def save_to_disk(rollouts: list[dict], metadata: dict, path: Path):
-    """Saves (sanitized) rollouts and metadata to disk."""
-    path.mkdir(parents=True, exist_ok=True)
-
-    def save_results(results_list: list[dict], path: Path):
-        with open(path, "w") as f:
-            for result in results_list:
-                json.dump(result, f)
-                f.write("\n")
-
-    def save_metadata(metadata_dict: dict, path: Path):
-        with open(path, "w") as f:
-            json.dump(metadata_dict, f)
-
-    save_results(rollouts, path / "results.jsonl")
-    save_metadata(metadata, path / "metadata.json")
-
-
-def save_generate_outputs(
-    outputs: GenerateOutputs,
-    push_to_hf_hub: bool = False,
-    hf_hub_dataset_name: str | None = None,
-):
-    path_to_save = outputs["metadata"]["path_to_save"]
-    sanitized_rollouts = sanitize_rollouts(outputs["rollouts"])
-    sanitized_metadata = sanitize_metadata(outputs["metadata"])
-    save_to_disk(sanitized_rollouts, sanitized_metadata, path_to_save)
-    logger.info(f"Results saved to {path_to_save}")
-    if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
-        try:
-            Dataset.from_list(sanitized_rollouts).push_to_hub(dataset_name)
-            logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
-        except Exception as e:
-            logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")

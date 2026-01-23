@@ -1,17 +1,24 @@
+import json
+import logging
 import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
+from datasets import Dataset
 from openai import AsyncOpenAI
 
-from verifiers.types import GenerateMetadata, RolloutOutput, SamplingArgs, State
+from verifiers.types import (
+    GenerateMetadata,
+    GenerateOutputs,
+    RolloutOutput,
+    SamplingArgs,
+    State,
+)
+from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_results_path
 
-
-def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
-    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
+logger = logging.getLogger(__name__)
 
 
 def state_to_rollout_output(
@@ -97,3 +104,82 @@ def states_to_generate_metadata(
         path_to_save=path_to_save,
         tools=tools,
     )
+
+
+def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
+    """Auto-generates a dataset name."""
+    metadata = outputs["metadata"]
+    dataset_name = (
+        metadata["env_id"]
+        + "_"
+        + metadata["model"].replace("/", "_")
+        + "_n"
+        + str(metadata["num_examples"])
+        + "_r"
+        + str(metadata["rollouts_per_example"])
+    )
+    return dataset_name
+
+
+def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
+    """Sanitizes a list of rollouts before saving to disk."""
+
+    def sanitize_rollout(rollout: RolloutOutput) -> dict:
+        sanitized_rollout = dict(rollout)
+        sanitized_rollout["prompt"] = sanitize_tool_calls(
+            messages_to_printable(rollout["prompt"])
+        )
+        sanitized_rollout["completion"] = sanitize_tool_calls(
+            messages_to_printable(rollout["completion"])
+        )
+        sanitized_rollout["error"] = repr(rollout.get("error"))
+        return sanitized_rollout
+
+    return [sanitize_rollout(rollout) for rollout in rollouts]
+
+
+def sanitize_metadata(metadata: GenerateMetadata) -> dict:
+    """Sanitizes metadata before saving to disk."""
+
+    metadata_dict = dict(metadata)
+    metadata_dict.pop("path_to_save")
+    metadata_dict.pop("date")
+
+    return metadata_dict
+
+
+def save_to_disk(rollouts: list[dict], metadata: dict, path: Path):
+    """Saves (sanitized) rollouts and metadata to disk."""
+    path.mkdir(parents=True, exist_ok=True)
+
+    def save_results(results_list: list[dict], path: Path):
+        with open(path, "w") as f:
+            for result in results_list:
+                json.dump(result, f)
+                f.write("\n")
+
+    def save_metadata(metadata_dict: dict, path: Path):
+        with open(path, "w") as f:
+            json.dump(metadata_dict, f)
+
+    save_results(rollouts, path / "results.jsonl")
+    save_metadata(metadata, path / "metadata.json")
+
+
+def save_generate_outputs(
+    outputs: GenerateOutputs,
+    push_to_hf_hub: bool = False,
+    hf_hub_dataset_name: str | None = None,
+):
+    path_to_save = outputs["metadata"]["path_to_save"]
+    sanitized_rollouts = sanitize_rollouts(outputs["rollouts"])
+    sanitized_metadata = sanitize_metadata(outputs["metadata"])
+    save_to_disk(sanitized_rollouts, sanitized_metadata, path_to_save)
+    logger.info(f"Results saved to {path_to_save}")
+    if push_to_hf_hub:
+        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
+        try:
+            Dataset.from_list(sanitized_rollouts).push_to_hub(dataset_name)
+            logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
+        except Exception as e:
+            logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")

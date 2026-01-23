@@ -50,11 +50,12 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.eval_utils import sanitize_rollouts, save_generate_outputs
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.save_utils import (
+    sanitize_rollouts,
+    save_generate_outputs,
     states_to_generate_metadata,
     states_to_rollout_outputs,
 )
