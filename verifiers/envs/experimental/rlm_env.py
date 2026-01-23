@@ -2322,16 +2322,14 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             if value is not None
         )
         export_cmd = f"export {exports}; " if exports else ""
-        cmd = textwrap.dedent(
-            f"""
-            bash -lc <<'BASH'
-            rm -f "{session.paths.command_fifo}" "{session.paths.response_fifo}" \
-                "{session.paths.ready_flag}" "{session.paths.worker_pid_file}"
-            {export_cmd}python -u "{session.paths.worker_path}" > "{session.paths.log_file}" 2>&1 &
-            echo $! > "{session.paths.worker_pid_file}"
-            BASH
-            """
+        script = (
+            f'rm -f "{session.paths.command_fifo}" "{session.paths.response_fifo}" '
+            f'"{session.paths.ready_flag}" "{session.paths.worker_pid_file}"; '
+            f"{export_cmd}"
+            f'python -u "{session.paths.worker_path}" > "{session.paths.log_file}" 2>&1 & '
+            f'echo $! > "{session.paths.worker_pid_file}"'
         )
+        cmd = f"bash -lc {shlex.quote(script)}"
         result = await self._execute_sandbox_command(
             session.sandbox_id,
             cmd,
