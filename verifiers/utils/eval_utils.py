@@ -346,7 +346,7 @@ async def run_evaluation(
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
-        push_to_hf_hub=config.save_to_hf_hub,
+        save_to_hf_hub=config.save_to_hf_hub,
         hf_hub_dataset_name=config.hf_hub_dataset_name,
         use_tqdm=use_tqdm,
         independent_scoring=config.independent_scoring,
@@ -355,11 +355,6 @@ async def run_evaluation(
         on_progress=on_progress,
         on_log=on_log,
     )
-
-    if config.save_results:
-        save_generate_outputs(
-            outputs, config.save_to_hf_hub, config.hf_hub_dataset_name
-        )
 
     return outputs
 
