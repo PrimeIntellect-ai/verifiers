@@ -611,15 +611,11 @@ class Environment(ABC):
 
         # Some providers (e.g. OpenRouter) may return None for response or response.choices
         if response is None:
-            raise vf.EmptyModelResponseError from ValueError(
-                "Model returned no response"
-            )
+            raise vf.EmptyModelResponseError("Model returned no response")
         if response.choices is None:
-            raise vf.EmptyModelResponseError from ValueError(
-                "Model returned no response choices"
-            )
+            raise vf.EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
-            raise vf.InvalidModelResponseError from ValueError(
+            raise vf.InvalidModelResponseError(
                 f"Model returned {len(response.choices)} choices, expected 1"
             )
         if isinstance(response.choices[0], Choice):
@@ -627,14 +623,12 @@ class Environment(ABC):
                 response.choices[0].message.content
                 or response.choices[0].message.tool_calls
             ):
-                raise vf.EmptyModelResponseError from ValueError(
+                raise vf.EmptyModelResponseError(
                     "Model returned no content and did not call any tools"
                 )
         elif isinstance(response.choices[0], CompletionChoice):
             if not response.choices[0].text:
-                raise vf.EmptyModelResponseError from ValueError(
-                    "Model returned no content"
-                )
+                raise vf.EmptyModelResponseError("Model returned no content")
 
         return response
 
