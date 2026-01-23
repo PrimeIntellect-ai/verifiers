@@ -2280,6 +2280,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
 
     async def _install_packages(self, session: SandboxRLMReplSession) -> None:
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
         packages = ["requests"]
         extras = [p.strip() for p in self.env.pip_install_packages.split() if p.strip()]
         packages.extend(extras)
@@ -2288,7 +2291,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         pkg_list = " ".join(packages)
         cmd = f"bash -lc 'pip install -q {pkg_list}'"
         result = await self._execute_sandbox_command(
-            session.sandbox_id,
+            sandbox_id,
             cmd,
             timeout=self.env._compute_install_wait_seconds(),
         )
@@ -2338,6 +2341,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
 
     async def _start_worker(self, session: SandboxRLMReplSession, state: State) -> None:
         assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
         env_vars = {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
@@ -2365,7 +2371,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
         cmd = f"bash -lc {shlex.quote(script)}"
         result = await self._execute_sandbox_command(
-            session.sandbox_id,
+            sandbox_id,
             cmd,
             timeout=self.env.max_startup_wait_seconds,
         )
@@ -2374,6 +2380,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
 
     async def _wait_for_ready(self, session: SandboxRLMReplSession) -> None:
         assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
         cmd = (
             "bash -lc '"
             f"for i in $(seq 1 {self.env.max_startup_wait_seconds * 10}); do "
@@ -2383,7 +2392,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
         try:
             result = await self._execute_sandbox_command(
-                session.sandbox_id,
+                sandbox_id,
                 cmd,
                 timeout=self.env.max_startup_wait_seconds,
             )
@@ -2404,6 +2413,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
     async def _stop_worker(self, session: SandboxRLMReplSession) -> None:
         if not session.sandbox_id or not session.paths:
             return
+        sandbox_id = session.sandbox_id
         cmd = (
             "bash -lc '"
             f'if [ -f "{session.paths.worker_pid_file}" ]; then '
@@ -2413,7 +2423,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
         try:
             await self._execute_sandbox_command(
-                session.sandbox_id,
+                sandbox_id,
                 cmd,
                 timeout=self.env.max_startup_wait_seconds,
             )
@@ -2438,10 +2448,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
     async def _read_worker_log_tail(self, session: SandboxRLMReplSession) -> str:
         if not session.sandbox_id or not session.paths:
             return ""
+        sandbox_id = session.sandbox_id
         cmd = f"bash -lc 'tail -n 200 \"{session.paths.log_file}\" 2>/dev/null || true'"
         try:
             result = await self._execute_sandbox_command(
-                session.sandbox_id,
+                sandbox_id,
                 cmd,
                 timeout=self.env.max_startup_wait_seconds,
             )
@@ -2453,6 +2464,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         self, session: SandboxRLMReplSession, payload: dict[str, Any]
     ) -> str:
         assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
         payload_json = json.dumps(payload)
         payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
         alive_check = (
@@ -2477,7 +2491,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             """
         )
         result = await self._execute_sandbox_command(
-            session.sandbox_id,
+            sandbox_id,
             command,
             timeout=self.env.code_execution_timeout,
         )
@@ -3817,8 +3831,7 @@ class RLMEnv(vf.StatefulToolEnv):
         """Stop the interception server if it was started."""
         await self._teardown_interception_server()
 
-    @vf.teardown
-    async def teardown_tunnel(self):
+    async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
         async with self._tunnel_lock:
             if self._tunnel is not None:
@@ -3829,6 +3842,11 @@ class RLMEnv(vf.StatefulToolEnv):
                     logger.warning(f"Error stopping Prime Tunnel: {e}")
                 finally:
                     self._tunnel = None
+
+    @vf.teardown
+    async def teardown_tunnel(self):
+        """Stop Prime Tunnel if it was started."""
+        await self._teardown_tunnel()
 
     @vf.teardown
     async def teardown_executor(self):
@@ -4402,7 +4420,7 @@ class RLMEnv(vf.StatefulToolEnv):
             if not self.active_rollouts:
                 await self._teardown_interception_server()
                 if self.execution_backend == "sandbox":
-                    await self.teardown_tunnel()
+                    await self._teardown_tunnel()
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
