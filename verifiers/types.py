@@ -167,20 +167,28 @@ class GenerateMetadata(TypedDict):
     tools: list[ChatCompletionToolParam] | None
 
 
+class RolloutOutput(TypedDict):
+    """TypedDict for generation outputs."""
+
+    example_id: int
+    prompt: Messages
+    completion: Messages
+    answer: str
+    task: str
+    info: Info
+    tools: dict
+    reward: float
+    metrics: dict[str, float]
+    stop_condition: str | None
+    is_truncated: bool
+    timing: RolloutTiming
+    error: Error | None
+
+
 class GenerateOutputs(TypedDict):
     """TypedDict for generation outputs."""
 
-    prompt: list[Messages]
-    completion: list[Messages]
-    answer: list[str]
-    state: list[State]
-    task: list[str]
-    info: list[Info]
-    example_id: list[int]
-    reward: list[float]
-    metrics: dict[str, list[float]]
-    stop_conditions: list[str | None]
-    is_truncated: list[bool]
+    rollouts: list[RolloutOutput]
     metadata: GenerateMetadata
 
 

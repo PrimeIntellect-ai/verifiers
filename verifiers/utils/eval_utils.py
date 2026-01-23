@@ -5,7 +5,9 @@ import logging
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
+
+from verifiers.utils.save_utils import to_col_order
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -24,6 +26,7 @@ from verifiers.types import (
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
+    RolloutOutput,
     StartCallback,
     State,
 )
@@ -179,54 +182,35 @@ def load_toml_config(path: Path) -> list[dict]:
     return merged_eval_list
 
 
-def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
-    """Group results by task name.
-
-    Args:
-        results: The GenerateOutputs from an evaluation run.
-
-    Returns:
-        A dictionary mapping task names to their corresponding GenerateOutputs.
-    """
-    task_indices: dict[str, list[int]] = {}
-    for i, task in enumerate(results["task"]):
-        if task not in task_indices:
-            task_indices[task] = []
-        task_indices[task].append(i)
-
-    task_results: dict[str, GenerateOutputs] = {}
-    for task, indices in task_indices.items():
-        task_results[task] = GenerateOutputs(
-            prompt=[results["prompt"][i] for i in indices],
-            completion=[results["completion"][i] for i in indices],
-            answer=[results["answer"][i] for i in indices],
-            state=[results["state"][i] for i in indices],
-            task=[results["task"][i] for i in indices],
-            info=[results["info"][i] for i in indices],
-            example_id=[results["example_id"][i] for i in indices],
-            reward=[results["reward"][i] for i in indices],
-            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
-            stop_conditions=[results["stop_conditions"][i] for i in indices],
-            is_truncated=[results["is_truncated"][i] for i in indices],
-            metadata=results["metadata"],
-        )
-    return task_results
+def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
+    """Get only the rollouts for a given task."""
+    rollouts = [r for r in results["rollouts"] if r["task"] == task]
+    return GenerateOutputs(
+        rollouts=rollouts,
+        metadata=results["metadata"],  # duplicate metadata
+    )
 
 
-def print_rewards(results: GenerateOutputs):
+def print_rewards(outputs: GenerateOutputs):
+    metadata = outputs["metadata"]
+    n = metadata["num_examples"]
+    r = metadata["rollouts_per_example"]
+
+    rewards = [r["reward"] for r in outputs["rollouts"]]
     print("Rewards:")
     print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
+        f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
     )
-    r = results["metadata"]["rollouts_per_example"]
-    n = len(results["reward"]) // r
     # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
+        trials = [round(rewards[i + (j * r)], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
-    for k in results["metrics"]:
-        v = results["metrics"][k]
+
+    metrics = [r["metrics"] for r in outputs["rollouts"]]
+    metrics_col = to_col_order(metrics)
+    for k in metrics_col.keys():
+        v = metrics_col[k]
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
             trials = [round(v[i + (j * r)], 3) for j in range(n)]
@@ -234,16 +218,18 @@ def print_rewards(results: GenerateOutputs):
             print(out)
 
 
-def print_info(results: GenerateOutputs):
+def print_info(outputs: GenerateOutputs):
+    is_truncated = [r["is_truncated"] for r in outputs["rollouts"]]
     print("Info:")
     print(
-        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+        f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    counter = Counter(results["stop_conditions"])
+    stop_conditions = [r["stop_condition"] for r in outputs["rollouts"]]
+    counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [s.get("error") for s in results["state"]]
+    errors = [r.get("error") for r in outputs["rollouts"]]
     has_errors = [e is not None for e in errors]
     if any(has_errors):
         print(
@@ -256,13 +242,13 @@ def print_info(results: GenerateOutputs):
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
 
 
-def print_timing(results: GenerateOutputs):
+def print_timing(outputs: GenerateOutputs):
     print("Timing:")
-    generation_ms_arr = np.array(
-        [s["timing"]["generation_ms"] for s in results["state"]]
-    )
-    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
-    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
+    timing = [r["timing"] for r in outputs["rollouts"]]
+    timing_col = to_col_order(cast(list[dict], timing))
+    generation_ms_arr = np.array(timing_col["generation_ms"])
+    scoring_ms_arr = np.array(timing_col["scoring_ms"])
+    total_ms_arr = np.array(timing_col["total_ms"])
     generation_arr = generation_ms_arr / 1000
     scoring_arr = scoring_ms_arr / 1000
     total_arr = total_ms_arr / 1000
@@ -278,43 +264,45 @@ def print_timing(results: GenerateOutputs):
     )
 
 
-def print_results(
-    results: GenerateOutputs,
-    num_samples: int = 1,
-):
-    assert results["metadata"] is not None
+def print_results(outputs: GenerateOutputs, num_samples: int = 1):
+    assert outputs["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
-    print(f"Model: {results['metadata']['model']}")
-    print(f"Provider: {results['metadata']['base_url']}")
-    print(f"Examples: {results['metadata']['num_examples']}")
-    print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
+    print(f"Environment: {outputs['metadata']['env_id']}")
+    print(f"Model: {outputs['metadata']['model']}")
+    print(f"Provider: {outputs['metadata']['base_url']}")
+    print(f"Examples: {outputs['metadata']['num_examples']}")
+    print(f"Rollouts per example: {outputs['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    printable_completions = [messages_to_printable(c) for c in results["completion"]]
-    errors = [s.get("error") for s in results["state"]]
+    printable_prompts = [
+        messages_to_printable(r["prompt"]) for r in outputs["rollouts"]
+    ]
+    printable_completions = [
+        messages_to_printable(r["completion"]) for r in outputs["rollouts"]
+    ]
+    rewards = [r["reward"] for r in outputs["rollouts"]]
+    errors = [r.get("error") for r in outputs["rollouts"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
         errors,
-        results["reward"],
+        rewards,
         step=0,
         num_samples=num_samples,
     )
     print("--- All ---")
-    print_rewards(results)
-    print_info(results)
-    print_timing(results)
+    print_rewards(outputs)
+    print_info(outputs)
+    print_timing(outputs)
 
-    num_tasks = len(set(results["task"]))
-    if num_tasks > 1:
-        task_results = get_results_by_task(results)
-        for task, task_results in task_results.items():
+    tasks = set([r["task"] for r in outputs["rollouts"]])
+    if len(tasks) > 1:
+        for task in tasks:
+            task_outputs = get_task_outputs(outputs, task)
             print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
+            print_rewards(task_outputs)
+            print_info(task_outputs)
+            print_timing(task_outputs)
 
 
 async def run_evaluation(
@@ -345,7 +333,7 @@ async def run_evaluation(
     )
     # disable tqdm when callbacks are provided (TUI handles progress display)
     use_tqdm = config.use_tqdm and on_progress is None
-    results = await vf_env.evaluate(
+    outputs = await vf_env.evaluate(
         client=client,
         model=config.model,
         sampling_args=config.sampling_args,
@@ -368,7 +356,12 @@ async def run_evaluation(
         on_log=on_log,
     )
 
-    return results
+    if config.save_results:
+        save_generate_outputs(
+            outputs, config.save_to_hf_hub, config.hf_hub_dataset_name
+        )
+
+    return outputs
 
 
 async def run_evaluations(config: EvalRunConfig) -> None:
@@ -511,8 +504,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     display.print_final_summary()
 
 
-def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
-    metadata = results["metadata"]
+def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
+    """Auto-generates a dataset name."""
+    metadata = outputs["metadata"]
     dataset_name = (
         metadata["env_id"]
         + "_"
@@ -525,81 +519,25 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def to_col_order(
-    list_of_dicts: list[dict[str, Any]], ignore_keys: list[str] = []
-) -> dict[str, list[Any]]:
-    """Converts a list of dicts (row-ordered dataset) to a dict of lists (col-ordered dataset)."""
-    list_keys = [k for k in list_of_dicts[0].keys() if k not in ignore_keys]
-    return {k: [d[k] for d in list_of_dicts] for k in list_keys}
+def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
+    """Sanitizes a list of rollouts before saving to disk."""
+
+    def sanitize_rollout(rollout: RolloutOutput) -> dict:
+        sanitized_rollout = dict(rollout)
+        sanitized_rollout["prompt"] = sanitize_tool_calls(
+            messages_to_printable(rollout["prompt"])
+        )
+        sanitized_rollout["completion"] = sanitize_tool_calls(
+            messages_to_printable(rollout["completion"])
+        )
+        return sanitized_rollout
+
+    return [sanitize_rollout(rollout) for rollout in rollouts]
 
 
-def to_row_order(
-    dict_of_lists: dict[str, list[Any]], ignore_keys: list[str] = []
-) -> list[dict[str, Any]]:
-    """Converts a dict of lists (col-ordered dataset) to a list of dicts (row-ordered dataset)."""
-    list_keys = [k for k in dict_of_lists.keys() if k not in ignore_keys]
-    list_values = [dict_of_lists[k] for k in list_keys]
-    return [{k: v for k, v in zip(list_keys, values)} for values in zip(*list_values)]
+def sanitize_metadata(metadata: GenerateMetadata) -> dict:
+    """Sanitizes metadata before saving to disk."""
 
-
-def build_results(results: GenerateOutputs) -> list[dict]:
-    """Builds list of results to save to disk from GenerateOutputs."""
-
-    def get_results_list(results: GenerateOutputs) -> list[dict]:
-        """Converts GenerateOutputs to a list of dicts."""
-        results_list = to_row_order(results, ignore_keys=["metrics", "metadata"])  # type: ignore
-        metrics_list = to_row_order(results["metrics"])  # type: ignore
-        return [
-            {**result_dict, **metrics_dict}
-            for result_dict, metrics_dict in zip(results_list, metrics_list)
-        ]
-
-    raw_results_list = get_results_list(results)
-    metadata = cast(GenerateMetadata, results["metadata"])
-    state_columns = metadata.get("state_columns", [])
-    results_list = []
-    for raw_result in raw_results_list:
-        try:
-            clean_prompt = sanitize_tool_calls(
-                messages_to_printable(raw_result["prompt"])
-            )
-            clean_completion = sanitize_tool_calls(
-                messages_to_printable(raw_result["completion"])
-            )
-
-            result_dict = {
-                "example_id": raw_result["example_id"],
-                "prompt": clean_prompt,
-                "completion": clean_completion,
-                "task": raw_result["task"],
-                "reward": raw_result["reward"],
-                "error": raw_result["state"].get("error"),
-                "generation_ms": raw_result["state"]["timing"]["generation_ms"],
-                "scoring_ms": raw_result["state"]["timing"]["scoring_ms"],
-                "total_ms": raw_result["state"]["timing"]["total_ms"],
-                **{k: v for k, v in raw_result["state"]["metrics"].items()},
-            }
-
-            if raw_result.get("info"):
-                result_dict["info"] = raw_result["info"]
-            if raw_result.get("answer"):
-                result_dict["answer"] = raw_result["answer"]
-
-            # add selected state columns if specified
-            for col in state_columns:
-                result_dict[col] = raw_result["state"].get(col)
-
-            results_list.append(result_dict)
-        except Exception as e:
-            logger.error(
-                f"Skipping saving result for example {raw_result['example_id']}: {repr(e)}"
-            )
-
-    return results_list
-
-
-def build_metadata(metadata: GenerateMetadata) -> dict:
-    """Builds metadata dict to save from GenerateMetadata."""
     metadata_dict = dict(metadata)
     metadata_dict.pop("path_to_save")
     metadata_dict.pop("date")
@@ -607,8 +545,9 @@ def build_metadata(metadata: GenerateMetadata) -> dict:
     return metadata_dict
 
 
-def save_to_disk(results_dict: list[dict], metadata_dict: dict, path_to_save: Path):
-    path_to_save.mkdir(parents=True, exist_ok=True)
+def save_to_disk(rollouts: list[dict], metadata: dict, path: Path):
+    """Saves (sanitized) rollouts and metadata to disk."""
+    path.mkdir(parents=True, exist_ok=True)
 
     def save_results(results_list: list[dict], path: Path):
         with open(path, "w") as f:
@@ -620,25 +559,24 @@ def save_to_disk(results_dict: list[dict], metadata_dict: dict, path_to_save: Pa
         with open(path, "w") as f:
             json.dump(metadata_dict, f)
 
-    save_results(results_dict, path_to_save / "results.jsonl")
-    save_metadata(metadata_dict, path_to_save / "metadata.json")
+    save_results(rollouts, path / "results.jsonl")
+    save_metadata(metadata, path / "metadata.json")
 
 
-def save_rollout_results(
-    results: GenerateOutputs,
+def save_generate_outputs(
+    outputs: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
 ):
-    path_to_save = results["metadata"]["path_to_save"]
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    results_list = build_results(results)
-    metadata_dict = build_metadata(results["metadata"])
-    save_to_disk(results_list, metadata_dict, path_to_save)
+    path_to_save = outputs["metadata"]["path_to_save"]
+    sanitized_rollouts = sanitize_rollouts(outputs["rollouts"])
+    sanitized_metadata = sanitize_metadata(outputs["metadata"])
+    save_to_disk(sanitized_rollouts, sanitized_metadata, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
+        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
         try:
-            Dataset.from_list(results_list).push_to_hub(dataset_name)
+            Dataset.from_list(sanitized_rollouts).push_to_hub(dataset_name)
             logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
         except Exception as e:
             logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")
