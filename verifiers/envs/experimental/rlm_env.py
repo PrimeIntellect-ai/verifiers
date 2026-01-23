@@ -2555,8 +2555,26 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             if local_path.exists():
                 shutil.rmtree(local_path, True)
             local_path.mkdir(parents=True, exist_ok=True)
+            base_dir = local_path.resolve()
             with tarfile.open(tar_path, "r:gz") as tar:
-                tar.extractall(local_path)
+                safe_members = []
+                for member in tar.getmembers():
+                    if member.issym() or member.islnk():
+                        logger.warning(
+                            "Skipping symlink in sandbox download: %s", member.name
+                        )
+                        continue
+                    try:
+                        member_path = (base_dir / member.name).resolve()
+                        member_path.relative_to(base_dir)
+                    except Exception:
+                        logger.warning(
+                            "Skipping unsafe tar member in sandbox download: %s",
+                            member.name,
+                        )
+                        continue
+                    safe_members.append(member)
+                tar.extractall(local_path, members=safe_members)
         finally:
             try:
                 await self._execute_sandbox_command(
