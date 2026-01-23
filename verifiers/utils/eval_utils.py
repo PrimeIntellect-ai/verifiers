@@ -334,8 +334,6 @@ async def run_evaluation(
         on_log=on_log,
     )
 
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
     return results
 
 
