@@ -525,6 +525,7 @@ def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
         sanitized_rollout["completion"] = sanitize_tool_calls(
             messages_to_printable(rollout["completion"])
         )
+        sanitized_rollout["error"] = repr(rollout.get("error"))
         return sanitized_rollout
 
     return [sanitize_rollout(rollout) for rollout in rollouts]
