@@ -525,22 +525,36 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
     return dataset_name
 
 
-def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
+def to_col_order(
+    list_of_dicts: list[dict[str, Any]], ignore_keys: list[str] = []
+) -> dict[str, list[Any]]:
     """Converts a list of dicts (row-ordered dataset) to a dict of lists (col-ordered dataset)."""
-    return {k: [d[k] for d in list_of_dicts] for k in list_of_dicts[0]}
+    list_keys = [k for k in list_of_dicts[0].keys() if k not in ignore_keys]
+    return {k: [d[k] for d in list_of_dicts] for k in list_keys}
 
 
-def to_row_order(dict_of_lists: dict[str, list[Any]]) -> list[dict[str, Any]]:
+def to_row_order(
+    dict_of_lists: dict[str, list[Any]], ignore_keys: list[str] = []
+) -> list[dict[str, Any]]:
     """Converts a dict of lists (col-ordered dataset) to a list of dicts (row-ordered dataset)."""
-    return [
-        {k: v for k, v in zip(dict_of_lists.keys(), values)}
-        for values in zip(*dict_of_lists.values())
-    ]
+    list_keys = [k for k in dict_of_lists.keys() if k not in ignore_keys]
+    list_values = [dict_of_lists[k] for k in list_keys]
+    return [{k: v for k, v in zip(list_keys, values)} for values in zip(*list_values)]
 
 
 def build_results(results: GenerateOutputs) -> list[dict]:
     """Builds list of results to save to disk from GenerateOutputs."""
-    raw_results_list = to_row_order(cast(dict[str, list[Any]], results))
+
+    def get_results_list(results: GenerateOutputs) -> list[dict]:
+        """Converts GenerateOutputs to a list of dicts."""
+        results_list = to_row_order(results, ignore_keys=["metrics", "metadata"])  # type: ignore
+        metrics_list = to_row_order(results["metrics"])  # type: ignore
+        return [
+            {**result_dict, **metrics_dict}
+            for result_dict, metrics_dict in zip(results_list, metrics_list)
+        ]
+
+    raw_results_list = get_results_list(results)
     metadata = cast(GenerateMetadata, results["metadata"])
     state_columns = metadata.get("state_columns", [])
     results_list = []
