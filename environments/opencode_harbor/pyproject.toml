@@ -1,6 +1,6 @@
 [project]
 name = "opencode-harbor"
-description = "Opencode agent on TerminalBench tasks"
+description = "Opencode agent on Harbor tasks"
 license = "MIT"
 tags = ["eval", "cli_agent"]
 version = "0.1.1"
@@ -19,7 +19,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["opencode_harbor.py", "pyproject.toml"] 
+include = ["opencode_harbor.py", "pyproject.toml", "tasks/**/*"] 
 
 [tool.verifiers.eval]
 num_examples = 5

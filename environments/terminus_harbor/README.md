@@ -2,13 +2,13 @@
 
 ### Overview
 - **Environment ID**: `terminus-harbor`
-- **Short description**: Environment for running the Terminus2 agent through Harbor on TerminalBench tasks
-- **Tags**: cli_agent, terminal_bench, terminus
+- **Short description**: Environment for running the Terminus2 agent through Harbor on Harbor tasks
+- **Tags**: cli_agent, harbor, terminus
 
 ### Datasets
-- **Primary dataset(s)**: TerminalBench@2.0
-- **Source links**: <https://www.tbench.ai/>
-- **Split sizes**: All Eval
+- **Primary dataset(s)**: Harbor tasks (hello-world included)
+- **Source links**: <https://github.com/laude-institute/harbor>
+- **Split sizes**: 1 example task included
 
 ### Task
 - **Type**: multiturn, cli_agent

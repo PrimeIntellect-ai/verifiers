@@ -2,13 +2,13 @@
 
 ### Overview
 - **Environment ID**: `opencode-harbor`
-- **Short description**: Environment for running an agent with opencode, primarily for TerminalBench tasks
-- **Tags**: opencode, cli_agent, terminal_bench
+- **Short description**: Environment for running an agent with OpenCode on Harbor tasks
+- **Tags**: opencode, cli_agent, harbor
 
 ### Datasets
-- **Primary dataset(s)**: TerminalBench@2.0
-- **Source links**: <https://www.tbench.ai/>
-- **Split sizes**: All Eval
+- **Primary dataset(s)**: Harbor tasks (hello-world included)
+- **Source links**: <https://github.com/laude-institute/harbor>
+- **Split sizes**: 1 example task included
 
 ### Task
 - **Type**: multiturn, cli_agent
