@@ -1721,7 +1721,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
         super().__init__(env)
         self._sessions: dict[str, LocalRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
-        self._io_executor = ThreadPoolExecutor(max_workers=4)
+        self._io_executor = ThreadPoolExecutor(
+            max_workers=self.env.local_repl_max_workers
+        )
 
     def create_rollout_dirs(self, state: State) -> None:
         session = self._get_or_create_session(state)
@@ -2669,6 +2671,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_workers: Sandbox client pool size (default: 10)
         sandbox_client_max_connections: Sandbox client max connections (default: 100)
         sandbox_client_max_keepalive_connections: Sandbox client keepalive conns (default: 50)
+        local_repl_max_workers: Max worker threads for local REPL execution.
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
@@ -2716,6 +2719,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_workers: int = 10,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
+        local_repl_max_workers: int | None = None,
         rubric: Rubric | None = None,
         **kwargs,
     ):
@@ -2792,6 +2796,11 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sandbox_client_max_keepalive_connections = (
             sandbox_client_max_keepalive_connections
         )
+        self.local_repl_max_workers = local_repl_max_workers or max(
+            1, min(64, os.cpu_count() or 1)
+        )
+        if self.local_repl_max_workers < 1:
+            raise ValueError("local_repl_max_workers must be >= 1")
         # Server-side timeout for LLM API calls (shorter than worker HTTP timeout)
         # This ensures server responds before the worker request times out
         (
