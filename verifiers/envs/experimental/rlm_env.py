@@ -2618,12 +2618,12 @@ class RLMEnv(vf.StatefulToolEnv):
                    The root model can call these inside the REPL as Python functions.
         sub_tools: List of tools available only to sub-LLMs.
                    Sub-LLMs access these via standard tool calling.
-        sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         (Ordering) The root tool list is: fixed tools (e.g. llm_batch), then `tools`,
                    then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
                    Each list is deduplicated by tool name. If two different tools
                    share a name within a list, initialization raises an error.
         sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
+        sub_model: Model to use for sub-LLM calls (defaults to same as root model)
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
@@ -2640,13 +2640,15 @@ class RLMEnv(vf.StatefulToolEnv):
                    tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
-        max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
+        disallowed_modules: Space-separated module names that user code may not import.
+        disallowed_builtins: Space-separated builtin names removed from user code execution.
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
                    When True (default), sub-LLM turns are prepended to the trajectory as
                    TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
                    When False, sub-LLM calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
+        max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
         code_execution_timeout: Timeout in seconds for code execution (default: 120).
                    This is longer than the default command timeout to allow for
                    llm_batch calls which can take several minutes.
@@ -2655,8 +2657,7 @@ class RLMEnv(vf.StatefulToolEnv):
                    try a more efficient approach.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
         filesystem_copy_max_bytes: Optional max bytes for context directory copy.
-        disallowed_modules: Space-separated module names that user code may not import.
-        disallowed_builtins: Space-separated builtin names removed from user code execution.
+        local_repl_max_workers: Max worker threads for local REPL execution.
         sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
         sandbox_start_command: Start command for sandbox backend (default: tail -f /dev/null)
         sandbox_cpu_cores: Sandbox CPU cores (default: 1)
@@ -2671,7 +2672,6 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_workers: Sandbox client pool size (default: 10)
         sandbox_client_max_connections: Sandbox client max connections (default: 100)
         sandbox_client_max_keepalive_connections: Sandbox client keepalive conns (default: 50)
-        local_repl_max_workers: Max worker threads for local REPL execution.
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
@@ -2679,9 +2679,9 @@ class RLMEnv(vf.StatefulToolEnv):
         self,
         tools: list[Callable] | None = None,
         root_tools: list[Callable] | None = None,
-        sub_model: str | None = None,
         sub_tools: list[Callable] | None = None,
         sub_tool_max_turns: int = 5,
+        sub_model: str | None = None,
         max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
@@ -2696,15 +2696,16 @@ class RLMEnv(vf.StatefulToolEnv):
         interception_port: int = 8766,
         interception_url: str | None = None,
         pip_install_packages: str = "",
-        max_startup_wait_seconds: int = 120,
+        disallowed_modules: str = "",
+        disallowed_builtins: str = "",
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
+        max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
         retain_filesystem_after_rollout: bool = False,
         filesystem_copy_max_bytes: int | None = 1_000_000_000,
-        disallowed_modules: str = "",
-        disallowed_builtins: str = "",
+        local_repl_max_workers: int | None = None,
         sandbox_docker_image: str = "python:3.11-slim",
         sandbox_start_command: str = "tail -f /dev/null",
         sandbox_cpu_cores: int = 1,
@@ -2719,8 +2720,6 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_workers: int = 10,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
-        local_repl_max_workers: int | None = None,
-        rubric: Rubric | None = None,
         **kwargs,
     ):
         if repl_language not in {"bash", "python"}:
@@ -2840,7 +2839,6 @@ class RLMEnv(vf.StatefulToolEnv):
         super().__init__(
             tools=[],
             max_turns=max_iterations,
-            rubric=rubric,
             **kwargs,
         )
         self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
