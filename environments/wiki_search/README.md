@@ -67,3 +67,7 @@ Notes:
 | ToolRubric metrics | Tool execution success and format adherence |
 | JudgeRubric metrics | Judge-scored answer quality |
 
+### Changelog
+
+#### v0.1.22 (Jan 22, 2026)
+- Make ChromaDB initialization lazy to allow multiple env instances to run concurrently

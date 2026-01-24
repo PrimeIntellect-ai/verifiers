@@ -146,22 +146,6 @@ class TestCliAgentEnv:
         state = {"timing": {"start_time": time.time() - 20}}
         assert await env.timeout_reached(state) is True
 
-    def test_extract_tunnel_url_from_line(self, sample_dataset):
-        """Test tunnel URL extraction from cloudflared output."""
-        env = vf.CliAgentEnv(
-            run_command="python agent.py",
-            dataset=sample_dataset,
-            rubric=vf.Rubric(),
-        )
-
-        line = "2024-01-01 INFO: https://abc-xyz.trycloudflare.com is ready"
-        url = env.extract_tunnel_url_from_line(line)
-        assert url == "https://abc-xyz.trycloudflare.com"
-
-        line = "Some other log line without URL"
-        url = env.extract_tunnel_url_from_line(line)
-        assert url is None
-
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):
         """Test that env_response returns empty list."""

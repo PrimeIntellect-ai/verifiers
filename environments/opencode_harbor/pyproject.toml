@@ -1,0 +1,29 @@
+[project]
+name = "opencode-harbor"
+description = "Opencode agent on TerminalBench tasks"
+license = "MIT"
+tags = ["eval", "cli_agent"]
+version = "0.1.1"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers",
+    "prime-sandboxes>=0.2.10",
+    "tomli>=2.3.0",
+]
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/primeintellect-ai/verifiers", branch = "cooper/terminus" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["opencode_harbor.py", "pyproject.toml"] 
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
+
+[tool.ruff]
+exclude = ["tasks/**"]

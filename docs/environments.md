@@ -7,6 +7,7 @@ This guide walks through building environments in Verifiers, from simple single-
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
   - [Evaluation Datasets](#evaluation-datasets)
+  - [Lazy Loading with DatasetBuilder](#lazy-loading-with-datasetbuilder)
 - [Rubrics](#rubrics)
   - [Reward Functions](#reward-functions)
   - [Multiple Reward Functions](#multiple-reward-functions)
@@ -129,6 +130,37 @@ return vf.SingleTurnEnv(
 ```
 
 When running `prime eval run`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
+
+### Lazy Loading with DatasetBuilder
+
+For large datasets or when running multiple environment replicas, you can defer dataset loading using a `DatasetBuilder`—a callable that returns a `Dataset` when invoked:
+
+```python
+def get_dataset_builder(split: str = "train", seed: int = 42) -> vf.DatasetBuilder:
+    """Returns a builder that lazily loads the dataset."""
+    def build() -> Dataset:
+        ds = load_dataset("my-dataset", split=split)
+        ds = ds.shuffle(seed=seed)
+        return ds
+    return build
+
+def load_environment():
+    dataset_builder = get_dataset_builder(split="train")
+    eval_builder = get_dataset_builder(split="test")
+    
+    return vf.SingleTurnEnv(
+        dataset=dataset_builder,      # built on first access
+        eval_dataset=eval_builder,    # built on first access
+        rubric=rubric,
+    )
+```
+
+The builder pattern is useful when:
+- Dataset loading is expensive (e.g., downloading from Hugging Face)
+- Multiple environment replicas don't all need to own the dataset
+- You want to parameterize dataset creation without loading it immediately
+
+When a raw `Dataset` is passed directly (the default pattern), it is loaded eagerly during environment initialization for backwards compatibility.
 
 ## Rubrics
 
@@ -458,6 +490,18 @@ The model sees `run_code(code: str)` in its tool schema, but the environment inj
 
 Verifiers includes several built-in stateful environment classes: `SandboxEnv` provides a containerized bash shell, and `PythonEnv` extends it with a persistent Python REPL (both of which are configured for use with Prime Intellect's [Sandboxes](https://docs.primeintellect.ai/sandboxes/overview)). These handle sandbox lifecycle management automatically.
 
+Both `SandboxEnv` and `CliAgentEnv` accept a `labels` parameter for tagging sandboxes:
+
+```python
+env = vf.SandboxEnv(
+    dataset=dataset,
+    rubric=rubric,
+    labels=["experiment-1", "math-tasks"],  # optional labels for sandbox categorization
+)
+```
+
+Labels are passed to the Prime Sandboxes API and can be used for organizing, filtering, and managing sandboxes across experiments or training runs.
+
 Stateful environments often define methods decorated with `@vf.cleanup` (called after each rollout) or `@vf.teardown` (called once at environment shutdown) for resource management. These decorators, along with `@vf.stop` for custom stop conditions (boolean functions checked after each turn), are powerful tools for rollout lifecycle control in custom `MultiTurnEnv` subclasses.
 
 ## Custom Multi-Turn Environments
@@ -727,6 +771,6 @@ These require additional dependencies installed via extras (e.g., `uv add 'verif
 Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
-- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests
+- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
-- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Supports `execution_backend="sandbox"` (default) or `"local"` for host execution. User code runs in a Python REPL with a best-effort guardrail that blocks common filesystem modules and `open` by default; customize via `disallowed_modules`/`disallowed_builtins`.
+- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Execution supports both local and sandbox backends via `execution_backend` (`"local"` default, `"sandbox"` to run the REPL inside a Prime Sandbox). Context is still filesystem-based: a provided `context_dir` is copied into the working directory, or legacy JSON-serializable `context` data is written to `context.json`/`context.txt`. The RLM scaffolding prompt (filesystem summary, REPL workflow, tool docs) is injected into the first user message wrapped in `<RLM_SCAFFOLDING>...</RLM_SCAFFOLDING>`, preserving any external system prompt. The REPL language is configurable via `repl_language` (default: `bash`); use `repl_language="python"` to retain the Python REPL. Bash mode uses `call_bash_repl` and behaves like a terminal; Python mode uses `call_python_repl`. Local Python mode uses a best-effort filesystem jail that restricts access to the working directory; sandboxes run without the jail. Sub-LLM and root-tool interception for sandboxes is routed through a Prime Tunnel unless `interception_url` is provided. Tooling can be split via `tools` (shared), `root_tools` (REPL-only), and `sub_tools` (sub-LLM tools). Fixed root tools like `llm_batch` are always present and cannot be overridden. Tool ordering is fixed tools → shared tools → role-specific tools, with per-list deduplication by name. Root tools are callable only inside the REPL; sub-LLM tools use standard tool-calling.

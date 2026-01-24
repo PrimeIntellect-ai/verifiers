@@ -462,6 +462,36 @@ class TestEnvGroup:
         assert eval_dataset["task"][0] == "task1"
         assert eval_dataset["task"][1] == "task2"
 
+    def test_env_group_with_only_eval_datasets(self, mock_openai_client):
+        """Test EnvGroup with environments that only have eval datasets (no train datasets)."""
+        # Environment with only eval dataset
+        env1 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["eq1"], "answer": ["ea1"]}),
+            rubric=Rubric(),
+        )
+
+        # Another environment with only eval dataset
+        env2 = SingleTurnEnv(
+            client=mock_openai_client,
+            model="test-model",
+            eval_dataset=Dataset.from_dict({"question": ["eq2"], "answer": ["ea2"]}),
+            rubric=Rubric(),
+        )
+
+        env_group = EnvGroup(envs=[env1, env2], env_names=["task1", "task2"])
+
+        # Train dataset should be None
+        assert env_group.dataset is None
+
+        # Should have concatenated eval datasets from both
+        eval_dataset = env_group.eval_dataset
+        assert eval_dataset is not None
+        assert len(eval_dataset) == 2
+        assert eval_dataset["task"][0] == "task1"
+        assert eval_dataset["task"][1] == "task2"
+
     def test_env_group_task_assignment_on_iteration(self, mock_openai_client):
         """Test that task values are correct when iterating over dataset rows.
 

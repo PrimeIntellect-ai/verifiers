@@ -356,7 +356,43 @@ Tools requiring per-rollout state. Override `setup_state` and `update_tool_args`
 
 #### SandboxEnv
 
+```python
+class SandboxEnv(StatefulToolEnv):
+    def __init__(
+        self,
+        sandbox_name: str = "sandbox-env",
+        docker_image: str = "python:3.11-slim",
+        start_command: str = "tail -f /dev/null",
+        cpu_cores: int = 1,
+        memory_gb: int = 2,
+        disk_size_gb: int = 5,
+        gpu_count: int = 0,
+        timeout_minutes: int = 60,
+        timeout_per_command_seconds: int = 30,
+        environment_vars: dict[str, str] | None = None,
+        team_id: str | None = None,
+        advanced_configs: AdvancedConfigs | None = None,
+        labels: list[str] | None = None,
+        **kwargs,
+    ): ...
+```
+
 Sandboxed container execution using `prime` sandboxes.
+
+**Key parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `sandbox_name` | `str` | Name prefix for sandbox instances |
+| `docker_image` | `str` | Docker image to use for the sandbox |
+| `cpu_cores` | `int` | Number of CPU cores |
+| `memory_gb` | `int` | Memory allocation in GB |
+| `disk_size_gb` | `int` | Disk size in GB |
+| `gpu_count` | `int` | Number of GPUs |
+| `timeout_minutes` | `int` | Sandbox timeout in minutes |
+| `timeout_per_command_seconds` | `int` | Per-command execution timeout |
+| `environment_vars` | `dict[str, str] \| None` | Environment variables to set in sandbox |
+| `labels` | `list[str] \| None` | Labels for sandbox categorization and filtering |
 
 #### PythonEnv
 
@@ -541,7 +577,9 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     max_concurrent_generation: int | None = None
     max_concurrent_scoring: int | None = None
+    independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    max_retries: int = 0
     print_results: bool = False
     verbose: bool = False
     state_columns: list[str] | None = None
@@ -652,3 +690,28 @@ vf.setup_logging(level: str = "INFO")
 ```
 
 Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default.
+
+```python
+vf.log_level(level: str | int)
+```
+
+Context manager to temporarily set the verifiers logger to a new log level. Useful for temporarily adjusting verbosity during specific operations.
+
+```python
+with vf.log_level("DEBUG"):
+    # verifiers logs at DEBUG level here
+    ...
+# reverts to previous level
+```
+
+```python
+vf.quiet_verifiers()
+```
+
+Context manager to temporarily silence verifiers logging by setting WARNING level. Shorthand for `vf.log_level("WARNING")`.
+
+```python
+with vf.quiet_verifiers():
+    # verifiers logging is quieted here
+    outputs = env.generate(...)
+# logging restored

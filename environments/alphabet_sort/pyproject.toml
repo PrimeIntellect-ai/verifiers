@@ -1,11 +1,11 @@
 [project]
 name = "alphabet-sort"
-version = "0.1.10"
+version = "0.1.12"
 tags = ["sorting", "names", "multi-turn", "xml", "synthetic", "tools"]
 license = "Apache-2.0"
 description = "This task requires the model to maintain and update an alphabetically sorted list of names across multiple conversation turns."
 dependencies = [
-    "verifiers>=0.1.8",
+    "verifiers>=0.1.9",
 ]
 
 [build-system]

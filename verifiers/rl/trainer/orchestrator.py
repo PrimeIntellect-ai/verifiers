@@ -102,7 +102,6 @@ class Orchestrator:
         self.worker_loop = None
 
         max_length = self.max_prompt_len
-        assert env.dataset is not None
 
         def filter_by_prompt_length(example, processing_class):
             prompt = example["prompt"]
@@ -115,7 +114,7 @@ class Orchestrator:
             prompt_ids = processing_class.encode(prompt_text)
             return len(prompt_ids) <= max_length
 
-        env.dataset = env.dataset.filter(
+        env.dataset = env.get_dataset().filter(
             filter_by_prompt_length,
             fn_kwargs={"processing_class": processing_class},
         )

@@ -34,18 +34,6 @@ def load_environment(
     corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
 ) -> vf.Environment:
-    # ensure Chroma server is running in client/server mode
-    # ensure_chroma_server(chroma_db_dir)
-    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        model_name=embed_model,
-        api_base=embed_base_url,
-        api_key=os.getenv(embed_api_key_var, "EMPTY"),
-    )
-    client = chromadb.PersistentClient(path=chroma_db_dir)
-    collection = client.get_or_create_collection(
-        name="wiki_titles",
-        embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
-    )
     # load corpus into memory and build page_id -> row index
     corpus = load_dataset(corpus_dataset, split=corpus_split)
     page_id_to_title: dict[str, str] = {}
@@ -58,8 +46,25 @@ def load_environment(
         page_id_to_title[pid] = title
         page_id_to_content[pid] = content
 
-    # initialize chroma collection
-    def init_chroma() -> None:
+    # lazy chroma initialization (once across all env instances)
+    _chroma_state: dict = {"collection": None}
+
+    def _get_collection():
+        if _chroma_state["collection"] is None:
+            openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+                model_name=embed_model,
+                api_base=embed_base_url,
+                api_key=os.getenv(embed_api_key_var, "EMPTY"),
+            )
+            client = chromadb.PersistentClient(path=chroma_db_dir)
+            _chroma_state["collection"] = client.get_or_create_collection(
+                name="wiki_titles",
+                embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
+            )
+            _init_chroma(_chroma_state["collection"])
+        return _chroma_state["collection"]
+
+    def _init_chroma(collection) -> None:
         # upsert missing pages
         all_ids = list(page_id_to_title.keys())
         existing: set[str] = set()
@@ -85,8 +90,6 @@ def load_environment(
                     metadatas=metadatas[i : i + bs],
                 )
 
-    init_chroma()
-
     # helper function to normalize section ids
     def normalize_id(text: str) -> str:
         """Normalize free text into an id: lowercased with spaces as underscores.
@@ -108,6 +111,7 @@ def load_environment(
         example:
             "basketball" -> [{"page_id": "basketball", "title": "Basketball"}, {"page_id": "basketball_rules", "title": "Basketball Rules"}, ...]
         """
+        collection = _get_collection()  # lazy init on first earch call
         async with _get_chroma_semaphore():
             results = await asyncio.to_thread(
                 collection.query, query_texts=[query], n_results=10
