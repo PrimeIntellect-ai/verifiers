@@ -121,6 +121,10 @@ class Rubric:
         ``
         """
 
+        # skip rollout scoring if the rollout has an error
+        if state.get("error") is not None:
+            return 0.0
+
         async def _call():
             sig = inspect.signature(func)
 
@@ -178,6 +182,10 @@ class Rubric:
         """
         Invoke `func` with only the required arguments.
         """
+
+        # skip group scoring if all states have an error
+        if all(state.get("error") is not None for state in states):
+            return [0.0] * len(states)
 
         async def _call():
             sig = inspect.signature(func)
