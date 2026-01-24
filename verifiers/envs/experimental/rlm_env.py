@@ -2807,13 +2807,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
         self.root_tool_doc_funcs: list[Callable] = []
         for tool in self.root_tools:
-            name = _tool_display_name(tool)
-            if name in _FIXED_REPL_TOOL_NAMES:
-                self.root_tool_doc_funcs.append(
-                    self._build_fixed_root_tool_schema(name)
-                )
-            else:
-                self.root_tool_doc_funcs.append(tool)
+            self.root_tool_doc_funcs.append(tool)
         self.root_oai_tools = [
             convert_func_to_oai_tool(tool) for tool in self.root_tool_doc_funcs
         ]
@@ -2882,15 +2876,14 @@ class RLMEnv(vf.StatefulToolEnv):
 
         async def llm_batch(prompts: list[str]) -> list[str]:
             """
-            Make multiple sub-LLM calls in parallel.
+            Call the sub-LLM on multiple prompts in parallel.
 
-            Args:
-                prompts: List of prompt strings (recommended). Message dicts or lists
-                    of message dicts are also accepted for compatibility.
-
-            Returns:
-                List of response contents in the same order as the input prompts.
+            - Input: a list of prompt strings (recommended). Message dicts or lists
+              of message dicts are also accepted.
+            - Output: a list of responses in the same order as the input prompts.
+            - Use this inside the REPL to get help on sub-tasks.
             """
+            # Context is injected only when called via the REPL root-tool endpoint.
             context = self._root_tool_context_var.get()
             if context is None:
                 raise RuntimeError(
@@ -2901,18 +2894,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
         llm_batch.__name__ = "llm_batch"
         return [llm_batch]
-
-    def _build_fixed_root_tool_schema(self, name: str) -> Callable:
-        """Return a schema-only stub for fixed root tools."""
-        if name == "llm_batch":
-
-            def llm_batch(prompts: list[str]) -> list[str]:
-                """Make multiple sub-LLM calls in parallel."""
-                raise RuntimeError("llm_batch schema stub should not be executed.")
-
-            llm_batch.__name__ = "llm_batch"
-            return llm_batch
-        raise ValueError(f"Unsupported fixed tool schema: {name}")
 
     def _compute_install_wait_seconds(self) -> int:
         """Estimate how long to wait for pip installs based on package count."""
