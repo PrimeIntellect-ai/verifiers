@@ -2728,8 +2728,7 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         if execution_backend not in {"local", "sandbox"}:
             raise ValueError(
-                "execution_backend must be 'local' or 'sandbox', got "
-                f"'{execution_backend}'."
+                f"Unsupported execution_backend '{execution_backend}'. Expected 'local' or 'sandbox'."
             )
         self.repl_language = repl_language
         self.execution_backend = execution_backend
@@ -2873,8 +2872,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if code_timeout < 10:
             logger.warning(
-                "code_execution_timeout=%s is low; sub-LLM calls may be unreliable",
-                code_timeout,
+                f"code_execution_timeout={code_timeout}s is low; sub-LLM calls may be unreliable"
             )
 
         return api_timeout, worker_timeout
@@ -3524,13 +3522,15 @@ class RLMEnv(vf.StatefulToolEnv):
             if meta.get("error"):
                 summary_lines.append(f"  [{index}]: error ({elapsed:.2f}s)")
                 continue
-            tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
+            prompt_tokens = meta.get("prompt_tokens", 0)
+            completion_tokens = meta.get("completion_tokens", 0)
             tool_calls = meta.get("tool_call_count", 0)
             max_turns = meta.get("max_turns_reached", False)
             status = "⚠ max turns" if max_turns else "✓"
             summary_lines.append(
-                f"  [{index}]: {tokens} tokens, {tool_calls} tool calls, "
-                f"{elapsed:.2f}s {status}"
+                f"  [{index}]: {prompt_tokens} prompt tokens, "
+                f"{completion_tokens} completion tokens, "
+                f"{tool_calls} tool calls, {elapsed:.2f}s {status}"
             )
 
         return contents, summary_lines
