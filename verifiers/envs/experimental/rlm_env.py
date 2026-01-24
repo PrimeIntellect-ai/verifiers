@@ -3003,17 +3003,6 @@ class RLMEnv(vf.StatefulToolEnv):
         return "\n".join(lines)
 
     @staticmethod
-    def _extract_tokens(response: Any) -> tuple[int, int]:
-        """Extract prompt and completion tokens from response usage."""
-        usage = getattr(response, "usage", None)
-        if not usage:
-            return 0, 0
-        return (
-            getattr(usage, "prompt_tokens", 0) or 0,
-            getattr(usage, "completion_tokens", 0) or 0,
-        )
-
-    @staticmethod
     def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
         """Normalize sampling args to match main model behavior."""
         if "max_tokens" in sampling_args:
@@ -3181,7 +3170,7 @@ class RLMEnv(vf.StatefulToolEnv):
             if response is None:
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
-            prompt_tokens, completion_tokens = self._extract_tokens(response)
+            prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
             return SubLLMResult(
                 final_content=response.choices[0].message.content or "",
                 turns=[
@@ -3223,7 +3212,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     num_turns,
                 )
 
-            prompt_tokens, completion_tokens = self._extract_tokens(response)
+            prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
             total_prompt_tokens += prompt_tokens
             total_completion_tokens += completion_tokens
 
@@ -3293,7 +3282,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 prompt_messages=prompt_snapshot, response=response, tool_call_count=0
             )
         )
-        prompt_tokens, completion_tokens = self._extract_tokens(response)
+        prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
 
         return SubLLMResult(
             final_content=response.choices[0].message.content or "",
