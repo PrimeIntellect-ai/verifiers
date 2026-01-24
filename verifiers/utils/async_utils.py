@@ -8,6 +8,8 @@ from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
 import tenacity as tc
 
 import verifiers as vf
+from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
 
@@ -96,28 +98,19 @@ class EventLoopLagMonitor:
         return asyncio.create_task(self.run())
 
 
-def _raise_error_from_state(result):
-    """Re-raise InfraError from state(s) to trigger retry."""
-    if isinstance(result, dict):
-        err = result.get("error")
-        if err and isinstance(err, vf.InfraError):
-            raise err
-    elif isinstance(result, list):
-        for state in result:
-            err = state.get("error")
-            if err and isinstance(err, vf.InfraError):
-                raise err
-
-
 def maybe_retry(
     func: Callable[..., Coroutine[Any, Any, T]],
     max_retries: int = 0,
     initial: float = 1.0,
     max_wait: float = 60.0,
+    error_types: tuple[type[Exception], ...] = (
+        vf.InfraError,
+        vf.InvalidModelResponseError,
+    ),
 ) -> Callable[..., Coroutine[Any, Any, T]]:
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
-    Re-raises vf.InfraError from state["error"] to trigger retry.
+    Re-raises specified errors from state["error"] to trigger tenacity retry.
 
     Usage:
         state = await maybe_retry(self.run_rollout, max_retries=3)(input, client, ...)
@@ -125,25 +118,45 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
-    def log_retry(retry_state):
+    def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
+        """Re-raise specified errors from state(s) to trigger tenacity retry."""
+        if isinstance(result, dict):
+            err = result.get("error")
+            if err and any(isinstance(err, err_type) for err_type in error_types):
+                raise err
+        elif isinstance(result, list):
+            for state in result:
+                err = state.get("error")
+                if err and any(isinstance(err, err_type) for err_type in error_types):
+                    raise err
+
+    def log_retry(retry_state: tc.RetryCallState) -> None:
+        """Log a warning with the exception and the number of attempts."""
+        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
+        error_chain = (
+            repr(
+                ErrorChain(
+                    retry_state.outcome.exception() or Exception("Unknown exception")
+                )
+            )
+            if retry_state.outcome
+            else None
+        )
+        next_action = retry_state.next_action.sleep if retry_state.next_action else 0
         logger.warning(
-            "Retrying %s (attempt %s/%s): %s",
-            retry_state.fn.__name__,
-            retry_state.attempt_number + 1,
-            max_retries + 1,
-            retry_state.outcome.exception(),
+            f"Caught {error_chain} in {caller}. Retrying in {print_time(next_action)} (retry {retry_state.attempt_number}/{max_retries})"
         )
 
     async def wrapper(*args, **kwargs):
         result = await func(*args, **kwargs)
-        _raise_error_from_state(result)
+        reraise_error_from_state(result, error_types)
         return result
 
     wrapper.__name__ = getattr(func, "__name__", "unknown")
     wrapper.__qualname__ = getattr(func, "__qualname__", "unknown")
 
     return tc.AsyncRetrying(
-        retry=tc.retry_if_exception_type((vf.InfraError, vf.InvalidModelResponseError)),
+        retry=tc.retry_if_exception_type(error_types),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
         before_sleep=log_retry,
