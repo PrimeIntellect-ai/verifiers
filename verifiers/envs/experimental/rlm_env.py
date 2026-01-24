@@ -2723,25 +2723,6 @@ class RLMEnv(vf.StatefulToolEnv):
         rubric: Rubric | None = None,
         **kwargs,
     ):
-        if tools is None and "tools" in kwargs:
-            tools = kwargs.pop("tools")
-        elif tools is not None and "tools" in kwargs:
-            raise ValueError("Tools were provided twice: use tools=... only once.")
-
-        if root_tools is None and "root_tools" in kwargs:
-            root_tools = kwargs.pop("root_tools")
-        elif root_tools is not None and "root_tools" in kwargs:
-            raise ValueError(
-                "root_tools were provided twice: use root_tools=... only once."
-            )
-
-        if sub_tools is None and "sub_tools" in kwargs:
-            sub_tools = kwargs.pop("sub_tools")
-        elif sub_tools is not None and "sub_tools" in kwargs:
-            raise ValueError(
-                "sub_tools were provided twice: use sub_tools=... only once."
-            )
-
         if repl_language not in {"bash", "python"}:
             raise ValueError(
                 f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
