@@ -104,7 +104,6 @@ def maybe_retry(
     initial: float = 1.0,
     max_wait: float = 60.0,
     error_types: tuple[type[Exception], ...] = (
-        vf.ModelError,
         vf.InfraError,
         vf.InvalidModelResponseError,
     ),
