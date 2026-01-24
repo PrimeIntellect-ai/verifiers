@@ -54,7 +54,6 @@ from aiohttp import web
 from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
-from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatMessage,
     ChatMessages,
