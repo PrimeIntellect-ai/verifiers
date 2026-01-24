@@ -73,10 +73,12 @@ class TestBrowserEnvValidation:
                 "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
             ):
                 # This should NOT raise ValueError about missing env vars
+                # use_sandbox=False to use manual CUA mode
                 try:
                     env = BrowserEnv(
                         mode="cua",
                         env="LOCAL",
+                        use_sandbox=False,
                         dataset=Dataset.from_dict(
                             {"question": ["test"], "answer": ["test"]}
                         ),
@@ -94,10 +96,12 @@ class TestBrowserEnvValidation:
             with patch(
                 "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
             ):
+                # Both sandbox and manual mode require credentials for BROWSERBASE
                 with pytest.raises(ValueError, match="BROWSERBASE_API_KEY"):
                     BrowserEnv(
                         mode="cua",
                         env="BROWSERBASE",
+                        use_sandbox=False,
                         dataset=Dataset.from_dict(
                             {"question": ["test"], "answer": ["test"]}
                         ),
@@ -164,6 +168,7 @@ class TestBrowserEnvSystemPrompt:
                 env = BrowserEnv(
                     mode="cua",
                     env="LOCAL",
+                    use_sandbox=False,
                     dataset=Dataset.from_dict(
                         {"question": ["test"], "answer": ["test"]}
                     ),
@@ -183,12 +188,134 @@ class TestBrowserEnvSystemPrompt:
                 env = BrowserEnv(
                     mode="cua",
                     env="LOCAL",
+                    use_sandbox=False,
                     dataset=Dataset.from_dict(
                         {"question": ["test"], "answer": ["test"]}
                     ),
                     system_prompt=custom_prompt,
                 )
                 assert env.system_prompt == custom_prompt
+
+
+# ============================================================================
+# CUASandboxMode Tests
+# ============================================================================
+
+
+class TestCUASandboxModeInit:
+    """Tests for CUASandboxMode initialization."""
+
+    def test_sandbox_mode_requires_prime_sandboxes(self):
+        """Test that CUASandboxMode requires prime-sandboxes package."""
+        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
+            SANDBOX_AVAILABLE,
+        )
+
+        # This test just verifies the import guard exists
+        assert isinstance(SANDBOX_AVAILABLE, bool)
+
+    def test_use_sandbox_true_creates_sandbox_mode(self):
+        """Test that use_sandbox=True creates CUASandboxMode."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
+            CUASandboxMode,
+        )
+
+        with patch.dict(
+            os.environ,
+            {"BROWSERBASE_API_KEY": "test", "BROWSERBASE_PROJECT_ID": "test"},
+            clear=True,
+        ):
+            env = BrowserEnv(
+                mode="cua",
+                use_sandbox=True,
+                env="BROWSERBASE",
+                dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
+            )
+            assert isinstance(env._mode_impl, CUASandboxMode)
+
+    def test_use_sandbox_false_creates_cua_mode(self):
+        """Test that use_sandbox=False creates regular CUAMode."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
+            CUASandboxMode,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+            ):
+                env = BrowserEnv(
+                    mode="cua",
+                    use_sandbox=False,
+                    env="LOCAL",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+                assert isinstance(env._mode_impl, CUAMode)
+                assert not isinstance(env._mode_impl, CUASandboxMode)
+
+
+class TestCUASandboxModeScreenshotFilter:
+    """Tests for screenshot filtering in CUASandboxMode."""
+
+    def test_filter_screenshots_keeps_recent(self):
+        """Test that filter keeps the N most recent screenshots."""
+        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
+            CUASandboxMode,
+            SANDBOX_AVAILABLE,
+        )
+
+        if not SANDBOX_AVAILABLE:
+            pytest.skip("prime-sandboxes not installed")
+
+        mode = CUASandboxMode(keep_recent_screenshots=2)
+
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "msg1"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "msg2"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,img1"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "msg3"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,img2"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "msg4"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,img3"},
+                    },
+                ],
+            },
+        ]
+
+        filtered = mode.filter_screenshots_in_messages(messages)
+
+        # First screenshot (msg2) should be replaced with placeholder
+        assert filtered[1]["content"][1]["type"] == "text"
+        assert "removed" in filtered[1]["content"][1]["text"].lower()
+
+        # Last two screenshots (msg3, msg4) should be preserved
+        assert filtered[2]["content"][1]["type"] == "image_url"
+        assert filtered[3]["content"][1]["type"] == "image_url"
 
 
 # ============================================================================

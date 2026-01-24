@@ -7,9 +7,16 @@ for vision-based browser control.
 CUA mode uses screenshots and vision models to interact with the browser,
 providing low-level primitives like click, scroll, and type_text.
 
+By default, CUA mode automatically deploys the server to a sandbox container,
+so no manual server setup is required.
+
 Usage:
-    # Start CUA server first, then:
-    prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+    # Default (sandbox mode - recommended)
+    prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+
+    # Manual mode (for local development)
+    cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
+    prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_sandbox": false}'
 """
 
 from typing import Literal
@@ -89,15 +96,23 @@ async def judge_answer(
 def load_environment(
     max_turns: int = 15,
     judge_model: str = "gpt-4o-mini",
+    # CUA mode configuration
+    use_sandbox: bool = True,
     server_url: str = "http://localhost:3000",
+    # Shared configuration
     browserbase_api_key: str | None = None,
     browserbase_project_id: str | None = None,
-    env: Literal["LOCAL", "BROWSERBASE"] = "LOCAL",
+    env: Literal["LOCAL", "BROWSERBASE"] = "BROWSERBASE",
     viewport_width: int = 1024,
     viewport_height: int = 768,
     save_screenshots: bool = False,
     keep_recent_screenshots: int | None = 2,
     proxies: bool = False,
+    # Sandbox configuration (when use_sandbox=True)
+    docker_image: str = "node:18-slim",
+    cpu_cores: int = 2,
+    memory_gb: int = 4,
+    use_binary: bool = True,
     **kwargs,
 ) -> vf.Environment:
     """
@@ -106,8 +121,15 @@ def load_environment(
     This is a self-contained "hello world" example demonstrating how to use
     BrowserEnv with CUA mode for vision-based browser control.
 
-    CUA mode uses vision-based primitives for browser control.
-    Requires a running CUA server (see cua-server/).
+    By default (use_sandbox=True), the CUA server is automatically deployed
+    to a sandbox container. This is the recommended approach as it:
+    - Requires no manual server setup
+    - Provides isolation between rollouts
+    - Automatically manages server lifecycle
+
+    For local development, you can set use_sandbox=False and run the server
+    manually:
+        cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
 
     Available tools in CUA mode:
     - click(x, y, button): Click at coordinates
@@ -124,22 +146,31 @@ def load_environment(
     Args:
         max_turns: Maximum conversation turns (default: 15)
         judge_model: Model for judging task completion
-        server_url: CUA server URL (default: http://localhost:3000)
+        use_sandbox: Auto-deploy CUA server to sandbox (default: True)
+        server_url: CUA server URL for manual mode (default: http://localhost:3000)
         browserbase_api_key: Browserbase API key (or set BROWSERBASE_API_KEY env var)
         browserbase_project_id: Browserbase project ID (or set BROWSERBASE_PROJECT_ID env var)
-        env: Environment type - "LOCAL" or "BROWSERBASE"
+        env: Browser environment - "LOCAL" or "BROWSERBASE" (default: BROWSERBASE)
         viewport_width: Browser viewport width (default: 1024)
         viewport_height: Browser viewport height (default: 768)
         save_screenshots: Save screenshots during execution (default: False)
         keep_recent_screenshots: Number of recent screenshots to keep in context
         proxies: Enable Browserbase proxies
+        docker_image: Docker image for sandbox (default: node:18-slim)
+        cpu_cores: CPU cores for sandbox (default: 2)
+        memory_gb: Memory in GB for sandbox (default: 4)
+        use_binary: Use pre-built SEA binary for faster sandbox startup (default: True)
         **kwargs: Additional arguments passed to BrowserEnv
 
     Returns:
         Configured BrowserEnv instance in CUA mode
 
     Example:
-        >>> env = load_environment(server_url="http://localhost:3000")
+        # Sandbox mode (default - recommended)
+        >>> env = load_environment()
+
+        # Manual mode (for local development)
+        >>> env = load_environment(use_sandbox=False, server_url="http://localhost:3000")
     """
     # Create inline dataset
     dataset = create_example_dataset()
@@ -151,20 +182,27 @@ def load_environment(
     )
     rubric.add_reward_func(judge_answer, weight=1.0)
 
-    # Create BrowserEnv with CUA mode (uses default system prompt)
+    # Create BrowserEnv with CUA mode
     return BrowserEnv(
         mode="cua",
         dataset=dataset,
         rubric=rubric,
         max_turns=max_turns,
+        # CUA mode configuration
+        use_sandbox=use_sandbox,
         server_url=server_url,
+        env=env,
         browserbase_api_key=browserbase_api_key,
         browserbase_project_id=browserbase_project_id,
-        env=env,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
         save_screenshots=save_screenshots,
         keep_recent_screenshots=keep_recent_screenshots,
         proxies=proxies,
+        # Sandbox configuration
+        docker_image=docker_image,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        use_binary=use_binary,
         **kwargs,
     )

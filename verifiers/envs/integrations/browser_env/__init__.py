@@ -4,9 +4,25 @@ Browser Environment - Unified browser automation with DOM and CUA modes.
 Usage:
     from verifiers.envs.integrations.browser_env import BrowserEnv
 
-    # Create environment with your own dataset and rubric
+    # DOM mode - natural language browser automation
     env = BrowserEnv(
-        mode="dom",  # or "cua"
+        mode="dom",
+        dataset=my_dataset,
+        rubric=my_rubric,
+    )
+
+    # CUA mode with sandbox (default) - automatic server deployment
+    env = BrowserEnv(
+        mode="cua",
+        dataset=my_dataset,
+        rubric=my_rubric,
+    )
+
+    # CUA mode without sandbox - requires manual server setup
+    env = BrowserEnv(
+        mode="cua",
+        use_sandbox=False,
+        server_url="http://localhost:3000",
         dataset=my_dataset,
         rubric=my_rubric,
     )

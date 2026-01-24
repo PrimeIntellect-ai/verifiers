@@ -1,0 +1,34 @@
+# Dockerfile for pre-built CUA server runtime image
+#
+# This creates a minimal runtime image with the binary already included,
+# eliminating the need to upload files and install dependencies at runtime.
+#
+# Build:
+#   docker build --platform linux/amd64 -f Dockerfile.runtime -t cua-server:local .
+#
+# Push to Docker Hub:
+#   docker tag cua-server:local deepdream19/cua-server:latest
+#   docker push deepdream19/cua-server:latest
+#
+# Note: Requires the binary to be built first via Dockerfile.build
+
+FROM --platform=linux/amd64 node:22-slim
+
+WORKDIR /app/cua-server
+
+# Install curl for health checks
+RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-built binary
+COPY dist/sea/cua-server-linux-x64 ./cua-server-linux-x64
+RUN chmod +x ./cua-server-linux-x64
+
+# Default environment variables
+ENV CUA_SERVER_PORT=3000
+ENV CUA_SERVER_HOST=0.0.0.0
+
+# Expose the server port
+EXPOSE 3000
+
+# Run the server
+CMD ["./cua-server-linux-x64"]
