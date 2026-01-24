@@ -51,7 +51,7 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.rubrics.rubric import Rubric
@@ -2283,7 +2283,6 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 session.paths.answer_file,
             ],
         }
-
         context_path = Path(session.local_control_dir) / "rlm_context.json"
         answer_path = Path(session.local_control_dir) / "rlm_answer.json"
         worker_path = Path(session.local_control_dir) / "rlm_worker.py"
@@ -2773,11 +2772,13 @@ class RLMEnv(vf.StatefulToolEnv):
             context="sub-LLM tools",
             reserved_names=set(_FIXED_REPL_TOOL_NAMES),
         )
-        self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
+        self.sub_oai_tools: list[ChatCompletionFunctionToolParam] = [
+            convert_func_to_oai_tool(tool) for tool in self.sub_tools
+        ]
         self.root_tool_doc_funcs: list[Callable] = []
         for tool in self.root_tools:
             self.root_tool_doc_funcs.append(tool)
-        self.root_oai_tools = [
+        self.root_oai_tools: list[ChatCompletionFunctionToolParam] = [
             convert_func_to_oai_tool(tool) for tool in self.root_tool_doc_funcs
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
@@ -2894,17 +2895,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return "\n".join(lines)
 
-    def _generate_sub_tools_documentation(self) -> str:
-        """Generate documentation for sub-agent tools to include in system prompt."""
-        if not self.sub_tools:
-            return ""
-
-        lines = ["\n## Sub-LLM Tools\n"]
-        lines.append(
-            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
-        )
-
-        for oai_tool in self.sub_oai_tools:
+    def _append_tool_docs(
+        self, lines: list[str], oai_tools: list[ChatCompletionFunctionToolParam]
+    ) -> None:
+        for oai_tool in oai_tools:
             func_def = oai_tool["function"]
             name = func_def["name"]
             desc = func_def.get("description", "No description")
@@ -2922,6 +2916,18 @@ class RLMEnv(vf.StatefulToolEnv):
                     param_desc = param_info.get("description", "")
                     lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
                 lines.append("")
+
+    def _generate_sub_tools_documentation(self) -> str:
+        """Generate documentation for sub-agent tools to include in system prompt."""
+        if not self.sub_tools:
+            return ""
+
+        lines = ["\n## Sub-LLM Tools\n"]
+        lines.append(
+            "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
+        )
+
+        self._append_tool_docs(lines, self.sub_oai_tools)
 
         lines.append(
             "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
@@ -2949,24 +2955,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 "The root model can call the following tools inside the Python REPL:\n"
             )
 
-        for oai_tool in self.root_oai_tools:
-            func_def = oai_tool["function"]
-            name = func_def["name"]
-            desc = func_def.get("description", "No description")
-            params = cast(
-                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
-            )
-
-            lines.append(f"### `{name}`")
-            lines.append(f"{desc}\n")
-
-            if params:
-                lines.append("**Parameters:**")
-                for param_name, param_info in params.items():
-                    param_type = param_info.get("type", "any")
-                    param_desc = param_info.get("description", "")
-                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
-                lines.append("")
+        self._append_tool_docs(lines, self.root_oai_tools)
 
         lines.append(
             "These tools run on the host and are only accessible from within the REPL."
