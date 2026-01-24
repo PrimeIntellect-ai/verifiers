@@ -91,6 +91,17 @@ def rlm_env_bash() -> RLMEnv:
 
 
 @pytest.fixture
+def rlm_env_both() -> RLMEnv:
+    dataset = make_dataset({})
+    return build_env(
+        dataset,
+        max_iterations=10,
+        max_output_length=1000,
+        repl_language="both",
+    )
+
+
+@pytest.fixture
 def context_dir(tmp_path: Path) -> Path:
     root = tmp_path / "context_src"
     root.mkdir()
@@ -342,6 +353,114 @@ class TestContextFilesystemSetup:
             await env.cleanup_rlm_state(result)
 
 
+class TestDualReplSetup:
+    @pytest.mark.asyncio
+    async def test_setup_state_populates_dual_repl_paths(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            assert "rlm_paths_by_repl" in result
+            assert "rlm_control_dir_by_repl" in result
+            assert set(result["rlm_paths_by_repl"]) == {"bash", "python"}
+            assert set(result["rlm_control_dir_by_repl"]) == {"bash", "python"}
+
+            control_dir = Path(result["rlm_control_dir"])
+            assert control_dir.name == "rlm_control"
+
+            bash_control = Path(result["rlm_control_dir_by_repl"]["bash"])
+            python_control = Path(result["rlm_control_dir_by_repl"]["python"])
+            assert bash_control.parent == control_dir
+            assert python_control.parent == control_dir
+
+            bash_paths = result["rlm_paths_by_repl"]["bash"]
+            python_paths = result["rlm_paths_by_repl"]["python"]
+            assert bash_paths["base_dir"] == str(bash_control)
+            assert python_paths["base_dir"] == str(python_control)
+
+            # Shared answer file for first-ready-wins semantics.
+            assert bash_paths["answer_file"] == python_paths["answer_file"]
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_setup_state_initializes_exec_seq_by_repl(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            assert "_exec_seq_by_repl" in result
+            assert result["_exec_seq_by_repl"]["python"] == 0
+            assert result["_exec_seq_by_repl"]["bash"] == 0
+            assert "_exec_seq" not in result
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    def test_resolve_repl_defaults_to_python_for_both(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+        assert env._resolve_repl(None) == "python"
+        assert env._resolve_repl("bash") == "bash"
+        assert env._resolve_repl("python") == "python"
+
+
+class TestDualReplPrompt:
+    @pytest.mark.asyncio
+    async def test_dual_repl_prompt_mentions_both_tools_and_first_ready(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "call_python_repl" in prompt
+            assert "call_bash_repl" in prompt
+            assert "first repl to set ready" in prompt.lower()
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_python_prompt_does_not_mention_bash_tool(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="python")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "call_bash_repl" not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_bash_prompt_does_not_mention_python_tool(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="bash")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            assert "call_python_repl" not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+
 class TestFilesystemCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_removes_filesystem_by_default(self, tmp_path: Path):
@@ -417,6 +536,134 @@ class TestBashReplOutput:
         assert "Out[" not in output
         assert "[Execution time" not in output
 
+
+class TestDualReplMetrics:
+    @pytest.mark.asyncio
+    async def test_metrics_split_by_repl(self, rlm_env_both):
+        env = rlm_env_both
+        env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {"trajectory": [], "context_warning_sent": False}
+
+        await env.call_python_repl("print('test')", state)
+
+        assert state["repl_call_count"] == 1
+        assert state["repl_call_count_by_repl"]["python"] == 1
+        assert state["repl_call_count_by_repl"]["bash"] == 0
+
+        await env.call_bash_repl("echo test", state)
+
+        assert state["repl_call_count"] == 2
+        assert state["repl_call_count_by_repl"]["python"] == 1
+        assert state["repl_call_count_by_repl"]["bash"] == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_code_routed_by_repl(self, rlm_env_both):
+        env = rlm_env_both
+        env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "output",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": False, "content": ""},
+            }
+        )
+
+        state = {"trajectory": [], "context_warning_sent": False}
+
+        await env.call_python_repl("print('test')", state)
+        await env.call_bash_repl("echo test", state)
+
+        assert env._execute_code.await_count == 2
+        calls = env._execute_code.await_args_list
+        assert calls[0].kwargs.get("repl_language") == "python"
+        assert calls[1].kwargs.get("repl_language") == "bash"
+
+
+class TestDualReplExecutionSemantics:
+    @pytest.mark.asyncio
+    async def test_execute_code_requires_repl_language(self, rlm_env_both):
+        env = rlm_env_both
+        state = {"rlm_worker_ready": True, "trajectory": [], "context_warning_sent": False}
+        with pytest.raises(ValueError, match="repl_language must be provided"):
+            await env._execute_code("print('x')", state)
+
+    @pytest.mark.asyncio
+    async def test_first_ready_wins(self, rlm_env_both):
+        env = rlm_env_both
+        env._execute_code = AsyncMock(
+            return_value={
+                "status": "ok",
+                "stdout": "",
+                "stderr": "",
+                "result": None,
+                "execution_count": 1,
+                "answer": {"ready": True, "content": "second"},
+            }
+        )
+
+        state = {"trajectory": [], "context_warning_sent": False, "final_answer": "first"}
+        await env.call_python_repl("print('test')", state)
+        assert state["final_answer"] == "first"
+
+    def test_format_output_respects_repl_override(self, rlm_env_both):
+        env = rlm_env_both
+        result = {
+            "status": "ok",
+            "stdout": "out",
+            "stderr": "err",
+            "result": None,
+            "execution_count": 1,
+        }
+        bash_output = env._format_execution_output(result, repl_language="bash")
+        assert "stderr:" not in bash_output
+        python_output = env._format_execution_output(result, repl_language="python")
+        assert "stderr:" in python_output
+
+
+class TestDualReplDocs:
+    def test_root_tools_docs_include_bash_and_python_in_both(self):
+        def sample_tool() -> str:
+            """Sample tool."""
+            return "ok"
+
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both", root_tools=[sample_tool])
+        docs = env._generate_root_tools_documentation()
+        assert "Bash usage" in docs
+        assert "Python usage" in docs
+
+
+class TestDualReplAnswerFile:
+    @pytest.mark.asyncio
+    async def test_read_answer_uses_shared_file(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            answer_path = result["rlm_paths_by_repl"]["bash"]["answer_file"]
+            Path(answer_path).write_text(
+                json.dumps({"ready": True, "content": "shared"}), encoding="utf-8"
+            )
+            content = await env._executor.read_answer(result)
+            assert content == "shared"
+        finally:
+            await env.cleanup_rlm_state(result)
 
 class TestBashWorkerScript:
     def test_rendered_bash_worker_is_valid_python(self, tmp_path: Path):
@@ -663,6 +910,13 @@ class TestRLMEnvInitialization:
 
         assert "call_python_repl" in env.tool_map
         assert "call_bash_repl" not in env.tool_map
+
+    def test_both_repl_tools_registered(self):
+        dataset = make_dataset({})
+        env = build_env(dataset, repl_language="both")
+
+        assert "call_python_repl" in env.tool_map
+        assert "call_bash_repl" in env.tool_map
 
     def test_default_initialization(self):
         dataset = make_dataset({})

@@ -40,7 +40,7 @@ import textwrap
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, cast
@@ -181,10 +181,14 @@ class RLMWorkerPaths:
 class LocalRLMReplSession:
     rollout_id: str
     rollout_dir: str
-    paths: RLMWorkerPaths
     fs_root: str
     control_dir: str
+    paths: RLMWorkerPaths | None = None
+    paths_by_repl: dict[str, RLMWorkerPaths] | None = None
+    control_dir_by_repl: dict[str, str] | None = None
+    shared_answer_file: str | None = None
     worker_process: subprocess.Popen | None = None
+    worker_processes: dict[str, subprocess.Popen] = field(default_factory=dict)
     venv_path: str | None = None
 
 
@@ -201,10 +205,14 @@ class SandboxRLMReplSession:
     local_rollout_dir: str
     local_fs_root: str
     local_control_dir: str
+    local_control_dir_by_repl: dict[str, str] | None = None
     sandbox_id: str | None = None
     sandbox_fs_root: str | None = None
     sandbox_control_dir: str | None = None
+    sandbox_control_dir_by_repl: dict[str, str] | None = None
     paths: RLMWorkerPaths | None = None
+    paths_by_repl: dict[str, RLMWorkerPaths] | None = None
+    shared_answer_file: str | None = None
 
 
 def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
@@ -241,6 +249,13 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("repl_total_time_seconds", 0.0)
     state.setdefault("repl_call_count", 0)
     state.setdefault("repl_mean_time_seconds", 0.0)
+    state.setdefault(
+        "repl_total_time_seconds_by_repl", {"python": 0.0, "bash": 0.0}
+    )
+    state.setdefault("repl_call_count_by_repl", {"python": 0, "bash": 0})
+    state.setdefault(
+        "repl_mean_time_seconds_by_repl", {"python": 0.0, "bash": 0.0}
+    )
     state.setdefault("root_tool_call_count", 0)
     state.setdefault("root_tool_calls", {})
 
@@ -248,7 +263,9 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_rlm_sub_llm_batch_counts", {})
 
 
-def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
+def _update_rlm_repl_metrics(
+    state: State, execution_seconds: float, repl_language: str
+) -> None:
     _ensure_rlm_metric_state(state)
     state["repl_total_time_seconds"] += execution_seconds
     state["repl_call_count"] += 1
@@ -256,6 +273,19 @@ def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
         state["repl_mean_time_seconds"] = (
             state["repl_total_time_seconds"] / state["repl_call_count"]
         )
+    repl_totals: dict[str, float] = state.get("repl_total_time_seconds_by_repl", {})
+    repl_counts: dict[str, int] = state.get("repl_call_count_by_repl", {})
+    repl_means: dict[str, float] = state.get("repl_mean_time_seconds_by_repl", {})
+    if repl_language:
+        repl_totals[repl_language] = repl_totals.get(repl_language, 0.0) + execution_seconds
+        repl_counts[repl_language] = repl_counts.get(repl_language, 0) + 1
+        count = repl_counts.get(repl_language, 0)
+        repl_means[repl_language] = (
+            repl_totals.get(repl_language, 0.0) / count if count else 0.0
+        )
+    state["repl_total_time_seconds_by_repl"] = repl_totals
+    state["repl_call_count_by_repl"] = repl_counts
+    state["repl_mean_time_seconds_by_repl"] = repl_means
 
 
 def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
@@ -1453,7 +1483,9 @@ _RLM_SANDBOX_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
 )
 
 
-def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
+def _build_worker_paths(
+    base_dir: str, *, answer_file_override: str | None = None
+) -> RLMWorkerPaths:
     base_dir = base_dir.rstrip("/") or base_dir
     return RLMWorkerPaths(
         base_dir=base_dir,
@@ -1463,7 +1495,9 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
         worker_path=os.path.join(base_dir, "rlm_worker.py"),
         worker_pid_file=os.path.join(base_dir, "rlm_worker.pid"),
         context_file=os.path.join(base_dir, "rlm_context.json"),
-        answer_file=os.path.join(base_dir, "rlm_answer.json"),
+        answer_file=answer_file_override
+        if answer_file_override
+        else os.path.join(base_dir, "rlm_answer.json"),
         log_file=os.path.join(base_dir, "rlm_worker.log"),
     )
 
@@ -1605,6 +1639,48 @@ export RLM_READY=1
 """
 
 
+_RLM_DUAL_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment with TWO REPL tools.
+
+## Critical: This is an ITERATIVE environment
+
+You will run code, see its output, then continue. **Do NOT try to solve everything in one tool call.**
+
+You can choose either REPL at any time:
+- `call_python_repl`: Python REPL with persistent state.
+- `call_bash_repl`: Bash REPL with persistent state.
+
+**The first REPL to set ready wins** (i.e., the first to set `answer["ready"] = True` or `RLM_READY=1`).
+
+## Filesystem Context
+{filesystem_summary}
+
+## Workflow (Python)
+```python
+import os
+print(os.getcwd())
+print(os.listdir("."))
+answer["content"] = "your current best answer"
+print(f"My answer: {answer['content']}")
+answer["ready"] = True
+```
+
+## Workflow (Bash)
+```bash
+pwd
+ls
+export RLM_CONTENT="your current best answer"
+printf "My answer: %s\\n" "$RLM_CONTENT"
+export RLM_READY=1
+```
+
+## Important Rules
+
+1. **Never set ready before seeing output**
+2. **One step at a time**
+3. **Use `llm_batch` for semantic tasks**
+"""
+
+
 class BaseRLMExecutor:
     def __init__(self, env: "RLMEnv") -> None:
         self.env = env
@@ -1618,13 +1694,17 @@ class BaseRLMExecutor:
     async def setup(self, state: State) -> None:
         raise NotImplementedError
 
-    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+    async def execute(
+        self, payload: dict[str, Any], state: State, repl_language: str | None = None
+    ) -> RLMExecResult:
         raise NotImplementedError
 
     async def read_answer(self, state: State) -> str:
         return ""
 
-    async def recover_from_timeout(self, state: State) -> bool:
+    async def recover_from_timeout(
+        self, state: State, repl_language: str | None = None
+    ) -> bool:
         return False
 
     async def cleanup(self, state: State) -> None:
@@ -1648,31 +1728,70 @@ class LocalRLMExecutor(BaseRLMExecutor):
         state["rlm_rollout_dir"] = session.rollout_dir
         state["rlm_fs_root"] = session.fs_root
         state["rlm_control_dir"] = session.control_dir
-        state["rlm_paths"] = session.paths.to_dict()
+        if self.env.repl_language == "both":
+            control_dir_by_repl = {
+                repl: os.path.join(session.control_dir, repl)
+                for repl in self.env.repl_languages
+            }
+            for path in control_dir_by_repl.values():
+                Path(path).mkdir(parents=True, exist_ok=True)
+            shared_answer = os.path.join(session.control_dir, "rlm_answer.json")
+            paths_by_repl = {
+                repl: _build_worker_paths(path, answer_file_override=shared_answer)
+                for repl, path in control_dir_by_repl.items()
+            }
+            session.paths_by_repl = paths_by_repl
+            session.control_dir_by_repl = control_dir_by_repl
+            session.shared_answer_file = shared_answer
+
+            state["rlm_paths_by_repl"] = {
+                repl: paths.to_dict() for repl, paths in paths_by_repl.items()
+            }
+            state["rlm_control_dir_by_repl"] = dict(control_dir_by_repl)
+            primary_repl = "python" if "python" in self.env.repl_languages else self.env.repl_languages[0]
+            session.paths = paths_by_repl[primary_repl]
+            state["rlm_paths"] = session.paths.to_dict()
+        else:
+            assert session.paths is not None
+            state["rlm_paths"] = session.paths.to_dict()
 
     async def setup(self, state: State) -> None:
         session = self._get_or_create_session(state)
         venv_path = await self._ensure_venv(session)
         session.venv_path = venv_path
 
-        await self._write_local_files(session, state)
-        await self._start_worker(state, session)
+        if self.env.repl_language == "both":
+            for repl in self.env.repl_languages:
+                await self._write_local_files(session, state, repl)
+                await self._start_worker(state, session, repl)
+        else:
+            await self._write_local_files(session, state, self.env.repl_language)
+            await self._start_worker(state, session, self.env.repl_language)
 
-    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+    async def execute(
+        self, payload: dict[str, Any], state: State, repl_language: str | None = None
+    ) -> RLMExecResult:
         session = self._get_session(state)
-        if session.worker_process is None:
+        repl = self.env._resolve_repl(repl_language)
+        process = (
+            session.worker_processes.get(repl)
+            if session.worker_processes
+            else session.worker_process
+        )
+        if process is None:
             raise vf.SandboxError() from Exception("RLM worker process not running")
-        if session.worker_process.poll() is not None:
+        if process.poll() is not None:
             raise vf.SandboxError() from Exception("RLM worker process not running")
+        paths = self._get_paths(session, repl)
 
         def _do_io() -> str:
             payload_json = json.dumps(payload)
             with open(
-                session.paths.command_fifo, "w", encoding="utf-8"
+                paths.command_fifo, "w", encoding="utf-8"
             ) as command_file:
                 command_file.write(payload_json)
             with open(
-                session.paths.response_fifo, "r", encoding="utf-8"
+                paths.response_fifo, "r", encoding="utf-8"
             ) as response_file:
                 return response_file.read()
 
@@ -1685,14 +1804,16 @@ class LocalRLMExecutor(BaseRLMExecutor):
             logger.warning(
                 "Code execution timed out after %ss", self.env.code_execution_timeout
             )
-            self._unblock_response_fifo(session, payload.get("seq", 0))
+            self._unblock_response_fifo(session, payload.get("seq", 0), repl)
             raise RLMCodeExecutionTimeout from e
         except Exception as e:
             raise vf.SandboxError() from e
 
         return RLMExecResult(stdout=raw, stderr="")
 
-    def _unblock_response_fifo(self, session: LocalRLMReplSession, seq: int) -> None:
+    def _unblock_response_fifo(
+        self, session: LocalRLMReplSession, seq: int, repl_language: str
+    ) -> None:
         """Best-effort write to the response FIFO to unblock a stuck reader thread."""
         payload = {
             "status": "error",
@@ -1704,7 +1825,8 @@ class LocalRLMExecutor(BaseRLMExecutor):
             "answer": {"ready": False, "content": ""},
         }
         try:
-            fd = os.open(session.paths.response_fifo, os.O_RDWR | os.O_NONBLOCK)
+            paths = self._get_paths(session, repl_language)
+            fd = os.open(paths.response_fifo, os.O_RDWR | os.O_NONBLOCK)
         except Exception:
             return
         try:
@@ -1718,25 +1840,42 @@ class LocalRLMExecutor(BaseRLMExecutor):
         if not session:
             return ""
         try:
-            content = Path(session.paths.answer_file).read_text(encoding="utf-8")
+            answer_file = (
+                session.shared_answer_file
+                if session.shared_answer_file
+                else session.paths.answer_file
+                if session.paths
+                else None
+            )
+            if not answer_file:
+                return ""
+            content = Path(answer_file).read_text(encoding="utf-8")
             return json.loads(content).get("content", "")
         except Exception:
             return ""
 
-    async def recover_from_timeout(self, state: State) -> bool:
+    async def recover_from_timeout(
+        self, state: State, repl_language: str | None = None
+    ) -> bool:
         session = self._sessions.get(state.get("rollout_id", ""))
         if not session:
             logger.error("Cannot recover from timeout: missing local session")
             return False
+        repl = self.env._resolve_repl(repl_language)
         try:
-            self._stop_worker(session)
-            await self._write_local_files(session, state)
-            await self._start_worker(state, session)
+            self._stop_worker(session, repl)
+            await self._write_local_files(session, state, repl)
+            await self._start_worker(state, session, repl)
         except Exception as e:
             logger.error(f"Failed to recover from code timeout: {e}")
             return False
         state["rlm_worker_ready"] = True
-        state["_exec_seq"] = 0
+        if self.env.repl_language == "both":
+            exec_seq = state.get("_exec_seq_by_repl", {})
+            exec_seq[repl] = 0
+            state["_exec_seq_by_repl"] = exec_seq
+        else:
+            state["_exec_seq"] = 0
         return True
 
     async def cleanup(self, state: State) -> None:
@@ -1746,7 +1885,11 @@ class LocalRLMExecutor(BaseRLMExecutor):
         session = self._sessions.pop(rollout_id, None)
         if not session:
             return
-        self._stop_worker(session)
+        if self.env.repl_language == "both":
+            for repl in self.env.repl_languages:
+                self._stop_worker(session, repl)
+        else:
+            self._stop_worker(session, self.env.repl_language)
         if state.get("retain_filesystem_after_rollout", False):
             self._retained_dirs.add(session.rollout_dir)
         else:
@@ -1758,7 +1901,11 @@ class LocalRLMExecutor(BaseRLMExecutor):
             self._sessions.clear()
             for session in sessions:
                 try:
-                    self._stop_worker(session)
+                    if self.env.repl_language == "both":
+                        for repl in self.env.repl_languages:
+                            self._stop_worker(session, repl)
+                    else:
+                        self._stop_worker(session, self.env.repl_language)
                 finally:
                     if session.rollout_dir not in self._retained_dirs:
                         shutil.rmtree(session.rollout_dir, True)
@@ -1776,14 +1923,14 @@ class LocalRLMExecutor(BaseRLMExecutor):
         control_dir = rollout_dir / "rlm_control"
         fs_root.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir(parents=True, exist_ok=True)
-        paths = _build_worker_paths(str(control_dir))
         session = LocalRLMReplSession(
             rollout_id=rollout_id,
             rollout_dir=str(rollout_dir),
-            paths=paths,
             fs_root=str(fs_root),
             control_dir=str(control_dir),
         )
+        if self.env.repl_language != "both":
+            session.paths = _build_worker_paths(str(control_dir))
         self._sessions[rollout_id] = session
         return session
 
@@ -1851,70 +1998,89 @@ class LocalRLMExecutor(BaseRLMExecutor):
         return os.path.join(venv_path, "bin", "python")
 
     async def _write_local_files(
-        self, session: LocalRLMReplSession, state: State
+        self,
+        session: LocalRLMReplSession,
+        state: State,
+        repl_language: str | None = None,
     ) -> None:
         Path(session.control_dir).mkdir(parents=True, exist_ok=True)
+        repl = self.env._resolve_repl(repl_language)
+        paths = self._get_paths(session, repl)
         allowed_paths = [
-            session.paths.command_fifo,
-            session.paths.response_fifo,
-            session.paths.ready_flag,
-            session.paths.context_file,
-            session.paths.answer_file,
+            paths.command_fifo,
+            paths.response_fifo,
+            paths.ready_flag,
+            paths.context_file,
+            paths.answer_file,
         ]
         context = {
             "fs_root": state.get("rlm_fs_root"),
             "fs_metadata": state.get("rlm_fs_metadata") or {},
             "allowed_paths": allowed_paths,
         }
-        Path(session.paths.context_file).write_text(
-            json.dumps(context), encoding="utf-8"
-        )
-        Path(session.paths.answer_file).write_text(
+        Path(paths.context_file).write_text(json.dumps(context), encoding="utf-8")
+        Path(paths.answer_file).write_text(
             json.dumps({"ready": False, "content": ""}), encoding="utf-8"
         )
 
-    async def _start_worker(self, state: State, session: LocalRLMReplSession) -> None:
-        if self.env.repl_language == "python" and not session.venv_path:
+    async def _start_worker(
+        self,
+        state: State,
+        session: LocalRLMReplSession,
+        repl_language: str | None = None,
+    ) -> None:
+        repl = self.env._resolve_repl(repl_language)
+        if repl == "python" and not session.venv_path:
             raise vf.SandboxError() from Exception("Local venv not initialized")
-        worker_script = _render_worker_script(
-            session.paths, repl_language=self.env.repl_language
-        )
-        Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
+        paths = self._get_paths(session, repl)
+        worker_script = _render_worker_script(paths, repl_language=repl)
+        Path(paths.worker_path).write_text(worker_script, encoding="utf-8")
 
         env_vars = os.environ.copy()
         env_vars.update(
             self.env._build_worker_env_vars(state, include_restrictions=True)
         )
 
-        if self.env.repl_language == "python":
+        if repl == "python":
             venv_path = session.venv_path
             if venv_path is None:
                 raise vf.SandboxError() from Exception("Local venv not initialized")
             python_path = self._venv_python(venv_path)
         else:
             python_path = sys.executable
-        with open(session.paths.log_file, "a", encoding="utf-8") as log_file:
+        with open(paths.log_file, "a", encoding="utf-8") as log_file:
             process = subprocess.Popen(
-                [python_path, "-u", session.paths.worker_path],
+                [python_path, "-u", paths.worker_path],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env_vars,
                 start_new_session=True,
             )
-        session.worker_process = process
+        if self.env.repl_language == "both":
+            session.worker_processes[repl] = process
+        else:
+            session.worker_process = process
 
-        await self._wait_for_ready(session)
+        await self._wait_for_ready(session, repl)
 
-    async def _wait_for_ready(self, session: LocalRLMReplSession) -> None:
+    async def _wait_for_ready(
+        self, session: LocalRLMReplSession, repl_language: str
+    ) -> None:
         max_wait_seconds = self.env.max_startup_wait_seconds
+        paths = self._get_paths(session, repl_language)
         start = perf_counter()
         while True:
-            if Path(session.paths.ready_flag).exists():
+            if Path(paths.ready_flag).exists():
                 return
-            if session.worker_process and session.worker_process.poll() is not None:
+            process = (
+                session.worker_processes.get(repl_language)
+                if session.worker_processes
+                else session.worker_process
+            )
+            if process and process.poll() is not None:
                 log_tail = ""
                 try:
-                    log_tail = Path(session.paths.log_file).read_text(encoding="utf-8")[
+                    log_tail = Path(paths.log_file).read_text(encoding="utf-8")[
                         -2000:
                     ]
                 except Exception:
@@ -1926,10 +2092,16 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 raise vf.SandboxError() from Exception("RLM worker failed to start")
             await asyncio.sleep(0.1)
 
-    def _stop_worker(self, session: LocalRLMReplSession) -> None:
-        if not session.worker_process:
+    def _stop_worker(
+        self, session: LocalRLMReplSession, repl_language: str
+    ) -> None:
+        process = (
+            session.worker_processes.get(repl_language)
+            if session.worker_processes
+            else session.worker_process
+        )
+        if not process:
             return
-        process = session.worker_process
         try:
             if os.name != "nt":
                 os.killpg(process.pid, signal.SIGTERM)
@@ -1948,7 +2120,18 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 process.wait(timeout=5)
             except Exception:
                 pass
-        session.worker_process = None
+        if self.env.repl_language == "both":
+            session.worker_processes.pop(repl_language, None)
+        else:
+            session.worker_process = None
+
+    def _get_paths(
+        self, session: LocalRLMReplSession, repl_language: str
+    ) -> RLMWorkerPaths:
+        if session.paths_by_repl:
+            return session.paths_by_repl[repl_language]
+        assert session.paths is not None
+        return session.paths
 
 
 class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
@@ -1969,7 +2152,31 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         state["rlm_rollout_dir"] = session.local_rollout_dir
         state["rlm_fs_root"] = session.local_fs_root
         state["rlm_control_dir"] = session.local_control_dir
-        state["rlm_paths"] = _build_worker_paths(session.local_control_dir).to_dict()
+        if self.env.repl_language == "both":
+            control_dir_by_repl = {
+                repl: os.path.join(session.local_control_dir, repl)
+                for repl in self.env.repl_languages
+            }
+            for path in control_dir_by_repl.values():
+                Path(path).mkdir(parents=True, exist_ok=True)
+            shared_answer = os.path.join(session.local_control_dir, "rlm_answer.json")
+            paths_by_repl = {
+                repl: _build_worker_paths(path, answer_file_override=shared_answer)
+                for repl, path in control_dir_by_repl.items()
+            }
+            session.paths_by_repl = paths_by_repl
+            session.local_control_dir_by_repl = control_dir_by_repl
+            session.shared_answer_file = shared_answer
+
+            state["rlm_paths_by_repl"] = {
+                repl: paths.to_dict() for repl, paths in paths_by_repl.items()
+            }
+            state["rlm_control_dir_by_repl"] = dict(control_dir_by_repl)
+            primary_repl = "python" if "python" in self.env.repl_languages else self.env.repl_languages[0]
+            session.paths = paths_by_repl[primary_repl]
+            state["rlm_paths"] = session.paths.to_dict()
+        else:
+            state["rlm_paths"] = _build_worker_paths(session.local_control_dir).to_dict()
 
     async def prepare_filesystem(self, state: State) -> None:
         session = self._get_session(state)
@@ -1990,7 +2197,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             sandbox_fs_root = f"{sandbox_root}/rlm_fs"
             sandbox_control_dir = f"{sandbox_root}/rlm_control"
 
-        mkdir_cmd = f"mkdir -p {sandbox_fs_root} {sandbox_control_dir}"
+        mkdir_targets = [sandbox_fs_root, sandbox_control_dir]
+        if self.env.repl_language == "both":
+            for repl in self.env.repl_languages:
+                mkdir_targets.append(os.path.join(sandbox_control_dir, repl))
+        mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(path) for path in mkdir_targets)
         await self._execute_sandbox_command(
             session.sandbox_id,
             f"bash -lc '{mkdir_cmd}'",
@@ -2003,13 +2214,37 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
 
         session.sandbox_fs_root = sandbox_fs_root
         session.sandbox_control_dir = sandbox_control_dir
-        session.paths = _build_worker_paths(sandbox_control_dir)
+        if self.env.repl_language == "both":
+            sandbox_control_dir_by_repl = {
+                repl: os.path.join(sandbox_control_dir, repl)
+                for repl in self.env.repl_languages
+            }
+            session.sandbox_control_dir_by_repl = sandbox_control_dir_by_repl
+            shared_answer = os.path.join(sandbox_control_dir, "rlm_answer.json")
+            paths_by_repl = {
+                repl: _build_worker_paths(path, answer_file_override=shared_answer)
+                for repl, path in sandbox_control_dir_by_repl.items()
+            }
+            session.paths_by_repl = paths_by_repl
+            session.shared_answer_file = shared_answer
+            primary_repl = "python" if "python" in self.env.repl_languages else self.env.repl_languages[0]
+            session.paths = paths_by_repl[primary_repl]
+        else:
+            session.paths = _build_worker_paths(sandbox_control_dir)
 
         state["rlm_fs_staging_root"] = session.local_fs_root
         state["rlm_control_dir_local"] = session.local_control_dir
         state["rlm_fs_root_remote"] = sandbox_fs_root
         state["rlm_control_dir_remote"] = sandbox_control_dir
         state["rlm_paths_remote"] = session.paths.to_dict()
+        if self.env.repl_language == "both":
+            state["rlm_control_dir_remote_by_repl"] = dict(
+                session.sandbox_control_dir_by_repl or {}
+            )
+            state["rlm_paths_remote_by_repl"] = {
+                repl: paths.to_dict()
+                for repl, paths in (session.paths_by_repl or {}).items()
+            }
 
     async def setup(self, state: State) -> None:
         session = self._get_session(state)
@@ -2019,16 +2254,25 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             raise vf.SandboxError() from Exception("Sandbox paths not initialized")
 
         await self._install_packages(session)
-        await self._write_sandbox_files(session, state)
-        await self._start_worker(session, state)
+        if self.env.repl_language == "both":
+            for repl in self.env.repl_languages:
+                await self._write_sandbox_files(session, state, repl)
+                await self._start_worker(session, state, repl)
+        else:
+            await self._write_sandbox_files(session, state, self.env.repl_language)
+            await self._start_worker(session, state, self.env.repl_language)
 
-    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+    async def execute(
+        self, payload: dict[str, Any], state: State, repl_language: str | None = None
+    ) -> RLMExecResult:
         session = self._get_session(state)
         if not session.sandbox_id or not session.paths:
             raise vf.SandboxError() from Exception("Sandbox session not initialized")
 
         try:
-            raw = await self._send_worker_request(session, payload)
+            repl = self.env._resolve_repl(repl_language)
+            paths = self._get_paths(session, repl)
+            raw = await self._send_worker_request(session, payload, paths)
         except CommandTimeoutError as e:
             raise RLMCodeExecutionTimeout from e
         except Exception as e:
@@ -2040,7 +2284,12 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         session = self._sessions.get(state.get("rollout_id", ""))
         if not session or not session.sandbox_id or not session.paths:
             return ""
-        cmd = f"bash -lc 'cat {session.paths.answer_file} 2>/dev/null || true'"
+        answer_file = (
+            session.shared_answer_file
+            if session.shared_answer_file
+            else session.paths.answer_file
+        )
+        cmd = f"bash -lc 'cat {answer_file} 2>/dev/null || true'"
         try:
             result = await self._execute_sandbox_command(
                 session.sandbox_id,
@@ -2057,20 +2306,28 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         except Exception:
             return ""
 
-    async def recover_from_timeout(self, state: State) -> bool:
+    async def recover_from_timeout(
+        self, state: State, repl_language: str | None = None
+    ) -> bool:
         session = self._sessions.get(state.get("rollout_id", ""))
         if not session or not session.sandbox_id or not session.paths:
             logger.error("Cannot recover from timeout: missing sandbox session")
             return False
+        repl = self.env._resolve_repl(repl_language)
         try:
-            await self._stop_worker(session)
-            await self._write_sandbox_files(session, state)
-            await self._start_worker(session, state)
+            await self._stop_worker(session, repl)
+            await self._write_sandbox_files(session, state, repl)
+            await self._start_worker(session, state, repl)
         except Exception as e:
             logger.error(f"Failed to recover from code timeout: {e}")
             return False
         state["rlm_worker_ready"] = True
-        state["_exec_seq"] = 0
+        if self.env.repl_language == "both":
+            exec_seq = state.get("_exec_seq_by_repl", {})
+            exec_seq[repl] = 0
+            state["_exec_seq_by_repl"] = exec_seq
+        else:
+            state["_exec_seq"] = 0
         return True
 
     async def cleanup(self, state: State) -> None:
@@ -2080,7 +2337,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         session = self._sessions.pop(rollout_id, None)
         if not session:
             return
-        await self._stop_worker(session)
+        if self.env.repl_language == "both":
+            for repl in self.env.repl_languages:
+                await self._stop_worker(session, repl)
+        else:
+            await self._stop_worker(session, self.env.repl_language)
 
         retain = state.get("retain_filesystem_after_rollout", False)
         if retain:
@@ -2124,7 +2385,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             self._sessions.clear()
             for session in sessions:
                 try:
-                    await self._stop_worker(session)
+                    if self.env.repl_language == "both":
+                        for repl in self.env.repl_languages:
+                            await self._stop_worker(session, repl)
+                    else:
+                        await self._stop_worker(session, self.env.repl_language)
                 finally:
                     if (
                         session.sandbox_id
@@ -2204,23 +2469,36 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         self._raise_on_command_error(result, "pip install")
 
     async def _write_sandbox_files(
-        self, session: SandboxRLMReplSession, state: State
+        self,
+        session: SandboxRLMReplSession,
+        state: State,
+        repl_language: str | None = None,
     ) -> None:
-        assert session.paths is not None
+        repl = self.env._resolve_repl(repl_language)
+        paths = self._get_paths(session, repl)
         context = {
             "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
             "fs_metadata": state.get("rlm_fs_metadata") or {},
             "allowed_paths": [
-                session.paths.command_fifo,
-                session.paths.response_fifo,
-                session.paths.ready_flag,
-                session.paths.context_file,
-                session.paths.answer_file,
+                paths.command_fifo,
+                paths.response_fifo,
+                paths.ready_flag,
+                paths.context_file,
+                paths.answer_file,
             ],
         }
-        context_path = Path(session.local_control_dir) / "rlm_context.json"
-        answer_path = Path(session.local_control_dir) / "rlm_answer.json"
-        worker_path = Path(session.local_control_dir) / "rlm_worker.py"
+        local_control_dir = (
+            session.local_control_dir_by_repl.get(repl)
+            if session.local_control_dir_by_repl
+            else session.local_control_dir
+        )
+        context_path = Path(local_control_dir) / "rlm_context.json"
+        worker_path = Path(local_control_dir) / "rlm_worker.py"
+        answer_path = (
+            Path(session.local_control_dir) / "rlm_answer.json"
+            if session.shared_answer_file
+            else Path(local_control_dir) / "rlm_answer.json"
+        )
 
         context_path.write_text(json.dumps(context), encoding="utf-8")
         answer_path.write_text(
@@ -2228,24 +2506,30 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
 
         worker_script = _render_worker_script(
-            session.paths,
-            repl_language=self.env.repl_language,
+            paths,
+            repl_language=repl,
             sandboxed=True,
         )
         worker_path.write_text(worker_script, encoding="utf-8")
 
         await self._sandbox_client.upload_file(
-            session.sandbox_id, session.paths.context_file, str(context_path)
+            session.sandbox_id, paths.context_file, str(context_path)
         )
         await self._sandbox_client.upload_file(
-            session.sandbox_id, session.paths.answer_file, str(answer_path)
+            session.sandbox_id, paths.answer_file, str(answer_path)
         )
         await self._sandbox_client.upload_file(
-            session.sandbox_id, session.paths.worker_path, str(worker_path)
+            session.sandbox_id, paths.worker_path, str(worker_path)
         )
 
-    async def _start_worker(self, session: SandboxRLMReplSession, state: State) -> None:
-        assert session.paths is not None
+    async def _start_worker(
+        self,
+        session: SandboxRLMReplSession,
+        state: State,
+        repl_language: str | None = None,
+    ) -> None:
+        repl = self.env._resolve_repl(repl_language)
+        paths = self._get_paths(session, repl)
         sandbox_id = session.sandbox_id
         if not sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
@@ -2258,11 +2542,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
         export_cmd = f"export {exports}; " if exports else ""
         script = (
-            f'rm -f "{session.paths.command_fifo}" "{session.paths.response_fifo}" '
-            f'"{session.paths.ready_flag}" "{session.paths.worker_pid_file}"; '
+            f'rm -f "{paths.command_fifo}" "{paths.response_fifo}" '
+            f'"{paths.ready_flag}" "{paths.worker_pid_file}"; '
             f"{export_cmd}"
-            f'python -u "{session.paths.worker_path}" > "{session.paths.log_file}" 2>&1 & '
-            f'echo $! > "{session.paths.worker_pid_file}"'
+            f'python -u "{paths.worker_path}" > "{paths.log_file}" 2>&1 & '
+            f'echo $! > "{paths.worker_pid_file}"'
         )
         cmd = f"bash -lc {shlex.quote(script)}"
         result = await self._execute_sandbox_command(
@@ -2271,17 +2555,19 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             timeout=self.env.max_startup_wait_seconds,
         )
         self._raise_on_command_error(result, "start worker")
-        await self._wait_for_ready(session)
+        await self._wait_for_ready(session, repl)
 
-    async def _wait_for_ready(self, session: SandboxRLMReplSession) -> None:
-        assert session.paths is not None
+    async def _wait_for_ready(
+        self, session: SandboxRLMReplSession, repl_language: str
+    ) -> None:
+        paths = self._get_paths(session, repl_language)
         sandbox_id = session.sandbox_id
         if not sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
         cmd = (
             "bash -lc '"
             f"for i in $(seq 1 {self.env.max_startup_wait_seconds * 10}); do "
-            f'if [ -f "{session.paths.ready_flag}" ]; then exit 0; fi; '
+            f'if [ -f "{paths.ready_flag}" ]; then exit 0; fi; '
             "sleep 0.1; "
             "done; exit 1'"
         )
@@ -2292,27 +2578,30 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 timeout=self.env.max_startup_wait_seconds,
             )
         except CommandTimeoutError as exc:
-            log_tail = await self._read_worker_log_tail(session)
+            log_tail = await self._read_worker_log_tail(session, repl_language)
             raise vf.SandboxError(
                 "RLM worker failed to become ready before timeout."
                 + (f"\nLog tail:\n{log_tail}" if log_tail else "")
             ) from exc
         exit_code = getattr(result, "exit_code", 0)
         if exit_code != 0:
-            log_tail = await self._read_worker_log_tail(session)
+            log_tail = await self._read_worker_log_tail(session, repl_language)
             raise vf.SandboxError(
                 "RLM worker failed to become ready."
                 + (f"\nLog tail:\n{log_tail}" if log_tail else "")
             )
 
-    async def _stop_worker(self, session: SandboxRLMReplSession) -> None:
+    async def _stop_worker(
+        self, session: SandboxRLMReplSession, repl_language: str
+    ) -> None:
         if not session.sandbox_id or not session.paths:
             return
+        paths = self._get_paths(session, repl_language)
         sandbox_id = session.sandbox_id
         cmd = (
             "bash -lc '"
-            f'if [ -f "{session.paths.worker_pid_file}" ]; then '
-            f'pid=$(cat "{session.paths.worker_pid_file}"); '
+            f'if [ -f "{paths.worker_pid_file}" ]; then '
+            f'pid=$(cat "{paths.worker_pid_file}"); '
             'kill "$pid" 2>/dev/null || true; '
             "fi'"
         )
@@ -2340,11 +2629,14 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             f"{context} failed with exit code {exit_code}.{detail}"
         )
 
-    async def _read_worker_log_tail(self, session: SandboxRLMReplSession) -> str:
+    async def _read_worker_log_tail(
+        self, session: SandboxRLMReplSession, repl_language: str
+    ) -> str:
         if not session.sandbox_id or not session.paths:
             return ""
+        paths = self._get_paths(session, repl_language)
         sandbox_id = session.sandbox_id
-        cmd = f"bash -lc 'tail -n 200 \"{session.paths.log_file}\" 2>/dev/null || true'"
+        cmd = f"bash -lc 'tail -n 200 \"{paths.log_file}\" 2>/dev/null || true'"
         try:
             result = await self._execute_sandbox_command(
                 sandbox_id,
@@ -2356,17 +2648,19 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         return (getattr(result, "stdout", "") or "").strip()
 
     async def _send_worker_request(
-        self, session: SandboxRLMReplSession, payload: dict[str, Any]
+        self,
+        session: SandboxRLMReplSession,
+        payload: dict[str, Any],
+        paths: RLMWorkerPaths,
     ) -> str:
-        assert session.paths is not None
         sandbox_id = session.sandbox_id
         if not sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
         payload_json = json.dumps(payload)
         payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
         alive_check = (
-            f'[ -f "{session.paths.worker_pid_file}" ] '
-            f'&& [ -d "/proc/$(cat {session.paths.worker_pid_file})" ] '
+            f'[ -f "{paths.worker_pid_file}" ] '
+            f'&& [ -d "/proc/$(cat {paths.worker_pid_file})" ] '
             '|| { echo "WORKER_DEAD"; exit 0; }'
         )
         command = textwrap.dedent(
@@ -2378,9 +2672,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
     import sys
 
     data = base64.b64decode('{payload_b64}').decode('utf-8')
-    with open('{session.paths.command_fifo}', 'w', encoding='utf-8') as command_file:
+    with open('{paths.command_fifo}', 'w', encoding='utf-8') as command_file:
         command_file.write(data)
-    with open('{session.paths.response_fifo}', 'r', encoding='utf-8') as response_file:
+    with open('{paths.response_fifo}', 'r', encoding='utf-8') as response_file:
         sys.stdout.write(response_file.read())
     PY
             """
@@ -2394,6 +2688,14 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         if raw_response and raw_response.strip() == "WORKER_DEAD":
             raise vf.SandboxError() from RuntimeError("RLM worker not running")
         return raw_response
+
+    def _get_paths(
+        self, session: SandboxRLMReplSession, repl_language: str
+    ) -> RLMWorkerPaths:
+        if session.paths_by_repl:
+            return session.paths_by_repl[repl_language]
+        assert session.paths is not None
+        return session.paths
 
     async def _upload_directory(
         self, sandbox_id: str, local_dir: str, remote_dir: str
@@ -2525,7 +2827,7 @@ class RLMEnv(vf.StatefulToolEnv):
         context_key: Key in info containing legacy context data (default: "context")
         context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
-        repl_language: REPL language to use: "bash" or "python" (default: "bash")
+        repl_language: REPL language to use: "bash", "python", or "both" (default: "bash")
         execution_backend: Execution backend to use: "local" or "sandbox" (default: "local")
         interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
         interception_port: Port for interception server (default: 8766)
@@ -2615,15 +2917,19 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
-        if repl_language not in {"bash", "python"}:
+        if repl_language not in {"bash", "python", "both"}:
             raise ValueError(
-                f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
+                f"Unsupported repl_language '{repl_language}'. Expected 'bash', 'python', or 'both'."
             )
         if execution_backend not in {"local", "sandbox"}:
             raise ValueError(
                 f"Unsupported execution_backend '{execution_backend}'. Expected 'local' or 'sandbox'."
             )
         self.repl_language = repl_language
+        if repl_language == "both":
+            self.repl_languages = ["python", "bash"]
+        else:
+            self.repl_languages = [repl_language]
         self.execution_backend = execution_backend
         self.sub_model = sub_model
         self.shared_tools = tools or []
@@ -2736,10 +3042,21 @@ class RLMEnv(vf.StatefulToolEnv):
             self._executor = LocalRLMExecutor(self)
 
         # Add the REPL tool (state is injected via update_tool_args)
-        if self.repl_language == "bash":
+        if self.repl_language == "both":
+            self.add_tool(self.call_python_repl, args_to_skip=["state"])
+            self.add_tool(self.call_bash_repl, args_to_skip=["state"])
+        elif self.repl_language == "bash":
             self.add_tool(self.call_bash_repl, args_to_skip=["state"])
         else:
             self.add_tool(self.call_python_repl, args_to_skip=["state"])
+
+    def _resolve_repl(self, repl_language: str | None) -> str:
+        """Resolve the active REPL for this call."""
+        if repl_language:
+            return repl_language
+        if self.repl_language == "both":
+            return "python"
+        return self.repl_language
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -2818,7 +3135,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
-        if self.repl_language != "python":
+        if self.repl_language not in {"python", "both"}:
             return ""
         if not self.pip_install_packages:
             return ""
@@ -2894,9 +3211,13 @@ class RLMEnv(vf.StatefulToolEnv):
             lines.append(
                 "The root model can call the following tools inside the Bash REPL as shell commands:\n"
             )
-        else:
+        elif self.repl_language == "python":
             lines.append(
                 "The root model can call the following tools inside the Python REPL:\n"
+            )
+        else:
+            lines.append(
+                "The root model can call the following tools inside either REPL:\n"
             )
 
         self._append_tool_docs(lines, self.root_oai_tools)
@@ -2904,7 +3225,7 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append(
             "These tools run on the host and are only accessible from within the REPL."
         )
-        if self.repl_language == "bash":
+        if self.repl_language in {"bash", "both"}:
             lines.append(
                 "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
                 'structured args/kwargs, use `tool_name --json \'{"args": [...], '
@@ -2912,6 +3233,10 @@ class RLMEnv(vf.StatefulToolEnv):
             )
             lines.append(
                 "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
+            )
+        if self.repl_language == "both":
+            lines.append(
+                "Python usage: call tools as normal Python functions, e.g. `llm_batch([...])`."
             )
         lines.append("")
 
@@ -3845,6 +4170,8 @@ class RLMEnv(vf.StatefulToolEnv):
         )
         if self.custom_system_prompt:
             base_system_prompt = self.custom_system_prompt
+        elif self.repl_language == "both":
+            base_system_prompt = _RLM_DUAL_SYSTEM_PROMPT
         elif self.repl_language == "bash":
             base_system_prompt = _RLM_BASH_SYSTEM_PROMPT
         else:
@@ -3887,7 +4214,10 @@ class RLMEnv(vf.StatefulToolEnv):
         state["context_warning_sent"] = False
 
         # Initialize FIFO sequence counter for detecting stale responses
-        state["_exec_seq"] = 0
+        if self.repl_language == "both":
+            state["_exec_seq_by_repl"] = {repl: 0 for repl in self.repl_languages}
+        else:
+            state["_exec_seq"] = 0
 
         _ensure_rlm_metric_state(state)
 
@@ -3897,23 +4227,36 @@ class RLMEnv(vf.StatefulToolEnv):
     # Code Execution
     # =========================================================================
 
-    async def _recover_from_code_timeout(self, state: State) -> bool:
+    async def _recover_from_code_timeout(
+        self, state: State, repl_language: str | None = None
+    ) -> bool:
         """Attempt to recover from a code execution timeout via the active backend."""
-        return await self._executor.recover_from_timeout(state)
+        return await self._executor.recover_from_timeout(state, repl_language)
 
-    async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
+    async def _execute_code(
+        self, code: str, state: State, *, repl_language: str | None = None
+    ) -> dict[str, Any]:
         """Execute code in worker and return result."""
+        if self.repl_language == "both" and repl_language is None:
+            raise ValueError("repl_language must be provided for dual-REPL execution")
+        repl = self._resolve_repl(repl_language)
         if not state.get("rlm_worker_ready", False):
             await self._executor.prepare_filesystem(state)
             await self._executor.setup(state)
             state["rlm_worker_ready"] = True
         # Increment and track sequence number for this execution
-        seq = state.get("_exec_seq", 0) + 1
-        state["_exec_seq"] = seq
+        if self.repl_language == "both":
+            seq_map = state.get("_exec_seq_by_repl", {})
+            seq = seq_map.get(repl, 0) + 1
+            seq_map[repl] = seq
+            state["_exec_seq_by_repl"] = seq_map
+        else:
+            seq = state.get("_exec_seq", 0) + 1
+            state["_exec_seq"] = seq
 
         payload = {"code": code, "seq": seq}
         try:
-            result = await self._executor.execute(payload, state)
+            result = await self._executor.execute(payload, state, repl)
         except RLMCodeExecutionTimeout as e:
             logger.warning(
                 "Code execution timed out after %ss", self.code_execution_timeout
@@ -3921,7 +4264,7 @@ class RLMEnv(vf.StatefulToolEnv):
             if self.abort_on_code_timeout:
                 # Abort rollout immediately on timeout
                 raise vf.SandboxError() from e
-            recovered = await self._recover_from_code_timeout(state)
+            recovered = await self._recover_from_code_timeout(state, repl)
             recovery_note = (
                 " The worker was restarted and the REPL state was reset."
                 if recovered
@@ -3981,9 +4324,12 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return parsed_result
 
-    def _format_execution_output(self, result: dict[str, Any]) -> str:
+    def _format_execution_output(
+        self, result: dict[str, Any], *, repl_language: str | None = None
+    ) -> str:
         """Format execution result for display to model."""
-        if self.repl_language == "bash":
+        repl = self._resolve_repl(repl_language)
+        if repl == "bash":
             stdout = result.get("stdout") or ""
             stderr = result.get("stderr") or ""
             result_text = result.get("result") or ""
@@ -4065,15 +4411,16 @@ class RLMEnv(vf.StatefulToolEnv):
         *,
         ready_instruction: str,
         append_execution_time: bool,
+        repl_language: str,
     ) -> str:
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
 
         execution_start = perf_counter()
-        result = await self._execute_code(code, state)
+        result = await self._execute_code(code, state, repl_language=repl_language)
         execution_time = perf_counter() - execution_start
-        output = self._format_execution_output(result)
+        output = self._format_execution_output(result, repl_language=repl_language)
 
         state.setdefault("tool_call_timings", []).append(
             {
@@ -4081,13 +4428,13 @@ class RLMEnv(vf.StatefulToolEnv):
                 "execution_seconds": execution_time,
             }
         )
-        _update_rlm_repl_metrics(state, execution_time)
+        _update_rlm_repl_metrics(state, execution_time, repl_language)
 
         if append_execution_time:
             output += f"\n[Execution time: {execution_time:.2f}s]"
 
         answer = result.get("answer", {})
-        if answer.get("ready", False):
+        if answer.get("ready", False) and "final_answer" not in state:
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
@@ -4120,6 +4467,7 @@ class RLMEnv(vf.StatefulToolEnv):
             state,
             ready_instruction="Please finalize your answer soon by setting RLM_READY=1.",
             append_execution_time=False,
+            repl_language="bash",
         )
 
     async def call_python_repl(self, code: str, state: Any) -> str:
@@ -4152,6 +4500,7 @@ class RLMEnv(vf.StatefulToolEnv):
             state,
             ready_instruction="Please finalize your answer soon by setting answer['ready'] = True.",
             append_execution_time=True,
+            repl_language="python",
         )
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):

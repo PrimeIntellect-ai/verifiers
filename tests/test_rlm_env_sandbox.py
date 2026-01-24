@@ -258,3 +258,72 @@ class TestSandboxFilesystemProvisioning:
         await executor._write_sandbox_files(session, state)
 
         assert executor._sandbox_client.upload_file.await_count == 3
+
+
+class TestSandboxDualRepl:
+    @pytest.mark.asyncio
+    async def test_setup_state_dual_repl_populates_paths(self):
+        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
+            pytest.skip("sandbox backend not yet implemented")
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            execution_backend="sandbox",
+            repl_language="both",
+            interception_url="https://override.example/base",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.prepare_filesystem = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            assert set(result["rlm_paths_by_repl"]) == {"bash", "python"}
+            assert set(result["rlm_control_dir_by_repl"]) == {"bash", "python"}
+            assert result["rlm_worker_ready"] is False
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    async def test_prepare_filesystem_sets_remote_paths_for_dual_repl(
+        self, tmp_path: Path
+    ):
+        if "execution_backend" not in inspect.signature(RLMEnv.__init__).parameters:
+            pytest.skip("sandbox backend not yet implemented")
+        dataset = make_dataset({})
+        env = build_env(
+            dataset,
+            execution_backend="sandbox",
+            repl_language="both",
+            interception_url="https://override.example/base",
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        executor = env._executor
+
+        executor._create_sandbox = AsyncMock(return_value=MagicMock(id="sbx_1"))
+        executor._wait_for_sandbox_ready = AsyncMock()
+        executor._execute_sandbox_command = AsyncMock()
+        executor._upload_directory = AsyncMock()
+
+        await executor.prepare_filesystem(result)
+
+        try:
+            assert "rlm_paths_remote_by_repl" in result
+            assert "rlm_control_dir_remote_by_repl" in result
+            assert set(result["rlm_paths_remote_by_repl"]) == {"bash", "python"}
+            assert set(result["rlm_control_dir_remote_by_repl"]) == {"bash", "python"}
+
+            bash_paths = result["rlm_paths_remote_by_repl"]["bash"]
+            python_paths = result["rlm_paths_remote_by_repl"]["python"]
+            assert bash_paths["answer_file"] == python_paths["answer_file"]
+            assert bash_paths["base_dir"].endswith("/bash")
+            assert python_paths["base_dir"].endswith("/python")
+            assert result["rlm_paths_remote"]["base_dir"].endswith("/python")
+        finally:
+            executor._delete_sandbox = AsyncMock()
+            await env.cleanup_rlm_state(result)
