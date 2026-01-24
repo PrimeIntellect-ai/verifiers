@@ -45,7 +45,7 @@ env = BrowserEnv(
     rubric=rubric,
 )
 
-# CUA mode (vision-based) - requires starting CUA server first
+# CUA mode (vision-based) - auto-deploys server to sandbox (no setup required)
 env = BrowserEnv(
     mode="cua",
     dataset=dataset,
@@ -72,9 +72,48 @@ Controls how Stagehand's internal LLM calls (for `observe`, `act`, `extract`) ar
   - Routing through custom API endpoints (e.g., vLLM, custom inference servers)
   - Training scenarios where you want consistent model usage
 
-### CUA Server Setup
+### CUA Mode Options
 
-For CUA mode, start the TypeScript server first:
+CUA mode automatically deploys the CUA server to Browserbase sandboxes using a pre-built Docker image. **No manual setup is required** - just set your environment variables and run.
+
+#### Execution Modes
+
+| Mode | Parameter | Startup | Use Case |
+|------|-----------|---------|----------|
+| **Pre-built Image** (default) | `use_prebuilt_image=True` | ~5-10s | Production, fastest startup |
+| **Binary Upload** | `use_prebuilt_image=False` | ~30-60s | Custom server modifications |
+| **Manual Server** | `use_sandbox=False` | Manual | Local development/debugging |
+
+#### Default Behavior
+
+By default, CUA mode uses the pre-built Docker image (`deepdream19/cua-server:latest`) which is automatically deployed to Browserbase sandboxes:
+
+```python
+env = BrowserEnv(
+    mode="cua",
+    dataset=dataset,
+    rubric=rubric,
+    # These are the defaults (no need to specify):
+    # use_sandbox=True,
+    # use_prebuilt_image=True,
+)
+```
+
+#### Manual Server Mode (Optional)
+
+For local development or debugging, you can disable sandbox mode and run the CUA server manually:
+
+```python
+env = BrowserEnv(
+    mode="cua",
+    dataset=dataset,
+    rubric=rubric,
+    use_sandbox=False,  # Disable automatic sandbox deployment
+    cua_server_url="http://localhost:3001",  # Point to local server
+)
+```
+
+To start the server locally:
 
 ```bash
 cd assets/templates/browserbase/cua

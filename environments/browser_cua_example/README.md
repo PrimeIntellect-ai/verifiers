@@ -43,6 +43,19 @@ Note: When running in manual server mode, ensure `OPENAI_API_KEY` is set in the 
 
 ## Usage
 
+### Quick Test Commands
+
+```bash
+# Default - pre-built image (fastest)
+prime eval run browser-cua-example -m openai/gpt-4o-mini
+
+# Binary upload (custom server)
+prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_prebuilt_image": false}'
+
+# Local development
+prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": false}'
+```
+
 ### Pre-built Docker Image (Default, Fastest)
 
 By default, CUA mode uses a pre-built Docker image (`deepdream19/cua-server:latest`) for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
