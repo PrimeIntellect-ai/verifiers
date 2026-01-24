@@ -382,30 +382,9 @@ class SubLLMResult(TypedDict):
 
 # Worker script that runs locally - handles code execution only
 # The REPL loop is managed by the framework, not this script
-_RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
-    """
-    import ast
-    import base64
-    import contextlib
-    import io
-    import json
-    import os
-    import pickle
-    import sys
-    import sysconfig
-    import time
-    import traceback
-    from pathlib import Path
-    import requests
-
-    {filesystem_jail_code}
-
-    COMMAND_FIFO = "{command_fifo}"
-    RESPONSE_FIFO = "{response_fifo}"
-    READY_FLAG = "{ready_flag}"
-    CONTEXT_FILE = "{context_file}"
-    ANSWER_FILE = "{answer_file}"
-
+_LOCAL_SUB_LLM_CONFIG_BLOCK = (
+    textwrap.dedent(
+        """
     # Sub-LLM configuration from environment
     INTERCEPTION_URL = os.environ.get("RLM_INTERCEPTION_URL", "")
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
@@ -415,7 +394,15 @@ _RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
     SUB_LLM_STAGGER_JITTER_MS = int(
         os.environ.get("RLM_SUB_LLM_STAGGER_JITTER_MS", "0")
     )
+    """
+    )
+    .strip("\n")
+    .splitlines()
+)
 
+_LOCAL_GUARDRAILS_BLOCK = (
+    textwrap.dedent(
+        """
     # Guardrails for user code execution (best-effort, not an OS sandbox)
     def _parse_disallowed(raw: str) -> list[str]:
         if not raw:
@@ -457,180 +444,302 @@ _RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
             restricted.pop(builtin_name, None)
 
         return restricted
-
-    def ensure_fifo(path: str) -> None:
-        if os.path.exists(path):
-            os.remove(path)
-        os.mkfifo(path)
-
-    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
-        ensure_fifo(fifo_path)
-
-    # Load filesystem context from file (written by setup_state)
-    fs_root = None
-    fs_metadata = {{}}
-    allowed_paths = []
-    def _get_stdlib_paths() -> list:
-        paths = []
-        try:
-            config_paths = sysconfig.get_paths()
-        except Exception:
-            return paths
-        for key in ("stdlib", "platstdlib"):
-            value = config_paths.get(key)
-            if value:
-                paths.append(value)
-        return paths
-
-    if Path(CONTEXT_FILE).exists():
-        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            context = json.load(f)
-            fs_root = context.get("fs_root")
-            fs_metadata = context.get("fs_metadata") or {{}}
-            allowed_paths = context.get("allowed_paths") or []
-            for stdlib_path in _get_stdlib_paths():
-                if stdlib_path not in allowed_paths:
-                    allowed_paths.append(stdlib_path)
-
-    if fs_root:
-        os.chdir(fs_root)
-        jail = FilesystemJail(
-            fs_root,
-            allowed_paths=allowed_paths,
-            disallowed_modules=DISALLOWED_MODULES,
-            disallowed_builtins=DISALLOWED_BUILTINS,
-        )
-        jail.install()
-
-    # Initialize answer structure
-    answer = {{"ready": False, "content": ""}}
-    if Path(ANSWER_FILE).exists():
-        with open(ANSWER_FILE, "r", encoding="utf-8") as f:
-            answer = json.load(f)
-
-    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
-    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
-    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
-    try:
-        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
-    except Exception:
-        ROOT_TOOL_NAMES = []
-
-    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
-        if not ROOT_TOOL_URL:
-            raise RuntimeError("Root tool URL not configured")
-        if ROOT_TOOL_SERIALIZATION != "pickle":
-            raise RuntimeError("Only pickle serialization is supported")
-
-        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
-        payload = {{
-            "tool_name": tool_name,
-            "serialization": "pickle",
-            "args": args_payload,
-            "kwargs": kwargs_payload,
-        }}
-
-        resp = requests.post(
-            ROOT_TOOL_URL,
-            json=payload,
-            timeout=SUB_LLM_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("print_lines"):
-            for line in data["print_lines"]:
-                print(line)
-        if data.get("error"):
-            raise RuntimeError(data["error"])
-        return pickle.loads(base64.b64decode(data.get("result", "")))
-
-    def _make_root_tool(name: str):
-        def _tool(*args, **kwargs):
-            return _call_root_tool(name, args, kwargs)
-
-        _tool.__name__ = name
-        return _tool
-
-    restricted_builtins = _build_restricted_builtins()
-    extra_data = fs_root
-
-    # Persistent execution namespace
-    namespace: dict[str, object] = {{
-        "__name__": "__main__",
-        "__builtins__": restricted_builtins,
-        "extra_data": extra_data,
-        "fs_metadata": fs_metadata,
-        "answer": answer,
-    }}
-    for tool_name in ROOT_TOOL_NAMES:
-        namespace[tool_name] = _make_root_tool(tool_name)
-
-    # Signal ready
-    Path(READY_FLAG).write_text("ready", encoding="utf-8")
-
-    execution_count = 0
-
-    while True:
-        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
-            payload = command_file.read()
-        if not payload:
-            continue
-        request = json.loads(payload)
-        if request.get("shutdown"):
-            break
-        
-        code = request.get("code", "")
-        seq = request.get("seq", 0)  # Sequence number for request/response matching
-        execution_count += 1
-        
-        result = {{
-            "status": "ok",
-            "stdout": "",
-            "stderr": "",
-            "result": None,
-            "execution_count": execution_count,
-            "seq": seq,  # Echo back sequence number for framework to verify
-            "answer": namespace.get("answer", {{"ready": False, "content": ""}}),
-        }}
-        
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                module_ast = ast.parse(code, mode="exec")
-                body = list(module_ast.body)
-                trailing_expr = None
-                if body and isinstance(body[-1], ast.Expr):
-                    trailing_expr = body.pop()
-                if body:
-                    exec_module = ast.Module(body=body, type_ignores=[])
-                    exec(compile(exec_module, "<cell>", "exec"), namespace, namespace)
-                if trailing_expr is not None:
-                    value = eval(
-                        compile(ast.Expression(trailing_expr.value), "<cell>", "eval"),
-                        namespace,
-                        namespace,
-                    )
-                    if value is not None:
-                        result["result"] = repr(value)
-        except Exception:
-            result["status"] = "error"
-            result["result"] = traceback.format_exc()
-        
-        result["stdout"] = stdout_buffer.getvalue()
-        result["stderr"] = stderr_buffer.getvalue()
-        result["answer"] = namespace.get("answer", {{"ready": False, "content": ""}})
-        
-        # Save answer to file for persistence
-        with open(ANSWER_FILE, "w", encoding="utf-8") as f:
-            json.dump(result["answer"], f)
-        
-        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
-            response_file.write(json.dumps(result))
     """
+    )
+    .strip("\n")
+    .splitlines()
 )
+
+_ENSURE_FIFO_BLOCK = [
+    "def ensure_fifo(path: str) -> None:",
+    "    if os.path.exists(path):",
+    "        os.remove(path)",
+    "    os.mkfifo(path)",
+    "",
+    "for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):",
+    "    ensure_fifo(fifo_path)",
+]
+
+_LOCAL_FS_CONTEXT_BLOCK = [
+    "fs_root = None",
+    "fs_metadata = {{}}",
+    "allowed_paths = []",
+    "def _get_stdlib_paths() -> list:",
+    "    paths = []",
+    "    try:",
+    "        config_paths = sysconfig.get_paths()",
+    "    except Exception:",
+    "        return paths",
+    '    for key in ("stdlib", "platstdlib"):',
+    "        value = config_paths.get(key)",
+    "        if value:",
+    "            paths.append(value)",
+    "    return paths",
+    "",
+    "if Path(CONTEXT_FILE).exists():",
+    '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
+    "        context = json.load(f)",
+    '        fs_root = context.get("fs_root")',
+    '        fs_metadata = context.get("fs_metadata") or {{}}',
+    '        allowed_paths = context.get("allowed_paths") or []',
+    "        for stdlib_path in _get_stdlib_paths():",
+    "            if stdlib_path not in allowed_paths:",
+    "                allowed_paths.append(stdlib_path)",
+]
+
+_SANDBOX_FS_CONTEXT_BLOCK = [
+    "fs_root = None",
+    "fs_metadata = {}",
+    "if Path(CONTEXT_FILE).exists():",
+    '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
+    "        context = json.load(f)",
+    '        fs_root = context.get("fs_root")',
+    '        fs_metadata = context.get("fs_metadata") or {}',
+]
+
+_LOCAL_JAIL_BLOCK = [
+    "    jail = FilesystemJail(",
+    "        fs_root,",
+    "        allowed_paths=allowed_paths,",
+    "        disallowed_modules=DISALLOWED_MODULES,",
+    "        disallowed_builtins=DISALLOWED_BUILTINS,",
+    "    )",
+    "    jail.install()",
+]
+
+
+def _build_python_worker_script_template(*, sandboxed: bool) -> str:
+    dict_open = "{" if sandboxed else "{{"
+    dict_close = "}" if sandboxed else "}}"
+    answer_default = f'{dict_open}"ready": False, "content": ""{dict_close}'
+    lines: list[str] = [
+        "",
+        "import ast",
+        "import base64",
+        "import contextlib",
+        "import io",
+        "import json",
+        "import os",
+        "import pickle",
+        "import sys",
+    ]
+
+    if not sandboxed:
+        lines.extend(["import sysconfig", "import time"])
+    lines.extend(
+        ["import traceback", "from pathlib import Path", "import requests", ""]
+    )
+
+    if not sandboxed:
+        lines.append("{filesystem_jail_code}")
+        lines.append("")
+
+    lines.extend(
+        [
+            'COMMAND_FIFO = "{command_fifo}"',
+            'RESPONSE_FIFO = "{response_fifo}"',
+            'READY_FLAG = "{ready_flag}"',
+            'CONTEXT_FILE = "{context_file}"',
+            'ANSWER_FILE = "{answer_file}"',
+            "",
+        ]
+    )
+
+    if not sandboxed:
+        lines.extend(_LOCAL_SUB_LLM_CONFIG_BLOCK)
+        lines.append("")
+        lines.extend(_LOCAL_GUARDRAILS_BLOCK)
+        lines.append("")
+
+    lines.extend(_ENSURE_FIFO_BLOCK)
+    lines.append("")
+    if not sandboxed:
+        lines.append("# Load filesystem context from file (written by setup_state)")
+        lines.extend(_LOCAL_FS_CONTEXT_BLOCK)
+    else:
+        lines.extend(_SANDBOX_FS_CONTEXT_BLOCK)
+    lines.append("")
+    lines.extend(["if fs_root:", "    os.chdir(fs_root)"])
+    if not sandboxed:
+        lines.extend(_LOCAL_JAIL_BLOCK)
+    lines.append("")
+    if not sandboxed:
+        lines.append("# Initialize answer structure")
+    lines.append(f"answer = {answer_default}")
+    lines.extend(
+        [
+            "if Path(ANSWER_FILE).exists():",
+            '    with open(ANSWER_FILE, "r", encoding="utf-8") as f:',
+            "        answer = json.load(f)",
+            "",
+            'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
+            'ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")',
+            'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
+            "try:",
+            "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
+            "except Exception:",
+            "    ROOT_TOOL_NAMES = []",
+            "",
+            "def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):",
+            "    if not ROOT_TOOL_URL:",
+            '        raise RuntimeError("Root tool URL not configured")',
+            '    if ROOT_TOOL_SERIALIZATION != "pickle":',
+            '        raise RuntimeError("Only pickle serialization is supported")',
+            "",
+            '    args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")',
+            '    kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")',
+            f"    payload = {dict_open}",
+            '        "tool_name": tool_name,',
+            '        "serialization": "pickle",',
+            '        "args": args_payload,',
+            '        "kwargs": kwargs_payload,',
+            f"    {dict_close}",
+            "",
+            "    resp = requests.post(",
+            "        ROOT_TOOL_URL,",
+            "        json=payload,",
+            f"        timeout={'300' if sandboxed else 'SUB_LLM_TIMEOUT'},",
+            "    )",
+            "    resp.raise_for_status()",
+            "    data = resp.json()",
+            '    if data.get("print_lines"):',
+            '        for line in data["print_lines"]:',
+            "            print(line)",
+            '    if data.get("error"):',
+            '        raise RuntimeError(data["error"])',
+            '    return pickle.loads(base64.b64decode(data.get("result", "")))',
+            "",
+            "def _make_root_tool(name: str):",
+            "    def _tool(*args, **kwargs):",
+            "        return _call_root_tool(name, args, kwargs)",
+            "",
+            "    _tool.__name__ = name",
+            "    return _tool",
+            "",
+        ]
+    )
+
+    if not sandboxed:
+        lines.append("restricted_builtins = _build_restricted_builtins()")
+    lines.append("extra_data = fs_root")
+    lines.append("")
+    if not sandboxed:
+        lines.append("# Persistent execution namespace")
+    lines.append(f"namespace: dict[str, object] = {dict_open}")
+    lines.extend(
+        [
+            '    "__name__": "__main__",',
+        ]
+    )
+    if not sandboxed:
+        lines.append('    "__builtins__": restricted_builtins,')
+    lines.extend(
+        [
+            '    "extra_data": extra_data,',
+            '    "fs_metadata": fs_metadata,',
+            '    "answer": answer,',
+            f"{dict_close}",
+            "for tool_name in ROOT_TOOL_NAMES:",
+            "    namespace[tool_name] = _make_root_tool(tool_name)",
+            "",
+        ]
+    )
+    if not sandboxed:
+        lines.append("# Signal ready")
+    lines.append('Path(READY_FLAG).write_text("ready", encoding="utf-8")')
+    lines.extend(
+        [
+            "",
+            "execution_count = 0",
+            "",
+            "while True:",
+            '    with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:',
+            "        payload = command_file.read()",
+            "    if not payload:",
+            "        continue",
+            "    request = json.loads(payload)",
+            '    if request.get("shutdown"):',
+            "        break",
+            "",
+            '    code = request.get("code", "")',
+        ]
+    )
+    if not sandboxed:
+        lines.append(
+            '    seq = request.get("seq", 0)  # Sequence number for request/response matching'
+        )
+    else:
+        lines.append('    seq = request.get("seq", 0)')
+    lines.extend(
+        [
+            "    execution_count += 1",
+            "",
+            f"    result = {dict_open}",
+            '        "status": "ok",',
+            '        "stdout": "",',
+            '        "stderr": "",',
+            '        "result": None,',
+            '        "execution_count": execution_count,',
+        ]
+    )
+    if not sandboxed:
+        lines.append(
+            '        "seq": seq,  # Echo back sequence number for framework to verify'
+        )
+    else:
+        lines.append('        "seq": seq,')
+    lines.extend(
+        [
+            f'        "answer": namespace.get("answer", {answer_default}),',
+            f"    {dict_close}",
+            "",
+            "    stdout_buffer = io.StringIO()",
+            "    stderr_buffer = io.StringIO()",
+            "",
+            "    try:",
+            "        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):",
+            '            module_ast = ast.parse(code, mode="exec")',
+            "            body = list(module_ast.body)",
+            "            trailing_expr = None",
+            "            if body and isinstance(body[-1], ast.Expr):",
+            "                trailing_expr = body.pop()",
+            "            if body:",
+            "                exec_module = ast.Module(body=body, type_ignores=[])",
+            '                exec(compile(exec_module, "<cell>", "exec"), namespace, namespace)',
+            "            if trailing_expr is not None:",
+            "                value = eval(",
+            '                    compile(ast.Expression(trailing_expr.value), "<cell>", "eval"),',
+            "                    namespace,",
+            "                    namespace,",
+            "                )",
+            "                if value is not None:",
+            '                    result["result"] = repr(value)',
+            "    except Exception:",
+            '        result["status"] = "error"',
+            '        result["result"] = traceback.format_exc()',
+            "",
+            '    result["stdout"] = stdout_buffer.getvalue()',
+            '    result["stderr"] = stderr_buffer.getvalue()',
+            f'    result["answer"] = namespace.get("answer", {answer_default})',
+            "",
+        ]
+    )
+    if not sandboxed:
+        lines.append("    # Save answer to file for persistence")
+    lines.extend(
+        [
+            '    with open(ANSWER_FILE, "w", encoding="utf-8") as f:',
+            '        json.dump(result["answer"], f)',
+            "",
+            '    with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:',
+            "        response_file.write(json.dumps(result))",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+_RLM_WORKER_SCRIPT_TEMPLATE = _build_python_worker_script_template(sandboxed=False)
 
 
 _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
@@ -1135,167 +1244,8 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
 )
 
 
-_RLM_SANDBOX_PY_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
-    """
-    import ast
-    import base64
-    import contextlib
-    import io
-    import json
-    import os
-    import pickle
-    import sys
-    import traceback
-    from pathlib import Path
-    import requests
-
-    COMMAND_FIFO = "{command_fifo}"
-    RESPONSE_FIFO = "{response_fifo}"
-    READY_FLAG = "{ready_flag}"
-    CONTEXT_FILE = "{context_file}"
-    ANSWER_FILE = "{answer_file}"
-
-    def ensure_fifo(path: str) -> None:
-        if os.path.exists(path):
-            os.remove(path)
-        os.mkfifo(path)
-
-    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
-        ensure_fifo(fifo_path)
-
-    fs_root = None
-    fs_metadata = {}
-    if Path(CONTEXT_FILE).exists():
-        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            context = json.load(f)
-            fs_root = context.get("fs_root")
-            fs_metadata = context.get("fs_metadata") or {}
-
-    if fs_root:
-        os.chdir(fs_root)
-
-    answer = {"ready": False, "content": ""}
-    if Path(ANSWER_FILE).exists():
-        with open(ANSWER_FILE, "r", encoding="utf-8") as f:
-            answer = json.load(f)
-
-    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
-    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
-    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
-    try:
-        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
-    except Exception:
-        ROOT_TOOL_NAMES = []
-
-    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
-        if not ROOT_TOOL_URL:
-            raise RuntimeError("Root tool URL not configured")
-        if ROOT_TOOL_SERIALIZATION != "pickle":
-            raise RuntimeError("Only pickle serialization is supported")
-
-        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
-        payload = {
-            "tool_name": tool_name,
-            "serialization": "pickle",
-            "args": args_payload,
-            "kwargs": kwargs_payload,
-        }
-
-        resp = requests.post(
-            ROOT_TOOL_URL,
-            json=payload,
-            timeout=300,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("print_lines"):
-            for line in data["print_lines"]:
-                print(line)
-        if data.get("error"):
-            raise RuntimeError(data["error"])
-        return pickle.loads(base64.b64decode(data.get("result", "")))
-
-    def _make_root_tool(name: str):
-        def _tool(*args, **kwargs):
-            return _call_root_tool(name, args, kwargs)
-
-        _tool.__name__ = name
-        return _tool
-
-    extra_data = fs_root
-
-    namespace: dict[str, object] = {
-        "__name__": "__main__",
-        "extra_data": extra_data,
-        "fs_metadata": fs_metadata,
-        "answer": answer,
-    }
-    for tool_name in ROOT_TOOL_NAMES:
-        namespace[tool_name] = _make_root_tool(tool_name)
-
-    Path(READY_FLAG).write_text("ready", encoding="utf-8")
-
-    execution_count = 0
-
-    while True:
-        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
-            payload = command_file.read()
-        if not payload:
-            continue
-        request = json.loads(payload)
-        if request.get("shutdown"):
-            break
-
-        code = request.get("code", "")
-        seq = request.get("seq", 0)
-        execution_count += 1
-
-        result = {
-            "status": "ok",
-            "stdout": "",
-            "stderr": "",
-            "result": None,
-            "execution_count": execution_count,
-            "seq": seq,
-            "answer": namespace.get("answer", {"ready": False, "content": ""}),
-        }
-
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                module_ast = ast.parse(code, mode="exec")
-                body = list(module_ast.body)
-                trailing_expr = None
-                if body and isinstance(body[-1], ast.Expr):
-                    trailing_expr = body.pop()
-                if body:
-                    exec_module = ast.Module(body=body, type_ignores=[])
-                    exec(compile(exec_module, "<cell>", "exec"), namespace, namespace)
-                if trailing_expr is not None:
-                    value = eval(
-                        compile(ast.Expression(trailing_expr.value), "<cell>", "eval"),
-                        namespace,
-                        namespace,
-                    )
-                    if value is not None:
-                        result["result"] = repr(value)
-        except Exception:
-            result["status"] = "error"
-            result["result"] = traceback.format_exc()
-
-        result["stdout"] = stdout_buffer.getvalue()
-        result["stderr"] = stderr_buffer.getvalue()
-        result["answer"] = namespace.get("answer", {"ready": False, "content": ""})
-
-        with open(ANSWER_FILE, "w", encoding="utf-8") as f:
-            json.dump(result["answer"], f)
-
-        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
-            response_file.write(json.dumps(result))
-    """
+_RLM_SANDBOX_PY_WORKER_SCRIPT_TEMPLATE = _build_python_worker_script_template(
+    sandboxed=True
 )
 
 
