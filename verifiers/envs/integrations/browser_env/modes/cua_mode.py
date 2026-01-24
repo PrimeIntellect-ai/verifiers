@@ -129,7 +129,7 @@ class CUAMode:
             raise RuntimeError(
                 f"\nCUA server is not reachable at {self.server_url}\n\n"
                 "To start the CUA server:\n"
-                "  cd verifiers/envs/integrations/browser_env/cua-server\n"
+                "  cd assets/templates/browserbase/cua\n"
                 "  npm install && npm run dev\n\n"
                 "The server must be running before using CUA mode environments.\n"
             )
@@ -137,7 +137,7 @@ class CUAMode:
             raise RuntimeError(
                 f"\nCUA server at {self.server_url} did not respond within 5 seconds.\n\n"
                 "Please check if the server is running and responsive:\n"
-                "  cd verifiers/envs/integrations/browser_env/cua-server\n"
+                "  cd assets/templates/browserbase/cua\n"
                 "  npm install && npm run dev\n"
             )
 

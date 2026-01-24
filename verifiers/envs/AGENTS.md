@@ -60,7 +60,7 @@ Browser automation environment using [Browserbase](https://browserbase.com) with
 
 CUA mode supports automatic sandbox deployment (`use_sandbox=True`, the default), where the CUA server is automatically deployed to a sandbox container. This eliminates the need for manual server setup. The server files are located in `assets/templates/browserbase/cua/` and are uploaded to sandboxes during rollout initialization.
 
-For local development, set `use_sandbox=False` and start the server manually from `verifiers/envs/integrations/browser_env/cua-server/`.
+For local development, set `use_sandbox=False` and start the server manually from `assets/templates/browserbase/cua/`.
 
 ## Experimental
 

@@ -77,7 +77,7 @@ Controls how Stagehand's internal LLM calls (for `observe`, `act`, `extract`) ar
 For CUA mode, start the TypeScript server first:
 
 ```bash
-cd verifiers/envs/integrations/browser_env/cua-server
+cd assets/templates/browserbase/cua
 pnpm install
 ./start.sh
 ```

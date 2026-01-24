@@ -43,13 +43,29 @@ Note: When running in manual server mode, ensure `OPENAI_API_KEY` is set in the 
 
 ## Usage
 
-### Sandbox Mode (Default, Recommended)
+### Pre-built Docker Image (Default, Fastest)
 
-By default, CUA mode automatically deploys the server to a sandbox container. No manual server setup is required:
+By default, CUA mode uses a pre-built Docker image (`deepdream19/cua-server:latest`) for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
 
 ```bash
 prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 ```
+
+This is the recommended approach for production use. Startup is ~5-10 seconds compared to ~30-60 seconds with binary upload.
+
+### Binary Upload Mode (Custom Server)
+
+If you need to use a custom version of the CUA server, disable the prebuilt image to build and upload the binary at runtime:
+
+```bash
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_prebuilt_image": false}'
+```
+
+This mode:
+1. Builds the CUA server binary via Docker (first run only)
+2. Uploads the binary to a sandbox container
+3. Installs dependencies (curl) in the sandbox
+4. Starts the server
 
 ### Manual Server Mode (Local Development)
 
@@ -57,7 +73,7 @@ For local development, you can run the CUA server manually:
 
 1. **Start the CUA server** (in a separate terminal):
    ```bash
-   cd verifiers/envs/integrations/browser_env/cua-server
+   cd assets/templates/browserbase/cua
    export OPENAI_API_KEY="your-openai-key"
    pnpm dev
    ```
@@ -82,18 +98,44 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 |----------|---------|-------------|
 | `max_turns` | `15` | Maximum conversation turns |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
-| `use_sandbox` | `True` | Auto-deploy CUA server to sandbox (recommended) |
+| `use_sandbox` | `True` | Auto-deploy CUA server to sandbox |
+| `use_prebuilt_image` | `True` | Use pre-built Docker image (fastest startup) |
+| `prebuilt_image` | `"deepdream19/cua-server:latest"` | Docker image to use when `use_prebuilt_image=True` |
 | `server_url` | `"http://localhost:3000"` | CUA server URL (only used when `use_sandbox=False`) |
 | `viewport_width` | `1024` | Browser viewport width |
 | `viewport_height` | `768` | Browser viewport height |
 | `save_screenshots` | `False` | Save screenshots during execution |
+
+## Execution Modes Summary
+
+| Mode | Flag | Startup Time | Use Case |
+|------|------|--------------|----------|
+| **Pre-built image** (default) | None | ~5-10s | Production, fastest startup |
+| **Binary upload** | `use_prebuilt_image=false` | ~30-60s | Custom server version |
+| **Manual server** | `use_sandbox=false` | Instant | Local development |
+
+## Building a Custom Docker Image
+
+To build and push a custom CUA server image:
+
+```bash
+cd assets/templates/browserbase/cua
+./build-and-push.sh                    # Push as :latest
+./build-and-push.sh v1.0.0             # Push with version tag
+DOCKERHUB_USER=myuser ./build-and-push.sh  # Use different Docker Hub user
+```
+
+Then use your custom image:
+```bash
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:v1.0.0"}'
+```
 
 ## DOM vs CUA Mode Comparison
 
 | Aspect | DOM Mode | CUA Mode |
 |--------|----------|----------|
 | **Control** | Natural language via Stagehand | Vision-based coordinates |
-| **Server** | None required | CUA server required |
+| **Server** | None required | CUA server (auto-deployed) |
 | **MODEL_API_KEY** | Required (for Stagehand) | Not required |
 | **Best for** | Structured web interactions | Visual/complex UIs |
 | **Speed** | Faster (direct DOM) | Slower (screenshots) |
@@ -101,6 +143,5 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 ## Requirements
 
 - Python >= 3.10
-- Node.js (for CUA server)
 - Browserbase account with API credentials
 - OpenAI API key

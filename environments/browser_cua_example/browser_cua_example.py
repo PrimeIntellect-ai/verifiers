@@ -7,15 +7,18 @@ for vision-based browser control.
 CUA mode uses screenshots and vision models to interact with the browser,
 providing low-level primitives like click, scroll, and type_text.
 
-By default, CUA mode automatically deploys the server to a sandbox container,
-so no manual server setup is required.
+By default, CUA mode uses a pre-built Docker image (deepdream19/cua-server:latest)
+for fastest startup (~5-10s). No manual server setup is required.
 
 Usage:
-    # Default (sandbox mode - recommended)
+    # Default (pre-built image - fastest, recommended)
     prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 
+    # Binary upload mode (for custom server versions)
+    prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_prebuilt_image": false}'
+
     # Manual mode (for local development)
-    cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
+    cd assets/templates/browserbase/cua && ./start.sh
     prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"use_sandbox": false}'
 """
 
@@ -113,6 +116,9 @@ def load_environment(
     cpu_cores: int = 2,
     memory_gb: int = 4,
     use_binary: bool = True,
+    # Pre-built image configuration (default - fastest startup)
+    use_prebuilt_image: bool = True,
+    prebuilt_image: str = "deepdream19/cua-server:latest",
     **kwargs,
 ) -> vf.Environment:
     """
@@ -121,15 +127,13 @@ def load_environment(
     This is a self-contained "hello world" example demonstrating how to use
     BrowserEnv with CUA mode for vision-based browser control.
 
-    By default (use_sandbox=True), the CUA server is automatically deployed
-    to a sandbox container. This is the recommended approach as it:
-    - Requires no manual server setup
-    - Provides isolation between rollouts
-    - Automatically manages server lifecycle
-
-    For local development, you can set use_sandbox=False and run the server
-    manually:
-        cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
+    Execution modes (from fastest to most flexible):
+    1. Pre-built image (default): Uses deepdream19/cua-server:latest
+       Fastest startup (~5-10s). No binary upload needed.
+    2. Binary upload (use_prebuilt_image=False): Builds/uploads binary
+       Slower startup (~30-60s). Use for custom server versions.
+    3. Manual server (use_sandbox=False): Connect to local server
+       For development: cd cua-server && ./start.sh
 
     Available tools in CUA mode:
     - click(x, y, button): Click at coordinates
@@ -156,18 +160,23 @@ def load_environment(
         save_screenshots: Save screenshots during execution (default: False)
         keep_recent_screenshots: Number of recent screenshots to keep in context
         proxies: Enable Browserbase proxies
-        docker_image: Docker image for sandbox (default: node:18-slim)
+        docker_image: Docker image for sandbox when use_prebuilt_image=False (default: node:18-slim)
         cpu_cores: CPU cores for sandbox (default: 2)
         memory_gb: Memory in GB for sandbox (default: 4)
-        use_binary: Use pre-built SEA binary for faster sandbox startup (default: True)
+        use_binary: Use pre-built SEA binary when use_prebuilt_image=False (default: True)
+        use_prebuilt_image: Use pre-built Docker image for fastest startup (default: True)
+        prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
         **kwargs: Additional arguments passed to BrowserEnv
 
     Returns:
         Configured BrowserEnv instance in CUA mode
 
     Example:
-        # Sandbox mode (default - recommended)
+        # Pre-built image (default - fastest, recommended)
         >>> env = load_environment()
+
+        # Binary upload mode (for custom server)
+        >>> env = load_environment(use_prebuilt_image=False)
 
         # Manual mode (for local development)
         >>> env = load_environment(use_sandbox=False, server_url="http://localhost:3000")
@@ -204,5 +213,8 @@ def load_environment(
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
         use_binary=use_binary,
+        # Pre-built image configuration
+        use_prebuilt_image=use_prebuilt_image,
+        prebuilt_image=prebuilt_image,
         **kwargs,
     )

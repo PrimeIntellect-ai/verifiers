@@ -756,7 +756,7 @@ When `use_sandbox=True` (the default), the CUA server is automatically deployed 
 
 ```python
 # First start the server manually:
-# cd verifiers/envs/integrations/browser_env/cua-server && ./start.sh
+# cd assets/templates/browserbase/cua && ./start.sh
 
 env = BrowserEnv(
     mode="cua",
