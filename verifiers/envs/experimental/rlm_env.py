@@ -1884,21 +1884,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         env_vars = os.environ.copy()
         env_vars.update(
-            {
-                "RLM_INTERCEPTION_URL": state["interception_url"],
-                "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
-                "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
-                "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
-                "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
-                "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
-                "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
-                "RLM_SUB_LLM_STAGGER_JITTER_MS": str(
-                    self.env.sub_llm_stagger_jitter_ms
-                ),
-                "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
-                "RLM_DISALLOWED_MODULES": self.env.disallowed_modules,
-                "RLM_DISALLOWED_BUILTINS": self.env.disallowed_builtins,
-            }
+            self.env._build_worker_env_vars(state, include_restrictions=True)
         )
 
         if self.env.repl_language == "python":
@@ -2264,17 +2250,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         sandbox_id = session.sandbox_id
         if not sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
-        env_vars = {
-            "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
-            "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
-            "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
-            "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
-            "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
-            "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
-            "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
-            "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.env.sub_llm_stagger_jitter_ms),
-            "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
-        }
+        env_vars = self.env._build_worker_env_vars(state, include_restrictions=False)
 
         exports = " ".join(
             f"{key}={shlex.quote(str(value))}"
@@ -2821,6 +2797,25 @@ class RLMEnv(vf.StatefulToolEnv):
         package_count = len(packages) + 1  # Always includes requests
         estimated_seconds = 30 * package_count
         return max(self.max_startup_wait_seconds, estimated_seconds)
+
+    def _build_worker_env_vars(
+        self, state: State, *, include_restrictions: bool
+    ) -> dict[str, str]:
+        env_vars = {
+            "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
+            "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+            "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
+            "RLM_ROOT_TOOL_SERIALIZATION": self.root_tool_serialization,
+            "RLM_SUB_MODEL": self.sub_model or state.get("model", ""),
+            "RLM_MAX_SUB_LLM_PARALLELISM": str(self.max_sub_llm_parallelism),
+            "RLM_SUB_LLM_STAGGER_MS": str(self.sub_llm_stagger_ms),
+            "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.sub_llm_stagger_jitter_ms),
+            "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
+        }
+        if include_restrictions:
+            env_vars["RLM_DISALLOWED_MODULES"] = self.disallowed_modules
+            env_vars["RLM_DISALLOWED_BUILTINS"] = self.disallowed_builtins
+        return env_vars
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
