@@ -7,7 +7,6 @@ from verifiers.utils.async_utils import maybe_await
 
 from .modes.dom_mode import DOMMode
 from .modes.cua_mode import CUAMode
-from .modes.cua_sandbox_mode import CUASandboxMode
 
 ModeType = Literal["dom", "cua"]
 
@@ -173,43 +172,31 @@ class BrowserEnv(vf.StatefulToolEnv):
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
             )
         elif mode == "cua":
-            if use_sandbox:
-                # Sandbox mode: CUASandboxMode manages its own sandbox
-                self._mode_impl = CUASandboxMode(
-                    server_port=server_port,
-                    env=env,
-                    browserbase_api_key=browserbase_api_key,
-                    browserbase_project_id=browserbase_project_id,
-                    viewport_width=viewport_width,
-                    viewport_height=viewport_height,
-                    save_screenshots=save_screenshots,
-                    keep_recent_screenshots=keep_recent_screenshots,
-                    proxies=proxies,
-                    server_ready_timeout=server_ready_timeout,
-                    server_ready_poll_interval=server_ready_poll_interval,
-                    docker_image=docker_image,
-                    cpu_cores=cpu_cores,
-                    memory_gb=memory_gb,
-                    disk_size_gb=disk_size_gb,
-                    sandbox_timeout_minutes=sandbox_timeout_minutes,
-                    sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-                    use_binary=use_binary,
-                    use_prebuilt_image=use_prebuilt_image,
-                    prebuilt_image=prebuilt_image,
-                )
-            else:
-                # Manual mode: CUAMode connects to external server
-                self._mode_impl = CUAMode(
-                    server_url=server_url,
-                    env=env,
-                    browserbase_api_key=browserbase_api_key,
-                    browserbase_project_id=browserbase_project_id,
-                    viewport_width=viewport_width,
-                    viewport_height=viewport_height,
-                    save_screenshots=save_screenshots,
-                    keep_recent_screenshots=keep_recent_screenshots,
-                    proxies=proxies,
-                )
+            # Unified CUAMode with execution_mode parameter
+            self._mode_impl = CUAMode(
+                execution_mode="sandbox" if use_sandbox else "local",
+                server_url=server_url,
+                server_port=server_port,
+                env=env,
+                browserbase_api_key=browserbase_api_key,
+                browserbase_project_id=browserbase_project_id,
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
+                save_screenshots=save_screenshots,
+                keep_recent_screenshots=keep_recent_screenshots,
+                proxies=proxies,
+                server_ready_timeout=server_ready_timeout,
+                server_ready_poll_interval=server_ready_poll_interval,
+                docker_image=docker_image,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                disk_size_gb=disk_size_gb,
+                sandbox_timeout_minutes=sandbox_timeout_minutes,
+                sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
+                use_binary=use_binary,
+                use_prebuilt_image=use_prebuilt_image,
+                prebuilt_image=prebuilt_image,
+            )
         else:
             raise ValueError(f"Unknown mode: {mode}. Must be 'dom' or 'cua'")
 

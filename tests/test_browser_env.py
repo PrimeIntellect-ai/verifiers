@@ -73,7 +73,7 @@ class TestBrowserEnvValidation:
                 "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
             ):
                 # This should NOT raise ValueError about missing env vars
-                # use_sandbox=False to use manual CUA mode
+                # use_sandbox=False to use local CUA mode
                 try:
                     env = BrowserEnv(
                         mode="cua",
@@ -96,7 +96,7 @@ class TestBrowserEnvValidation:
             with patch(
                 "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
             ):
-                # Both sandbox and manual mode require credentials for BROWSERBASE
+                # Both sandbox and local mode require credentials for BROWSERBASE
                 with pytest.raises(ValueError, match="BROWSERBASE_API_KEY"):
                     BrowserEnv(
                         mode="cua",
@@ -198,28 +198,26 @@ class TestBrowserEnvSystemPrompt:
 
 
 # ============================================================================
-# CUASandboxMode Tests
+# CUAMode Tests (Unified)
 # ============================================================================
 
 
-class TestCUASandboxModeInit:
-    """Tests for CUASandboxMode initialization."""
+class TestCUAModeInit:
+    """Tests for CUAMode initialization with execution_mode parameter."""
 
     def test_sandbox_mode_requires_prime_sandboxes(self):
-        """Test that CUASandboxMode requires prime-sandboxes package."""
-        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
+        """Test that CUAMode sandbox mode requires prime-sandboxes package."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
             SANDBOX_AVAILABLE,
         )
 
         # This test just verifies the import guard exists
         assert isinstance(SANDBOX_AVAILABLE, bool)
 
-    def test_use_sandbox_true_creates_sandbox_mode(self):
-        """Test that use_sandbox=True creates CUASandboxMode."""
+    def test_use_sandbox_true_creates_sandbox_execution_mode(self):
+        """Test that use_sandbox=True creates CUAMode with execution_mode='sandbox'."""
         from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
-            CUASandboxMode,
-        )
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         with patch.dict(
             os.environ,
@@ -232,15 +230,13 @@ class TestCUASandboxModeInit:
                 env="BROWSERBASE",
                 dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
             )
-            assert isinstance(env._mode_impl, CUASandboxMode)
+            assert isinstance(env._mode_impl, CUAMode)
+            assert env._mode_impl._execution_mode == "sandbox"
 
-    def test_use_sandbox_false_creates_cua_mode(self):
-        """Test that use_sandbox=False creates regular CUAMode."""
+    def test_use_sandbox_false_creates_local_execution_mode(self):
+        """Test that use_sandbox=False creates CUAMode with execution_mode='local'."""
         from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
-        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
-            CUASandboxMode,
-        )
 
         with patch.dict(os.environ, {}, clear=True):
             with patch(
@@ -255,23 +251,42 @@ class TestCUASandboxModeInit:
                     ),
                 )
                 assert isinstance(env._mode_impl, CUAMode)
-                assert not isinstance(env._mode_impl, CUASandboxMode)
+                assert env._mode_impl._execution_mode == "local"
 
 
-class TestCUASandboxModeScreenshotFilter:
-    """Tests for screenshot filtering in CUASandboxMode."""
+class TestCUASandboxModeBackwardsCompat:
+    """Tests for backwards compatibility with CUASandboxMode."""
 
-    def test_filter_screenshots_keeps_recent(self):
-        """Test that filter keeps the N most recent screenshots."""
-        from verifiers.envs.integrations.browser_env.modes.cua_sandbox_mode import (
-            CUASandboxMode,
+    def test_deprecated_cua_sandbox_mode_import(self):
+        """Test that CUASandboxMode import still works with deprecation warning."""
+        import warnings
+        from verifiers.envs.integrations.browser_env.modes import CUASandboxMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
             SANDBOX_AVAILABLE,
         )
 
         if not SANDBOX_AVAILABLE:
             pytest.skip("prime-sandboxes not installed")
 
-        mode = CUASandboxMode(keep_recent_screenshots=2)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            mode = CUASandboxMode(keep_recent_screenshots=2)
+            # Check that deprecation warning was issued
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
+            # Check that it's actually a CUAMode with sandbox execution
+            assert mode._execution_mode == "sandbox"
+
+
+class TestCUAModeScreenshotFilter:
+    """Tests for screenshot filtering in CUAMode."""
+
+    def test_filter_screenshots_keeps_recent(self):
+        """Test that filter keeps the N most recent screenshots."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
+
+        mode = CUAMode(execution_mode="local", keep_recent_screenshots=2)
 
         messages = [
             {"role": "user", "content": [{"type": "text", "text": "msg1"}]},
@@ -317,20 +332,17 @@ class TestCUASandboxModeScreenshotFilter:
         assert filtered[2]["content"][1]["type"] == "image_url"
         assert filtered[3]["content"][1]["type"] == "image_url"
 
+    def test_filter_screenshots_sandbox_mode(self):
+        """Test that filter works in sandbox mode too."""
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
+            CUAMode,
+            SANDBOX_AVAILABLE,
+        )
 
-# ============================================================================
-# CUAMode Tests
-# ============================================================================
+        if not SANDBOX_AVAILABLE:
+            pytest.skip("prime-sandboxes not installed")
 
-
-class TestCUAModeScreenshotFilter:
-    """Tests for screenshot filtering in CUAMode."""
-
-    def test_filter_screenshots_keeps_recent(self):
-        """Test that filter keeps the N most recent screenshots."""
-        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
-
-        mode = CUAMode(keep_recent_screenshots=2)
+        mode = CUAMode(execution_mode="sandbox", keep_recent_screenshots=2)
 
         messages = [
             {"role": "user", "content": [{"type": "text", "text": "msg1"}]},
@@ -380,7 +392,7 @@ class TestCUAModeScreenshotFilter:
         """Test that keep_recent_screenshots=None keeps all screenshots."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(keep_recent_screenshots=None)
+        mode = CUAMode(execution_mode="local", keep_recent_screenshots=None)
 
         messages = [
             {
@@ -413,7 +425,7 @@ class TestCUAModeScreenshotFilter:
         """Test that filtering doesn't change messages when fewer than N screenshots."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(keep_recent_screenshots=5)
+        mode = CUAMode(execution_mode="local", keep_recent_screenshots=5)
 
         messages = [
             {
@@ -450,7 +462,7 @@ class TestCUAModeResponseFormat:
         """Test formatting a successful response."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(save_screenshots=False)
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
 
         response = {
             "success": True,
@@ -471,7 +483,7 @@ class TestCUAModeResponseFormat:
         """Test formatting a failed response with error."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(save_screenshots=False)
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
 
         response = {
             "success": False,
@@ -490,7 +502,7 @@ class TestCUAModeResponseFormat:
         """Test formatting includes image_url when screenshot present."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(save_screenshots=False)
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
 
         response = {
             "success": True,
@@ -512,7 +524,7 @@ class TestCUAModeResponseFormat:
         """Test formatting handles missing screenshot gracefully."""
         from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
-        mode = CUAMode(save_screenshots=False)
+        mode = CUAMode(execution_mode="local", save_screenshots=False)
 
         response = {
             "success": True,
