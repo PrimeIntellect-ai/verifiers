@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 from rich.console import Console
 from rich.panel import Panel
@@ -11,6 +12,8 @@ from rich.text import Text
 from verifiers.errors import Error
 from verifiers.types import Messages
 from verifiers.utils.error_utils import ErrorChain
+
+LOGGER_NAME = "verifiers"
 
 
 def setup_logging(
@@ -34,12 +37,40 @@ def setup_logging(
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
 
-    logger = logging.getLogger("verifiers")
+    logger = logging.getLogger(LOGGER_NAME)
+    # Remove any existing handlers to avoid duplicates
+    logger.handlers.clear()
     logger.setLevel(level.upper())
     logger.addHandler(handler)
 
     # Prevent the logger from propagating messages to the root logger
     logger.propagate = False
+
+
+@contextmanager
+def log_level(level: str | int):
+    """
+    Context manager to temporarily set the verifiers logger to a new log level.
+    Useful for temporarily silencing verifiers logging.
+
+    with log_level("DEBUG"):
+        # verifiers logs at DEBUG level here
+        ...
+    # reverts to previous level
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    prev_level = logger.level
+    new_level = level if isinstance(level, int) else getattr(logging, level.upper())
+    logger.setLevel(new_level)
+    try:
+        yield
+    finally:
+        logger.setLevel(prev_level)
+
+
+def quiet_verifiers():
+    """Context manager to temporarily silence verifiers logging by setting WARNING level."""
+    return log_level("WARNING")
 
 
 def print_prompt_completions_sample(

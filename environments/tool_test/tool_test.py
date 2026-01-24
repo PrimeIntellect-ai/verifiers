@@ -6,7 +6,7 @@ import verifiers as vf
 
 
 # dummy tools for sanity checking parallel tool calls
-def tool_A(x: int) -> int:
+async def tool_A(x: int) -> int:
     """
     Tool for adding 1 to an integer.
 
@@ -19,7 +19,7 @@ def tool_A(x: int) -> int:
     return x + 1
 
 
-def tool_B(x: str) -> str:
+async def tool_B(x: str) -> str:
     """
     Tool for concatenating a string with "2".
 
@@ -32,7 +32,7 @@ def tool_B(x: str) -> str:
     return x + "2"
 
 
-def tool_C(x: float) -> float:
+async def tool_C(x: float) -> float:
     """
     Tool for adding 3.0 to a float.
 
@@ -45,7 +45,7 @@ def tool_C(x: float) -> float:
     return x + 3.0
 
 
-def tool_D(x: bool) -> bool:
+async def tool_D(x: bool) -> bool:
     """
     Tool for negating a boolean.
 
@@ -102,12 +102,10 @@ def load_environment(
 
     dataset = Dataset.from_list(train_rows)
     eval_dataset = Dataset.from_list(eval_rows)
-    parser = vf.Parser()
     rubric = vf.Rubric(funcs=[tool_call_reward_func])
     vf_env = vf.ToolEnv(
         dataset=dataset,
         eval_dataset=eval_dataset,
-        parser=parser,
         rubric=rubric,
         tools=tool_list,
         max_turns=1,

@@ -7,6 +7,8 @@ from typing import (
     Literal,
 )
 
+from datasets import Dataset
+
 from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
@@ -48,6 +50,7 @@ SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
+DatasetBuilder = Callable[[], Dataset]
 
 
 class TrajectoryStepTokens(TypedDict):
@@ -139,6 +142,11 @@ class State(dict):
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
+# callbacks
+StartCallback = Callable[[int], None]  # total rollouts
+ProgressCallback = Callable[[list[State], list[State]], None]  # all_states, new_states
+LogCallback = Callable[[str], None]  # log messages
+
 
 class GenerateMetadata(TypedDict):
     """Pydantic model for generation metadata."""
@@ -156,6 +164,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
+    tools: list[ChatCompletionToolParam] | None
 
 
 class GenerateOutputs(TypedDict):
@@ -235,12 +244,19 @@ class EvalConfig(BaseModel):
     max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
+    max_retries: int = 0
     # logging
-    print_results: bool = False
     verbose: bool = False
+    use_tqdm: bool = True
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
     save_every: int = -1
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
+
+
+class EvalRunConfig(BaseModel):
+    """Pydantic model for evaluation run configuration."""
+
+    evals: list[EvalConfig]

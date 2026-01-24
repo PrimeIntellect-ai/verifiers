@@ -18,7 +18,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
-from textual.widgets import Footer, Input, Label, OptionList, Static
+from textual.widgets import Footer, Input, Label, OptionList, Static, TextArea
 from textual.widgets._option_list import Option
 
 
@@ -604,6 +604,7 @@ class ViewRunScreen(Screen):
         Binding("left,h", "prev_record", "Previous"),
         Binding("right,l", "next_record", "Next"),
         Binding("s", "search", "Search"),
+        Binding("c", "copy", "Copy"),
     ]
 
     def __init__(self, run: RunInfo):
@@ -615,6 +616,8 @@ class ViewRunScreen(Screen):
         self._completion_lines: List[str] = []
         self._prompt_offsets: List[int] = []
         self._completion_offsets: List[int] = []
+        self._prompt_text: str = ""
+        self._completion_text: str = ""
         self._highlight_regex: Optional[re.Pattern] = None
         self._highlight_column: Optional[str] = None
         self._highlight_timer = None
@@ -742,6 +745,7 @@ class ViewRunScreen(Screen):
         if self._highlight_regex and self._highlight_column == "prompt":
             _stylize_matches(prompt_text, self._highlight_regex, "reverse")
         prompt_widget.update(prompt_text)
+        self._prompt_text = prompt_text.plain
 
         # Update completion
         completion = record.get("completion", "")
@@ -755,6 +759,7 @@ class ViewRunScreen(Screen):
         if self._highlight_regex and self._highlight_column == "completion":
             _stylize_matches(completion_text, self._highlight_regex, "reverse")
         completion_widget.update(completion_text)
+        self._completion_text = completion_text.plain
 
         # Update details
         details_lines = Text()
@@ -822,6 +827,13 @@ class ViewRunScreen(Screen):
         self.app.push_screen(
             SearchScreen(self._prompt_lines, self._completion_lines),
             self._handle_search_result,
+        )
+
+    def action_copy(self) -> None:
+        if not self.records:
+            return
+        self.app.push_screen(
+            CopyScreen(self._prompt_text, self._completion_text, "completion")
         )
 
     def _handle_search_result(self, result: Optional[SearchResult]) -> None:
@@ -981,6 +993,12 @@ class VerifiersTUI(App):
         color: $text-muted;
         margin-bottom: 1;
     }
+
+    .copy-hint {
+        color: $text-muted;
+        margin-bottom: 0;
+    }
+
     
     OptionList {
         height: auto;
@@ -1082,6 +1100,28 @@ class VerifiersTUI(App):
         background: $surface;
         color: $text;
     }
+
+    .copy-header {
+        height: auto;
+    }
+
+    .copy-columns {
+        height: 1fr;
+        layout: horizontal;
+    }
+
+    .copy-panel {
+        width: 50%;
+        height: 100%;
+        layout: vertical;
+    }
+
+    .copy-textarea {
+        height: 1fr;
+        background: $surface;
+        color: $text;
+    }
+
     """
 
     def __init__(
@@ -1360,6 +1400,239 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
                 return None
             return self._completion_hits[self._completion_cursor]
         return None
+
+
+class CopyScreen(ModalScreen[None]):
+    """Modal screen for selecting and copying prompt/completion text."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("q", "quit", "Quit"),
+        Binding("tab", "cycle_column", "Next column"),
+        Binding("shift+tab", "cycle_column", show=False),
+        Binding("c", "copy", "Copy"),
+    ]
+
+    def __init__(self, prompt_text: str, completion_text: str, start_column: str):
+        super().__init__()
+        self._prompt_text = prompt_text
+        self._completion_text = completion_text
+        self._active_column = (
+            start_column if start_column in ("prompt", "completion") else "completion"
+        )
+
+    def compose(self) -> ComposeResult:
+        with Container():
+            with Panel(classes="copy-header"):
+                yield Label(Text("Copy Mode", style="bold"))
+                yield Label(
+                    Text("q: quit", style="dim"),
+                    id="copy-hint-q",
+                    classes="copy-hint",
+                )
+                yield Label(
+                    Text("Tab: switch columns", style="dim"),
+                    id="copy-hint-1",
+                    classes="copy-hint",
+                )
+                yield Label(
+                    Text(
+                        "Highlight text with mouse drag or Shift+Arrow",
+                        style="dim",
+                    ),
+                    id="copy-hint-2",
+                    classes="copy-hint",
+                )
+                yield Label("", id="copy-hint-3", classes="copy-hint")
+                yield Label(
+                    Text("Esc: close", style="dim"),
+                    id="copy-hint-4",
+                    classes="copy-hint",
+                )
+                yield Label("", id="copy-status", classes="subtitle")
+
+            with Horizontal(classes="copy-columns"):
+                with Panel(classes="copy-panel"):
+                    yield Label(Text("Prompt", style="bold"), id="copy-prompt-label")
+                    prompt_area = TextArea(
+                        self._prompt_text,
+                        id="copy-prompt",
+                        classes="copy-textarea",
+                    )
+                    prompt_area.read_only = True
+                    yield prompt_area
+                with Panel(classes="copy-panel"):
+                    yield Label(
+                        Text("Completion", style="bold"), id="copy-completion-label"
+                    )
+                    completion_area = TextArea(
+                        self._completion_text,
+                        id="copy-completion",
+                        classes="copy-textarea",
+                    )
+                    completion_area.read_only = True
+                    yield completion_area
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._sync_focus()
+        self._update_copy_hint()
+
+    @property
+    def active_bindings(self) -> dict[str, Any]:
+        bindings = super().active_bindings
+        ordered: dict[str, Any] = {}
+        for key in ("q", "escape", "tab", "c"):
+            if key in bindings:
+                ordered[key] = bindings[key]
+        for key, binding in bindings.items():
+            if key not in ordered:
+                ordered[key] = binding
+        return ordered
+
+    @on(TextArea.SelectionChanged)
+    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area is self._active_text_area():
+            self._update_copy_hint()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+    def on_key(self, event) -> None:
+        if event.key in ("tab", "shift+tab", "backtab"):
+            self.action_cycle_column()
+            event.prevent_default()
+            event.stop()
+
+    def action_cycle_column(self) -> None:
+        self._active_column = (
+            "completion" if self._active_column == "prompt" else "prompt"
+        )
+        self._sync_focus()
+        self._update_copy_hint()
+
+    def action_copy(self) -> None:
+        text_area = self._active_text_area()
+        selected = _get_text_area_selection(text_area)
+        full_text = _get_text_area_full_text(text_area)
+        if not selected:
+            selected = full_text
+            copied_label = "full column"
+        else:
+            copied_label = "selection"
+        if not isinstance(selected, str):
+            selected = str(selected)
+        if selected:
+            _copy_to_clipboard(self.app, selected)
+        status = self.query_one("#copy-status", Label)
+        status.update(
+            Text(f"Copied {copied_label} ({len(selected)} chars).", style="dim")
+            if selected
+            else Text("Nothing to copy.", style="dim")
+        )
+        self._update_copy_hint()
+
+    def _active_text_area(self) -> TextArea:
+        if self._active_column == "prompt":
+            return self.query_one("#copy-prompt", TextArea)
+        return self.query_one("#copy-completion", TextArea)
+
+    def _sync_focus(self) -> None:
+        prompt_label = self.query_one("#copy-prompt-label", Label)
+        completion_label = self.query_one("#copy-completion-label", Label)
+        if self._active_column == "prompt":
+            prompt_label.update(Text("Prompt (active)", style="bold"))
+            completion_label.update(Text("Completion", style="bold"))
+        else:
+            prompt_label.update(Text("Prompt", style="bold"))
+            completion_label.update(Text("Completion (active)", style="bold"))
+        self._active_text_area().focus()
+
+    def _update_copy_hint(self) -> None:
+        selected = _get_text_area_selection(self._active_text_area())
+        if selected:
+            count = len(selected)
+            unit = "char" if count == 1 else "chars"
+            copy_text = f"c: copy selection ({count} {unit})"
+        elif self._active_column == "prompt":
+            copy_text = "c: copy prompt"
+        else:
+            copy_text = "c: copy completion"
+        hint = self.query_one("#copy-hint-3", Label)
+        hint.update(Text(copy_text, style="dim"))
+
+
+def _copy_to_clipboard(app: App, text: str) -> None:
+    if hasattr(app, "copy_to_clipboard"):
+        app.copy_to_clipboard(text)
+        return
+    clipboard = getattr(app, "clipboard", None)
+    if clipboard is None:
+        return
+    for method_name in ("write_text", "set_text", "set"):
+        method = getattr(clipboard, method_name, None)
+        if callable(method):
+            method(text)
+            return
+
+
+def _get_text_area_selection(text_area: TextArea) -> str:
+    selected = getattr(text_area, "selected_text", None)
+    if isinstance(selected, str) and selected:
+        return selected
+    for method_name in ("get_selected_text", "selection_text"):
+        method = getattr(text_area, method_name, None)
+        if callable(method):
+            try:
+                value = method()
+            except Exception:
+                continue
+            if isinstance(value, str) and value:
+                return value
+    selection = getattr(text_area, "selection", None)
+    text = _get_text_area_full_text(text_area)
+    if selection is None or not isinstance(text, str) or not text:
+        return ""
+    start = getattr(selection, "start", None)
+    end = getattr(selection, "end", None)
+    if isinstance(start, int) and isinstance(end, int) and start != end:
+        lo, hi = sorted((start, end))
+        return text[lo:hi]
+    if isinstance(start, tuple) and isinstance(end, tuple):
+        try:
+            return _slice_text_by_row_col(text, start, end)
+        except Exception:
+            return ""
+    return ""
+
+
+def _get_text_area_full_text(text_area: TextArea) -> str:
+    text = getattr(text_area, "text", None)
+    if isinstance(text, str):
+        return text
+    value = getattr(text_area, "value", None)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _slice_text_by_row_col(text: str, start: tuple, end: tuple) -> str:
+    start_row, start_col = start
+    end_row, end_col = end
+    if (start_row, start_col) == (end_row, end_col):
+        return ""
+    if (start_row, start_col) > (end_row, end_col):
+        start_row, end_row = end_row, start_row
+        start_col, end_col = end_col, start_col
+    lines = text.splitlines(keepends=True)
+    if start_row >= len(lines) or end_row >= len(lines):
+        return ""
+    start_offset = sum(len(lines[i]) for i in range(start_row)) + start_col
+    end_offset = sum(len(lines[i]) for i in range(end_row)) + end_col
+    return text[start_offset:end_offset]
 
 
 def main() -> None:

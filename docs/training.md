@@ -12,6 +12,9 @@ This section covers how to use Verifiers environments for RL training with our H
     - [Setup and Configuration](#setup-and-configuration)
     - [Generation Parameters](#generation-parameters)
     - [Training Schedule](#training-schedule)
+- [Prompt Optimization with `vf-gepa`](#prompt-optimization-with-vf-gepa)
+    - [Usage](#usage)
+    - [Output](#output)
 - [RL Rules of Thumb](#rl-rules-of-thumb)
     - [Before Training](#before-training)
     - [Performance Trade-offs](#performance-trade-offs)
@@ -202,6 +205,38 @@ Core fields in `[trainer.args]`:
 ### Model loading
 
 By default, `vf.RLTrainer` will use Liger Kernel for optimized training. To disable Liger Kernel, set `use_liger = false` in `[trainer.args]`.
+
+## Prompt Optimization with `vf-gepa`
+
+`vf-gepa` is a CLI for automatic system prompt optimization using [GEPA](https://github.com/gepa-ai/gepa) (Genetic-Pareto prompt optimization). It iteratively refines your environment's system prompt using a teacher LLM to reflect on evaluation results, without requiring gradient-based training. Current support is for system prompt optimization only.
+
+### Usage
+
+Basic usage mirrors `vf-eval`:
+```bash
+vf-gepa wiki-search --model google/gemini-3-flash-preview
+```
+
+This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
+
+Key options:
+- `--model` / `-m`: Model for evaluation rollouts
+- `--reflection-model` / `-M`: Teacher model for prompt reflection (defaults to `--model`)
+- `--max-calls` / `-B`: Evaluation budget (default: 500)
+- `--num-train` / `-n`: Training examples (default: 100)
+- `--num-val` / `-N`: Validation examples (default: 50)
+- `--minibatch-size`: Number of examples evaluated together per reflection step (default: 3)
+- `--perfect-score`: Maximum score for a rollout in your environment (if applicable); minibatches achieving this score are skipped during reflection (useful if your environment has a known max score)
+- `--state-columns`: Additional state columns to copy into the reflection dataset. By default, `query`, `completion`, `expected_answer`, `reward`, and `error` are included. Use this to add environment-specific state fields (e.g., `--state-columns tool_calls reasoning_trace`)
+
+### Output
+
+After optimization, you'll find:
+- `best_prompt.txt` - The optimized system prompt
+- `pareto_frontier.jsonl` - Best prompts per validation example
+- `metadata.json` - Run configuration and summary
+
+Use `vf-eval` to verify performance before and after optimization.
 
 ## RL Rules of Thumb
 

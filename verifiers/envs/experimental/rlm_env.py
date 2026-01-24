@@ -8,12 +8,13 @@ Based on: https://www.alexzhang.dev/blog/recursive-language-models
 
 Architecture:
 - REPL loop runs in the framework (MultiTurnEnv pattern)
-- Code execution backend can be sandboxed or local (persistent Python worker)
+- Code execution runs locally in a persistent Python worker
 - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
 Key features:
 - Works with any dataset that has a normal prompt
-- Optional large input data can be provided in info["context"]
+- Optional input data can be provided via info["context_dir"] (directory) or
+  legacy info["context"] (builtin data written to a file)
 - Root model only sees query, not full input data (unless it peeks via code)
 - Model can make recursive sub-LLM calls via llm_batch() function
 - Final answer returned via answer variable
@@ -21,21 +22,28 @@ Key features:
 
 import asyncio
 import base64
+import contextvars
+import inspect
 import json
 import logging
 import os
-import shlex
+import pickle
+import random
 import shutil
+import signal
+import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -43,16 +51,18 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from prime_sandboxes import CommandTimeoutError
-
+from openai.types.chat import ChatCompletion
+from prime_tunnel import Tunnel
 import verifiers as vf
-from verifiers.envs.sandbox_env import (
-    SandboxCreationError,
-    SandboxEnv,
-    SandboxNotReadyError,
-)
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, ModelResponse, State, TrajectoryStep
+from verifiers.types import (
+    ChatMessage,
+    ChatMessages,
+    Messages,
+    ModelResponse,
+    State,
+    TrajectoryStep,
+)
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
@@ -61,17 +71,81 @@ from verifiers.utils.response_utils import (
     parse_response_messages,
     parse_response_tokens,
 )
-from verifiers.utils.rlm_data_serialization_utils import (
-    DataSerializer,
-    PreparedContextData,
-    SerializerRegistry,
-    build_default_serializer_registry,
-    prepare_context_data,
-)
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.tunnel_utils import TunnelPool
+from verifiers.utils.token_utils import (
+    prepare_sampling_args_for_token_prompts,
+    tokenize_vllm,
+)
+from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
+import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
+from verifiers.envs.sandbox_env import CreateSandboxRequest
+from prime_sandboxes import CommandTimeoutError
 
 logger = logging.getLogger(__name__)
+
+_FIXED_REPL_TOOL_NAMES = frozenset({"llm_batch"})
+
+
+def _tool_display_name(tool: Callable) -> str:
+    return getattr(tool, "__name__", tool.__class__.__name__)
+
+
+def _dedupe_tools(
+    tools: list[Callable],
+    *,
+    context: str,
+    reserved_names: set[str] | None = None,
+) -> tuple[list[Callable], dict[str, Callable]]:
+    deduped: list[Callable] = []
+    seen: dict[str, Callable] = {}
+    for tool in tools:
+        name = _tool_display_name(tool)
+        if reserved_names and name in reserved_names:
+            raise ValueError(f"Tool '{name}' is reserved and cannot be overridden.")
+        if name in seen:
+            if seen[name] is not tool:
+                raise ValueError(
+                    f"Tool name collision in {context}: '{name}' is defined by both "
+                    f"{seen[name]!r} and {tool!r}. Rename or remove one."
+                )
+            continue
+        seen[name] = tool
+        deduped.append(tool)
+    return deduped, seen
+
+
+def _merge_tool_lists(
+    *,
+    fixed_tools: list[Callable],
+    shared_tools: list[Callable],
+    role_tools: list[Callable],
+    context: str,
+    reserved_names: set[str],
+) -> tuple[list[Callable], dict[str, Callable]]:
+    fixed, fixed_map = _dedupe_tools(
+        fixed_tools,
+        context=f"{context} fixed tools",
+        reserved_names=set(),
+    )
+    merged = list(fixed)
+    deduped_shared, _ = _dedupe_tools(
+        shared_tools,
+        context=f"{context} shared tools",
+        reserved_names=reserved_names,
+    )
+    merged.extend(deduped_shared)
+    deduped_role, _ = _dedupe_tools(
+        role_tools,
+        context=f"{context} tools",
+        reserved_names=reserved_names,
+    )
+    merged.extend(deduped_role)
+    deduped_all, deduped_map = _dedupe_tools(
+        merged,
+        context=context,
+        reserved_names=set(),
+    )
+    return deduped_all, deduped_map
 
 
 class RLMCodeExecutionTimeout(Exception):
@@ -84,7 +158,6 @@ class RLMWorkerPaths:
     command_fifo: str
     response_fifo: str
     ready_flag: str
-    install_done_flag: str
     worker_path: str
     worker_pid_file: str
     context_file: str
@@ -97,7 +170,6 @@ class RLMWorkerPaths:
             "command_fifo": self.command_fifo,
             "response_fifo": self.response_fifo,
             "ready_flag": self.ready_flag,
-            "install_done_flag": self.install_done_flag,
             "worker_path": self.worker_path,
             "worker_pid_file": self.worker_pid_file,
             "context_file": self.context_file,
@@ -109,8 +181,10 @@ class RLMWorkerPaths:
 @dataclass
 class LocalRLMReplSession:
     rollout_id: str
-    temp_dir: tempfile.TemporaryDirectory
+    rollout_dir: str
     paths: RLMWorkerPaths
+    fs_root: str
+    control_dir: str
     worker_process: subprocess.Popen | None = None
     venv_path: str | None = None
 
@@ -120,6 +194,18 @@ class RLMExecResult:
     stdout: str
     stderr: str | None = None
     exit_code: int | None = None
+
+
+@dataclass
+class SandboxRLMReplSession:
+    rollout_id: str
+    local_rollout_dir: str
+    local_fs_root: str
+    local_control_dir: str
+    sandbox_id: str | None = None
+    sandbox_fs_root: str | None = None
+    sandbox_control_dir: str | None = None
+    paths: RLMWorkerPaths | None = None
 
 
 def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
@@ -156,6 +242,8 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("repl_total_time_seconds", 0.0)
     state.setdefault("repl_call_count", 0)
     state.setdefault("repl_mean_time_seconds", 0.0)
+    state.setdefault("root_tool_call_count", 0)
+    state.setdefault("root_tool_calls", {})
 
     state.setdefault("_rlm_sub_llm_call_ids", {})
     state.setdefault("_rlm_sub_llm_batch_counts", {})
@@ -220,8 +308,16 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
         state["main_rlm_completion_tokens"] += completion_tokens
 
 
+def _update_root_tool_metrics(state: State, tool_name: str) -> None:
+    _ensure_rlm_metric_state(state)
+    state["root_tool_call_count"] += 1
+    tool_calls: dict[str, int] = state.get("root_tool_calls", {})
+    tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
+    state["root_tool_calls"] = tool_calls
+
+
 class RLMMonitorRubric(vf.Rubric):
-    def __init__(self, **kwargs):
+    def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.add_metric(self.sub_llm_call_count)
         self.add_metric(self.sub_llm_total_turns)
@@ -237,6 +333,9 @@ class RLMMonitorRubric(vf.Rubric):
         self.add_metric(self.repl_total_time_seconds)
         self.add_metric(self.repl_call_count)
         self.add_metric(self.repl_mean_time_seconds)
+        self.add_metric(self.root_tool_call_count)
+        for tool_name in root_tool_names or []:
+            self.add_metric(self._make_root_tool_metric(tool_name))
 
     async def sub_llm_call_count(self, state: State) -> int:
         return state["sub_llm_call_count"]
@@ -280,11 +379,22 @@ class RLMMonitorRubric(vf.Rubric):
     async def repl_mean_time_seconds(self, state: State) -> float:
         return state["repl_mean_time_seconds"]
 
+    async def root_tool_call_count(self, state: State) -> int:
+        return state["root_tool_call_count"]
+
+    def _make_root_tool_metric(self, tool_name: str):
+        async def root_tool_metric(state: State) -> int:
+            tool_calls: dict[str, int] = state.get("root_tool_calls", {})
+            return int(tool_calls.get(tool_name, 0))
+
+        root_tool_metric.__name__ = f"{tool_name}_root_calls"
+        return root_tool_metric
+
 
 class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
 
-    prompt_messages: list[dict]  # Messages before this LLM call
+    prompt_messages: ChatMessages  # Messages before this LLM call
     response: ModelResponse  # Full response object (with token_ids, logprobs)
     tool_call_count: int  # Number of tool calls made in this turn
 
@@ -301,22 +411,25 @@ class SubLLMResult(TypedDict):
     max_turns_reached: bool
 
 
-# Worker script that runs inside the sandbox - handles code execution only
+# Worker script that runs locally - handles code execution only
 # The REPL loop is managed by the framework, not this script
-_RLM_WORKER_SCRIPT = textwrap.dedent(
-    '''
+_RLM_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
+    """
     import ast
+    import base64
     import contextlib
     import io
     import json
     import os
-    import random
+    import pickle
     import sys
+    import sysconfig
     import time
     import traceback
     from pathlib import Path
-    from concurrent.futures import ThreadPoolExecutor
     import requests
+
+    {filesystem_jail_code}
 
     COMMAND_FIFO = "{command_fifo}"
     RESPONSE_FIFO = "{response_fifo}"
@@ -329,15 +442,12 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
     MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
-    SANDBOX_TIMEOUT = int(os.environ.get("RLM_SANDBOX_TIMEOUT", "120"))
     SUB_LLM_STAGGER_MS = int(os.environ.get("RLM_SUB_LLM_STAGGER_MS", "0"))
     SUB_LLM_STAGGER_JITTER_MS = int(
         os.environ.get("RLM_SUB_LLM_STAGGER_JITTER_MS", "0")
     )
-    if SANDBOX_TIMEOUT > 0:
-        SUB_LLM_TIMEOUT = min(SUB_LLM_TIMEOUT, SANDBOX_TIMEOUT)
 
-    # Guardrails for user code execution (best-effort, not a sandbox)
+    # Guardrails for user code execution (best-effort, not an OS sandbox)
     def _parse_disallowed(raw: str) -> list[str]:
         if not raw:
             return []
@@ -351,12 +461,6 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         _parse_disallowed(os.environ.get("RLM_DISALLOWED_BUILTINS", ""))
     )
 
-    def _is_disallowed_module(name: str) -> bool:
-        for blocked in DISALLOWED_MODULES:
-            if name == blocked or name.startswith(blocked + "."):
-                return True
-        return False
-
     def _build_restricted_builtins() -> dict:
         builtins_obj = __builtins__
         if not isinstance(builtins_obj, dict):
@@ -369,10 +473,11 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
             def _restricted_import(
                 name, globals=None, locals=None, fromlist=(), level=0
             ):
-                if _is_disallowed_module(name):
-                    raise ImportError(
-                        f"Import of '{{name}}' is blocked by RLM policy"
-                    )
+                for blocked in DISALLOWED_MODULES:
+                    if name == blocked or name.startswith(blocked + "."):
+                        raise ImportError(
+                            f"Import of '{{name}}' is blocked by RLM policy"
+                        )
                 if original_import is None:
                     raise ImportError("Import mechanism unavailable")
                 return original_import(name, globals, locals, fromlist, level)
@@ -392,54 +497,41 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
     for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
         ensure_fifo(fifo_path)
 
-    # Load extra_data from file (written by setup_state)
-    extra_data = None
+    # Load filesystem context from file (written by setup_state)
+    fs_root = None
+    fs_metadata = {{}}
+    allowed_paths = []
+    def _get_stdlib_paths() -> list:
+        paths = []
+        try:
+            config_paths = sysconfig.get_paths()
+        except Exception:
+            return paths
+        for key in ("stdlib", "platstdlib"):
+            value = config_paths.get(key)
+            if value:
+                paths.append(value)
+        return paths
+
     if Path(CONTEXT_FILE).exists():
         with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            _full_context = json.load(f)
-            data_spec = _full_context.get("input_data_spec") or {{}}
-            if data_spec:
-                payload_path = data_spec.get("payload_path")
-                payload_encoding = data_spec.get("payload_encoding")
-                payload = None
-                if not payload_path:
-                    raise ValueError("input_data_spec is missing payload_path")
-                if payload_encoding:
-                    with open(payload_path, "r", encoding=payload_encoding) as pf:
-                        payload = pf.read()
-                else:
-                    with open(payload_path, "rb") as pf:
-                        payload = pf.read()
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+            fs_metadata = context.get("fs_metadata") or {{}}
+            allowed_paths = context.get("allowed_paths") or []
+            for stdlib_path in _get_stdlib_paths():
+                if stdlib_path not in allowed_paths:
+                    allowed_paths.append(stdlib_path)
 
-                dtype = data_spec.get("dtype", "")
-                deserializer_code = data_spec.get("deserializer_code")
-                deserializer_function = data_spec.get("deserializer_function")
-
-                if deserializer_code and deserializer_function:
-                    namespace = {{}}
-                    exec(deserializer_code, namespace)
-                    if deserializer_function not in namespace:
-                        raise ValueError(
-                            "Deserializer function '"
-                            + str(deserializer_function)
-                            + "' not found"
-                        )
-                    extra_data = namespace[deserializer_function](payload, data_spec)
-                elif dtype == "text":
-                    extra_data = payload
-                elif dtype == "json":
-                    if isinstance(payload, bytes):
-                        payload = payload.decode("utf-8")
-                    if isinstance(payload, str):
-                        extra_data = json.loads(payload)
-                    else:
-                        extra_data = payload
-                else:
-                    raise ValueError(
-                        "No deserializer provided for dtype '" + str(dtype) + "'."
-                    )
-            else:
-                extra_data = _full_context.get("input_data")
+    if fs_root:
+        os.chdir(fs_root)
+        jail = FilesystemJail(
+            fs_root,
+            allowed_paths=allowed_paths,
+            disallowed_modules=DISALLOWED_MODULES,
+            disallowed_builtins=DISALLOWED_BUILTINS,
+        )
+        jail.install()
 
     # Initialize answer structure
     answer = {{"ready": False, "content": ""}}
@@ -447,121 +539,63 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         with open(ANSWER_FILE, "r", encoding="utf-8") as f:
             answer = json.load(f)
 
-    def _single_llm_call(prompt: str, batch_id: str, **kwargs) -> dict:
-        """Make a single sub-LLM call via interception server.
-        
-        Returns a dict with 'content' and 'metadata' keys (including 'elapsed_seconds').
-        """
-        from time import perf_counter
-        import uuid
-        start_time = perf_counter()
-        
-        if not INTERCEPTION_URL:
-            return {{
-                "content": "Error: Sub-LLM interception URL not configured",
-                "metadata": {{"error": True, "elapsed_seconds": 0.0}},
-            }}
-        
-        try:
-            request_id = uuid.uuid4().hex[:8]
-            payload = {{
-                "model": SUB_MODEL or "default",
-                "messages": [{{"role": "user", "content": prompt}}],
-                "_batch_id": batch_id,
-                "_request_id": request_id,
-            }}
-            # Add any extra kwargs
-            for k, v in kwargs.items():
-                if k not in ("model", "messages", "_batch_id", "_request_id"):
-                    payload[k] = v
-            
-            resp = requests.post(
-                INTERCEPTION_URL,
-                json=payload,
-                timeout=SUB_LLM_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data.get("choices", [{{}}])[0].get("message", {{}}).get("content", "")
-            metadata = data.get("_rlm_metadata", {{}})
-            elapsed = perf_counter() - start_time
-            metadata["elapsed_seconds"] = elapsed
-            return {{"content": content, "metadata": metadata}}
-        except Exception as e:
-            elapsed = perf_counter() - start_time
-            return {{
-                "content": f"Error in sub-LLM call: {{e}}",
-                "metadata": {{"error": True, "elapsed_seconds": elapsed}},
-            }}
+    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
 
-    def llm_batch(prompts: list, **kwargs) -> list:
-        """
-        Make multiple sub-LLM calls in parallel.
-        
-        Prints a summary of each call's metadata (including timing), then returns the list of responses.
-        
-        Parallelism is controlled by RLM_MAX_SUB_LLM_PARALLELISM.
-        Sandbox timeout is available via SANDBOX_TIMEOUT env var.
-        
-        Args:
-            prompts: List of prompts for the sub-LLMs
-            **kwargs: Additional arguments applied to all calls
-        
-        Returns:
-            List of response contents in the same order as the input prompts
-        """
-        from time import perf_counter
-        import uuid
-        batch_start = perf_counter()
-        batch_id = uuid.uuid4().hex[:8]
-        with ThreadPoolExecutor(max_workers=MAX_SUB_LLM_PARALLELISM) as executor:
-            futures = []
-            for i, prompt in enumerate(prompts):
-                jitter_ms = (
-                    random.random() * SUB_LLM_STAGGER_JITTER_MS
-                    if SUB_LLM_STAGGER_JITTER_MS > 0
-                    else 0.0
-                )
-                delay_s = max(0.0, (i * SUB_LLM_STAGGER_MS + jitter_ms) / 1000.0)
+    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
+        if not ROOT_TOOL_URL:
+            raise RuntimeError("Root tool URL not configured")
+        if ROOT_TOOL_SERIALIZATION != "pickle":
+            raise RuntimeError("Only pickle serialization is supported")
 
-                def _call_with_delay(
-                    p=prompt, d=delay_s, b=batch_id, kw=kwargs
-                ):
-                    if d:
-                        time.sleep(d)
-                    return _single_llm_call(p, b, **kw)
+        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+        payload = {{
+            "tool_name": tool_name,
+            "serialization": "pickle",
+            "args": args_payload,
+            "kwargs": kwargs_payload,
+        }}
 
-                futures.append(executor.submit(_call_with_delay))
-            results = [f.result() for f in futures]
-        batch_elapsed = perf_counter() - batch_start
-        
-        # Print metadata summary with timing
-        print(f"llm_batch: {{len(results)}} call(s) in {{batch_elapsed:.2f}}s")
-        for i, r in enumerate(results):
-            meta = r.get("metadata", {{}})
-            elapsed = meta.get("elapsed_seconds", 0.0)
-            if meta.get("error"):
-                print(f"  [{{i}}]: error ({{elapsed:.2f}}s)")
-            else:
-                tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
-                tool_calls = meta.get("tool_call_count", 0)
-                max_turns = meta.get("max_turns_reached", False)
-                status = "⚠ max turns" if max_turns else "✓"
-                print(f"  [{{i}}]: {{tokens}} tokens, {{tool_calls}} tool calls, {{elapsed:.2f}}s {{status}}")
-        
-        # Return just the content
-        return [r.get("content", "") for r in results]
+        resp = requests.post(
+            ROOT_TOOL_URL,
+            json=payload,
+            timeout=SUB_LLM_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("print_lines"):
+            for line in data["print_lines"]:
+                print(line)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        return pickle.loads(base64.b64decode(data.get("result", "")))
+
+    def _make_root_tool(name: str):
+        def _tool(*args, **kwargs):
+            return _call_root_tool(name, args, kwargs)
+
+        _tool.__name__ = name
+        return _tool
 
     restricted_builtins = _build_restricted_builtins()
+    extra_data = fs_root
 
     # Persistent execution namespace
     namespace: dict[str, object] = {{
         "__name__": "__main__",
         "__builtins__": restricted_builtins,
         "extra_data": extra_data,
+        "fs_metadata": fs_metadata,
         "answer": answer,
-        "llm_batch": llm_batch,
     }}
+    for tool_name in ROOT_TOOL_NAMES:
+        namespace[tool_name] = _make_root_tool(tool_name)
 
     # Signal ready
     Path(READY_FLAG).write_text("ready", encoding="utf-8")
@@ -626,100 +660,879 @@ _RLM_WORKER_SCRIPT = textwrap.dedent(
         
         with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
             response_file.write(json.dumps(result))
-    '''
-)
-
-
-_RLM_START_COMMAND_TEMPLATE = textwrap.dedent(
-    """
-    bash -lc '
-    set -euo pipefail
-
-    command_fifo="{command_fifo}"
-    response_fifo="{response_fifo}"
-    ready_flag="{ready_flag}"
-    install_done_flag="{install_done_flag}"
-    worker_path="{worker_path}"
-    worker_pid_file="{worker_pid_file}"
-
-    rm -f "$command_fifo" "$response_fifo" "$ready_flag" "$install_done_flag" "$worker_pid_file"
-
-    # Write worker script but do NOT start it yet
-    # Worker will be started by setup_state after context/env vars are set
-    python - <<'PY'
-import base64
-from pathlib import Path
-
-Path("{worker_path}").write_bytes(base64.b64decode("{worker_b64}"))
-PY
-
-    tail -f /dev/null
-    '
     """
 )
 
 
-def _make_ready_wait_script(
-    ready_flag: str,
-    max_wait_seconds: int,
-    error_message: str = "RLM worker failed to start",
-) -> str:
-    """Generate a ready wait script with configurable timeout."""
-    # Each iteration sleeps 0.05 seconds, so calculate iterations needed
-    iterations = max(1, int(max_wait_seconds / 0.05))
-    return textwrap.dedent(
-        f"""
-        bash -lc '
-        for i in $(seq 1 {iterations}); do
-          if [ -f "{ready_flag}" ]; then
-            exit 0
-          fi
-          sleep 0.05
-        done
-        echo "{error_message}" >&2
-        exit 1
-        '
-        """
+_RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
+    """
+    import base64
+    import json
+    import os
+    import pickle
+    import sys
+    import urllib.error
+    import urllib.request
+
+    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
+    ROOT_TOOL_USER_AGENT = os.environ.get(
+        "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
 
 
-def _make_worker_ready_wait_script(
-    ready_flag: str,
-    pid_file: str,
-    log_file: str,
-    max_wait_seconds: int,
-) -> str:
-    """Wait for worker ready flag or fail fast if the worker process exits."""
-    iterations = max(1, int(max_wait_seconds / 0.1))
-    return textwrap.dedent(
-        f"""
-        bash -lc '
-        for i in $(seq 1 {iterations}); do
-          if [ -f "{ready_flag}" ]; then
-            exit 0
-          fi
-          if [ -f "{pid_file}" ]; then
-            pid=$(cat "{pid_file}" 2>/dev/null || true)
-            if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-              echo "RLM worker exited" >&2
-              if [ -f "{log_file}" ]; then
-                echo "---LOG---" >&2
-                tail -n 200 "{log_file}" >&2
-              fi
-              exit 1
-            fi
-          fi
-          sleep 0.1
-        done
-        echo "RLM worker failed to start" >&2
-        if [ -f "{log_file}" ]; then
-          echo "---LOG---" >&2
-          tail -n 200 "{log_file}" >&2
-        fi
-        exit 1
-        '
-        """
-    )
+    def _decode_arg(raw: str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+
+
+    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
+        if not ROOT_TOOL_URL:
+            raise RuntimeError("Root tool URL not configured")
+        if ROOT_TOOL_SERIALIZATION != "pickle":
+            raise RuntimeError("Only pickle serialization is supported")
+
+        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+        payload = {
+            "tool_name": tool_name,
+            "serialization": "pickle",
+            "args": args_payload,
+            "kwargs": kwargs_payload,
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            ROOT_TOOL_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": ROOT_TOOL_USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                resp_body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            try:
+                error_body = e.read().decode("utf-8")
+            except Exception:
+                error_body = str(e)
+            raise RuntimeError(error_body) from e
+
+        response_data = json.loads(resp_body)
+        if response_data.get("error"):
+            raise RuntimeError(response_data["error"])
+
+        result_payload = response_data.get("result", "")
+        result = pickle.loads(base64.b64decode(result_payload))
+        print_lines = response_data.get("print_lines") or []
+        return result, print_lines
+
+
+    def _print_result(result):
+        if isinstance(result, str):
+            sys.stdout.write(result)
+            if not result.endswith("\\n"):
+                sys.stdout.write("\\n")
+            return
+        try:
+            sys.stdout.write(json.dumps(result))
+            sys.stdout.write("\\n")
+        except Exception:
+            sys.stdout.write(repr(result))
+            sys.stdout.write("\\n")
+
+
+    def _print_lines(lines):
+        for line in lines:
+            text = str(line)
+            sys.stdout.write(text)
+            if not text.endswith("\\n"):
+                sys.stdout.write("\\n")
+
+
+    def _split_batch_lines(lines):
+        summary = []
+        per_item = {}
+        for line in lines:
+            text = str(line).strip()
+            if text.startswith("[") and "]:" in text:
+                idx_text = text[1 : text.index("]")]
+                if idx_text.isdigit():
+                    per_item[int(idx_text)] = text[text.index("]:") + 2 :].strip()
+                    continue
+            summary.append(text)
+        return summary, per_item
+
+
+    def _print_llm_batch_result(result_list, per_item_meta=None):
+        for index, item in enumerate(result_list):
+            if index > 0:
+                sys.stdout.write("\\n")
+            header = f"----- llm_batch[{index}]"
+            if per_item_meta and index in per_item_meta:
+                header = f"{header} ({per_item_meta[index]})"
+            sys.stdout.write(f"{header} -----\\n")
+            if not isinstance(item, str):
+                try:
+                    item = json.dumps(item)
+                except Exception:
+                    item = repr(item)
+            sys.stdout.write(item)
+            if not item.endswith("\\n"):
+                sys.stdout.write("\\n")
+
+
+    def _load_json_payload(json_payload):
+        raw = json_payload
+        if raw is None and not sys.stdin.isatty():
+            raw = sys.stdin.read().strip()
+        if not raw:
+            raise RuntimeError("Missing JSON payload.")
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            raise RuntimeError(f"Invalid JSON payload: {exc}") from exc
+
+
+    def _coerce_args_kwargs(data):
+        if isinstance(data, dict):
+            if "args" in data or "kwargs" in data:
+                args = data.get("args", [])
+                kwargs = data.get("kwargs", {})
+            else:
+                args = []
+                kwargs = data
+        elif isinstance(data, list):
+            args = data
+            kwargs = {}
+        else:
+            args = [data]
+            kwargs = {}
+        if not isinstance(args, (list, tuple)):
+            raise RuntimeError("JSON args must be a list.")
+        if not isinstance(kwargs, dict):
+            raise RuntimeError("JSON kwargs must be an object.")
+        return list(args), kwargs
+
+
+    def main():
+        argv = sys.argv[1:]
+        tool_name = None
+        use_lines = False
+        use_json = False
+        json_payload = None
+        args = []
+        while argv:
+            token = argv.pop(0)
+            if token == "--tool":
+                if not argv:
+                    raise RuntimeError("--tool requires a name")
+                tool_name = argv.pop(0)
+            elif token == "--lines":
+                use_lines = True
+            elif token == "--json":
+                use_json = True
+                if argv and not argv[0].startswith("--"):
+                    json_payload = argv.pop(0)
+            else:
+                args.append(token)
+
+        if not tool_name:
+            raise RuntimeError("Tool name not provided")
+
+        if tool_name == "llm_batch":
+            def _coerce_prompts(data):
+                if isinstance(data, dict):
+                    if "prompts" in data:
+                        return data["prompts"]
+                    if "messages" in data:
+                        return data["messages"]
+                    if "prompt" in data:
+                        return [data["prompt"]]
+                    return [data]
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, str):
+                    return [data]
+                return [data]
+
+            prompts = []
+            if use_json:
+                if args:
+                    raise RuntimeError("llm_batch --json does not accept extra args.")
+                data = _load_json_payload(json_payload)
+                if isinstance(data, dict) and "prompts" in data:
+                    prompts = data["prompts"]
+                elif isinstance(data, dict) and ("args" in data or "kwargs" in data):
+                    parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
+                    if "prompts" in parsed_kwargs:
+                        prompts = parsed_kwargs["prompts"]
+                    elif parsed_args:
+                        prompts = parsed_args
+                    else:
+                        raise RuntimeError(
+                            "llm_batch --json requires 'prompts' or non-empty 'args'."
+                        )
+                else:
+                    prompts = _coerce_prompts(data)
+            elif use_lines:
+                prompts = sys.stdin.read().splitlines()
+            elif args:
+                if len(args) == 1:
+                    raw_arg = args[0].strip()
+                    if raw_arg.startswith("{") or raw_arg.startswith("["):
+                        try:
+                            data = json.loads(raw_arg)
+                        except Exception:
+                            prompts = [args[0]]
+                        else:
+                            prompts = _coerce_prompts(data)
+                    else:
+                        prompts = list(args)
+                else:
+                    prompts = list(args)
+            elif not sys.stdin.isatty():
+                raw = sys.stdin.read().strip()
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        prompts = [raw]
+                    else:
+                        prompts = _coerce_prompts(data)
+            result, print_lines = _call_root_tool(tool_name, (prompts,), {})
+            summary_lines, per_item = _split_batch_lines(print_lines)
+            if summary_lines:
+                _print_lines(summary_lines)
+            if isinstance(result, list):
+                _print_llm_batch_result(result, per_item_meta=per_item)
+            else:
+                if print_lines:
+                    _print_lines(print_lines)
+                _print_result(result)
+            return
+
+        if use_json:
+            if args:
+                raise RuntimeError("--json does not accept extra args.")
+            data = _load_json_payload(json_payload)
+            parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
+            result, print_lines = _call_root_tool(
+                tool_name, tuple(parsed_args), parsed_kwargs
+            )
+            if print_lines:
+                _print_lines(print_lines)
+            _print_result(result)
+            return
+
+        parsed_args = tuple(_decode_arg(arg) for arg in args)
+        result, print_lines = _call_root_tool(tool_name, parsed_args, {})
+        if print_lines:
+            _print_lines(print_lines)
+        _print_result(result)
+
+
+    if __name__ == "__main__":
+        try:
+            main()
+        except Exception as exc:
+            sys.stderr.write(f"Error: {exc}\\n")
+            sys.exit(1)
+    """
+)
+
+
+_RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
+    """
+    import base64
+    import json
+    import os
+    import pty
+    import select
+    import subprocess
+    import sys
+    import time
+    import uuid
+    from pathlib import Path
+
+    COMMAND_FIFO = "{command_fifo}"
+    RESPONSE_FIFO = "{response_fifo}"
+    READY_FLAG = "{ready_flag}"
+    CONTEXT_FILE = "{context_file}"
+    ANSWER_FILE = "{answer_file}"
+    ROOT_TOOL_HELPER_SCRIPT = {root_tool_helper_script}
+    # Bash answer readiness/content are emitted via markers in stdout.
+
+    def ensure_fifo(path: str) -> None:
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkfifo(path)
+
+    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
+        ensure_fifo(fifo_path)
+
+    fs_root = None
+    if Path(CONTEXT_FILE).exists():
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+
+    if fs_root:
+        os.chdir(fs_root)
+
+    helper_path = os.path.join(os.path.dirname(CONTEXT_FILE), "rlm_root_tool.py")
+    Path(helper_path).write_text(ROOT_TOOL_HELPER_SCRIPT, encoding="utf-8")
+    try:
+        os.chmod(helper_path, 0o700)
+    except Exception:
+        pass
+
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
+
+    def _start_bash():
+        master_fd, slave_fd = pty.openpty()
+        env = os.environ.copy()
+        env.update(
+            {
+                "BASH_SILENCE_DEPRECATION_WARNING": "1",
+                "RLM_ROOT_TOOL_HELPER": helper_path,
+                "RLM_ROOT_TOOL_PYTHON": sys.executable,
+            }
+        )
+        process = subprocess.Popen(
+            ["bash", "--noprofile", "--norc"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            cwd=fs_root or None,
+        )
+        os.close(slave_fd)
+        init_marker = f"__RLM_INIT__{uuid.uuid4().hex}__"
+        init_lines = [
+            "stty -echo",
+            "export PS1=",
+            "export PS2=",
+            "export PROMPT_COMMAND=",
+            "export RLM_READY=",
+            "export RLM_CONTENT=",
+        ]
+        for tool_name in ROOT_TOOL_NAMES:
+            init_lines.append(
+                f'{tool_name}() {{ "$RLM_ROOT_TOOL_PYTHON" "$RLM_ROOT_TOOL_HELPER" --tool "{tool_name}" "$@"; }}'
+            )
+        init_lines.append(f'printf "\\n{init_marker}\\n"')
+        init_script = "\\n".join(init_lines) + "\\n"
+        os.write(master_fd, init_script.encode("utf-8"))
+        return process, master_fd, init_marker
+
+    process, master_fd, init_marker = _start_bash()
+
+    Path(READY_FLAG).write_text("ready", encoding="utf-8")
+
+    execution_count = 0
+
+    def _read_until_marker(marker: bytes) -> bytes:
+        buffer = b""
+        while True:
+            ready, _, _ = select.select([master_fd], [], [], 1.0)
+            if master_fd in ready:
+                chunk = os.read(master_fd, 4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                marker_idx = buffer.find(marker)
+                if marker_idx != -1:
+                    tail = buffer[marker_idx + len(marker) :]
+                    if b"\\n" in tail:
+                        break
+        return buffer
+
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    try:
+        _read_until_marker(init_marker.encode("utf-8"))
+    except Exception:
+        pass
+
+    while True:
+        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
+            payload = command_file.read()
+        if not payload:
+            continue
+        request = json.loads(payload)
+        if request.get("shutdown"):
+            break
+
+        code = request.get("code", "")
+        seq = request.get("seq", 0)
+        execution_count += 1
+
+        marker = uuid.uuid4().hex
+        end_marker = f"__RLM_END__{marker}__"
+        env_marker = f"__RLM_ENV__{marker}__"
+        cmd = (
+            f"{code}\\n"
+            f'printf "\\n{end_marker}__%s\\n" "$?";'
+            f' printf "{env_marker}__%s__" "${{RLM_READY:-}}";'
+            f' printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n";'
+            f" printf '\\n'\\n"
+        )
+        try:
+            os.write(master_fd, cmd.encode("utf-8"))
+        except Exception as exc:
+            result = {
+                "status": "error",
+                "stdout": "",
+                "stderr": "",
+                "result": f"Failed to write to bash session: {exc}",
+                "execution_count": execution_count,
+                "seq": seq,
+                "answer": {"ready": False, "content": ""},
+            }
+            with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+                response_file.write(json.dumps(result))
+            continue
+
+        raw = _read_until_marker(env_marker.encode("utf-8"))
+        text = raw.decode("utf-8", errors="replace")
+
+        output = text
+        exit_code = None
+        ready_val = ""
+        content_val = ""
+
+        end_idx = text.find(end_marker)
+        if end_idx != -1:
+            output = text[:end_idx]
+            after_end = text[end_idx + len(end_marker):]
+            if after_end.startswith(\"__\"):
+                after_end = after_end[2:]
+                exit_str = after_end.split(\"\\n\", 1)[0]
+                try:
+                    exit_code = int(exit_str.strip())
+                except Exception:
+                    exit_code = None
+
+        env_idx = text.find(env_marker)
+        if env_idx != -1:
+            after_env = text[env_idx + len(env_marker):]
+            if after_env.startswith("__"):
+                after_env = after_env[2:]
+                parts = after_env.split("__", 1)
+                if len(parts) == 2:
+                    ready_val = parts[0]
+                    content_b64 = parts[1].split("\\n", 1)[0]
+                    if content_b64:
+                        try:
+                            content_val = base64.b64decode(content_b64).decode(
+                                "utf-8", errors="replace"
+                            )
+                        except Exception:
+                            content_val = ""
+
+        answer = {"ready": _parse_bool(ready_val), "content": content_val}
+        Path(ANSWER_FILE).write_text(json.dumps(answer), encoding="utf-8")
+
+        status = "ok"
+        if process.poll() is not None:
+            status = "error"
+            output = output + f"\\nBash session exited with code {process.returncode}\\n"
+
+        result = {
+            "status": status,
+            "stdout": output,
+            "stderr": "",
+            "result": None,
+            "execution_count": execution_count,
+            "seq": seq,
+            "answer": answer,
+        }
+
+        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+            response_file.write(json.dumps(result))
+    """
+)
+
+
+_RLM_SANDBOX_PY_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
+    """
+    import ast
+    import base64
+    import contextlib
+    import io
+    import json
+    import os
+    import pickle
+    import sys
+    import traceback
+    from pathlib import Path
+    import requests
+
+    COMMAND_FIFO = "{command_fifo}"
+    RESPONSE_FIFO = "{response_fifo}"
+    READY_FLAG = "{ready_flag}"
+    CONTEXT_FILE = "{context_file}"
+    ANSWER_FILE = "{answer_file}"
+
+    def ensure_fifo(path: str) -> None:
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkfifo(path)
+
+    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
+        ensure_fifo(fifo_path)
+
+    fs_root = None
+    fs_metadata = {}
+    if Path(CONTEXT_FILE).exists():
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+            fs_metadata = context.get("fs_metadata") or {}
+
+    if fs_root:
+        os.chdir(fs_root)
+
+    answer = {"ready": False, "content": ""}
+    if Path(ANSWER_FILE).exists():
+        with open(ANSWER_FILE, "r", encoding="utf-8") as f:
+            answer = json.load(f)
+
+    ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SERIALIZATION = os.environ.get("RLM_ROOT_TOOL_SERIALIZATION", "pickle")
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
+
+    def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):
+        if not ROOT_TOOL_URL:
+            raise RuntimeError("Root tool URL not configured")
+        if ROOT_TOOL_SERIALIZATION != "pickle":
+            raise RuntimeError("Only pickle serialization is supported")
+
+        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
+        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
+        payload = {
+            "tool_name": tool_name,
+            "serialization": "pickle",
+            "args": args_payload,
+            "kwargs": kwargs_payload,
+        }
+
+        resp = requests.post(
+            ROOT_TOOL_URL,
+            json=payload,
+            timeout=300,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("print_lines"):
+            for line in data["print_lines"]:
+                print(line)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        return pickle.loads(base64.b64decode(data.get("result", "")))
+
+    def _make_root_tool(name: str):
+        def _tool(*args, **kwargs):
+            return _call_root_tool(name, args, kwargs)
+
+        _tool.__name__ = name
+        return _tool
+
+    extra_data = fs_root
+
+    namespace: dict[str, object] = {
+        "__name__": "__main__",
+        "extra_data": extra_data,
+        "fs_metadata": fs_metadata,
+        "answer": answer,
+    }
+    for tool_name in ROOT_TOOL_NAMES:
+        namespace[tool_name] = _make_root_tool(tool_name)
+
+    Path(READY_FLAG).write_text("ready", encoding="utf-8")
+
+    execution_count = 0
+
+    while True:
+        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
+            payload = command_file.read()
+        if not payload:
+            continue
+        request = json.loads(payload)
+        if request.get("shutdown"):
+            break
+
+        code = request.get("code", "")
+        seq = request.get("seq", 0)
+        execution_count += 1
+
+        result = {
+            "status": "ok",
+            "stdout": "",
+            "stderr": "",
+            "result": None,
+            "execution_count": execution_count,
+            "seq": seq,
+            "answer": namespace.get("answer", {"ready": False, "content": ""}),
+        }
+
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+
+        try:
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                module_ast = ast.parse(code, mode="exec")
+                body = list(module_ast.body)
+                trailing_expr = None
+                if body and isinstance(body[-1], ast.Expr):
+                    trailing_expr = body.pop()
+                if body:
+                    exec_module = ast.Module(body=body, type_ignores=[])
+                    exec(compile(exec_module, "<cell>", "exec"), namespace, namespace)
+                if trailing_expr is not None:
+                    value = eval(
+                        compile(ast.Expression(trailing_expr.value), "<cell>", "eval"),
+                        namespace,
+                        namespace,
+                    )
+                    if value is not None:
+                        result["result"] = repr(value)
+        except Exception:
+            result["status"] = "error"
+            result["result"] = traceback.format_exc()
+
+        result["stdout"] = stdout_buffer.getvalue()
+        result["stderr"] = stderr_buffer.getvalue()
+        result["answer"] = namespace.get("answer", {"ready": False, "content": ""})
+
+        with open(ANSWER_FILE, "w", encoding="utf-8") as f:
+            json.dump(result["answer"], f)
+
+        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+            response_file.write(json.dumps(result))
+    """
+)
+
+
+_RLM_SANDBOX_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
+    """
+    import base64
+    import json
+    import os
+    import subprocess
+    import sys
+    import uuid
+    from pathlib import Path
+
+    COMMAND_FIFO = "{command_fifo}"
+    RESPONSE_FIFO = "{response_fifo}"
+    READY_FLAG = "{ready_flag}"
+    CONTEXT_FILE = "{context_file}"
+    ANSWER_FILE = "{answer_file}"
+    ROOT_TOOL_HELPER_SCRIPT = {root_tool_helper_script}
+    STATE_FILE = os.path.join(os.path.dirname(CONTEXT_FILE), "rlm_env_state.json")
+
+    def ensure_fifo(path: str) -> None:
+        if os.path.exists(path):
+            os.remove(path)
+        os.mkfifo(path)
+
+    for fifo_path in (COMMAND_FIFO, RESPONSE_FIFO):
+        ensure_fifo(fifo_path)
+
+    fs_root = None
+    if Path(CONTEXT_FILE).exists():
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            context = json.load(f)
+            fs_root = context.get("fs_root")
+
+    if fs_root:
+        os.chdir(fs_root)
+
+    helper_path = os.path.join(os.path.dirname(CONTEXT_FILE), "rlm_root_tool.py")
+    Path(helper_path).write_text(ROOT_TOOL_HELPER_SCRIPT, encoding="utf-8")
+    try:
+        os.chmod(helper_path, 0o700)
+    except Exception:
+        pass
+
+    ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")
+    try:
+        ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)
+    except Exception:
+        ROOT_TOOL_NAMES = []
+
+    def _tool_defs():
+        lines = []
+        for tool_name in ROOT_TOOL_NAMES:
+            lines.append(
+                f'{tool_name}() {{ "$RLM_ROOT_TOOL_PYTHON" "$RLM_ROOT_TOOL_HELPER" --tool "{tool_name}" "$@"; }}'
+            )
+        return "\\n".join(lines)
+
+    TOOL_DEF_SCRIPT = _tool_defs()
+
+    def _load_state():
+        if Path(STATE_FILE).exists():
+            try:
+                return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {
+            "cwd": fs_root or os.getcwd(),
+            "ready": False,
+            "content": "",
+        }
+
+    def _save_state(state):
+        Path(STATE_FILE).write_text(json.dumps(state), encoding="utf-8")
+
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    state = _load_state()
+    answer = {"ready": bool(state.get("ready")), "content": state.get("content", "")}
+
+    Path(READY_FLAG).write_text("ready", encoding="utf-8")
+
+    execution_count = 0
+
+    while True:
+        with open(COMMAND_FIFO, "r", encoding="utf-8") as command_file:
+            payload = command_file.read()
+        if not payload:
+            continue
+        request = json.loads(payload)
+        if request.get("shutdown"):
+            break
+
+        code = request.get("code", "")
+        seq = request.get("seq", 0)
+        execution_count += 1
+
+        marker = uuid.uuid4().hex
+        end_marker = f"__RLM_END__{marker}__"
+        env_marker = f"__RLM_ENV__{marker}__"
+        pwd_marker = f"__RLM_PWD__{marker}__"
+
+        bash_script = (
+            f'cd "${{RLM_PWD:-$PWD}}"\\n'
+            f'export RLM_READY="${{RLM_READY:-}}"\\n'
+            f'export RLM_CONTENT="${{RLM_CONTENT-}}"\\n'
+            f"{TOOL_DEF_SCRIPT}\\n"
+            f"(\\n"
+            f"trap '"
+            f'__RLM_STATUS=$?; '
+            f'printf "\\n{end_marker}__%s\\n" "$__RLM_STATUS"; '
+            f'printf "{env_marker}__%s__" "${{RLM_READY:-}}"; '
+            f'printf "%s" "${{RLM_CONTENT-}}" | base64 | tr -d "\\n"; '
+            f'printf "\\n{pwd_marker}__%s\\n" "$PWD"'
+            f"' EXIT\\n"
+            f"{code}\\n"
+            f")\\n"
+        )
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "RLM_READY": "1" if state.get("ready") else "",
+                "RLM_CONTENT": state.get("content", ""),
+                "RLM_PWD": state.get("cwd", ""),
+                "RLM_ROOT_TOOL_HELPER": helper_path,
+                "RLM_ROOT_TOOL_PYTHON": sys.executable,
+            }
+        )
+
+        proc = subprocess.run(
+            ["bash", "-lc", bash_script],
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=state.get("cwd") or None,
+        )
+
+        text = proc.stdout or ""
+        output = text
+        exit_code = None
+        ready_val = ""
+        content_val = ""
+        cwd_val = state.get("cwd", "")
+
+        end_idx = text.find(end_marker)
+        if end_idx != -1:
+            output = text[:end_idx]
+            after_end = text[end_idx + len(end_marker):]
+            if after_end.startswith("__"):
+                after_end = after_end[2:]
+                exit_str = after_end.split("\\n", 1)[0]
+                try:
+                    exit_code = int(exit_str.strip())
+                except Exception:
+                    exit_code = None
+
+        env_idx = text.find(env_marker)
+        if env_idx != -1:
+            after_env = text[env_idx + len(env_marker):]
+            if after_env.startswith("__"):
+                after_env = after_env[2:]
+                parts = after_env.split("__", 1)
+                if len(parts) == 2:
+                    ready_val = parts[0]
+                    content_b64 = parts[1].split("\\n", 1)[0]
+                    if content_b64:
+                        try:
+                            content_val = base64.b64decode(content_b64).decode(
+                                "utf-8", errors="replace"
+                            )
+                        except Exception:
+                            content_val = ""
+
+        pwd_idx = text.find(pwd_marker)
+        if pwd_idx != -1:
+            after_pwd = text[pwd_idx + len(pwd_marker):]
+            if after_pwd.startswith("__"):
+                after_pwd = after_pwd[2:]
+                cwd_val = after_pwd.split("\\n", 1)[0].strip() or cwd_val
+
+        state["ready"] = _parse_bool(ready_val)
+        state["content"] = content_val
+        if cwd_val:
+            state["cwd"] = cwd_val
+        _save_state(state)
+
+        answer = {"ready": bool(state.get("ready")), "content": state.get("content", "")}
+        Path(ANSWER_FILE).write_text(json.dumps(answer), encoding="utf-8")
+
+        result = {
+            "status": "ok",
+            "stdout": output,
+            "stderr": proc.stderr or "",
+            "result": None,
+            "execution_count": execution_count,
+            "seq": seq,
+            "answer": answer,
+        }
+
+        with open(RESPONSE_FIFO, "w", encoding="utf-8") as response_file:
+            response_file.write(json.dumps(result))
+    """
+)
 
 
 def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
@@ -729,7 +1542,6 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
         command_fifo=os.path.join(base_dir, "rlm_cmd"),
         response_fifo=os.path.join(base_dir, "rlm_res"),
         ready_flag=os.path.join(base_dir, "rlm_ready"),
-        install_done_flag=os.path.join(base_dir, "rlm_install_done"),
         worker_path=os.path.join(base_dir, "rlm_worker.py"),
         worker_pid_file=os.path.join(base_dir, "rlm_worker.pid"),
         context_file=os.path.join(base_dir, "rlm_context.json"),
@@ -738,8 +1550,43 @@ def _build_worker_paths(base_dir: str) -> RLMWorkerPaths:
     )
 
 
-def _render_worker_script(paths: RLMWorkerPaths) -> str:
-    return _RLM_WORKER_SCRIPT.format(
+def _render_worker_script(
+    paths: RLMWorkerPaths, *, repl_language: str, sandboxed: bool = False
+) -> str:
+    if sandboxed:
+        if repl_language == "bash":
+            script = _RLM_SANDBOX_BASH_WORKER_SCRIPT_TEMPLATE
+            script = script.replace("{command_fifo}", paths.command_fifo)
+            script = script.replace("{response_fifo}", paths.response_fifo)
+            script = script.replace("{ready_flag}", paths.ready_flag)
+            script = script.replace("{context_file}", paths.context_file)
+            script = script.replace("{answer_file}", paths.answer_file)
+            script = script.replace(
+                "{root_tool_helper_script}", repr(_RLM_BASH_TOOL_HELPER_SCRIPT)
+            )
+            return script
+        script = _RLM_SANDBOX_PY_WORKER_SCRIPT_TEMPLATE
+        script = script.replace("{command_fifo}", paths.command_fifo)
+        script = script.replace("{response_fifo}", paths.response_fifo)
+        script = script.replace("{ready_flag}", paths.ready_flag)
+        script = script.replace("{context_file}", paths.context_file)
+        script = script.replace("{answer_file}", paths.answer_file)
+        return script
+
+    if repl_language == "bash":
+        script = _RLM_BASH_WORKER_SCRIPT_TEMPLATE
+        script = script.replace("{command_fifo}", paths.command_fifo)
+        script = script.replace("{response_fifo}", paths.response_fifo)
+        script = script.replace("{ready_flag}", paths.ready_flag)
+        script = script.replace("{context_file}", paths.context_file)
+        script = script.replace("{answer_file}", paths.answer_file)
+        script = script.replace(
+            "{root_tool_helper_script}", repr(_RLM_BASH_TOOL_HELPER_SCRIPT)
+        )
+        return script
+    filesystem_jail_code = textwrap.dedent(inspect.getsource(rlm_jail_module))
+    return _RLM_WORKER_SCRIPT_TEMPLATE.format(
+        filesystem_jail_code=filesystem_jail_code,
         command_fifo=paths.command_fifo,
         response_fifo=paths.response_fifo,
         ready_flag=paths.ready_flag,
@@ -764,15 +1611,16 @@ You will write code, see its output, then write more code based on what you lear
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
 
-## Input Data Metadata
-{metadata_summary}
+## Filesystem Context
+{filesystem_summary}
 
 ## Workflow
 
-**Step 1: Explore the data**
+**Step 1: Explore the filesystem**
 ```python
-print(type(extra_data))
-print(extra_data[:500] if isinstance(extra_data, str) else extra_data[:3])
+import os
+print(os.getcwd())
+print(os.listdir("."))
 ```
 Wait for output. Now you know the actual format.
 
@@ -795,14 +1643,61 @@ answer["ready"] = True
 """
 
 
+_RLM_BASH_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
+
+## Critical: This is an ITERATIVE environment
+
+You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
+
+Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
+
+## Filesystem Context
+{filesystem_summary}
+
+## Workflow
+
+**Step 1: Explore the filesystem**
+```bash
+pwd
+ls
+```
+Wait for output. Now you know the actual format.
+
+**Step 2: Build your answer**
+```bash
+export RLM_CONTENT="your current best answer"
+```
+
+**Step 3: Verify and finalize (only after reviewing output)**
+```bash
+printf "My answer: %s\\n" "$RLM_CONTENT"
+export RLM_READY=1
+```
+
+## Important Rules
+
+1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
+2. **One step at a time** - make small tool calls, see output, then continue
+3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
+4. **Tool usage in Bash**:
+   - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
+   - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
+     (or provide the JSON via stdin).
+   - `llm_batch` accepts `--json` with `{"prompts":[...]}`
+"""
+
+
 class BaseRLMExecutor:
     def __init__(self, env: "RLMEnv") -> None:
         self.env = env
 
-    async def get_payload_dir(self, state: State) -> str | None:
+    def create_rollout_dirs(self, state: State) -> None:
+        raise NotImplementedError
+
+    async def prepare_filesystem(self, state: State) -> None:
         return None
 
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+    async def setup(self, state: State) -> None:
         raise NotImplementedError
 
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
@@ -821,358 +1716,28 @@ class BaseRLMExecutor:
         return None
 
 
-class SandboxRLMExecutor(BaseRLMExecutor):
-    def __init__(self, env: "RLMEnv") -> None:
-        super().__init__(env)
-        self._paths = env._sandbox_paths
-
-    async def get_payload_dir(self, state: State) -> str | None:
-        return self._paths.base_dir
-
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
-        state["rlm_paths"] = self._paths.to_dict()
-        max_sandbox_retries = 5
-        for attempt in range(max_sandbox_retries):
-            try:
-                await self._prepare_sandbox_and_start_worker(state, prepared)
-                return
-            except vf.SandboxError as e:
-                cause_text = str(e.__cause__ or e)
-                lower_cause = cause_text.lower()
-                retryable = (
-                    isinstance(e, SandboxNotReadyError)
-                    or "worker failed to start" in lower_cause
-                    or "sandbox_not_ready" in lower_cause
-                    or "timeout during sandbox creation" in lower_cause
-                )
-                if retryable and attempt < max_sandbox_retries - 1:
-                    logger.warning(
-                        "Sandbox startup failed (attempt %s/%s): %s. Recreating sandbox...",
-                        attempt + 1,
-                        max_sandbox_retries,
-                        cause_text,
-                    )
-                    state = await self._recreate_sandbox(state)
-                else:
-                    raise
-
-    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox ID not set")
-        payload_json = json.dumps(payload)
-        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
-        command = textwrap.dedent(
-            f"""
-            python3 - <<'PY'
-import base64
-import json
-import sys
-
-data = base64.b64decode('{payload_b64}').decode('utf-8')
-with open('{self._paths.command_fifo}', 'w', encoding='utf-8') as command_file:
-    command_file.write(data)
-with open('{self._paths.response_fifo}', 'r', encoding='utf-8') as response_file:
-    sys.stdout.write(response_file.read())
-PY
-            """
-        )
-        try:
-            result = await self.env.sandbox_client.execute_command(
-                sandbox_id, command, timeout=self.env.code_execution_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.warning(
-                "Code execution timed out after %ss", self.env.code_execution_timeout
-            )
-            raise RLMCodeExecutionTimeout from e
-        except Exception as e:
-            logger.error(f"Sandbox error during code execution: {e}")
-            raise vf.SandboxError() from e
-        return RLMExecResult(
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            exit_code=getattr(result, "exit_code", None),
-        )
-
-    async def read_answer(self, state: State) -> str:
-        sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
-            return ""
-        try:
-            result = await self._execute_command_with_retry(
-                sandbox_id,
-                f'cat {self._paths.answer_file} 2>/dev/null || echo \'{{"content": ""}}\'',
-            )
-            return json.loads(result.stdout.strip()).get("content", "")
-        except Exception:
-            return ""
-
-    async def recover_from_timeout(self, state: State) -> bool:
-        context_dict = state.get("rlm_context")
-        if not context_dict:
-            logger.error("Cannot recover from timeout: missing rlm_context in state")
-            return False
-        try:
-            state = await self._recreate_sandbox(state)
-            prepared = PreparedContextData(
-                context_dict=context_dict,
-                payload_bytes=state.get("rlm_payload_bytes"),
-                payload_path=state.get("rlm_payload_path"),
-                payload_name=state.get("rlm_payload_name"),
-            )
-            await self._prepare_sandbox_and_start_worker(state, prepared)
-        except Exception as e:
-            logger.error(f"Failed to recover from code timeout: {e}")
-            return False
-        state["rlm_worker_ready"] = True
-        state["_exec_seq"] = 0
-        return True
-
-    async def cleanup(self, state: State) -> None:
-        return None
-
-    async def _execute_command_with_retry(
-        self, sandbox_id: str, command: str, timeout: int | None = None
-    ):
-        """Execute command with retry logic for transient sandbox errors."""
-        effective_timeout = timeout or self.env.timeout_per_command_seconds
-        start = perf_counter()
-        logger.debug(f"Executing command in sandbox {sandbox_id}: {command[:100]}...")
-        try:
-            result = await self.env.with_retry(self.env.sandbox_client.execute_command)(
-                sandbox_id, command, timeout=effective_timeout
-            )
-        except CommandTimeoutError as e:
-            logger.debug(
-                f"Command timed out after {effective_timeout}s in sandbox {sandbox_id}"
-            )
-            raise vf.SandboxError() from e
-        except Exception as e:
-            raise vf.SandboxError() from e
-        elapsed = perf_counter() - start
-        logger.debug(f"Command completed in {elapsed:.1f}s")
-        return result
-
-    async def _write_json_to_sandbox(
-        self, sandbox_id: str, data: dict, file_path: str, filename: str
-    ) -> None:
-        data_bytes = json.dumps(data).encode("utf-8")
-        await self.env.with_retry(self.env.sandbox_client.upload_bytes)(
-            sandbox_id, file_path=file_path, file_bytes=data_bytes, filename=filename
-        )
-
-    async def upload_file_to_sandbox(
-        self, sandbox_id: str, data: bytes, file_path: str, filename: str | None
-    ) -> None:
-        import tempfile
-
-        tmp_path = None
-        try:
-            suffix = f"-{filename}" if filename else ""
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                tmp_path = Path(tmp_file.name)
-                tmp_file.write(data)
-            await self.env.with_retry(self.env.sandbox_client.upload_file)(
-                sandbox_id, file_path, str(tmp_path)
-            )
-        finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
-
-    async def _wait_for_worker_ready(self, sandbox_id: str) -> None:
-        wait_script = _make_worker_ready_wait_script(
-            self._paths.ready_flag,
-            self._paths.worker_pid_file,
-            self._paths.log_file,
-            self.env.max_startup_wait_seconds,
-        )
-        timeout = self.env.max_startup_wait_seconds + 10
-        result = await self._execute_command_with_retry(
-            sandbox_id, wait_script, timeout=timeout
-        )
-        stderr = result.stderr or ""
-        stdout = result.stdout or ""
-        if (
-            "RLM worker failed to start" in stdout
-            or "RLM worker failed to start" in stderr
-            or "RLM worker exited" in stdout
-            or "RLM worker exited" in stderr
-        ):
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                (
-                    f"ls -la {self._paths.base_dir}/rlm* 2>&1; echo '---PID---'; "
-                    f"cat {self._paths.worker_pid_file} 2>&1 || echo 'no pid'; "
-                    "echo '---LOG---'; "
-                    f"cat {self._paths.log_file} 2>&1 || echo 'no log'; "
-                    "echo '---PS---'; ps aux 2>&1"
-                ),
-            )
-            logger.error(
-                f"RLM worker failed to start. Debug info:\n{debug_result.stdout}"
-            )
-            raise vf.SandboxError() from Exception(
-                f"RLM worker failed to start: {debug_result.stdout[:500]}"
-            )
-
-    async def _wait_for_install_done(self, sandbox_id: str) -> None:
-        install_wait_seconds = self.env._compute_install_wait_seconds()
-        packages = ["requests"]
-        extra_packages = [
-            p.strip() for p in self.env.pip_install_packages.split() if p.strip()
-        ]
-        packages.extend(extra_packages)
-        if not packages:
-            return
-        install_cmd = " ".join(packages)
-        timeout = install_wait_seconds + 10
-        install_script = textwrap.dedent(
-            f"""
-            bash -lc '
-            set -euo pipefail
-            rm -f "{self._paths.install_done_flag}"
-            pip install -q {install_cmd} 2>&1 | tee /tmp/rlm_pip.log
-            touch "{self._paths.install_done_flag}"
-            '
-            """
-        )
-        result = await self._execute_command_with_retry(
-            sandbox_id, install_script, timeout=timeout
-        )
-        exit_code = getattr(result, "exit_code", 0)
-        if (
-            isinstance(exit_code, int)
-            and not isinstance(exit_code, bool)
-            and exit_code != 0
-        ):
-            debug_result = await self._execute_command_with_retry(
-                sandbox_id,
-                (
-                    "echo '---PIP LOG---'; tail -n 200 /tmp/rlm_pip.log 2>&1 || "
-                    "echo 'no pip log'"
-                ),
-            )
-            logger.error(
-                "RLM pip install failed (exit_code=%s). Log tail:\n%s",
-                exit_code,
-                debug_result.stdout,
-            )
-            raise vf.SandboxError() from Exception("RLM pip install failed")
-
-    async def _start_worker(self, state: State) -> None:
-        sandbox_id = state["sandbox_id"]
-        interception_url = state["interception_url"]
-
-        sub_llm_timeout = self.env.sub_llm_timeout
-        disallowed_modules = shlex.quote(self.env.disallowed_modules)
-        disallowed_builtins = shlex.quote(self.env.disallowed_builtins)
-        script_wait_iterations = max(1, int(self.env.max_startup_wait_seconds / 0.1))
-        await self._wait_for_install_done(sandbox_id)
-        start_worker_cmd = f"""
-export RLM_INTERCEPTION_URL="{interception_url}"
-export RLM_SUB_MODEL="{self.env.sub_model or state.get("model", "")}"
-export RLM_MAX_SUB_LLM_PARALLELISM="{self.env.max_sub_llm_parallelism}"
-export RLM_SUB_LLM_STAGGER_MS="{self.env.sub_llm_stagger_ms}"
-export RLM_SUB_LLM_STAGGER_JITTER_MS="{self.env.sub_llm_stagger_jitter_ms}"
-export RLM_SUB_LLM_TIMEOUT="{sub_llm_timeout}"
-export RLM_SANDBOX_TIMEOUT="{self.env.code_execution_timeout}"
-export RLM_DISALLOWED_MODULES={disallowed_modules}
-export RLM_DISALLOWED_BUILTINS={disallowed_builtins}
-
-sync 2>/dev/null || true
-for i in $(seq 1 {script_wait_iterations}); do
-    if [ -f "{self._paths.worker_path}" ]; then
-        break
-    fi
-    sleep 0.1
-done
-
-        if [ ! -f "{self._paths.worker_path}" ]; then
-            echo "Worker script not found - pip install may have failed or timed out" >&2
-            exit 1
-        fi
-
-        sleep 0.2
-
-        nohup python -u {self._paths.worker_path} >> {self._paths.log_file} 2>&1 &
-        echo $! > {self._paths.worker_pid_file}
-"""
-        start_worker_timeout = self.env.max_startup_wait_seconds + 30
-        await self._execute_command_with_retry(
-            sandbox_id, start_worker_cmd, timeout=start_worker_timeout
-        )
-        await self._wait_for_worker_ready(sandbox_id)
-
-    async def _prepare_sandbox_and_start_worker(
-        self, state: State, prepared: "PreparedContextData"
-    ) -> None:
-        sandbox_id = state["sandbox_id"]
-        try:
-            await self.env.sandbox_client.wait_for_creation(sandbox_id)
-        except Exception as e:
-            raise SandboxNotReadyError(e)
-        if prepared.payload_bytes is not None and prepared.payload_path:
-            await self.upload_file_to_sandbox(
-                sandbox_id,
-                prepared.payload_bytes,
-                prepared.payload_path,
-                prepared.payload_name,
-            )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            prepared.context_dict,
-            self._paths.context_file,
-            "rlm_context.json",
-        )
-        await self._write_json_to_sandbox(
-            sandbox_id,
-            {"ready": False, "content": ""},
-            self._paths.answer_file,
-            "rlm_answer.json",
-        )
-        await self._start_worker(state)
-
-    async def _recreate_sandbox(self, state: State) -> State:
-        old_sandbox_id = state.get("sandbox_id")
-        if old_sandbox_id:
-            self.env.active_sandboxes.discard(old_sandbox_id)
-            try:
-                await self.env.sandbox_client.delete(old_sandbox_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete broken sandbox {old_sandbox_id}: {e}")
-
-        await asyncio.sleep(1)
-
-        request = self.env.get_sandbox_request(state)
-        try:
-            sandbox = await self.env.with_retry(self.env.sandbox_client.create)(request)
-        except Exception as e:
-            raise SandboxCreationError(e)
-        self.env.active_sandboxes.add(sandbox.id)
-        logger.debug(f"Created replacement sandbox {sandbox.id}")
-        state["sandbox_id"] = sandbox.id
-        return state
-
-
 class LocalRLMExecutor(BaseRLMExecutor):
     def __init__(self, env: "RLMEnv") -> None:
         super().__init__(env)
         self._sessions: dict[str, LocalRLMReplSession] = {}
-        self._venv_lock = asyncio.Lock()
-        self._instance_venv_path: str | None = None
-        self._instance_venv_ready = False
+        self._retained_dirs: set[str] = set()
+        self._io_executor = ThreadPoolExecutor(
+            max_workers=self.env.local_repl_max_workers
+        )
 
-    async def get_payload_dir(self, state: State) -> str | None:
+    def create_rollout_dirs(self, state: State) -> None:
         session = self._get_or_create_session(state)
-        return session.paths.base_dir
+        state["rlm_rollout_dir"] = session.rollout_dir
+        state["rlm_fs_root"] = session.fs_root
+        state["rlm_control_dir"] = session.control_dir
+        state["rlm_paths"] = session.paths.to_dict()
 
-    async def setup(self, state: State, prepared: "PreparedContextData") -> None:
+    async def setup(self, state: State) -> None:
         session = self._get_or_create_session(state)
         venv_path = await self._ensure_venv(session)
         session.venv_path = venv_path
 
-        await self._write_local_files(session, prepared)
+        await self._write_local_files(session, state)
         await self._start_worker(state, session)
 
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
@@ -1195,18 +1760,40 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         try:
             raw = await asyncio.wait_for(
-                asyncio.to_thread(_do_io),
+                asyncio.get_running_loop().run_in_executor(self._io_executor, _do_io),
                 timeout=self.env.code_execution_timeout,
             )
         except asyncio.TimeoutError as e:
             logger.warning(
                 "Code execution timed out after %ss", self.env.code_execution_timeout
             )
+            self._unblock_response_fifo(session, payload.get("seq", 0))
             raise RLMCodeExecutionTimeout from e
         except Exception as e:
             raise vf.SandboxError() from e
 
         return RLMExecResult(stdout=raw, stderr="")
+
+    def _unblock_response_fifo(self, session: LocalRLMReplSession, seq: int) -> None:
+        """Best-effort write to the response FIFO to unblock a stuck reader thread."""
+        payload = {
+            "status": "error",
+            "stdout": "",
+            "stderr": "",
+            "result": "Unblocked timed-out FIFO read.",
+            "execution_count": 0,
+            "seq": seq,
+            "answer": {"ready": False, "content": ""},
+        }
+        try:
+            fd = os.open(session.paths.response_fifo, os.O_RDWR | os.O_NONBLOCK)
+        except Exception:
+            return
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as response_file:
+                response_file.write(json.dumps(payload))
+        except Exception:
+            pass
 
     async def read_answer(self, state: State) -> str:
         session = self._sessions.get(state.get("rollout_id", ""))
@@ -1225,13 +1812,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
             return False
         try:
             self._stop_worker(session)
-            prepared = PreparedContextData(
-                context_dict=state.get("rlm_context", {}),
-                payload_bytes=state.get("rlm_payload_bytes"),
-                payload_path=state.get("rlm_payload_path"),
-                payload_name=state.get("rlm_payload_name"),
-            )
-            await self._write_local_files(session, prepared)
+            await self._write_local_files(session, state)
             await self._start_worker(state, session)
         except Exception as e:
             logger.error(f"Failed to recover from code timeout: {e}")
@@ -1248,11 +1829,12 @@ class LocalRLMExecutor(BaseRLMExecutor):
         if not session:
             return
         self._stop_worker(session)
-        session.temp_dir.cleanup()
+        if state.get("retain_filesystem_after_rollout", False):
+            self._retained_dirs.add(session.rollout_dir)
+        else:
+            await asyncio.to_thread(shutil.rmtree, session.rollout_dir, True)
 
     async def teardown(self) -> None:
-        if self.env.execution_backend != "local":
-            return
         if self._sessions:
             sessions = list(self._sessions.values())
             self._sessions.clear()
@@ -1260,24 +1842,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
                 try:
                     self._stop_worker(session)
                 finally:
-                    session.temp_dir.cleanup()
-        if self.env.local_venv_scope != "instance":
-            return
-        if self._instance_venv_path:
-            if sys.is_finalizing():
-                shutil.rmtree(self._instance_venv_path, True)
-            else:
-                try:
-                    await asyncio.to_thread(
-                        shutil.rmtree, self._instance_venv_path, True
-                    )
-                except RuntimeError as e:
-                    if "cannot schedule new futures" in str(e).lower():
-                        shutil.rmtree(self._instance_venv_path, True)
-                    else:
-                        raise
-            self._instance_venv_path = None
-            self._instance_venv_ready = False
+                    if session.rollout_dir not in self._retained_dirs:
+                        shutil.rmtree(session.rollout_dir, True)
+        self._io_executor.shutdown(wait=False, cancel_futures=True)
 
     def _get_or_create_session(self, state: State) -> LocalRLMReplSession:
         rollout_id = state.get("rollout_id")
@@ -1286,15 +1853,20 @@ class LocalRLMExecutor(BaseRLMExecutor):
         session = self._sessions.get(rollout_id)
         if session:
             return session
-        temp_dir = tempfile.TemporaryDirectory(prefix=f"rlm_{rollout_id}_")
-        paths = _build_worker_paths(temp_dir.name)
+        rollout_dir = Path(tempfile.mkdtemp(prefix=f"rlm_rollout_{rollout_id}_"))
+        fs_root = rollout_dir / "rlm_fs"
+        control_dir = rollout_dir / "rlm_control"
+        fs_root.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(parents=True, exist_ok=True)
+        paths = _build_worker_paths(str(control_dir))
         session = LocalRLMReplSession(
             rollout_id=rollout_id,
-            temp_dir=temp_dir,
+            rollout_dir=str(rollout_dir),
             paths=paths,
+            fs_root=str(fs_root),
+            control_dir=str(control_dir),
         )
         self._sessions[rollout_id] = session
-        state["rlm_paths"] = paths.to_dict()
         return session
 
     def _get_session(self, state: State) -> LocalRLMReplSession:
@@ -1303,22 +1875,13 @@ class LocalRLMExecutor(BaseRLMExecutor):
             raise vf.SandboxError() from Exception("Local session not initialized")
         return self._sessions[rollout_id]
 
-    async def _ensure_venv(self, session: LocalRLMReplSession) -> str:
-        if self.env.local_venv_scope == "rollout":
-            venv_path = os.path.join(session.paths.base_dir, ".venv")
-            await self._create_venv(venv_path, force=True)
-            await self._install_packages(venv_path)
-            return venv_path
-
-        async with self._venv_lock:
-            if self._instance_venv_ready and self._instance_venv_path:
-                return self._instance_venv_path
-            venv_path = self._instance_venv_path or tempfile.mkdtemp(prefix="rlm_venv_")
-            await self._create_venv(venv_path, force=not self._instance_venv_ready)
-            await self._install_packages(venv_path)
-            self._instance_venv_path = venv_path
-            self._instance_venv_ready = True
-            return venv_path
+    async def _ensure_venv(self, session: LocalRLMReplSession) -> str | None:
+        if self.env.repl_language == "bash":
+            return None
+        venv_path = os.path.join(session.fs_root, ".venv")
+        await self._create_venv(venv_path, force=True)
+        await self._install_packages(venv_path)
+        return venv_path
 
     async def _create_venv(self, venv_path: str, force: bool) -> None:
         if force and os.path.exists(venv_path):
@@ -1370,30 +1933,43 @@ class LocalRLMExecutor(BaseRLMExecutor):
         return os.path.join(venv_path, "bin", "python")
 
     async def _write_local_files(
-        self, session: LocalRLMReplSession, prepared: "PreparedContextData"
+        self, session: LocalRLMReplSession, state: State
     ) -> None:
-        Path(session.paths.base_dir).mkdir(parents=True, exist_ok=True)
-        if prepared.payload_bytes is not None and prepared.payload_path:
-            payload_path = Path(prepared.payload_path)
-            payload_path.parent.mkdir(parents=True, exist_ok=True)
-            payload_path.write_bytes(prepared.payload_bytes)
+        Path(session.control_dir).mkdir(parents=True, exist_ok=True)
+        allowed_paths = [
+            session.paths.command_fifo,
+            session.paths.response_fifo,
+            session.paths.ready_flag,
+            session.paths.context_file,
+            session.paths.answer_file,
+        ]
+        context = {
+            "fs_root": state.get("rlm_fs_root"),
+            "fs_metadata": state.get("rlm_fs_metadata") or {},
+            "allowed_paths": allowed_paths,
+        }
         Path(session.paths.context_file).write_text(
-            json.dumps(prepared.context_dict), encoding="utf-8"
+            json.dumps(context), encoding="utf-8"
         )
         Path(session.paths.answer_file).write_text(
             json.dumps({"ready": False, "content": ""}), encoding="utf-8"
         )
 
     async def _start_worker(self, state: State, session: LocalRLMReplSession) -> None:
-        if not session.venv_path:
+        if self.env.repl_language == "python" and not session.venv_path:
             raise vf.SandboxError() from Exception("Local venv not initialized")
-        worker_script = _render_worker_script(session.paths)
+        worker_script = _render_worker_script(
+            session.paths, repl_language=self.env.repl_language
+        )
         Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
 
         env_vars = os.environ.copy()
         env_vars.update(
             {
                 "RLM_INTERCEPTION_URL": state["interception_url"],
+                "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+                "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
+                "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
                 "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
                 "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
                 "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
@@ -1401,19 +1977,25 @@ class LocalRLMExecutor(BaseRLMExecutor):
                     self.env.sub_llm_stagger_jitter_ms
                 ),
                 "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
-                "RLM_SANDBOX_TIMEOUT": str(self.env.code_execution_timeout),
                 "RLM_DISALLOWED_MODULES": self.env.disallowed_modules,
                 "RLM_DISALLOWED_BUILTINS": self.env.disallowed_builtins,
             }
         )
 
-        python_path = self._venv_python(session.venv_path)
+        if self.env.repl_language == "python":
+            venv_path = session.venv_path
+            if venv_path is None:
+                raise vf.SandboxError() from Exception("Local venv not initialized")
+            python_path = self._venv_python(venv_path)
+        else:
+            python_path = sys.executable
         with open(session.paths.log_file, "a", encoding="utf-8") as log_file:
             process = subprocess.Popen(
                 [python_path, "-u", session.paths.worker_path],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env_vars,
+                start_new_session=True,
             )
         session.worker_process = process
 
@@ -1443,55 +2025,619 @@ class LocalRLMExecutor(BaseRLMExecutor):
     def _stop_worker(self, session: LocalRLMReplSession) -> None:
         if not session.worker_process:
             return
+        process = session.worker_process
         try:
-            session.worker_process.terminate()
-            session.worker_process.wait(timeout=5)
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+            process.wait(timeout=5)
         except Exception:
             try:
-                session.worker_process.kill()
+                if os.name != "nt":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
             except Exception:
                 pass
         session.worker_process = None
 
 
-class RLMEnv(SandboxEnv):
+class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
+    def __init__(self, env: "RLMEnv") -> None:
+        BaseRLMExecutor.__init__(self, env)
+        SandboxExecutorMixin.__init__(self)
+        self._sessions: dict[str, SandboxRLMReplSession] = {}
+        self._retained_dirs: set[str] = set()
+        self._retained_sandboxes: set[str] = set()
+        self._init_sandbox_executor(
+            sandbox_client_max_workers=env.sandbox_client_max_workers,
+            sandbox_client_max_connections=env.sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=env.sandbox_client_max_keepalive_connections,
+        )
+
+    def create_rollout_dirs(self, state: State) -> None:
+        session = self._get_or_create_session(state)
+        state["rlm_rollout_dir"] = session.local_rollout_dir
+        state["rlm_fs_root"] = session.local_fs_root
+        state["rlm_control_dir"] = session.local_control_dir
+        state["rlm_paths"] = _build_worker_paths(session.local_control_dir).to_dict()
+
+    async def prepare_filesystem(self, state: State) -> None:
+        session = self._get_session(state)
+        if session.sandbox_id is None:
+            request = self._build_sandbox_request(state)
+            sandbox = await self._create_sandbox(request)
+            session.sandbox_id = sandbox.id
+            state["sandbox_id"] = sandbox.id
+            await self._wait_for_sandbox_ready(sandbox.id)
+
+        if not session.sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+
+        sandbox_fs_root = state.get("rlm_fs_root_remote")
+        sandbox_control_dir = state.get("rlm_control_dir_remote")
+        if not sandbox_fs_root or not sandbox_control_dir:
+            sandbox_root = f"/tmp/rlm_{session.rollout_id}"
+            sandbox_fs_root = f"{sandbox_root}/rlm_fs"
+            sandbox_control_dir = f"{sandbox_root}/rlm_control"
+
+        mkdir_cmd = f"mkdir -p {sandbox_fs_root} {sandbox_control_dir}"
+        await self._execute_sandbox_command(
+            session.sandbox_id,
+            f"bash -lc '{mkdir_cmd}'",
+            timeout=self.env.max_startup_wait_seconds,
+        )
+
+        await self._upload_directory(
+            session.sandbox_id, session.local_fs_root, sandbox_fs_root
+        )
+
+        session.sandbox_fs_root = sandbox_fs_root
+        session.sandbox_control_dir = sandbox_control_dir
+        session.paths = _build_worker_paths(sandbox_control_dir)
+
+        state["rlm_fs_staging_root"] = session.local_fs_root
+        state["rlm_control_dir_local"] = session.local_control_dir
+        state["rlm_fs_root_remote"] = sandbox_fs_root
+        state["rlm_control_dir_remote"] = sandbox_control_dir
+        state["rlm_paths_remote"] = session.paths.to_dict()
+
+    async def setup(self, state: State) -> None:
+        session = self._get_session(state)
+        if not session.sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        if not session.paths:
+            raise vf.SandboxError() from Exception("Sandbox paths not initialized")
+
+        await self._install_packages(session)
+        await self._write_sandbox_files(session, state)
+        await self._start_worker(session, state)
+
+    async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
+        session = self._get_session(state)
+        if not session.sandbox_id or not session.paths:
+            raise vf.SandboxError() from Exception("Sandbox session not initialized")
+
+        try:
+            raw = await self._send_worker_request(session, payload)
+        except CommandTimeoutError as e:
+            raise RLMCodeExecutionTimeout from e
+        except Exception as e:
+            raise vf.SandboxError() from e
+
+        return RLMExecResult(stdout=raw, stderr="")
+
+    async def read_answer(self, state: State) -> str:
+        session = self._sessions.get(state.get("rollout_id", ""))
+        if not session or not session.sandbox_id or not session.paths:
+            return ""
+        cmd = f"bash -lc 'cat {session.paths.answer_file} 2>/dev/null || true'"
+        try:
+            result = await self._execute_sandbox_command(
+                session.sandbox_id,
+                cmd,
+                timeout=self.env.code_execution_timeout,
+            )
+        except Exception:
+            return ""
+        content = (result.stdout or "").strip()
+        if not content:
+            return ""
+        try:
+            return json.loads(content).get("content", "")
+        except Exception:
+            return ""
+
+    async def recover_from_timeout(self, state: State) -> bool:
+        session = self._sessions.get(state.get("rollout_id", ""))
+        if not session or not session.sandbox_id or not session.paths:
+            logger.error("Cannot recover from timeout: missing sandbox session")
+            return False
+        try:
+            await self._stop_worker(session)
+            await self._write_sandbox_files(session, state)
+            await self._start_worker(session, state)
+        except Exception as e:
+            logger.error(f"Failed to recover from code timeout: {e}")
+            return False
+        state["rlm_worker_ready"] = True
+        state["_exec_seq"] = 0
+        return True
+
+    async def cleanup(self, state: State) -> None:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id:
+            return
+        session = self._sessions.pop(rollout_id, None)
+        if not session:
+            return
+        await self._stop_worker(session)
+
+        retain = state.get("retain_filesystem_after_rollout", False)
+        if retain:
+            self._retained_dirs.add(session.local_rollout_dir)
+            if session.sandbox_id:
+                sandbox_fs_root = session.sandbox_fs_root or state.get(
+                    "rlm_fs_root_remote"
+                )
+                if sandbox_fs_root:
+                    try:
+                        await self._download_directory(
+                            session.sandbox_id,
+                            sandbox_fs_root,
+                            session.local_fs_root,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to sync sandbox filesystem for rollout %s: %s",
+                            rollout_id,
+                            e,
+                        )
+                try:
+                    await self._delete_sandbox(session.sandbox_id)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete sandbox {session.sandbox_id}: {e}"
+                    )
+            return
+
+        try:
+            if session.sandbox_id:
+                await self._delete_sandbox(session.sandbox_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete sandbox {session.sandbox_id}: {e}")
+
+        await asyncio.to_thread(shutil.rmtree, session.local_rollout_dir, True)
+
+    async def teardown(self) -> None:
+        if self._sessions:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            for session in sessions:
+                try:
+                    await self._stop_worker(session)
+                finally:
+                    if (
+                        session.sandbox_id
+                        and session.sandbox_id not in self._retained_sandboxes
+                    ):
+                        try:
+                            await self._delete_sandbox(
+                                session.sandbox_id, use_retry=False
+                            )
+                        except Exception:
+                            pass
+                    if session.local_rollout_dir not in self._retained_dirs:
+                        shutil.rmtree(session.local_rollout_dir, True)
+        self._teardown_sandbox_client()
+
+    def _get_or_create_session(self, state: State) -> SandboxRLMReplSession:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id:
+            raise ValueError("rollout_id must be set before creating sandbox session")
+        session = self._sessions.get(rollout_id)
+        if session:
+            return session
+        rollout_dir = Path(tempfile.mkdtemp(prefix=f"rlm_rollout_{rollout_id}_"))
+        fs_root = rollout_dir / "rlm_fs"
+        control_dir = rollout_dir / "rlm_control"
+        fs_root.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(parents=True, exist_ok=True)
+        session = SandboxRLMReplSession(
+            rollout_id=rollout_id,
+            local_rollout_dir=str(rollout_dir),
+            local_fs_root=str(fs_root),
+            local_control_dir=str(control_dir),
+        )
+        self._sessions[rollout_id] = session
+        return session
+
+    def _get_session(self, state: State) -> SandboxRLMReplSession:
+        rollout_id = state.get("rollout_id")
+        if not rollout_id or rollout_id not in self._sessions:
+            raise vf.SandboxError() from Exception("Sandbox session not initialized")
+        return self._sessions[rollout_id]
+
+    def _build_sandbox_request(self, state: State) -> CreateSandboxRequest:
+        env = self.env
+        env_vars = dict(env.sandbox_environment_vars or {})
+        return CreateSandboxRequest(
+            name=f"rlm-{state.get('rollout_id', 'unknown')}",
+            docker_image=env.sandbox_docker_image,
+            start_command=env.sandbox_start_command,
+            cpu_cores=env.sandbox_cpu_cores,
+            memory_gb=env.sandbox_memory_gb,
+            disk_size_gb=env.sandbox_disk_size_gb,
+            gpu_count=env.sandbox_gpu_count,
+            timeout_minutes=env.sandbox_timeout_minutes,
+            environment_vars=env_vars,
+            team_id=env.sandbox_team_id,
+            advanced_configs=env.sandbox_advanced_configs,
+            labels=env.sandbox_labels or [],
+        )
+
+    async def _install_packages(self, session: SandboxRLMReplSession) -> None:
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        packages = ["requests"]
+        extras = [p.strip() for p in self.env.pip_install_packages.split() if p.strip()]
+        packages.extend(extras)
+        if not packages:
+            return
+        pkg_list = " ".join(packages)
+        cmd = f"bash -lc 'pip install -q {pkg_list}'"
+        result = await self._execute_sandbox_command(
+            sandbox_id,
+            cmd,
+            timeout=self.env._compute_install_wait_seconds(),
+        )
+        self._raise_on_command_error(result, "pip install")
+
+    async def _write_sandbox_files(
+        self, session: SandboxRLMReplSession, state: State
+    ) -> None:
+        assert session.paths is not None
+        context = {
+            "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
+            "fs_metadata": state.get("rlm_fs_metadata") or {},
+            "allowed_paths": [
+                session.paths.command_fifo,
+                session.paths.response_fifo,
+                session.paths.ready_flag,
+                session.paths.context_file,
+                session.paths.answer_file,
+            ],
+        }
+
+        context_path = Path(session.local_control_dir) / "rlm_context.json"
+        answer_path = Path(session.local_control_dir) / "rlm_answer.json"
+        worker_path = Path(session.local_control_dir) / "rlm_worker.py"
+
+        context_path.write_text(json.dumps(context), encoding="utf-8")
+        answer_path.write_text(
+            json.dumps({"ready": False, "content": ""}), encoding="utf-8"
+        )
+
+        worker_script = _render_worker_script(
+            session.paths,
+            repl_language=self.env.repl_language,
+            sandboxed=True,
+        )
+        worker_path.write_text(worker_script, encoding="utf-8")
+
+        await self._sandbox_client.upload_file(
+            session.sandbox_id, session.paths.context_file, str(context_path)
+        )
+        await self._sandbox_client.upload_file(
+            session.sandbox_id, session.paths.answer_file, str(answer_path)
+        )
+        await self._sandbox_client.upload_file(
+            session.sandbox_id, session.paths.worker_path, str(worker_path)
+        )
+
+    async def _start_worker(self, session: SandboxRLMReplSession, state: State) -> None:
+        assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        env_vars = {
+            "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
+            "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+            "RLM_ROOT_TOOL_NAMES": json.dumps(self.env.root_tool_names),
+            "RLM_ROOT_TOOL_SERIALIZATION": self.env.root_tool_serialization,
+            "RLM_SUB_MODEL": self.env.sub_model or state.get("model", ""),
+            "RLM_MAX_SUB_LLM_PARALLELISM": str(self.env.max_sub_llm_parallelism),
+            "RLM_SUB_LLM_STAGGER_MS": str(self.env.sub_llm_stagger_ms),
+            "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.env.sub_llm_stagger_jitter_ms),
+            "RLM_SUB_LLM_TIMEOUT": str(self.env.sub_llm_timeout),
+        }
+
+        exports = " ".join(
+            f"{key}={shlex.quote(str(value))}"
+            for key, value in env_vars.items()
+            if value is not None
+        )
+        export_cmd = f"export {exports}; " if exports else ""
+        script = (
+            f'rm -f "{session.paths.command_fifo}" "{session.paths.response_fifo}" '
+            f'"{session.paths.ready_flag}" "{session.paths.worker_pid_file}"; '
+            f"{export_cmd}"
+            f'python -u "{session.paths.worker_path}" > "{session.paths.log_file}" 2>&1 & '
+            f'echo $! > "{session.paths.worker_pid_file}"'
+        )
+        cmd = f"bash -lc {shlex.quote(script)}"
+        result = await self._execute_sandbox_command(
+            sandbox_id,
+            cmd,
+            timeout=self.env.max_startup_wait_seconds,
+        )
+        self._raise_on_command_error(result, "start worker")
+        await self._wait_for_ready(session)
+
+    async def _wait_for_ready(self, session: SandboxRLMReplSession) -> None:
+        assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        cmd = (
+            "bash -lc '"
+            f"for i in $(seq 1 {self.env.max_startup_wait_seconds * 10}); do "
+            f'if [ -f "{session.paths.ready_flag}" ]; then exit 0; fi; '
+            "sleep 0.1; "
+            "done; exit 1'"
+        )
+        try:
+            result = await self._execute_sandbox_command(
+                sandbox_id,
+                cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        except CommandTimeoutError as exc:
+            log_tail = await self._read_worker_log_tail(session)
+            raise vf.SandboxError(
+                "RLM worker failed to become ready before timeout."
+                + (f"\nLog tail:\n{log_tail}" if log_tail else "")
+            ) from exc
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code != 0:
+            log_tail = await self._read_worker_log_tail(session)
+            raise vf.SandboxError(
+                "RLM worker failed to become ready."
+                + (f"\nLog tail:\n{log_tail}" if log_tail else "")
+            )
+
+    async def _stop_worker(self, session: SandboxRLMReplSession) -> None:
+        if not session.sandbox_id or not session.paths:
+            return
+        sandbox_id = session.sandbox_id
+        cmd = (
+            "bash -lc '"
+            f'if [ -f "{session.paths.worker_pid_file}" ]; then '
+            f'pid=$(cat "{session.paths.worker_pid_file}"); '
+            'kill "$pid" 2>/dev/null || true; '
+            "fi'"
+        )
+        try:
+            await self._execute_sandbox_command(
+                sandbox_id,
+                cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        except Exception:
+            pass
+
+    def _raise_on_command_error(self, result: Any, context: str) -> None:
+        exit_code = getattr(result, "exit_code", 0)
+        if exit_code == 0 or exit_code is None:
+            return
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        detail = ""
+        if stdout:
+            detail += f"\nstdout:\n{stdout}"
+        if stderr:
+            detail += f"\nstderr:\n{stderr}"
+        raise vf.SandboxError() from RuntimeError(
+            f"{context} failed with exit code {exit_code}.{detail}"
+        )
+
+    async def _read_worker_log_tail(self, session: SandboxRLMReplSession) -> str:
+        if not session.sandbox_id or not session.paths:
+            return ""
+        sandbox_id = session.sandbox_id
+        cmd = f"bash -lc 'tail -n 200 \"{session.paths.log_file}\" 2>/dev/null || true'"
+        try:
+            result = await self._execute_sandbox_command(
+                sandbox_id,
+                cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        except Exception:
+            return ""
+        return (getattr(result, "stdout", "") or "").strip()
+
+    async def _send_worker_request(
+        self, session: SandboxRLMReplSession, payload: dict[str, Any]
+    ) -> str:
+        assert session.paths is not None
+        sandbox_id = session.sandbox_id
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        payload_json = json.dumps(payload)
+        payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+        alive_check = (
+            f'[ -f "{session.paths.worker_pid_file}" ] '
+            f'&& [ -d "/proc/$(cat {session.paths.worker_pid_file})" ] '
+            '|| { echo "WORKER_DEAD"; exit 0; }'
+        )
+        command = textwrap.dedent(
+            f"""
+            {alive_check}
+            python - <<'PY'
+    import base64
+    import json
+    import sys
+
+    data = base64.b64decode('{payload_b64}').decode('utf-8')
+    with open('{session.paths.command_fifo}', 'w', encoding='utf-8') as command_file:
+        command_file.write(data)
+    with open('{session.paths.response_fifo}', 'r', encoding='utf-8') as response_file:
+        sys.stdout.write(response_file.read())
+    PY
+            """
+        )
+        result = await self._execute_sandbox_command(
+            sandbox_id,
+            command,
+            timeout=self.env.code_execution_timeout,
+        )
+        raw_response = result.stdout or ""
+        if raw_response and raw_response.strip() == "WORKER_DEAD":
+            raise vf.SandboxError() from RuntimeError("RLM worker not running")
+        return raw_response
+
+    async def _upload_directory(
+        self, sandbox_id: str, local_dir: str, remote_dir: str
+    ) -> None:
+        local_path = Path(local_dir)
+        tar_path = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+            tar_path = Path(tmp.name)
+            tmp.close()
+            with tarfile.open(tar_path, "w:gz") as tar:
+                tar.add(local_path, arcname=".")
+            remote_tar = f"/tmp/rlm_upload_{uuid.uuid4().hex}.tar.gz"
+            await self._sandbox_client.upload_file(
+                sandbox_id, remote_tar, str(tar_path)
+            )
+            extract_cmd = (
+                "bash -lc '"
+                f'mkdir -p "{remote_dir}"; '
+                f'tar -xzf "{remote_tar}" -C "{remote_dir}"; '
+                f'rm -f "{remote_tar}"\''
+            )
+            await self._execute_sandbox_command(
+                sandbox_id,
+                extract_cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+        finally:
+            if tar_path and tar_path.exists():
+                try:
+                    tar_path.unlink()
+                except Exception:
+                    pass
+
+    async def _download_directory(
+        self, sandbox_id: str, remote_dir: str, local_dir: str
+    ) -> None:
+        local_path = Path(local_dir)
+        tar_path = None
+        remote_tar = f"/tmp/rlm_download_{uuid.uuid4().hex}.tar.gz"
+        try:
+            create_cmd = f'bash -lc \'tar -czf "{remote_tar}" -C "{remote_dir}" .\''
+            await self._execute_sandbox_command(
+                sandbox_id,
+                create_cmd,
+                timeout=self.env.max_startup_wait_seconds,
+            )
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+            tar_path = Path(tmp.name)
+            tmp.close()
+            await self._sandbox_client.download_file(
+                sandbox_id, remote_tar, str(tar_path)
+            )
+            if local_path.exists():
+                shutil.rmtree(local_path, True)
+            local_path.mkdir(parents=True, exist_ok=True)
+            base_dir = local_path.resolve()
+            with tarfile.open(tar_path, "r:gz") as tar:
+                safe_members = []
+                for member in tar.getmembers():
+                    if member.issym() or member.islnk():
+                        logger.warning(
+                            "Skipping symlink in sandbox download: %s", member.name
+                        )
+                        continue
+                    try:
+                        member_path = (base_dir / member.name).resolve()
+                        member_path.relative_to(base_dir)
+                    except Exception:
+                        logger.warning(
+                            "Skipping unsafe tar member in sandbox download: %s",
+                            member.name,
+                        )
+                        continue
+                    safe_members.append(member)
+                tar.extractall(local_path, members=safe_members)
+        finally:
+            try:
+                await self._execute_sandbox_command(
+                    sandbox_id,
+                    f"bash -lc 'rm -f \"{remote_tar}\"'",
+                    timeout=self.env.max_startup_wait_seconds,
+                )
+            except Exception:
+                pass
+            if tar_path and tar_path.exists():
+                try:
+                    tar_path.unlink()
+                except Exception:
+                    pass
+
+
+class RLMEnv(vf.StatefulToolEnv):
     """
     Recursive Language Model Environment.
 
-    Extends SandboxEnv to provide a Python REPL environment where the model can:
-    - Interact with large input data stored as a variable (`extra_data`)
+    Extends StatefulToolEnv to provide a Python REPL environment where the model can:
+    - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
-    - Code execution runs in a sandbox or locally (persistent Python worker)
+    - Code execution runs locally in a persistent Python worker
     - Sub-LLM calls from worker code are intercepted via HTTP proxy
 
     Works with any dataset that has a normal prompt. Input data can optionally
-    be provided in info[context_key] for large data that shouldn't be in the prompt.
+    be provided via info[context_dir_key] (directory path) or info[context_key]
+    (legacy builtin data written to a file).
 
     Args:
+        tools: List of tools shared by both the root REPL and sub-LLMs.
+                   These are added first in the tool documentation order.
+        root_tools: List of tools available only to the root REPL.
+                   The root model can call these inside the REPL as Python functions.
+        sub_tools: List of tools available only to sub-LLMs.
+                   Sub-LLMs access these via standard tool calling.
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
-        sub_tools: List of Python functions that sub-LLMs can use as tools.
-                   These tools are NOT available to the root model.
+        (Ordering) The root tool list is: fixed tools (e.g. llm_batch), then `tools`,
+                   then `root_tools`. The sub-LLM tool list is: `tools`, then `sub_tools`.
+                   Each list is deduplicated by tool name. If two different tools
+                   share a name within a list, initialization raises an error.
         sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
         sub_llm_stagger_ms: Optional fixed per-call stagger delay (ms) within llm_batch.
         sub_llm_stagger_jitter_ms: Optional random jitter (ms) added to stagger delay.
-        context_key: Key in info containing optional input data (default: "context")
-        context_dtype: Optional dtype override for input data serialization.
-                   If set, must match a supported serializer dtype.
-        data_serializers: Optional list of custom serializers provided by the designer.
-                   These are registered on top of the default registry (text/json),
-                   overriding by dtype if there are conflicts.
-        serializer_registry: Optional explicit serializer registry. If provided,
-                   data_serializers must be None and this registry is used as-is.
+        context_key: Key in info containing legacy context data (default: "context")
+        context_dir_key: Key in info containing directory path (default: "context_dir")
         system_prompt: Custom system prompt (default: RLM standard prompt)
-        interception_host: Optional hostname/IP for interception server (auto-tunneled if not set)
+        repl_language: REPL language to use: "bash" or "python" (default: "bash")
+        execution_backend: Execution backend to use: "local" or "sandbox" (default: "local")
+        interception_host: Optional hostname/IP for interception server (default: 127.0.0.1)
         interception_port: Port for interception server (default: 8766)
+        interception_url: Optional base URL for interception (sandbox only). If set,
+                   tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
@@ -1507,29 +2653,32 @@ class RLMEnv(SandboxEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
-        execution_backend: Where code execution runs. "sandbox" (default) preserves
-                   existing behavior; "local" runs on the host without tunnels.
-        local_venv_scope: For local execution, whether to create one uv venv per
-                   env instance ("instance", default) or per rollout ("rollout").
-        disallowed_modules: Space-separated module names that user code may not import
-                   (best-effort guardrail). Defaults to blocking common filesystem modules.
-        disallowed_builtins: Space-separated builtin names removed from user code
-                   execution (best-effort guardrail). Defaults to "open".
-        **kwargs: Additional arguments passed to SandboxEnv
+        retain_filesystem_after_rollout: If True, keep filesystem after rollout.
+        filesystem_copy_max_bytes: Optional max bytes for context directory copy.
+        disallowed_modules: Space-separated module names that user code may not import.
+        disallowed_builtins: Space-separated builtin names removed from user code execution.
+        sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
+        sandbox_start_command: Start command for sandbox backend (default: tail -f /dev/null)
+        sandbox_cpu_cores: Sandbox CPU cores (default: 1)
+        sandbox_memory_gb: Sandbox memory in GB (default: 2)
+        sandbox_disk_size_gb: Sandbox disk size in GB (default: 5)
+        sandbox_gpu_count: Sandbox GPU count (default: 0)
+        sandbox_timeout_minutes: Sandbox timeout in minutes (default: 60)
+        sandbox_environment_vars: Extra environment vars for sandbox (default: None)
+        sandbox_team_id: Optional team id for sandbox (default: None)
+        sandbox_advanced_configs: Optional advanced configs for sandbox (default: None)
+        sandbox_labels: Optional labels for sandbox (default: None)
+        sandbox_client_max_workers: Sandbox client pool size (default: 10)
+        sandbox_client_max_connections: Sandbox client max connections (default: 100)
+        sandbox_client_max_keepalive_connections: Sandbox client keepalive conns (default: 50)
+        local_repl_max_workers: Max worker threads for local REPL execution.
+        **kwargs: Additional arguments passed to StatefulToolEnv
     """
-
-    # Worker file paths
-    _WORKER_PATH = "/tmp/rlm_worker.py"
-    _COMMAND_FIFO = "/tmp/rlm_cmd"
-    _RESPONSE_FIFO = "/tmp/rlm_res"
-    _READY_FLAG = "/tmp/rlm_ready"
-    _INSTALL_DONE_FLAG = "/tmp/rlm_install_done"
-    _WORKER_PID_FILE = "/tmp/rlm_worker.pid"
-    _CONTEXT_FILE = "/tmp/rlm_context.json"
-    _ANSWER_FILE = "/tmp/rlm_answer.json"
 
     def __init__(
         self,
+        tools: list[Callable] | None = None,
+        root_tools: list[Callable] | None = None,
         sub_model: str | None = None,
         sub_tools: list[Callable] | None = None,
         sub_tool_max_turns: int = 5,
@@ -1539,27 +2688,75 @@ class RLMEnv(SandboxEnv):
         sub_llm_stagger_ms: int = 200,
         sub_llm_stagger_jitter_ms: int = 50,
         context_key: str = "context",
-        context_dtype: str | None = None,
-        data_serializers: list[DataSerializer] | None = None,
-        serializer_registry: SerializerRegistry | None = None,
+        context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
+        repl_language: str = "bash",
+        execution_backend: str = "local",
         interception_host: str | None = None,
         interception_port: int = 8766,
+        interception_url: str | None = None,
         pip_install_packages: str = "",
         max_startup_wait_seconds: int = 120,
         include_sub_llm_in_trajectory: bool = True,
         context_warning_threshold: float = 0.80,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
-        execution_backend: Literal["sandbox", "local"] = "sandbox",
-        local_venv_scope: Literal["instance", "rollout"] = "instance",
-        disallowed_modules: str = ("os sys pathlib shutil glob tempfile io builtins"),
-        disallowed_builtins: str = "open",
+        retain_filesystem_after_rollout: bool = False,
+        filesystem_copy_max_bytes: int | None = 1_000_000_000,
+        disallowed_modules: str = "",
+        disallowed_builtins: str = "",
+        sandbox_docker_image: str = "python:3.11-slim",
+        sandbox_start_command: str = "tail -f /dev/null",
+        sandbox_cpu_cores: int = 1,
+        sandbox_memory_gb: int = 2,
+        sandbox_disk_size_gb: int = 5,
+        sandbox_gpu_count: int = 0,
+        sandbox_timeout_minutes: int = 60,
+        sandbox_environment_vars: dict[str, str] | None = None,
+        sandbox_team_id: str | None = None,
+        sandbox_advanced_configs: Any | None = None,
+        sandbox_labels: list[str] | None = None,
+        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
+        local_repl_max_workers: int | None = None,
         rubric: Rubric | None = None,
         **kwargs,
     ):
+        if tools is None and "tools" in kwargs:
+            tools = kwargs.pop("tools")
+        elif tools is not None and "tools" in kwargs:
+            raise ValueError("Tools were provided twice: use tools=... only once.")
+
+        if root_tools is None and "root_tools" in kwargs:
+            root_tools = kwargs.pop("root_tools")
+        elif root_tools is not None and "root_tools" in kwargs:
+            raise ValueError(
+                "root_tools were provided twice: use root_tools=... only once."
+            )
+
+        if sub_tools is None and "sub_tools" in kwargs:
+            sub_tools = kwargs.pop("sub_tools")
+        elif sub_tools is not None and "sub_tools" in kwargs:
+            raise ValueError(
+                "sub_tools were provided twice: use sub_tools=... only once."
+            )
+
+        if repl_language not in {"bash", "python"}:
+            raise ValueError(
+                f"Unsupported repl_language '{repl_language}'. Expected 'bash' or 'python'."
+            )
+        if execution_backend not in {"local", "sandbox"}:
+            raise ValueError(
+                "execution_backend must be 'local' or 'sandbox', got "
+                f"'{execution_backend}'."
+            )
+        self.repl_language = repl_language
+        self.execution_backend = execution_backend
         self.sub_model = sub_model
-        self.sub_tools = sub_tools or []
+        self.shared_tools = tools or []
+        self.root_only_tools = root_tools or []
+        self.sub_only_tools = sub_tools or []
         self.sub_tool_max_turns = sub_tool_max_turns
         self.max_iterations = max_iterations
         self.max_output_length = max_output_length
@@ -1567,68 +2764,85 @@ class RLMEnv(SandboxEnv):
         self.sub_llm_stagger_ms = sub_llm_stagger_ms
         self.sub_llm_stagger_jitter_ms = sub_llm_stagger_jitter_ms
         self.context_key = context_key
-        self.context_dtype = context_dtype
-        if serializer_registry is not None and data_serializers is not None:
-            raise ValueError(
-                "Provide either serializer_registry or data_serializers, not both."
-            )
-        if serializer_registry is not None:
-            self.serializer_registry = serializer_registry
-        else:
-            registry = build_default_serializer_registry()
-            for serializer in data_serializers or []:
-                registry.register(serializer, allow_override=True)
-            self.serializer_registry = registry
-        self.data_serializers = self.serializer_registry.all()
+        self.context_dir_key = context_dir_key
         self.custom_system_prompt = system_prompt
-        if execution_backend == "local" and interception_host is None:
-            interception_host = "127.0.0.1"
-        self.interception_host = interception_host
+        self.interception_host = interception_host or "127.0.0.1"
         self.interception_port = interception_port
+        self.interception_url_override = interception_url
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
-        self.execution_backend = execution_backend
-        self.local_venv_scope = local_venv_scope
         self.disallowed_modules = disallowed_modules
         self.disallowed_builtins = disallowed_builtins
-        if self.execution_backend not in ("sandbox", "local"):
-            raise ValueError("execution_backend must be 'sandbox' or 'local'.")
-        if self.local_venv_scope not in ("instance", "rollout"):
-            raise ValueError("local_venv_scope must be 'instance' or 'rollout'.")
-        self._interception_bind_host = (
-            "127.0.0.1" if execution_backend == "local" else "0.0.0.0"
+        self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
+        self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
+        self._interception_bind_host = self.interception_host
+        self.sandbox_docker_image = sandbox_docker_image
+        self.sandbox_start_command = sandbox_start_command
+        self.sandbox_cpu_cores = sandbox_cpu_cores
+        self.sandbox_memory_gb = sandbox_memory_gb
+        self.sandbox_disk_size_gb = sandbox_disk_size_gb
+        self.sandbox_gpu_count = sandbox_gpu_count
+        self.sandbox_timeout_minutes = sandbox_timeout_minutes
+        self.sandbox_environment_vars = sandbox_environment_vars
+        self.sandbox_team_id = sandbox_team_id
+        self.sandbox_advanced_configs = sandbox_advanced_configs
+        self.sandbox_labels = sandbox_labels
+        self.sandbox_client_max_workers = sandbox_client_max_workers
+        self.sandbox_client_max_connections = sandbox_client_max_connections
+        self.sandbox_client_max_keepalive_connections = (
+            sandbox_client_max_keepalive_connections
         )
-        # Server-side timeout for LLM API calls (shorter than sandbox HTTP timeout)
-        # This ensures server responds before sandbox worker's HTTP request times out
+        self.local_repl_max_workers = (
+            local_repl_max_workers
+            if local_repl_max_workers is not None
+            else max(1, min(64, os.cpu_count() or 1))
+        )
+        if self.local_repl_max_workers < 1:
+            raise ValueError("local_repl_max_workers must be >= 1")
+        # Server-side timeout for LLM API calls (shorter than worker HTTP timeout)
+        # This ensures server responds before the worker request times out
         (
             self.sub_llm_api_timeout,
             self.sub_llm_timeout,
         ) = self._compute_sub_llm_timeouts()
 
-        # Convert sub_tools to OAI format (reusing existing infrastructure)
+        fixed_root_tools = self._build_fixed_root_tools()
+        self.root_tools, self.root_tool_map = _merge_tool_lists(
+            fixed_tools=fixed_root_tools,
+            shared_tools=self.shared_tools,
+            role_tools=self.root_only_tools,
+            context="root tools",
+            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+        )
+        self.sub_tools, self.sub_tool_map = _merge_tool_lists(
+            fixed_tools=[],
+            shared_tools=self.shared_tools,
+            role_tools=self.sub_only_tools,
+            context="sub-LLM tools",
+            reserved_names=set(_FIXED_REPL_TOOL_NAMES),
+        )
         self.sub_oai_tools = [convert_func_to_oai_tool(tool) for tool in self.sub_tools]
-        self.sub_tool_map = {
-            getattr(tool, "__name__", tool.__class__.__name__): tool
-            for tool in self.sub_tools
-        }
-
-        self._sandbox_paths = _build_worker_paths("/tmp")
-        worker_script = _render_worker_script(self._sandbox_paths)
-        worker_b64 = base64.b64encode(worker_script.encode("utf-8")).decode("utf-8")
-
-        start_command = _RLM_START_COMMAND_TEMPLATE.format(
-            command_fifo=self._sandbox_paths.command_fifo,
-            response_fifo=self._sandbox_paths.response_fifo,
-            ready_flag=self._sandbox_paths.ready_flag,
-            install_done_flag=self._sandbox_paths.install_done_flag,
-            worker_path=self._sandbox_paths.worker_path,
-            worker_pid_file=self._sandbox_paths.worker_pid_file,
-            worker_b64=worker_b64,
-            pip_install_packages=pip_install_packages,
+        self.root_tool_doc_funcs: list[Callable] = []
+        for tool in self.root_tools:
+            name = _tool_display_name(tool)
+            if name in _FIXED_REPL_TOOL_NAMES:
+                self.root_tool_doc_funcs.append(
+                    self._build_fixed_root_tool_schema(name)
+                )
+            else:
+                self.root_tool_doc_funcs.append(tool)
+        self.root_oai_tools = [
+            convert_func_to_oai_tool(tool) for tool in self.root_tool_doc_funcs
+        ]
+        self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
+        self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
+        self.root_tool_serialization = "pickle"
+        self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar("rlm_root_tool_context", default=None)
         )
 
         # Interception server state (shared across rollouts)
@@ -1636,40 +2850,29 @@ class RLMEnv(SandboxEnv):
         self._server_lock = asyncio.Lock()
         self._server_runner: Any = None
         self._server_site: Any = None
-
-        # Tunnel pool for exposing interception server to sandboxes
-        self._tunnel_pool: TunnelPool | None = (
-            TunnelPool(port=interception_port)
-            if execution_backend == "sandbox" and interception_host is None
-            else None
-        )
+        self._tunnel: Tunnel | None = None
+        self._tunnel_lock = asyncio.Lock()
 
         # Active rollout tracking for sub-LLM request routing
         self.active_rollouts: dict[str, dict[str, Any]] = {}
 
-        # Logprobs support detection (None = unknown, True/False = known)
-        self._sub_llm_supports_logprobs: bool | None = None
-
         super().__init__(
-            sandbox_name="rlm-env",
-            start_command=start_command,
+            tools=[],
             max_turns=max_iterations,
             rubric=rubric,
             **kwargs,
         )
-        self.add_rubric(RLMMonitorRubric())
-        self._executor = (
-            LocalRLMExecutor(self)
-            if self.execution_backend == "local"
-            else SandboxRLMExecutor(self)
-        )
+        self.add_rubric(RLMMonitorRubric(root_tool_names=self.root_tool_names))
+        if self.execution_backend == "sandbox":
+            self._executor = SandboxRLMExecutor(self)
+        else:
+            self._executor = LocalRLMExecutor(self)
 
-        # Remove bash tool from parent - we use our own REPL tool
-        if hasattr(self, "tool_map") and "bash" in self.tool_map:
-            self.remove_tool(self.bash)
-
-        # Add the Python REPL tool (sandbox_id and state are injected via update_tool_args)
-        self.add_tool(self.call_python_repl, args_to_skip=["sandbox_id", "state"])
+        # Add the REPL tool (state is injected via update_tool_args)
+        if self.repl_language == "bash":
+            self.add_tool(self.call_bash_repl, args_to_skip=["state"])
+        else:
+            self.add_tool(self.call_python_repl, args_to_skip=["state"])
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure
@@ -1697,6 +2900,43 @@ class RLMEnv(SandboxEnv):
 
         return api_timeout, worker_timeout
 
+    def _build_fixed_root_tools(self) -> list[Callable]:
+        """Return the fixed root REPL tools (non-overridable)."""
+
+        async def llm_batch(prompts: list[str]) -> list[str]:
+            """
+            Make multiple sub-LLM calls in parallel.
+
+            Args:
+                prompts: List of prompt strings (recommended). Message dicts or lists
+                    of message dicts are also accepted for compatibility.
+
+            Returns:
+                List of response contents in the same order as the input prompts.
+            """
+            context = self._root_tool_context_var.get()
+            if context is None:
+                raise RuntimeError(
+                    "llm_batch called outside of a tool request context."
+                )
+            results, _ = await self._root_llm_batch(context, prompts)
+            return results
+
+        llm_batch.__name__ = "llm_batch"
+        return [llm_batch]
+
+    def _build_fixed_root_tool_schema(self, name: str) -> Callable:
+        """Return a schema-only stub for fixed root tools."""
+        if name == "llm_batch":
+
+            def llm_batch(prompts: list[str]) -> list[str]:
+                """Make multiple sub-LLM calls in parallel."""
+                raise RuntimeError("llm_batch schema stub should not be executed.")
+
+            llm_batch.__name__ = "llm_batch"
+            return llm_batch
+        raise ValueError(f"Unsupported fixed tool schema: {name}")
+
     def _compute_install_wait_seconds(self) -> int:
         """Estimate how long to wait for pip installs based on package count."""
         packages = [p.strip() for p in self.pip_install_packages.split() if p.strip()]
@@ -1706,6 +2946,8 @@ class RLMEnv(SandboxEnv):
 
     def _generate_packages_documentation(self) -> str:
         """Generate documentation for installed packages to include in system prompt."""
+        if self.repl_language != "python":
+            return ""
         if not self.pip_install_packages:
             return ""
 
@@ -1730,7 +2972,7 @@ class RLMEnv(SandboxEnv):
         if not self.sub_tools:
             return ""
 
-        lines = ["\n## Sub-Agent Tools\n"]
+        lines = ["\n## Sub-LLM Tools\n"]
         lines.append(
             "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
         )
@@ -1765,16 +3007,133 @@ class RLMEnv(SandboxEnv):
 
         return "\n".join(lines)
 
-    def _generate_metadata_documentation(self, metadata: dict[str, Any]) -> str:
-        """Generate a concise summary of input data metadata for the system prompt."""
-        if not metadata:
-            return "No input data metadata available."
+    def _generate_root_tools_documentation(self) -> str:
+        """Generate documentation for root REPL tools to include in system prompt."""
+        if not self.root_tools:
+            return ""
 
-        lines = ["The environment contains the following input data in `extra_data`:"]
-        for key, value in metadata.items():
-            # Format key for better readability
-            display_key = key.replace("_", " ").title()
-            lines.append(f"- **{display_key}**: `{value}`")
+        lines = ["\n## Root REPL Tools\n"]
+        if self.repl_language == "bash":
+            lines.append(
+                "The root model can call the following tools inside the Bash REPL as shell commands:\n"
+            )
+        else:
+            lines.append(
+                "The root model can call the following tools inside the Python REPL:\n"
+            )
+
+        for oai_tool in self.root_oai_tools:
+            func_def = oai_tool["function"]
+            name = func_def["name"]
+            desc = func_def.get("description", "No description")
+            params = cast(
+                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
+            )
+
+            lines.append(f"### `{name}`")
+            lines.append(f"{desc}\n")
+
+            if params:
+                lines.append("**Parameters:**")
+                for param_name, param_info in params.items():
+                    param_type = param_info.get("type", "any")
+                    param_desc = param_info.get("description", "")
+                    lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
+                lines.append("")
+
+        lines.append(
+            "These tools run on the host and are only accessible from within the REPL."
+        )
+        if self.repl_language == "bash":
+            lines.append(
+                "Bash usage: `tool_name arg1 arg2` (args are JSON-decoded). For "
+                'structured args/kwargs, use `tool_name --json \'{"args": [...], '
+                '"kwargs": {...}}\'` or provide the JSON via stdin.'
+            )
+            lines.append(
+                "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
+            )
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def _compute_fs_metadata(
+        self, fs_root: str, *, disallow_symlinks: bool = False
+    ) -> dict[str, int]:
+        file_count = 0
+        total_size = 0
+        for root, dirs, files in os.walk(fs_root, followlinks=False):
+            if disallow_symlinks:
+                for name in [*dirs, *files]:
+                    path = os.path.join(root, name)
+                    if os.path.islink(path):
+                        raise ValueError(
+                            f"context_dir contains a symlink, which is not allowed: {path}"
+                        )
+            for name in files:
+                file_count += 1
+                path = os.path.join(root, name)
+                try:
+                    total_size += os.path.getsize(path)
+                except OSError:
+                    continue
+        return {
+            "file_count": file_count,
+            "total_size": total_size,
+            "total_bytes": total_size,
+        }
+
+    def _copy_context_directory(self, src: str, dst: str) -> None:
+        src_path = os.fspath(src)
+        if not os.path.isdir(src_path):
+            raise ValueError(f"context_dir must be a directory: {src_path}")
+        size_limit = self.filesystem_copy_max_bytes
+        if os.path.islink(src_path):
+            raise ValueError(f"context_dir cannot be a symlink: {src_path}")
+        if size_limit is not None:
+            metadata = self._compute_fs_metadata(src_path, disallow_symlinks=True)
+            total_size = metadata.get("total_size", 0)
+            if total_size > size_limit:
+                raise ValueError(
+                    "Context directory exceeds size limit: "
+                    f"{total_size} bytes > {size_limit} bytes."
+                )
+        else:
+            self._compute_fs_metadata(src_path, disallow_symlinks=True)
+        shutil.copytree(src_path, dst, dirs_exist_ok=True)
+
+    def _write_builtin_context(self, context_data: Any, fs_root: str) -> None:
+        if isinstance(context_data, str):
+            path = os.path.join(fs_root, "context.txt")
+            Path(path).write_text(context_data, encoding="utf-8")
+            return
+        try:
+            payload = json.dumps(context_data, ensure_ascii=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Legacy context data must be JSON-serializable or a raw string."
+            ) from exc
+        path = os.path.join(fs_root, "context.json")
+        Path(path).write_text(payload, encoding="utf-8")
+
+    def _generate_filesystem_summary(
+        self, *, fs_root: str, metadata: dict[str, Any], has_data: bool
+    ) -> str:
+        """Generate a concise summary of filesystem context for the system prompt."""
+        lines = [f"Working directory: {fs_root}"]
+        if has_data:
+            file_count = metadata.get("file_count")
+            total_size = metadata.get("total_size", metadata.get("total_bytes"))
+            if file_count is not None:
+                lines.append(f"File count: {file_count}")
+            if total_size is not None:
+                lines.append(f"Total size (bytes): {total_size}")
+        else:
+            lines.append(
+                "No extra data was provided. The working directory exists but is empty."
+            )
+            lines.append("You can still use this directory for any files you create.")
+        lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
     @staticmethod
@@ -1789,30 +3148,31 @@ class RLMEnv(SandboxEnv):
         )
 
     @staticmethod
-    def _is_logprobs_param_error(error: Exception) -> bool:
-        """Return True if the error indicates logprobs is an unsupported/invalid param."""
-        error_text = str(error).lower()
-        if "logprob" not in error_text:
-            return False
-        param_markers = (
-            "not supported",
-            "unsupported",
-            "not allowed",
-            "not permitted",
-            "forbidden",
-            "invalid",
-            "unknown",
-            "unexpected",
-            "additional properties",
-            "not a valid",
-            "unrecognized",
-            "extra fields",
-            "parameter",
-            "params",
-            "schema",
-            "403",
-        )
-        return any(marker in error_text for marker in param_markers)
+    def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
+        """Normalize sampling args to match main model behavior."""
+        if "max_tokens" in sampling_args:
+            if sampling_args["max_tokens"] is None:
+                sampling_args.pop("max_tokens")
+            else:
+                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
+        if (
+            "max_completion_tokens" in sampling_args
+            and sampling_args["max_completion_tokens"] is None
+        ):
+            sampling_args.pop("max_completion_tokens")
+        return {k: v for k, v in sampling_args.items() if v is not None}
+
+    def _prepare_sub_llm_sampling_args(
+        self, state: State, *, interleaved: bool
+    ) -> dict[str, Any]:
+        sampling_args = dict(state.get("sampling_args") or {})
+        extra_body = sampling_args.get("extra_body")
+        if isinstance(extra_body, dict):
+            sampling_args["extra_body"] = dict(extra_body)
+        sampling_args = self._normalize_sampling_args(sampling_args)
+        if interleaved:
+            return prepare_sampling_args_for_token_prompts(sampling_args)
+        return sampling_args
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -1833,7 +3193,9 @@ class RLMEnv(SandboxEnv):
                 "tool_call_id": tool_call_id,
             }
 
-    def _normalize_message_content(self, messages: list[dict]) -> list[dict]:
+    def _normalize_message_content(
+        self, messages: ChatMessages | list[dict[str, Any]]
+    ) -> ChatMessages:
         """Normalize message content fields to formats the API accepts.
 
         The API expects content to be: string, array of objects, or None.
@@ -1841,9 +3203,9 @@ class RLMEnv(SandboxEnv):
         1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
         2. Content is a content part object (has 'type' key) - wrap in array
         """
-        normalized = []
+        normalized: ChatMessages = []
         for msg in messages:
-            msg_copy = dict(msg)
+            msg_copy: dict[str, Any] = cast(dict[str, Any], msg).copy()
             content = msg_copy.get("content")
 
             if content is not None and isinstance(content, dict):
@@ -1857,54 +3219,72 @@ class RLMEnv(SandboxEnv):
                 else:
                     # Unknown dict structure - try wrapping in array as fallback
                     msg_copy["content"] = [content]
-            normalized.append(msg_copy)
+            normalized.append(cast(ChatMessage, msg_copy))
         return normalized
 
     async def _call_sub_llm_api(
-        self, client: Any, model: str, messages: list[dict], tools: list | None = None
+        self,
+        state: State,
+        client: Any,
+        model: str,
+        messages: ChatMessages,
+        tools: list | None = None,
     ) -> Any | None:
-        """Make a single sub-LLM API call with timeout. Returns None on timeout."""
+        """Make a single sub-LLM API call matching main-model request mode."""
         normalized_messages = self._normalize_message_content(messages)
-        logprobs_support = self._sub_llm_supports_logprobs
+        sampling_args = self._prepare_sub_llm_sampling_args(
+            state, interleaved=self.interleaved_rollouts
+        )
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": normalized_messages,
+            "tools": tools,
+        }
 
-        async def _create_call(logprobs: bool | None) -> Any:
-            return await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model,
+        try:
+            if self.interleaved_rollouts:
+                extra_body = sampling_args.pop("extra_body", {})
+                prompt_ids = await tokenize_vllm(
+                    client=client,
                     messages=normalized_messages,
                     tools=tools,
-                    logprobs=logprobs,
+                    model=model,
+                )
+                payload = {
+                    "model": model,
+                    "messages": normalized_messages,
+                    "tools": tools,
+                    "tokens": prompt_ids,
+                    **sampling_args,
+                    **extra_body,
+                }
+                return await asyncio.wait_for(
+                    client.post(
+                        "/chat/completions/tokens",
+                        body=payload,
+                        cast_to=ChatCompletion,
+                    ),
+                    timeout=self.sub_llm_api_timeout,
+                )
+            payload = {
+                "model": model,
+                "messages": normalized_messages,
+                "tools": tools,
+                **sampling_args,
+            }
+            return await asyncio.wait_for(
+                client.chat.completions.create(
+                    **payload,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
-
-        try:
-            if logprobs_support is False:
-                return await _create_call(None)
-            if logprobs_support is True:
-                return await _create_call(True)
-
-            # Unknown support: try logprobs=True once, then fallback on param errors.
-            response = await _create_call(True)
-            self._sub_llm_supports_logprobs = True
-            return response
         except asyncio.TimeoutError:
             logger.warning(
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
         except Exception as e:
-            if logprobs_support is None and self._is_logprobs_param_error(e):
-                if self._sub_llm_supports_logprobs is None:
-                    self._sub_llm_supports_logprobs = False
-                try:
-                    return await _create_call(None)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
-                    )
-                    return None
-            raise
+            raise e
 
     def _make_timeout_result(
         self,
@@ -1926,12 +3306,12 @@ class RLMEnv(SandboxEnv):
         )
 
     async def _run_sub_llm(
-        self, client: Any, model: str, messages: list[dict]
+        self, state: State, client: Any, model: str, messages: ChatMessages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
-            response = await self._call_sub_llm_api(client, model, messages)
+            response = await self._call_sub_llm_api(state, client, model, messages)
             if response is None:
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
@@ -1940,7 +3320,7 @@ class RLMEnv(SandboxEnv):
                 final_content=response.choices[0].message.content or "",
                 turns=[
                     SubLLMTurn(
-                        prompt_messages=[dict(m) for m in messages],
+                        prompt_messages=[cast(ChatMessage, dict(m)) for m in messages],
                         response=response,
                         tool_call_count=0,
                     )
@@ -1963,10 +3343,10 @@ class RLMEnv(SandboxEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            prompt_snapshot = [dict(m) for m in current_messages]
+            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
 
             response = await self._call_sub_llm_api(
-                client, model, current_messages, tools
+                state, client, model, current_messages, tools
             )
             if response is None:
                 return self._make_timeout_result(
@@ -2005,7 +3385,7 @@ class RLMEnv(SandboxEnv):
                     max_turns_reached=False,
                 )
 
-            current_messages.append(assistant_message.model_dump())
+            current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
 
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
@@ -2016,20 +3396,23 @@ class RLMEnv(SandboxEnv):
                 tool_result = await self._call_sub_tool(
                     tool_name, tool_args, tool_call.id
                 )
-                current_messages.append(tool_result)
+                current_messages.append(cast(ChatMessage, tool_result))
 
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
         current_messages.append(
-            {
-                "role": "user",
-                "content": "You've reached the maximum number of tool calls. "
-                "Based on the information gathered, provide your final answer inside \\boxed{}.",
-            }
+            cast(
+                ChatMessage,
+                {
+                    "role": "user",
+                    "content": "You've reached the maximum number of tool calls. "
+                    "Based on the information gathered, provide your final answer inside \\boxed{}.",
+                },
+            )
         )
 
-        prompt_snapshot = [dict(m) for m in current_messages]
-        response = await self._call_sub_llm_api(client, model, current_messages)
+        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
+        response = await self._call_sub_llm_api(state, client, model, current_messages)
         if response is None:
             return self._make_timeout_result(
                 turns,
@@ -2056,8 +3439,125 @@ class RLMEnv(SandboxEnv):
             max_turns_reached=True,
         )
 
+    async def _root_llm_batch(
+        self,
+        context: dict[str, Any],
+        prompts: list[Any],
+    ) -> tuple[list[str], list[str]]:
+        """Run a batch of sub-LLM calls for root REPL usage."""
+        if not isinstance(prompts, list):
+            raise ValueError("llm_batch expects a list of prompts.")
+
+        client = context.get("client")
+        sub_model = context.get("sub_model") or context.get("model")
+        state_ref = context.get("state")
+        parent_turn = context.get("parent_turn", 0)
+        if not client or not sub_model or state_ref is None:
+            raise RuntimeError("Sub-LLM context is not available.")
+
+        batch_start = perf_counter()
+        batch_id = uuid.uuid4().hex[:8]
+        results: list[dict[str, Any] | None] = [None] * len(prompts)
+        semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
+
+        def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
+            if isinstance(prompt, str):
+                return [cast(ChatMessage, {"role": "user", "content": prompt})]
+            if isinstance(prompt, dict):
+                if "role" in prompt and "content" in prompt:
+                    return [cast(ChatMessage, prompt)]
+                raise ValueError(
+                    "llm_batch prompt at index "
+                    + str(index)
+                    + " must be a string or message dict with 'role' and 'content'."
+                )
+            if isinstance(prompt, (list, tuple)):
+                if all(isinstance(item, dict) for item in prompt):
+                    return [cast(ChatMessage, item) for item in prompt]
+                raise ValueError(
+                    "llm_batch prompt at index "
+                    + str(index)
+                    + " must be a list of message dicts."
+                )
+            raise ValueError(
+                "llm_batch prompt at index "
+                + str(index)
+                + " must be a string, message dict, or list of message dicts."
+            )
+
+        async def _call_one(index: int, prompt: Any) -> None:
+            jitter_ms = (
+                random.random() * self.sub_llm_stagger_jitter_ms
+                if self.sub_llm_stagger_jitter_ms > 0
+                else 0.0
+            )
+            delay_s = max(0.0, (index * self.sub_llm_stagger_ms + jitter_ms) / 1000.0)
+            if delay_s:
+                await asyncio.sleep(delay_s)
+
+            async with semaphore:
+                request_id = uuid.uuid4().hex[:8]
+                start_time = perf_counter()
+                try:
+                    messages = _coerce_prompt_messages(prompt, index)
+                    response_dict = await self._run_sub_llm_request(
+                        state_ref=state_ref,
+                        client=client,
+                        sub_model=sub_model,
+                        messages=messages,
+                        batch_id=batch_id,
+                        request_id=request_id,
+                        parent_turn=parent_turn,
+                    )
+                    elapsed = perf_counter() - start_time
+                    response_dict.setdefault("_rlm_metadata", {})["elapsed_seconds"] = (
+                        elapsed
+                    )
+                except Exception as exc:
+                    elapsed = perf_counter() - start_time
+                    response_dict = {
+                        "choices": [
+                            {"message": {"content": f"Error in sub-LLM call: {exc}"}}
+                        ],
+                        "_rlm_metadata": {
+                            "error": True,
+                            "elapsed_seconds": elapsed,
+                        },
+                    }
+                results[index] = response_dict
+
+        await asyncio.gather(
+            *[_call_one(i, prompt) for i, prompt in enumerate(prompts)]
+        )
+
+        batch_elapsed = perf_counter() - batch_start
+        summary_lines = [f"llm_batch: {len(prompts)} call(s) in {batch_elapsed:.2f}s"]
+        contents: list[str] = []
+        for index, result in enumerate(results):
+            if not result:
+                contents.append("")
+                summary_lines.append(f"  [{index}]: error (0.00s)")
+                continue
+            message = result.get("choices", [{}])[0].get("message", {})
+            contents.append(message.get("content", ""))
+            meta = result.get("_rlm_metadata", {})
+            elapsed = meta.get("elapsed_seconds", 0.0)
+            if meta.get("error"):
+                summary_lines.append(f"  [{index}]: error ({elapsed:.2f}s)")
+                continue
+            tokens = meta.get("prompt_tokens", 0) + meta.get("completion_tokens", 0)
+            tool_calls = meta.get("tool_call_count", 0)
+            max_turns = meta.get("max_turns_reached", False)
+            status = "⚠ max turns" if max_turns else "✓"
+            summary_lines.append(
+                f"  [{index}]: {tokens} tokens, {tool_calls} tool calls, "
+                f"{elapsed:.2f}s {status}"
+            )
+
+        return contents, summary_lines
+
     # =========================================================================
-    # Interception Server (for sub-LLM calls from sandbox code)
+    # Interception Server (for sub-LLM calls from worker code)
     # =========================================================================
 
     async def _ensure_interception_server(self):
@@ -2070,6 +3570,10 @@ class RLMEnv(SandboxEnv):
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self._handle_sub_llm_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/rlm/tools",
+                self._handle_root_tool_request,
             )
 
             runner = web.AppRunner(app)
@@ -2093,8 +3597,207 @@ class RLMEnv(SandboxEnv):
                 f"Started RLM interception server on port {self.interception_port}"
             )
 
+    async def _get_tunnel_url(self) -> str:
+        """Get tunnel URL, starting the tunnel if needed."""
+        async with self._tunnel_lock:
+            if self._tunnel is None:
+                if logger.isEnabledFor(logging.DEBUG):
+                    self._tunnel = Tunnel(
+                        local_port=self.interception_port,
+                        log_level="debug",
+                    )
+                else:
+                    self._tunnel = Tunnel(local_port=self.interception_port)
+                url = await self._tunnel.start()
+                logger.debug(f"Prime Tunnel started: {url}")
+                return url
+            else:
+                assert self._tunnel.url is not None, "Tunnel started but URL is None"
+                return self._tunnel.url
+
+    async def _run_sub_llm_request(
+        self,
+        *,
+        state_ref: State,
+        client: Any,
+        sub_model: str,
+        messages: ChatMessages,
+        batch_id: str,
+        request_id: str,
+        parent_turn: int,
+        elapsed_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        messages_with_system: ChatMessages = [
+            cast(ChatMessage, {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT}),
+            *messages,
+        ]
+
+        result = await self._run_sub_llm(
+            state_ref, client, sub_model, messages_with_system
+        )
+        final_content = result["final_content"]
+        prompt_tokens = result["total_prompt_tokens"]
+        completion_tokens = result["total_completion_tokens"]
+        tool_call_count = result["tool_call_count"]
+        num_turns = result["num_turns"]
+        max_turns_reached = result["max_turns_reached"]
+        turns = result["turns"]
+
+        boxed_content = extract_boxed_answer(final_content)
+
+        timestamp = time.time()
+        total_sub_turns = len(turns)
+        for sub_turn_index, turn in enumerate(turns):
+            extras = {
+                "is_sub_llm_call": True,
+                "parent_turn": parent_turn,
+                "batch_id": batch_id,
+                "request_id": request_id,
+                "sub_turn_index": sub_turn_index,
+                "total_sub_turns": total_sub_turns,
+                "timestamp": timestamp,
+                "tool_call_count": turn["tool_call_count"],
+            }
+
+            if self.include_sub_llm_in_trajectory:
+                tokens = await parse_response_tokens(
+                    turn["response"], "chat", self.max_seq_len
+                )
+                completion_messages = await parse_response_messages(
+                    turn["response"], "chat"
+                )
+                response_is_truncated = await parse_is_truncated(
+                    turn["response"], "chat"
+                )
+                is_truncated = response_is_truncated or (
+                    tokens is not None and bool(tokens.get("is_truncated"))
+                )
+
+                trajectory_step = TrajectoryStep(
+                    prompt=cast(Messages, turn["prompt_messages"]),
+                    completion=completion_messages,
+                    response=turn["response"],
+                    tokens=tokens,
+                    reward=None,
+                    advantage=None,
+                    is_truncated=is_truncated,
+                    trajectory_id=f"{batch_id}_{request_id}",
+                    extras=extras,
+                )
+                await self.add_trajectory_step(state_ref, trajectory_step)
+            else:
+                trajectory_step = TrajectoryStep(
+                    prompt=cast(Messages, turn["prompt_messages"]),
+                    completion=[],
+                    response=turn["response"],
+                    tokens=None,
+                    reward=None,
+                    advantage=None,
+                    is_truncated=False,
+                    trajectory_id=f"{batch_id}_{request_id}",
+                    extras=extras,
+                )
+                update_rlm_metrics_from_step(state_ref, trajectory_step)
+
+        metadata = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "tool_call_count": tool_call_count,
+            "num_turns": num_turns,
+            "max_turns_reached": max_turns_reached,
+        }
+        if elapsed_seconds is not None:
+            metadata["elapsed_seconds"] = elapsed_seconds
+
+        return {
+            "choices": [{"message": {"content": boxed_content}}],
+            "_rlm_metadata": metadata,
+        }
+
+    async def _handle_root_tool_request(self, request: Any) -> Any:
+        """Handle root tool requests from worker."""
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+
+        tool_name = request_body.get("tool_name", "")
+        serialization = request_body.get("serialization", "pickle")
+        if not tool_name:
+            return web.json_response({"error": "Tool name not provided"}, status=400)
+        if tool_name not in self.root_tool_map:
+            return web.json_response(
+                {"error": f"Tool '{tool_name}' not found"}, status=404
+            )
+
+        state_ref = context.get("state")
+        if state_ref is None:
+            return web.json_response({"error": "State not available"}, status=500)
+
+        try:
+            if serialization != "pickle":
+                raise ValueError("Only pickle serialization is supported.")
+            args = pickle.loads(base64.b64decode(request_body.get("args", "")))
+            kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
+            if not isinstance(args, tuple):
+                raise ValueError("Pickle args payload must be a tuple.")
+            if not isinstance(kwargs, dict):
+                raise ValueError("Pickle kwargs payload must be a dict.")
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        parent_turn = context.get("current_turn", 0)
+        root_tool_context = {
+            "state": state_ref,
+            "client": context.get("client"),
+            "sub_model": context.get("sub_model") or context.get("model"),
+            "parent_turn": parent_turn,
+        }
+        token = self._root_tool_context_var.set(root_tool_context)
+        try:
+            _update_root_tool_metrics(state_ref, tool_name)
+            tool_func = self.root_tool_map[tool_name]
+            if tool_name == "llm_batch":
+                if args and "prompts" in kwargs:
+                    raise ValueError("llm_batch received prompts twice.")
+                if args:
+                    if len(args) != 1:
+                        raise ValueError("llm_batch expects a single prompts argument.")
+                    prompts = args[0]
+                elif "prompts" in kwargs:
+                    prompts = kwargs.pop("prompts")
+                else:
+                    raise ValueError("llm_batch requires a prompts argument.")
+                if kwargs:
+                    raise ValueError(
+                        "llm_batch does not accept extra keyword arguments: "
+                        + ", ".join(sorted(kwargs))
+                    )
+                result_value, print_lines = await self._root_llm_batch(
+                    root_tool_context, prompts
+                )
+            else:
+                result_value = await maybe_await(tool_func, *args, **kwargs)
+                print_lines = None
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        finally:
+            self._root_tool_context_var.reset(token)
+
+        result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
+
+        response_body: dict[str, Any] = {"result": result_payload}
+        if print_lines:
+            response_body["print_lines"] = print_lines
+        return web.json_response(response_body)
+
     async def _handle_sub_llm_request(self, request: Any) -> Any:
-        """Handle sub-LLM requests from sandbox code."""
+        """Handle sub-LLM requests from worker code."""
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -2114,116 +3817,28 @@ class RLMEnv(SandboxEnv):
         if not sub_model:
             return web.json_response({"error": "Model not available"}, status=500)
 
-        messages = request_body.get("messages", [])
+        messages = cast(ChatMessages, request_body.get("messages", []))
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
 
-        # Prepend system message with \boxed{} instruction
-        messages_with_system = [
-            {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT},
-            *messages,
-        ]
-
         state_ref = context.get("state") if context else None
+        if state_ref is None:
+            return web.json_response({"error": "State not available"}, status=500)
 
+        parent_turn = context.get("current_turn", 0)
         try:
-            # Run sub-LLM call (handles both with-tools and no-tools cases)
-            result = await self._run_sub_llm(client, sub_model, messages_with_system)
-            final_content = result["final_content"]
-            prompt_tokens = result["total_prompt_tokens"]
-            completion_tokens = result["total_completion_tokens"]
-            tool_call_count = result["tool_call_count"]
-            num_turns = result["num_turns"]
-            max_turns_reached = result["max_turns_reached"]
-            turns = result["turns"]
-
-            # Extract boxed answer for response to sandbox
-            boxed_content = extract_boxed_answer(final_content)
-
-            parent_turn = context.get("current_turn", 0)
-            timestamp = time.time()
-
-            total_sub_turns = len(turns)
-            for sub_turn_index, turn in enumerate(turns):
-                extras = {
-                    "is_sub_llm_call": True,
-                    "parent_turn": parent_turn,
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "sub_turn_index": sub_turn_index,
-                    "total_sub_turns": total_sub_turns,
-                    "timestamp": timestamp,
-                    "tool_call_count": turn["tool_call_count"],
-                }
-
-                if self.include_sub_llm_in_trajectory:
-                    # Parse tokens from response
-                    tokens = await parse_response_tokens(
-                        turn["response"], "chat", self.max_seq_len
-                    )
-                    # Parse completion messages
-                    completion_messages = await parse_response_messages(
-                        turn["response"], "chat"
-                    )
-                    # Check if response was truncated
-                    response_is_truncated = await parse_is_truncated(
-                        turn["response"], "chat"
-                    )
-                    is_truncated = response_is_truncated or (
-                        tokens is not None and bool(tokens.get("is_truncated"))
-                    )
-
-                    trajectory_step = TrajectoryStep(
-                        prompt=cast(Messages, turn["prompt_messages"]),
-                        completion=completion_messages,
-                        response=turn["response"],
-                        tokens=tokens,
-                        reward=None,
-                        advantage=None,
-                        is_truncated=is_truncated,
-                        trajectory_id=f"{batch_id}_{request_id}",
-                        extras=extras,
-                    )
-                    if state_ref is not None:
-                        await self.add_trajectory_step(state_ref, trajectory_step)
-                else:
-                    if state_ref is None:
-                        continue
-                    trajectory_step = TrajectoryStep(
-                        prompt=cast(Messages, turn["prompt_messages"]),
-                        completion=[],
-                        response=turn["response"],
-                        tokens=None,
-                        reward=None,
-                        advantage=None,
-                        is_truncated=False,
-                        trajectory_id=f"{batch_id}_{request_id}",
-                        extras=extras,
-                    )
-                    update_rlm_metrics_from_step(state_ref, trajectory_step)
-
-            # Build response dict for sandbox
-            response_dict = {
-                "choices": [{"message": {"content": boxed_content}}],
-                "_rlm_metadata": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "tool_call_count": tool_call_count,
-                    "num_turns": num_turns,
-                    "max_turns_reached": max_turns_reached,
-                },
-            }
-
+            response_dict = await self._run_sub_llm_request(
+                state_ref=state_ref,
+                client=client,
+                sub_model=sub_model,
+                messages=messages,
+                batch_id=batch_id,
+                request_id=request_id,
+                parent_turn=parent_turn,
+            )
             return web.json_response(response_dict)
         except Exception as e:
-            logger.error(f"Sub-LLM call failed: {e}")
             return web.json_response({"error": str(e)}, status=500)
-
-    @vf.teardown
-    async def teardown_tunnels(self):
-        """Stop all cloudflared tunnel processes."""
-        if self._tunnel_pool:
-            self._tunnel_pool.teardown()
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
@@ -2245,6 +3860,23 @@ class RLMEnv(SandboxEnv):
         """Stop the interception server if it was started."""
         await self._teardown_interception_server()
 
+    async def _teardown_tunnel(self) -> None:
+        """Stop Prime Tunnel if it was started."""
+        async with self._tunnel_lock:
+            if self._tunnel is not None:
+                try:
+                    await self._tunnel.stop()
+                    logger.debug("Prime Tunnel stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping Prime Tunnel: {e}")
+                finally:
+                    self._tunnel = None
+
+    @vf.teardown
+    async def teardown_tunnel(self):
+        """Stop Prime Tunnel if it was started."""
+        await self._teardown_tunnel()
+
     @vf.teardown
     async def teardown_executor(self):
         """Cleanup executor-level resources (e.g., local venv)."""
@@ -2262,10 +3894,9 @@ class RLMEnv(SandboxEnv):
         state: State,
         **kwargs,
     ) -> dict[str, Any]:
-        """Inject sandbox_id and state into call_python_repl tool args."""
-        if tool_name == "call_python_repl":
+        """Inject state into REPL tool args."""
+        if tool_name in {"call_python_repl", "call_bash_repl"}:
             updated_args = dict(tool_args)
-            updated_args["sandbox_id"] = state.get("sandbox_id")
             updated_args["state"] = state
             return updated_args
         else:
@@ -2276,20 +3907,27 @@ class RLMEnv(SandboxEnv):
     async def _setup_interception_and_register(
         self, state: State, rollout_id: str
     ) -> State:
-        """Start interception server, configure tunnel, and register rollout."""
+        """Start interception server and register rollout."""
         await self._ensure_interception_server()
-
-        if self._tunnel_pool:
-            tunnel_url = await self._tunnel_pool.get_tunnel_url(
-                len(self.active_rollouts)
-            )
-            interception_url = f"{tunnel_url}/rollout/{rollout_id}/v1/chat/completions"
+        if self.execution_backend == "sandbox":
+            if self.interception_url_override:
+                base_url = self.interception_url_override.rstrip("/")
+            else:
+                base_url = await self._get_tunnel_url()
+            interception_url = f"{base_url}/rollout/{rollout_id}/v1/chat/completions"
+            root_tool_url = f"{base_url}/rollout/{rollout_id}/v1/rlm/tools"
         else:
-            tunnel_url = None
-            interception_url = f"http://{self.interception_host}:{self.interception_port}/rollout/{rollout_id}/v1/chat/completions"
+            interception_url = (
+                f"http://{self.interception_host}:{self.interception_port}"
+                f"/rollout/{rollout_id}/v1/chat/completions"
+            )
+            root_tool_url = (
+                f"http://{self.interception_host}:{self.interception_port}"
+                f"/rollout/{rollout_id}/v1/rlm/tools"
+            )
 
         state["interception_url"] = interception_url
-        state["tunnel_url"] = tunnel_url
+        state["root_tool_url"] = root_tool_url
 
         self.active_rollouts[rollout_id] = {
             "client": state.get("client"),
@@ -2300,71 +3938,99 @@ class RLMEnv(SandboxEnv):
         return state
 
     async def setup_state(self, state: State, **kwargs) -> State:
-        """Setup sandbox with context and worker, plus interception for sub-LLM calls."""
-        # 1. Create sandbox via parent (sandbox backend only)
-        if self.execution_backend == "sandbox":
-            state = await super().setup_state(state, **kwargs)
-            sandbox_id = state.get("sandbox_id")
-            if not sandbox_id:
-                raise vf.SandboxError() from Exception("Sandbox ID not set")
-        else:
-            state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
-            state["sandbox_state"] = {
-                "ready": False,
-                "ready_wait_time": 0.0,
-                "command_execution_times": [],
-            }
+        """Setup worker, filesystem context, and interception for sub-LLM calls."""
+        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
+        if self.execution_backend == "sandbox":
+            state["rlm_fs_root_remote"] = f"/tmp/rlm_{rollout_id}/rlm_fs"
+            state["rlm_control_dir_remote"] = f"/tmp/rlm_{rollout_id}/rlm_control"
 
-        # 2. Setup interception, tunnels, and register rollout
+        # 1. Setup interception and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
 
-        # 3. Build context
-        info = state.get("info", {})
-        context_data = info.get(self.context_key, None)
-        disk_size_gb = getattr(self.sandbox_request, "disk_size_gb", None)
-        max_payload_bytes = None
-        if isinstance(disk_size_gb, (int, float)) and disk_size_gb > 0:
-            max_payload_bytes = int(disk_size_gb * 1024**3)
+        # 2. Create rollout directories
+        self._executor.create_rollout_dirs(state)
 
-        payload_dir = await self._executor.get_payload_dir(state)
-        prepared_context = prepare_context_data(
-            context_data,
-            self.context_dtype,
-            self.serializer_registry,
-            max_payload_bytes,
-            payload_dir=payload_dir,
+        # 3. Build filesystem context
+        info = state.get("info") or {}
+        if not isinstance(info, dict):
+            info = {}
+        fs_root = state.get("rlm_fs_root")
+        if not fs_root:
+            raise ValueError("RLM filesystem root not initialized")
+        fs_has_data = False
+        fs_source: str | None = None
+
+        context_dir = info.get(self.context_dir_key)
+        if context_dir:
+            fs_source = str(context_dir)
+            self._copy_context_directory(fs_source, fs_root)
+            fs_has_data = True
+        else:
+            context_data = info.get(self.context_key, None)
+            if context_data is not None:
+                fs_has_data = True
+                self._write_builtin_context(context_data, fs_root)
+
+        fs_metadata = self._compute_fs_metadata(fs_root)
+        state["rlm_fs_root"] = fs_root
+        state["rlm_fs_source"] = fs_source
+        state["rlm_fs_metadata"] = fs_metadata
+        state["rlm_fs_has_data"] = fs_has_data
+        state["retain_filesystem_after_rollout"] = self.retain_filesystem_after_rollout
+
+        fs_root_for_prompt = (
+            state.get("rlm_fs_root_remote")
+            if self.execution_backend == "sandbox"
+            else fs_root
         )
-        context_dict = prepared_context.context_dict
-        state["rlm_context"] = context_dict
-        state["rlm_payload_bytes"] = prepared_context.payload_bytes
-        state["rlm_payload_path"] = prepared_context.payload_path
-        state["rlm_payload_name"] = prepared_context.payload_name
 
-        metadata = context_dict.get("input_data_metadata", {})
-        metadata_summary = self._generate_metadata_documentation(metadata)
-        base_system_prompt = self.custom_system_prompt or _RLM_SYSTEM_PROMPT
-        if "{metadata_summary}" in base_system_prompt:
+        filesystem_summary = self._generate_filesystem_summary(
+            fs_root=fs_root_for_prompt or fs_root,
+            metadata=fs_metadata,
+            has_data=fs_has_data,
+        )
+        if self.custom_system_prompt:
+            base_system_prompt = self.custom_system_prompt
+        elif self.repl_language == "bash":
+            base_system_prompt = _RLM_BASH_SYSTEM_PROMPT
+        else:
+            base_system_prompt = _RLM_SYSTEM_PROMPT
+        if "{filesystem_summary}" in base_system_prompt:
             # Use replace instead of format to avoid conflict with curly braces from Python code
             base_system_prompt = base_system_prompt.replace(
-                "{metadata_summary}", metadata_summary
+                "{filesystem_summary}", filesystem_summary
             )
         else:
             # If custom prompt doesn't have placeholder, prepend it
-            base_system_prompt = f"{metadata_summary}\n\n{base_system_prompt}"
+            base_system_prompt = f"{filesystem_summary}\n\n{base_system_prompt}"
 
         packages_docs = self._generate_packages_documentation()
+        root_tools_docs = self._generate_root_tools_documentation()
         sub_tools_docs = self._generate_sub_tools_documentation()
-        state["rlm_system_prompt"] = base_system_prompt + packages_docs + sub_tools_docs
+        state["rlm_system_prompt"] = (
+            base_system_prompt + packages_docs + root_tools_docs + sub_tools_docs
+        )
         state["rlm_packages_docs"] = packages_docs
+        state["rlm_root_tools_docs"] = root_tools_docs
         state["rlm_sub_tools_docs"] = sub_tools_docs
+        deduped_shared, _ = _dedupe_tools(
+            self.shared_tools, context="shared tools", reserved_names=set()
+        )
+        state["rlm_shared_tools"] = [
+            _tool_display_name(tool) for tool in deduped_shared
+        ]
+        state["rlm_root_tools"] = [_tool_display_name(tool) for tool in self.root_tools]
+        state["rlm_sub_tools"] = [_tool_display_name(tool) for tool in self.sub_tools]
 
-        # 4. Prepare backend and start worker
-        await self._executor.setup(state, prepared_context)
-
-        state["rlm_worker_ready"] = True
+        # 4. Prepare backend and start worker (defer for sandbox to allow env setup)
+        if self.execution_backend != "sandbox":
+            await self._executor.setup(state)
+            state["rlm_worker_ready"] = True
+        else:
+            state["rlm_worker_ready"] = False
 
         # Initialize context warning flag (feature enabled if max_seq_len is set)
         state["context_warning_sent"] = False
@@ -2384,10 +4050,12 @@ class RLMEnv(SandboxEnv):
         """Attempt to recover from a code execution timeout via the active backend."""
         return await self._executor.recover_from_timeout(state)
 
-    async def _execute_code(
-        self, sandbox_id: str | None, code: str, state: State
-    ) -> dict[str, Any]:
+    async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
         """Execute code in worker and return result."""
+        if not state.get("rlm_worker_ready", False):
+            await self._executor.prepare_filesystem(state)
+            await self._executor.setup(state)
+            state["rlm_worker_ready"] = True
         # Increment and track sequence number for this execution
         seq = state.get("_exec_seq", 0) + 1
         state["_exec_seq"] = seq
@@ -2404,9 +4072,9 @@ class RLMEnv(SandboxEnv):
                 raise vf.SandboxError() from e
             recovered = await self._recover_from_code_timeout(state)
             recovery_note = (
-                " The sandbox was restarted and the REPL state was reset."
+                " The worker was restarted and the REPL state was reset."
                 if recovered
-                else " Failed to restart the sandbox; the REPL may be unusable."
+                else " Failed to restart the worker; the REPL may be unusable."
             )
             # Return error to model so it can try more efficient code
             return {
@@ -2464,6 +4132,19 @@ class RLMEnv(SandboxEnv):
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
+        if self.repl_language == "bash":
+            stdout = result.get("stdout") or ""
+            stderr = result.get("stderr") or ""
+            result_text = result.get("result") or ""
+            output = f"{stdout}{stderr}"
+            if not output and result_text:
+                output = str(result_text)
+            if not output:
+                output = "(no output)"
+            if len(output) > self.max_output_length:
+                output = output[: self.max_output_length] + "\n... [output truncated]"
+            return output
+
         parts: list[str] = []
 
         stdout = (result.get("stdout") or "").rstrip()
@@ -2495,21 +4176,88 @@ class RLMEnv(SandboxEnv):
     # REPL Tool
     # =========================================================================
 
-    async def call_python_repl(
-        self, code: str, sandbox_id: str | None, state: Any
-    ) -> str:
+    async def call_bash_repl(self, code: str, state: Any) -> str:
+        """
+        Execute Bash commands in a persistent REPL environment.
+
+        The Bash session maintains state across calls and provides access to:
+
+        - Files in the working directory (current working directory is the context root).
+        - `RLM_CONTENT`: Your current best answer (string).
+        - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
+
+        - `llm_batch` and other root tools: available as shell commands.
+
+        Args:
+            code: Bash code to execute in the persistent REPL
+
+        Returns:
+            Raw execution output (stdout/stderr combined)
+        """
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        execution_start = perf_counter()
+        result = await self._execute_code(code, state)
+        execution_time = perf_counter() - execution_start
+        output = self._format_execution_output(result)
+
+        state.setdefault("tool_call_timings", []).append(
+            {
+                "turn": state.get("turn", 0),
+                "execution_seconds": execution_time,
+            }
+        )
+        _update_rlm_repl_metrics(state, execution_time)
+
+        answer = result.get("answer", {})
+        if answer.get("ready", False):
+            state["final_answer"] = answer.get("content", "")
+            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
+
+        # Inject context limit warning if approaching limit
+        if self.max_seq_len and not state.get("context_warning_sent"):
+            trajectory = state.get("trajectory", [])
+            last_main = next(
+                (
+                    step
+                    for step in reversed(trajectory)
+                    if not step.get("extras", {}).get("is_sub_llm_call")
+                ),
+                None,
+            )
+            response = last_main.get("response") if last_main else None
+            usage = getattr(response, "usage", None) if response else None
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
+            warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
+
+            if prompt_tokens >= warning_threshold:
+                state["context_warning_sent"] = True
+                pct = prompt_tokens / self.max_seq_len
+                output += (
+                    f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
+                    f"{self.max_seq_len:,} tokens ({pct:.0%}). Please finalize your answer "
+                    "soon by setting RLM_READY=1."
+                )
+
+        return output
+
+    async def call_python_repl(self, code: str, state: Any) -> str:
         """
         Execute Python code in a persistent REPL environment.
 
         The REPL maintains state across calls and provides access to:
 
-        - `extra_data`: The actual input data you need to process.
+        - Files in the working directory (current working directory is the context root).
+        - `extra_data`: The working directory path (string) for convenience.
+        - `fs_metadata`: Metadata about the filesystem context (file_count, total_size).
 
         - `answer`: A dictionary for your final answer:
           - `answer["content"]`: Your answer (string) - update this as you work
           - `answer["ready"]`: Set to `True` to finish (terminates execution immediately)
 
-        - `llm_batch(prompts, **kwargs)`: Make sub-LLM calls for help with subtasks
+        - `llm_batch(prompts)`: Make sub-LLM calls for help with subtasks
           - Takes a list of prompts, returns a list of answers (same order)
           - Useful for semantic understanding, summarization, complex reasoning
           - Prints metadata summary showing tokens and tool calls per sub-LLM
@@ -2524,10 +4272,9 @@ class RLMEnv(SandboxEnv):
         rollout_id = state.get("rollout_id")
         if rollout_id and rollout_id in self.active_rollouts:
             self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
-
         # Time the full tool call execution
         execution_start = perf_counter()
-        result = await self._execute_code(sandbox_id, code, state)
+        result = await self._execute_code(code, state)
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
@@ -2588,37 +4335,84 @@ class RLMEnv(SandboxEnv):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
         if len(state["trajectory"]) == 0:
-            # First turn: add system prompt
+            # First turn: inject RLM scaffolding into the first user message
             prompt = state.get("prompt", [])
             if isinstance(prompt, str):
                 prompt = [{"role": "user", "content": prompt}]
 
             system_prompt = state.get("rlm_system_prompt")
             packages_docs = state.get("rlm_packages_docs")
+            root_tools_docs = state.get("rlm_root_tools_docs")
             sub_tools_docs = state.get("rlm_sub_tools_docs")
-            if system_prompt is None or packages_docs is None or sub_tools_docs is None:
+            if (
+                system_prompt is None
+                or packages_docs is None
+                or root_tools_docs is None
+                or sub_tools_docs is None
+            ):
                 raise ValueError("RLM setup_state must run before get_prompt_messages")
 
-            messages = list(prompt)
-            if not messages or messages[0].get("role") != "system":
-                messages.insert(0, {"role": "system", "content": system_prompt})
-            else:
-                # Append packages and tool docs to existing system prompt
-                messages[0] = {
-                    "role": "system",
-                    "content": messages[0]["content"] + packages_docs + sub_tools_docs,
-                }
+            messages = [cast(ChatMessage, dict(m)) for m in prompt]
+            scaffold = (
+                "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
+            )
+            inserted = False
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                msg_mut = cast(dict[str, Any], msg)
+                content = msg_mut.get("content")
+                if isinstance(content, str) or content is None:
+                    text = content or ""
+                    if text.startswith("<RLM_SCAFFOLDING>"):
+                        inserted = True
+                        break
+                    msg_mut["content"] = scaffold + text
+                elif isinstance(content, list):
+                    if (
+                        content
+                        and isinstance(content[0], dict)
+                        and content[0].get("type") == "text"
+                        and str(content[0].get("text", "")).startswith(
+                            "<RLM_SCAFFOLDING>"
+                        )
+                    ):
+                        inserted = True
+                        break
+                    msg_mut["content"] = [{"type": "text", "text": scaffold}, *content]
+                elif isinstance(content, dict):
+                    msg_mut["content"] = [
+                        {"type": "text", "text": scaffold},
+                        content,
+                    ]
+                inserted = True
+                break
+
+            if not inserted:
+                messages.append(
+                    cast(ChatMessage, {"role": "user", "content": scaffold})
+                )
+
             return cast(Messages, messages)
         else:
             # Subsequent turns: use parent implementation
             return await super().get_prompt_messages(state)
+
+    async def env_response(
+        self, messages: Messages, state: State, **kwargs
+    ) -> Messages:
+        """Override to set final_env_response when answer is ready to avoid extra model call"""
+        tool_messages = await super().env_response(messages, state, **kwargs)
+        if "final_answer" in state:
+            state["final_env_response"] = tool_messages
+        return tool_messages
 
     # =========================================================================
     # Stop Conditions
     # =========================================================================
 
     async def _ensure_final_answer(self, state: State) -> None:
-        """Read final answer from sandbox if not already set."""
+        """Read final answer from worker if not already set."""
         if "final_answer" in state:
             return
         state["final_answer"] = await self._executor.read_answer(state)
@@ -2649,17 +4443,13 @@ class RLMEnv(SandboxEnv):
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
 
-        # Release tunnel
-        if (tunnel_url := state.get("tunnel_url")) and self._tunnel_pool:
-            await self._tunnel_pool.release_tunnel(tunnel_url)
-
         try:
             await self._executor.cleanup(state)
         finally:
             if not self.active_rollouts:
                 await self._teardown_interception_server()
-                if self._tunnel_pool:
-                    self._tunnel_pool.teardown()
+                if self.execution_backend == "sandbox":
+                    await self._teardown_tunnel()
 
     async def render_completion(self, state: State):
         """Render completion from main model steps only, ignoring sub-LLM steps."""
@@ -2690,5 +4480,5 @@ class RLMEnv(SandboxEnv):
         state["completion"] = full_conversation[len(state["prompt"]) :]
 
     async def post_rollout(self, state: State):
-        """Read final answer from sandbox if not already set."""
+        """Read final answer from worker if not already set."""
         await self._ensure_final_answer(state)

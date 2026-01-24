@@ -1,18 +1,34 @@
+import asyncio
 import importlib.util
 import json
 import logging
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
+
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ImportError:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 import numpy as np
 from datasets import Dataset, disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.types import Endpoints, EvalConfig, GenerateMetadata, GenerateOutputs
+from verifiers.types import (
+    Endpoints,
+    EvalConfig,
+    EvalRunConfig,
+    GenerateMetadata,
+    GenerateOutputs,
+    LogCallback,
+    ProgressCallback,
+    StartCallback,
+    State,
+)
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
@@ -59,9 +75,213 @@ def load_endpoints(endpoints_path: str):
     return endpoints
 
 
+def load_toml_config(path: Path) -> list[dict]:
+    """Loads and validates a TOML config file.
+
+    Config format supports global defaults at the top level, with per-eval overrides:
+
+        # Global defaults (optional)
+        model = "openai/gpt-4.1-mini"
+        num_examples = 10
+
+        [[eval]]
+        env_id = "gsm8k"
+
+        [[eval]]
+        env_id = "math-python"
+        num_examples = 5  # overrides global default
+
+    Minimal config (just a single eval):
+
+        [[eval]]
+        env_id = "gsm8k"
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    with open(path, "rb") as f:
+        raw_config = tomllib.load(f)
+
+    # validate schema
+    eval_list = raw_config.get("eval", [])
+    if not isinstance(eval_list, list):
+        raise ValueError(
+            f"Config file uses [eval] but should use [[eval]] (double brackets) "
+            f"for array of tables: {path}"
+        )
+    if not eval_list:
+        raise ValueError(
+            f"Config file must contain at least one [[eval]] section: {path}"
+        )
+
+    if not all("env_id" in e for e in eval_list):
+        raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
+
+    # extract global defaults (everything except 'eval' key)
+    global_defaults = {k: v for k, v in raw_config.items() if k != "eval"}
+
+    # valid fields mirror cli args, not evalconfig
+    # TODO: properly tie EvalConfig to CLI
+    valid_fields = {
+        # environment
+        "env_id",
+        "env_args",
+        "env_dir_path",
+        "endpoints_path",
+        "extra_env_kwargs",
+        # model/client
+        "model",
+        "api_key_var",
+        "api_base_url",
+        "header",
+        # sampling
+        "sampling_args",
+        "max_tokens",
+        "temperature",
+        # evaluation
+        "num_examples",
+        "rollouts_per_example",
+        "max_concurrent",
+        "max_concurrent_generation",
+        "max_concurrent_scoring",
+        "independent_scoring",
+        "max_retries",
+        # logging
+        "verbose",
+        # saving
+        "state_columns",
+        "save_results",
+        "save_every",
+        "save_to_hf_hub",
+        "hf_hub_dataset_name",
+    }
+
+    # validate global fields
+    if global_defaults:
+        invalid_global = set(global_defaults.keys()) - valid_fields
+        if invalid_global:
+            raise ValueError(
+                f"Invalid global field(s) {invalid_global}. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+
+    # merge global defaults with per-eval configs
+    merged_eval_list: list[dict] = []
+    for eval_config in eval_list:
+        invalid_fields = set(eval_config.keys()) - valid_fields
+        if invalid_fields:
+            raise ValueError(
+                f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
+                f"Valid fields are: {sorted(valid_fields)}"
+            )
+        # global defaults, then per-eval overrides
+        merged = {**global_defaults, **eval_config}
+        merged_eval_list.append(merged)
+
+    return merged_eval_list
+
+
+def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
+    """Group results by task name.
+
+    Args:
+        results: The GenerateOutputs from an evaluation run.
+
+    Returns:
+        A dictionary mapping task names to their corresponding GenerateOutputs.
+    """
+    task_indices: dict[str, list[int]] = {}
+    for i, task in enumerate(results["task"]):
+        if task not in task_indices:
+            task_indices[task] = []
+        task_indices[task].append(i)
+
+    task_results: dict[str, GenerateOutputs] = {}
+    for task, indices in task_indices.items():
+        task_results[task] = GenerateOutputs(
+            prompt=[results["prompt"][i] for i in indices],
+            completion=[results["completion"][i] for i in indices],
+            answer=[results["answer"][i] for i in indices],
+            state=[results["state"][i] for i in indices],
+            task=[results["task"][i] for i in indices],
+            info=[results["info"][i] for i in indices],
+            example_id=[results["example_id"][i] for i in indices],
+            reward=[results["reward"][i] for i in indices],
+            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
+            stop_conditions=[results["stop_conditions"][i] for i in indices],
+            is_truncated=[results["is_truncated"][i] for i in indices],
+            metadata=results["metadata"],
+        )
+    return task_results
+
+
+def print_rewards(results: GenerateOutputs):
+    print("Rewards:")
+    print(
+        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
+    )
+    r = results["metadata"]["rollouts_per_example"]
+    n = len(results["reward"]) // r
+    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
+    for i in range(r):
+        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
+        out = f"r{i + 1}: {trials}"
+        print(out)
+    for k in results["metrics"]:
+        v = results["metrics"][k]
+        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        for i in range(r):
+            trials = [round(v[i + (j * r)], 3) for j in range(n)]
+            out = f"r{i + 1}: {trials}"
+            print(out)
+
+
+def print_info(results: GenerateOutputs):
+    print("Info:")
+    print(
+        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+    )
+    counter = Counter(results["stop_conditions"])
+    print(
+        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
+    )
+    errors = [s.get("error") for s in results["state"]]
+    has_errors = [e is not None for e in errors]
+    if any(has_errors):
+        print(
+            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
+        )
+        errors = [e for e in errors if e is not None]
+        error_chains = [ErrorChain(e) for e in errors]
+        counter = Counter(error_chains)
+        for error_chain, count in counter.items():
+            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
+
+
+def print_timing(results: GenerateOutputs):
+    print("Timing:")
+    generation_ms_arr = np.array(
+        [s["timing"]["generation_ms"] for s in results["state"]]
+    )
+    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
+    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
+    generation_arr = generation_ms_arr / 1000
+    scoring_arr = scoring_ms_arr / 1000
+    total_arr = total_ms_arr / 1000
+
+    print(
+        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
+    )
+    print(
+        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
+    )
+    print(
+        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
+    )
+
+
 def print_results(
     results: GenerateOutputs,
-    event_loop_lags: list[float] | None = None,
     num_samples: int = 1,
 ):
     assert results["metadata"] is not None
@@ -85,89 +305,34 @@ def print_results(
         num_samples=num_samples,
     )
     print("--- All ---")
-    print("Rewards:")
-    print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
-    )
-    r = results["metadata"]["rollouts_per_example"]
-    n = len(results["reward"]) // r
-    # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
-    for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
-        out = f"r{i + 1}: {trials}"
-        print(out)
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
-        for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
-            out = f"r{i + 1}: {trials}"
-            print(out)
+    print_rewards(results)
+    print_info(results)
+    print_timing(results)
 
-    print("Info:")
-    print(
-        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
-    )
-    counter = Counter(results["stop_conditions"])
-    print(
-        f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
-    )
-    has_errors = [e is not None for e in errors]
-    if any(has_errors):
-        print(
-            f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
-        )
-        errors = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in errors]
-        counter = Counter(error_chains)
-        for error_chain, count in counter.items():
-            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
-    generation_ms_arr = np.array(
-        [s["timing"]["generation_ms"] for s in results["state"]]
-    )
-    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
-    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
-    print("Timing:")
-    print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
-    )
-    if event_loop_lags:
-        print("Performance:")
-        event_loop_lags_arr = np.array(event_loop_lags)
-        med_lag, p90_lag, max_lag = (
-            np.median(event_loop_lags_arr),
-            np.percentile(event_loop_lags_arr, 90),
-            np.max(event_loop_lags_arr),
-        )
-        print(
-            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
-        )
+    num_tasks = len(set(results["task"]))
+    if num_tasks > 1:
+        task_results = get_results_by_task(results)
+        for task, task_results in task_results.items():
+            print(f"\n--- {task} ---")
+            print_rewards(task_results)
+            print_info(task_results)
+            print_timing(task_results)
 
 
-async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
+async def run_evaluation(
+    config: EvalConfig,
+    on_start: StartCallback | None = None,
+    on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
+) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(
-        config.client_config,
-    )
+    client = setup_client(config.client_config)
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
-
-    # load event loop lag monitor
-    event_loop_lag_monitor = EventLoopLagMonitor()
-    event_loop_lag_monitor.run_in_background()
 
     # set extra environment kwargs
     if config.extra_env_kwargs:
@@ -176,11 +341,12 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
 
     # run evaluation
     results_path = get_eval_results_path(config)
-    logger.info(f"Starting evaluation with model: {config.model}")
-    logger.info(
+    logger.debug(f"Starting evaluation with model: {config.model}")
+    logger.debug(
         f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
     )
-    start_time = time.time()
+    # disable tqdm when callbacks are provided (TUI handles progress display)
+    use_tqdm = config.use_tqdm and on_progress is None
     results = await vf_env.evaluate(
         client=client,
         model=config.model,
@@ -194,18 +360,157 @@ async def run_evaluation(config: EvalConfig) -> GenerateOutputs:
         state_columns=config.state_columns,
         save_results=config.save_results,
         save_every=config.save_every,
+        push_to_hf_hub=config.save_to_hf_hub,
+        hf_hub_dataset_name=config.hf_hub_dataset_name,
+        use_tqdm=use_tqdm,
         independent_scoring=config.independent_scoring,
+        max_retries=config.max_retries,
+        on_start=on_start,
+        on_progress=on_progress,
+        on_log=on_log,
+    )
+
+    return results
+
+
+async def run_evaluations(config: EvalRunConfig) -> None:
+    # load event loop lag monitor
+    event_loop_lag_monitor = EventLoopLagMonitor()
+    event_loop_lag_monitor.run_in_background()
+
+    start_time = time.time()
+    all_results = await asyncio.gather(
+        *[run_evaluation(eval_config) for eval_config in config.evals]
     )
     end_time = time.time()
+    event_loop_lags = event_loop_lag_monitor.get_lags()
     logger.info(f"Evaluation completed in {end_time - start_time:.2f} seconds")
 
-    event_loop_lags = event_loop_lag_monitor.get_lags()
+    for results in all_results:
+        print_results(results)
 
-    if config.print_results:
-        print_results(results, event_loop_lags)
-    if config.save_results:
-        save_rollout_results(results, config.save_to_hf_hub, config.hf_hub_dataset_name)
-    return results
+    if event_loop_lags:
+        print("\nPerformance:")
+        event_loop_lags_arr = np.array(event_loop_lags)
+        med_lag, p90_lag, max_lag = (
+            np.median(event_loop_lags_arr),
+            np.percentile(event_loop_lags_arr, 90),
+            np.max(event_loop_lags_arr),
+        )
+        print(
+            f"event_loop_lag: med - {print_time(float(med_lag))}, p90 - {print_time(float(p90_lag))}, max - {print_time(float(max_lag))}"
+        )
+
+
+async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> None:
+    """Run multi-environment evaluation with a Rich display.
+
+    Args:
+        config: Evaluation run configuration.
+        tui_mode: If True, use alternate screen (--tui flag). If False, refresh in-place.
+    """
+    from verifiers.utils.eval_display import EvalDisplay, is_tty
+
+    # fall back to non-display mode if not a tty
+    if not is_tty():
+        logger.debug("Not a TTY, falling back to standard output")
+        await run_evaluations(config)
+        return
+
+    display = EvalDisplay(config.evals, screen=tui_mode)
+
+    async def run_with_progress(
+        env_config: EvalConfig, env_idx: int
+    ) -> GenerateOutputs:
+        """Run a single evaluation with display progress updates."""
+        reward_accum = 0
+        metrics_accum = defaultdict(float)
+        error_accum = 0
+
+        def on_start(total: int) -> None:
+            # total is num_examples * rollouts_per_example
+            # compute actual num_examples (resolves -1 to actual count)
+            num_examples = total // env_config.rollouts_per_example
+            display.update_env_state(env_idx, total=total, num_examples=num_examples)
+
+        def on_progress(all_states: list[State], new_states: list[State]) -> None:
+            nonlocal error_accum, reward_accum, metrics_accum
+
+            # Progress is always rollout-based
+            completed = len(all_states)
+
+            for s in new_states:
+                if s.get("error") is not None:
+                    error_accum += 1
+                reward = s.get("reward")
+                if reward is not None:
+                    reward_accum += reward
+                state_metrics = s.get("metrics") or {}
+                for name, value in state_metrics.items():
+                    if value is not None:
+                        metrics_accum[name] += value
+
+            # Compute averages over completed rollouts
+            reward = reward_accum / completed
+            metrics = {name: metrics_accum[name] / completed for name in metrics_accum}
+            error_rate = error_accum / completed
+
+            display.update_env_state(
+                env_idx,
+                progress=completed,
+                reward=reward,
+                metrics=metrics,
+                error_rate=error_rate,
+            )
+
+        def on_log(message: str) -> None:
+            display.update_env_state(env_idx, log_message=message)
+
+        display.update_env_state(env_idx, status="running")
+        try:
+            result = await run_evaluation(
+                env_config,
+                on_start=on_start,
+                on_progress=on_progress,
+                on_log=on_log,
+            )
+
+            # get save path if results were saved
+            save_path = (
+                result["metadata"]["path_to_save"] if env_config.save_results else None
+            )
+
+            display.update_env_state(
+                env_idx,
+                status="completed",
+                save_path=save_path,
+                results=result,
+            )
+
+            return result
+        except Exception as e:
+            display.update_env_state(env_idx, status="failed", error=str(e))
+            raise
+
+    try:
+        async with display:
+            await asyncio.gather(
+                *[
+                    run_with_progress(env_config, idx)
+                    for idx, env_config in enumerate(config.evals)
+                ],
+                return_exceptions=True,
+            )
+
+            display.refresh()
+            if tui_mode:
+                await display.wait_for_exit()
+
+    except KeyboardInterrupt:
+        pass  # exit on interrupt
+
+    # print final summary after exit
+    display.print_final_summary()
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:

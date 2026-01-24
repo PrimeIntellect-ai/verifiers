@@ -179,6 +179,7 @@ class HarborEnv(vf.CliAgentEnv):
                 sandbox_id,
                 f"mkdir -p /oracle /tests && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 working_dir=None,
+                timeout=900,
             )
             logger.debug(f"Uploaded test assets for {task_dir.name}")
         finally:

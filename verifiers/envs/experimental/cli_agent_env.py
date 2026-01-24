@@ -1,20 +1,27 @@
 import asyncio
+import json
 import logging
-import platform
-import shlex
-import shutil
-import subprocess
 import time
 import uuid
 from typing import Any, cast
 
 from aiohttp import web
 from openai import AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+    ChatCompletionMessageToolCall,
+)
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message_tool_call import Function
 from prime_sandboxes import (
     AdvancedConfigs,
     AsyncSandboxClient,
+    BackgroundJob,
+    BackgroundJobStatus,
     CreateSandboxRequest,
 )
+from prime_tunnel import Tunnel
 
 import verifiers as vf
 from verifiers.types import (
@@ -55,6 +62,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
+        labels: list[str] | None = None,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -62,11 +70,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.poll_interval = poll_interval
         self.interception_port = interception_port
         self.interception_url = interception_url
-        self.tunnels: list[
-            dict[str, Any]
-        ] = []  # List of {url, process, active_rollouts}
+        self.tunnel: Tunnel | None = None
         self.tunnel_lock = asyncio.Lock()
-        self.tunnel_round_robin_index = 0
         self.timeout_seconds = timeout_seconds
         self.docker_image = docker_image
         self.start_command = start_command
@@ -78,6 +83,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.environment_vars = environment_vars
         self.team_id = team_id
         self.advanced_configs = advanced_configs
+        self.labels = labels
         self.active_rollouts: dict[str, dict[str, Any]] = {}
         self.intercepts: dict[str, dict[str, Any]] = {}  # request_id -> intercept data
         self.interception_server: Any = None
@@ -85,151 +91,23 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.server_runner: Any = None
         self.server_site: Any = None
 
-    def ensure_cloudflared_installed(self) -> str:
-        """Install cloudflared if not already installed. Returns path to cloudflared binary."""
-        path = shutil.which("cloudflared")
-        if path:
-            return path
-
-        logger.info("Installing cloudflared...")
-        system = platform.system()
-
-        if system == "Darwin":
-            cmd = ["brew", "install", "cloudflare/cloudflare/cloudflared"]
-        elif system == "Linux":
-            script = (
-                "curl -L --output cloudflared.deb "
-                "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb "
-                "&& sudo dpkg -i cloudflared.deb && rm cloudflared.deb"
-            )
-            cmd = ["bash", "-c", script]
-        else:
-            raise RuntimeError(
-                f"Unsupported platform: {system}. "
-                "Please install cloudflared manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
-            )
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to install cloudflared: {result.stderr}")
-
-        path = shutil.which("cloudflared")
-        if not path:
-            raise RuntimeError("cloudflared installed but not found in PATH")
-        return path
-
-    def extract_tunnel_url_from_line(self, line: str) -> str | None:
-        """Extract tunnel URL from a line of cloudflared output."""
-        if ".trycloudflare.com" not in line:
-            return None
-
-        # Find the start of the URL
-        start_idx = line.find("https://")
-        if start_idx == -1:
-            return None
-
-        # Extract URL up to the next whitespace or end of line
-        url_start = start_idx
-        url_end = url_start + 8  # Skip "https://"
-        while url_end < len(line) and not line[url_end].isspace():
-            url_end += 1
-
-        url = line[url_start:url_end].rstrip("/")
-        if ".trycloudflare.com" in url:
-            return url
-        return None
-
-    def start_cloudflared_tunnel(self) -> tuple[str, subprocess.Popen]:
-        """Start cloudflared tunnel and return (URL, process)."""
-        cloudflared_path = self.ensure_cloudflared_installed()
-
-        # Start cloudflared tunnel process
-        tunnel_process = subprocess.Popen(
-            [
-                cloudflared_path,
-                "tunnel",
-                "--url",
-                f"http://localhost:{self.interception_port}",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-
-        # Read stderr line by line until we find the tunnel URL
-        stderr_lines = []
-        max_wait_seconds = 30
-        check_interval = 0.5
-        max_iterations = int(max_wait_seconds / check_interval)
-
-        for _ in range(max_iterations):
-            # Check if process died
-            if tunnel_process.poll() is not None:
-                if tunnel_process.stderr:
-                    remaining = tunnel_process.stderr.read()
-                    stderr_lines.append(remaining)
-                error_output = "".join(stderr_lines)
-                raise RuntimeError(
-                    f"cloudflared tunnel failed to start: {error_output}"
-                )
-
-            # Try to read a line from stderr
-            if tunnel_process.stderr:
-                line = tunnel_process.stderr.readline()
-                if line:
-                    stderr_lines.append(line)
-                    url = self.extract_tunnel_url_from_line(line)
-                    if url:
-                        logger.info(f"Cloudflare tunnel started: {url}")
-                        return url, tunnel_process
-
-            time.sleep(check_interval)
-
-        # Search all collected lines
-        all_output = "".join(stderr_lines)
-        for line in stderr_lines:
-            url = self.extract_tunnel_url_from_line(line)
-            if url:
-                logger.info(f"Cloudflare tunnel started: {url}")
-                return url, tunnel_process
-
-        raise RuntimeError(
-            f"Failed to get tunnel URL from cloudflared after {max_wait_seconds} seconds. "
-            f"Output: {all_output[:500]}"
-        )
-
     async def get_tunnel_url(self) -> str:
-        """Get tunnel URL from pool, creating new tunnels as needed (1 per 50 active rollouts)."""
+        """Get tunnel URL, starting the tunnel if needed."""
         async with self.tunnel_lock:
-            total_active_rollouts = len(self.active_rollouts)
-
-            # Calculate required tunnels (at least 1 per 50 rollouts, minimum 1)
-            required_tunnels = max(1, (total_active_rollouts + 49) // 50)
-
-            while len(self.tunnels) < required_tunnels:
-                try:
-                    url, process = self.start_cloudflared_tunnel()
-                    self.tunnels.append(
-                        {
-                            "url": url,
-                            "process": process,
-                            "active_rollouts": 0,
-                        }
+            if self.tunnel is None:
+                if logger.isEnabledFor(logging.DEBUG):
+                    self.tunnel = Tunnel(
+                        local_port=self.interception_port,
+                        log_level="debug",
                     )
-                    logger.debug(
-                        f"Created tunnel {len(self.tunnels)}/{required_tunnels}: {url}"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to create tunnel: {e}")
-                    raise
-
-            tunnel = self.tunnels[self.tunnel_round_robin_index % len(self.tunnels)]
-            self.tunnel_round_robin_index += 1
-
-            tunnel["active_rollouts"] += 1
-
-            return tunnel["url"]
+                else:
+                    self.tunnel = Tunnel(local_port=self.interception_port)
+                url = await self.tunnel.start()
+                logger.debug(f"Prime Tunnel started: {url}")
+                return url
+            else:
+                assert self.tunnel.url is not None, "Tunnel started but URL is None"
+                return self.tunnel.url
 
     async def setup_state(self, state: State) -> State:
         """Setup sandbox + interception for this rollout"""
@@ -240,8 +118,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         await self.ensure_interception_server()
 
-        # Auto-start Cloudflare tunnel if not provided
-        tunnel_url: str | None = None
+        # Auto-start Prime Tunnel if no interception URL provided
         if self.interception_url is None:
             tunnel_url = await self.get_tunnel_url()
             state["interception_base_url"] = f"{tunnel_url}/rollout/{rollout_id}/v1"
@@ -266,6 +143,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             environment_vars=env_vars,
             team_id=self.team_id,
             advanced_configs=self.advanced_configs,
+            labels=self.labels if self.labels else [],
         )
         logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
@@ -280,7 +158,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
         request_id_queue: asyncio.Queue = asyncio.Queue()
         state["request_id_queue"] = request_id_queue
-        state["tunnel_url"] = tunnel_url if self.interception_url is None else None
         state["agent_completed"] = False
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_id_queue,
@@ -298,6 +175,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
         env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
+        env_vars.setdefault("OPENAI_TIMEOUT", "600")
+        env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "600")
+        env_vars.setdefault("HTTPX_TIMEOUT", "600")
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
@@ -312,47 +192,65 @@ class CliAgentEnv(vf.MultiTurnEnv):
     async def start_agent(
         self, state: State, sandbox_client: AsyncSandboxClient
     ) -> None:
-        """Start the agent command with automatic completion detection."""
+        """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        # Wrap command: when it exits (success or failure), signal completion
-        wrapped_command = f"""
-{self.run_command}
-EXIT_CODE=$?
-echo $EXIT_CODE > /tmp/vf_exit_code
-touch /tmp/vf_complete
-"""
-
-        # Run in background so this method can return
-        await sandbox_client.execute_command(
+        # Start the agent as a background job
+        background_job: BackgroundJob = await sandbox_client.start_background_job(
             sandbox_id,
-            f"nohup bash -c {shlex.quote(wrapped_command)} "
-            f"> /tmp/agent_stdout.log 2> /tmp/agent_stderr.log &",
+            self.run_command,
         )
+        state["background_job"] = background_job
+        state["agent_start_time"] = time.time()
 
-        # Start background task that blocks until completion marker appears
+        # Start the polling task
         state["completion_wait_task"] = asyncio.create_task(
-            self.wait_for_completion(state)
+            self.wait_for_completion(state, sandbox_client)
         )
 
-    async def wait_for_completion(self, state: State) -> None:
-        """Block until agent completion marker appears, then set state flag."""
+    async def wait_for_completion(
+        self, state: State, sandbox_client: AsyncSandboxClient
+    ) -> None:
+        """Poll for agent completion using background job API."""
         sandbox_id = state.get("sandbox_id")
-        if not sandbox_id:
+        background_job: BackgroundJob | None = state.get("background_job")
+
+        if not sandbox_id or not background_job:
+            state["agent_completed"] = True
             return
 
         try:
-            sandbox_client = AsyncSandboxClient()
-            # Block until /tmp/vf_complete exists (check every 0.1s in sandbox)
-            await sandbox_client.execute_command(
-                sandbox_id,
-                "while ! test -f /tmp/vf_complete; do sleep 0.1; done",
-                timeout=int(self.timeout_seconds),
+            await asyncio.wait_for(
+                self.poll_job_completion(state, sandbox_id, background_job),
+                timeout=self.timeout_seconds,
             )
-            state["agent_completed"] = True
+        except asyncio.TimeoutError:
+            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            state["agent_timed_out"] = True
+        except asyncio.CancelledError:
+            logger.debug("Completion wait task cancelled")
+            raise
         except Exception as e:
             logger.debug(f"Completion wait ended: {e}")
+        finally:
             state["agent_completed"] = True
+
+    async def poll_job_completion(
+        self, state: State, sandbox_id: str, background_job: BackgroundJob
+    ) -> None:
+        """Poll until background job completes, capturing output."""
+        sandbox_client = AsyncSandboxClient()
+        while True:
+            status: BackgroundJobStatus = await sandbox_client.get_background_job(
+                sandbox_id, background_job
+            )
+            if status.completed:
+                state["agent_exit_code"] = status.exit_code
+                state["agent_stdout"] = status.stdout
+                state["agent_stderr"] = status.stderr
+                logger.debug(f"Agent completed with exit_code={status.exit_code}")
+                return
+            await asyncio.sleep(1)
 
     async def check_agent_completed(self, state: State) -> bool:
         """Check if agent process has completed."""
@@ -395,9 +293,6 @@ touch /tmp/vf_complete
         """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
         if not prompt:
-            from openai.types.chat import ChatCompletion, ChatCompletionMessage
-            from openai.types.chat.chat_completion import Choice
-
             return ChatCompletion(
                 id="agent-completed",
                 choices=[
@@ -416,24 +311,191 @@ touch /tmp/vf_complete
         intercept = self.intercepts.get(request_id) if request_id else None
 
         if intercept:
-            model = intercept.get("model") or model
+            # Always use the configured model from state, not the intercepted model
+            # (agent may send a placeholder like "model" from its config)
+            model = state.get("model") or model
             oai_tools = intercept.get("tools") or oai_tools
 
-        response = await super().get_model_response(
-            state=state,
-            prompt=prompt,
-            client=client,
-            model=model,
-            oai_tools=oai_tools,
-            sampling_args=sampling_args,
-            message_type=message_type,
-        )
+        response: ModelResponse | None = None
+        error: BaseException | None = None
 
-        if intercept:
-            intercept["response_future"].set_result(response)
-            state["current_request_id"] = None
+        try:
+            # Handle streaming requests
+            if intercept and intercept.get("stream"):
+                response = await self._get_streaming_model_response(
+                    state=state,
+                    prompt=prompt,
+                    intercept=intercept,
+                    client=client,
+                    model=model,
+                    oai_tools=oai_tools,
+                    sampling_args=sampling_args,
+                )
+            else:
+                response = await super().get_model_response(
+                    state=state,
+                    prompt=prompt,
+                    client=client,
+                    model=model,
+                    oai_tools=oai_tools,
+                    sampling_args=sampling_args,
+                    message_type=message_type,
+                )
+        except BaseException as e:
+            error = e
+            raise
+        finally:
+            # Always unblock HTTP handler, even on exception
+            if intercept:
+                future = intercept.get("response_future")
+                if future and not future.done():
+                    if error is not None:
+                        future.set_exception(error)
+                    elif response is not None:
+                        future.set_result(response)
+                state["current_request_id"] = None
 
         return response
+
+    async def _get_streaming_model_response(
+        self,
+        state: State,
+        prompt: Messages,
+        intercept: dict,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
+        oai_tools: list[ChatCompletionToolParam] | None = None,
+        sampling_args: SamplingArgs | None = None,
+    ) -> ChatCompletion:
+        """Handle streaming API call, forwarding chunks and accumulating response."""
+        chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+
+        # Resolve client and model
+        client = client or state["client"]
+        model = model or state["model"]
+        sampling_args = sampling_args or state.get("sampling_args") or {}
+
+        # Remove max_tokens and use max_completion_tokens for chat
+        if "max_tokens" in sampling_args:
+            sampling_args = dict(sampling_args)
+            max_tokens = sampling_args.pop("max_tokens")
+            if "max_completion_tokens" not in sampling_args:
+                sampling_args["max_completion_tokens"] = max_tokens
+
+        # Make streaming API call
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": prompt,
+            "stream": True,
+        }
+        if oai_tools:
+            create_kwargs["tools"] = oai_tools
+        create_kwargs.update(sampling_args)
+
+        stream = await client.chat.completions.create(**create_kwargs)
+
+        # Accumulate response while streaming chunks
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, dict] = {}  # index -> {id, type, function}
+        finish_reason = None
+        completion_id = None
+        created_time = int(time.time())
+        stream_ended = False
+
+        try:
+            async for chunk in stream:
+                # Forward chunk to HTTP handler
+                await chunk_queue.put(chunk)
+
+                # Accumulate data
+                if not completion_id and chunk.id:
+                    completion_id = chunk.id
+                if chunk.created:
+                    created_time = chunk.created
+
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+
+                    delta = choice.delta
+                    if delta:
+                        if delta.content:
+                            accumulated_content += delta.content
+
+                        # Accumulate tool calls
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        "id": tc.id or "",
+                                        "type": tc.type or "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                if tc.id:
+                                    accumulated_tool_calls[idx]["id"] = tc.id
+                                if tc.function:
+                                    if tc.function.name:
+                                        accumulated_tool_calls[idx]["function"][
+                                            "name"
+                                        ] = tc.function.name
+                                    if tc.function.arguments:
+                                        accumulated_tool_calls[idx]["function"][
+                                            "arguments"
+                                        ] += tc.function.arguments
+
+            # Signal end of stream
+            await chunk_queue.put(None)
+            stream_ended = True
+        finally:
+            # Always signal end of stream to unblock HTTP handler
+            if not stream_ended:
+                try:
+                    chunk_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+
+        # Build accumulated ChatCompletion
+        tool_calls_list = None
+        if accumulated_tool_calls:
+            tool_calls_list = [
+                ChatCompletionMessageToolCall(
+                    id=tc_data["id"],
+                    type="function",
+                    function=Function(
+                        name=tc_data["function"]["name"],
+                        arguments=tc_data["function"]["arguments"],
+                    ),
+                )
+                for idx, tc_data in sorted(accumulated_tool_calls.items())
+            ]
+
+        message = ChatCompletionMessage(
+            role="assistant",
+            content=accumulated_content if accumulated_content else None,
+            tool_calls=tool_calls_list,
+        )
+
+        result = ChatCompletion(
+            id=completion_id or f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            choices=[
+                Choice(
+                    finish_reason=finish_reason or "stop",
+                    index=0,
+                    message=message,
+                )
+            ],
+            created=created_time,
+            model=model,
+            object="chat.completion",
+        )
+
+        # Log the accumulated response
+        rollout_id = intercept.get("rollout_id", "?")
+        self.log_response(rollout_id, result.model_dump())
+
+        return result
 
     async def add_model_response(
         self,
@@ -485,6 +547,11 @@ touch /tmp/vf_complete
                 self.handle_intercepted_request,
             )
 
+            app.router.add_get(
+                "/health",
+                lambda _: web.json_response({"status": "ok"}),
+            )
+
             runner = web.AppRunner(app)  # type: ignore
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", self.interception_port)  # type: ignore
@@ -516,66 +583,126 @@ touch /tmp/vf_complete
 
         self.log_request(rollout_id, request_body)
 
+        is_streaming = request_body.get("stream", False)
         request_id = f"req_{uuid.uuid4().hex[:8]}"
+
+        # For streaming, we use a queue to pass chunks from get_model_response
+        chunk_queue: asyncio.Queue | None = asyncio.Queue() if is_streaming else None
+
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
             "messages": request_body["messages"],
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
+            "stream": is_streaming,
+            "chunk_queue": chunk_queue,
             "response_future": asyncio.Future(),
         }
 
         self.intercepts[request_id] = intercept
         await context["request_id_queue"].put(request_id)
 
-        try:
-            response_future = cast(asyncio.Future[Any], intercept["response_future"])
-            response = await response_future
-        except asyncio.CancelledError:
-            return web.json_response(  # type: ignore
-                {"error": "Rollout cancelled"}, status=499
-            )
-        except Exception as e:
-            logger.error(f"Error processing intercepted request: {e}")
-            return web.json_response(  # type: ignore
-                {"error": str(e)}, status=500
+        if is_streaming:
+            return await self._handle_streaming_response(request, rollout_id, intercept)
+        else:
+            try:
+                response_future = cast(
+                    asyncio.Future[Any], intercept["response_future"]
+                )
+                response = await response_future
+            except asyncio.CancelledError:
+                return web.json_response(  # type: ignore
+                    {"error": "Rollout cancelled"}, status=499
+                )
+            except Exception as e:
+                logger.error(f"Error processing intercepted request: {e}")
+                return web.json_response(  # type: ignore
+                    {"error": str(e)}, status=500
+                )
+
+            response_dict = (
+                response.model_dump()
+                if hasattr(response, "model_dump")
+                else dict(response)
             )
 
-        response_dict = (
-            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            self.log_response(rollout_id, response_dict)
+            return web.json_response(response_dict)  # type: ignore
+
+    async def _handle_streaming_response(
+        self, http_request: Any, rollout_id: str, intercept: dict
+    ) -> Any:
+        """Handle streaming SSE response to the agent."""
+        chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+        response_future = cast(asyncio.Future[Any], intercept["response_future"])
+
+        response = web.StreamResponse(  # type: ignore
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
         )
+        await response.prepare(http_request)
 
-        self.log_response(rollout_id, response_dict)
-        return web.json_response(response_dict)  # type: ignore
+        try:
+            while True:
+                # Wait for chunks from get_model_response
+                chunk = await chunk_queue.get()
+
+                if chunk is None:
+                    # End of stream signal
+                    await response.write(b"data: [DONE]\n\n")
+                    break
+
+                # Convert chunk to SSE format
+                chunk_dict = (
+                    chunk.model_dump() if hasattr(chunk, "model_dump") else dict(chunk)
+                )
+                chunk_json = json.dumps(chunk_dict)
+                await response.write(f"data: {chunk_json}\n\n".encode())
+
+            # Wait for the accumulated response
+            await response_future
+
+        except asyncio.CancelledError:
+            logger.debug(f"[{rollout_id}] Streaming cancelled")
+        except Exception as e:
+            logger.error(f"[{rollout_id}] Streaming error: {e}")
+
+        await response.write_eof()
+        return response
 
     @vf.teardown
     async def teardown_tunnel(self):
-        """Stop cloudflared tunnels and HTTP interception server"""
-        # Stop cloudflared tunnels
+        """Stop Prime Tunnel and HTTP interception server"""
+        # Stop Prime Tunnel
         async with self.tunnel_lock:
-            for tunnel in self.tunnels:
-                process = tunnel.get("process")
-                if process:
-                    try:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    except Exception as e:
-                        logger.warning(f"Error stopping cloudflared tunnel: {e}")
-                        try:
-                            process.kill()
-                        except Exception:
-                            pass
-            self.tunnels.clear()
+            if self.tunnel is not None:
+                try:
+                    await self.tunnel.stop()
+                    logger.debug("Prime Tunnel stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping Prime Tunnel: {e}")
+                finally:
+                    self.tunnel = None
 
         # Stop HTTP interception server
         async with self.server_lock:
             if self.server_runner is not None:
-                await self.server_runner.cleanup()
-                self.server_runner = None
-                self.server_site = None
-                self.interception_server = None
-                logger.debug("Stopped HTTP interception server")
+                try:
+                    await self.server_runner.cleanup()
+                    logger.debug("Stopped HTTP interception server")
+                except RuntimeError as e:
+                    if "Event loop is closed" not in str(e):
+                        raise
+                    logger.debug("HTTP server cleanup skipped (event loop closed)")
+                finally:
+                    self.server_runner = None
+                    self.server_site = None
+                    self.interception_server = None
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -589,11 +716,20 @@ touch /tmp/vf_complete
             except asyncio.CancelledError:
                 pass
 
+        state.pop("background_job", None)
+
         rollout_id = state.get("rollout_id")
         if rollout_id:
             for request_id in list(self.intercepts.keys()):
                 intercept = self.intercepts.get(request_id)
                 if intercept and intercept.get("rollout_id") == rollout_id:
+                    # For streaming requests, signal the chunk queue to exit
+                    chunk_queue = intercept.get("chunk_queue")
+                    if chunk_queue is not None:
+                        try:
+                            chunk_queue.put_nowait(None)
+                        except asyncio.QueueFull:
+                            pass
                     # Cancel pending future to unblock HTTP handler
                     future = intercept.get("response_future")
                     if future and not future.done():
@@ -602,16 +738,6 @@ touch /tmp/vf_complete
 
             if rollout_id in self.active_rollouts:
                 del self.active_rollouts[rollout_id]
-
-        tunnel_url = state.get("tunnel_url")
-        if tunnel_url:
-            async with self.tunnel_lock:
-                for tunnel in self.tunnels:
-                    if tunnel["url"] == tunnel_url:
-                        tunnel["active_rollouts"] = max(
-                            0, tunnel["active_rollouts"] - 1
-                        )
-                        break
 
     @vf.stop
     async def agent_completed(self, state: State) -> bool:
