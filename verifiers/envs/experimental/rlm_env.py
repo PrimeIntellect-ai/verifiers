@@ -4075,6 +4075,45 @@ class RLMEnv(vf.StatefulToolEnv):
     # REPL Tool
     # =========================================================================
 
+    async def _call_repl(
+        self,
+        code: str,
+        state: Any,
+        *,
+        ready_instruction: str,
+        append_execution_time: bool,
+    ) -> str:
+        rollout_id = state.get("rollout_id")
+        if rollout_id and rollout_id in self.active_rollouts:
+            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
+
+        execution_start = perf_counter()
+        result = await self._execute_code(code, state)
+        execution_time = perf_counter() - execution_start
+        output = self._format_execution_output(result)
+
+        state.setdefault("tool_call_timings", []).append(
+            {
+                "turn": state.get("turn", 0),
+                "execution_seconds": execution_time,
+            }
+        )
+        _update_rlm_repl_metrics(state, execution_time)
+
+        if append_execution_time:
+            output += f"\n[Execution time: {execution_time:.2f}s]"
+
+        answer = result.get("answer", {})
+        if answer.get("ready", False):
+            state["final_answer"] = answer.get("content", "")
+            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
+
+        output = self._maybe_add_context_warning(
+            output, state, ready_instruction=ready_instruction
+        )
+
+        return output
+
     async def call_bash_repl(self, code: str, state: Any) -> str:
         """
         Execute Bash commands in a persistent REPL environment.
@@ -4093,35 +4132,12 @@ class RLMEnv(vf.StatefulToolEnv):
         Returns:
             Raw execution output (stdout/stderr combined)
         """
-        rollout_id = state.get("rollout_id")
-        if rollout_id and rollout_id in self.active_rollouts:
-            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
-
-        execution_start = perf_counter()
-        result = await self._execute_code(code, state)
-        execution_time = perf_counter() - execution_start
-        output = self._format_execution_output(result)
-
-        state.setdefault("tool_call_timings", []).append(
-            {
-                "turn": state.get("turn", 0),
-                "execution_seconds": execution_time,
-            }
-        )
-        _update_rlm_repl_metrics(state, execution_time)
-
-        answer = result.get("answer", {})
-        if answer.get("ready", False):
-            state["final_answer"] = answer.get("content", "")
-            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
-
-        output = self._maybe_add_context_warning(
-            output,
+        return await self._call_repl(
+            code,
             state,
             ready_instruction="Please finalize your answer soon by setting RLM_READY=1.",
+            append_execution_time=False,
         )
-
-        return output
 
     async def call_python_repl(self, code: str, state: Any) -> str:
         """
@@ -4148,41 +4164,12 @@ class RLMEnv(vf.StatefulToolEnv):
         Returns:
             Execution output including stdout, stderr, and expression results
         """
-        # Update current turn in rollout context for sub-LLM call tracking
-        rollout_id = state.get("rollout_id")
-        if rollout_id and rollout_id in self.active_rollouts:
-            self.active_rollouts[rollout_id]["current_turn"] = state.get("turn", 0)
-        # Time the full tool call execution
-        execution_start = perf_counter()
-        result = await self._execute_code(code, state)
-        execution_time = perf_counter() - execution_start
-        output = self._format_execution_output(result)
-
-        # Track timing in state for metrics
-        state.setdefault("tool_call_timings", []).append(
-            {
-                "turn": state.get("turn", 0),
-                "execution_seconds": execution_time,
-            }
-        )
-        _update_rlm_repl_metrics(state, execution_time)
-
-        # Append execution time to output
-        output += f"\n[Execution time: {execution_time:.2f}s]"
-
-        # Check if answer is ready
-        answer = result.get("answer", {})
-        if answer.get("ready", False):
-            state["final_answer"] = answer.get("content", "")
-            logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
-
-        output = self._maybe_add_context_warning(
-            output,
+        return await self._call_repl(
+            code,
             state,
             ready_instruction="Please finalize your answer soon by setting answer['ready'] = True.",
+            append_execution_time=True,
         )
-
-        return output
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
