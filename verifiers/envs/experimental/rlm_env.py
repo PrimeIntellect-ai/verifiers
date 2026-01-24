@@ -2796,8 +2796,10 @@ class RLMEnv(vf.StatefulToolEnv):
         self.sandbox_client_max_keepalive_connections = (
             sandbox_client_max_keepalive_connections
         )
-        self.local_repl_max_workers = local_repl_max_workers or max(
-            1, min(64, os.cpu_count() or 1)
+        self.local_repl_max_workers = (
+            local_repl_max_workers
+            if local_repl_max_workers is not None
+            else max(1, min(64, os.cpu_count() or 1))
         )
         if self.local_repl_max_workers < 1:
             raise ValueError("local_repl_max_workers must be >= 1")
