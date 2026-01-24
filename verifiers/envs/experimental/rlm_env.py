@@ -317,70 +317,39 @@ def _update_root_tool_metrics(state: State, tool_name: str) -> None:
 
 
 class RLMMonitorRubric(vf.Rubric):
+    _SIMPLE_METRICS = [
+        "sub_llm_call_count",
+        "sub_llm_total_turns",
+        "sub_llm_prompt_tokens",
+        "sub_llm_completion_tokens",
+        "sub_llm_total_tool_calls",
+        "sub_llm_batch_count",
+        "sub_llm_max_batch_size",
+        "sub_llm_mean_batch_size",
+        "main_rlm_turns",
+        "main_rlm_prompt_tokens",
+        "main_rlm_completion_tokens",
+        "repl_total_time_seconds",
+        "repl_call_count",
+        "repl_mean_time_seconds",
+        "root_tool_call_count",
+    ]
+
     def __init__(self, root_tool_names: list[str] | None = None, **kwargs):
         super().__init__(**kwargs)
-        self.add_metric(self.sub_llm_call_count)
-        self.add_metric(self.sub_llm_total_turns)
-        self.add_metric(self.sub_llm_prompt_tokens)
-        self.add_metric(self.sub_llm_completion_tokens)
-        self.add_metric(self.sub_llm_total_tool_calls)
-        self.add_metric(self.sub_llm_batch_count)
-        self.add_metric(self.sub_llm_max_batch_size)
-        self.add_metric(self.sub_llm_mean_batch_size)
-        self.add_metric(self.main_rlm_turns)
-        self.add_metric(self.main_rlm_prompt_tokens)
-        self.add_metric(self.main_rlm_completion_tokens)
-        self.add_metric(self.repl_total_time_seconds)
-        self.add_metric(self.repl_call_count)
-        self.add_metric(self.repl_mean_time_seconds)
-        self.add_metric(self.root_tool_call_count)
+        for metric_name in self._SIMPLE_METRICS:
+            metric_fn = self._make_state_metric(metric_name)
+            setattr(self, metric_name, metric_fn)
+            self.add_metric(metric_fn)
         for tool_name in root_tool_names or []:
             self.add_metric(self._make_root_tool_metric(tool_name))
 
-    async def sub_llm_call_count(self, state: State) -> int:
-        return state["sub_llm_call_count"]
+    def _make_state_metric(self, key: str):
+        async def metric(state: State):
+            return state[key]
 
-    async def sub_llm_total_turns(self, state: State) -> int:
-        return state["sub_llm_total_turns"]
-
-    async def sub_llm_prompt_tokens(self, state: State) -> int:
-        return state["sub_llm_prompt_tokens"]
-
-    async def sub_llm_completion_tokens(self, state: State) -> int:
-        return state["sub_llm_completion_tokens"]
-
-    async def sub_llm_total_tool_calls(self, state: State) -> int:
-        return state["sub_llm_total_tool_calls"]
-
-    async def sub_llm_batch_count(self, state: State) -> int:
-        return state["sub_llm_batch_count"]
-
-    async def sub_llm_max_batch_size(self, state: State) -> int:
-        return state["sub_llm_max_batch_size"]
-
-    async def sub_llm_mean_batch_size(self, state: State) -> float:
-        return state["sub_llm_mean_batch_size"]
-
-    async def main_rlm_turns(self, state: State) -> int:
-        return state["main_rlm_turns"]
-
-    async def main_rlm_prompt_tokens(self, state: State) -> int:
-        return state["main_rlm_prompt_tokens"]
-
-    async def main_rlm_completion_tokens(self, state: State) -> int:
-        return state["main_rlm_completion_tokens"]
-
-    async def repl_total_time_seconds(self, state: State) -> float:
-        return state["repl_total_time_seconds"]
-
-    async def repl_call_count(self, state: State) -> int:
-        return state["repl_call_count"]
-
-    async def repl_mean_time_seconds(self, state: State) -> float:
-        return state["repl_mean_time_seconds"]
-
-    async def root_tool_call_count(self, state: State) -> int:
-        return state["root_tool_call_count"]
+        metric.__name__ = key
+        return metric
 
     def _make_root_tool_metric(self, tool_name: str):
         async def root_tool_metric(state: State) -> int:
@@ -2914,10 +2883,10 @@ class RLMEnv(vf.StatefulToolEnv):
         if not packages:
             return ""
 
-        lines = ["\n## Installed Packages\n"]
-        lines.append(
-            "The following Python packages are pre-installed in the REPL environment:\n"
-        )
+        lines = [
+            "\n## Installed Packages\n",
+            "The following Python packages are pre-installed in the REPL environment:\n",
+        ]
         for pkg in packages:
             lines.append(f"- `{pkg}`")
         lines.append("")
@@ -4132,6 +4101,37 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return output
 
+    def _maybe_add_context_warning(
+        self, output: str, state: State, *, ready_instruction: str
+    ) -> str:
+        """Append a context-limit warning if nearing max_seq_len."""
+        if not self.max_seq_len or state.get("context_warning_sent"):
+            return output
+
+        trajectory = state.get("trajectory", [])
+        last_main = next(
+            (
+                step
+                for step in reversed(trajectory)
+                if not step.get("extras", {}).get("is_sub_llm_call")
+            ),
+            None,
+        )
+        response = last_main.get("response") if last_main else None
+        usage = getattr(response, "usage", None) if response else None
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
+        warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
+
+        if prompt_tokens >= warning_threshold:
+            state["context_warning_sent"] = True
+            pct = prompt_tokens / self.max_seq_len
+            output += (
+                f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
+                f"{self.max_seq_len:,} tokens ({pct:.0%}). {ready_instruction}"
+            )
+
+        return output
+
     # =========================================================================
     # REPL Tool
     # =========================================================================
@@ -4176,30 +4176,11 @@ class RLMEnv(vf.StatefulToolEnv):
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
-        # Inject context limit warning if approaching limit
-        if self.max_seq_len and not state.get("context_warning_sent"):
-            trajectory = state.get("trajectory", [])
-            last_main = next(
-                (
-                    step
-                    for step in reversed(trajectory)
-                    if not step.get("extras", {}).get("is_sub_llm_call")
-                ),
-                None,
-            )
-            response = last_main.get("response") if last_main else None
-            usage = getattr(response, "usage", None) if response else None
-            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
-            warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
-
-            if prompt_tokens >= warning_threshold:
-                state["context_warning_sent"] = True
-                pct = prompt_tokens / self.max_seq_len
-                output += (
-                    f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
-                    f"{self.max_seq_len:,} tokens ({pct:.0%}). Please finalize your answer "
-                    "soon by setting RLM_READY=1."
-                )
+        output = self._maybe_add_context_warning(
+            output,
+            state,
+            ready_instruction="Please finalize your answer soon by setting RLM_READY=1.",
+        )
 
         return output
 
@@ -4256,31 +4237,11 @@ class RLMEnv(vf.StatefulToolEnv):
             state["final_answer"] = answer.get("content", "")
             logger.debug(f"Answer ready: {state['final_answer'][:100]}...")
 
-        # Inject context limit warning if approaching limit
-        if self.max_seq_len and not state.get("context_warning_sent"):
-            # Get prompt token count from latest main-model trajectory response
-            trajectory = state.get("trajectory", [])
-            last_main = next(
-                (
-                    step
-                    for step in reversed(trajectory)
-                    if not step.get("extras", {}).get("is_sub_llm_call")
-                ),
-                None,
-            )
-            response = last_main.get("response") if last_main else None
-            usage = getattr(response, "usage", None) if response else None
-            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
-            warning_threshold = int(self.max_seq_len * self.context_warning_threshold)
-
-            if prompt_tokens >= warning_threshold:
-                state["context_warning_sent"] = True
-                pct = prompt_tokens / self.max_seq_len
-                output += (
-                    f"\n\n[CONTEXT LIMIT WARNING] You have used {prompt_tokens:,} of "
-                    f"{self.max_seq_len:,} tokens ({pct:.0%}). Please finalize your answer "
-                    "soon by setting answer['ready'] = True."
-                )
+        output = self._maybe_add_context_warning(
+            output,
+            state,
+            ready_instruction="Please finalize your answer soon by setting answer['ready'] = True.",
+        )
 
         return output
 
