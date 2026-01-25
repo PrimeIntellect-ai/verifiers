@@ -13,6 +13,7 @@ from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
+from verifiers.envs.experimental.sandbox_mixin import SandboxClientType
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class HarborEnv(vf.CliAgentEnv):
         return env_vars
 
     async def post_sandbox_setup(
-        self, state: vf.State, sandbox_client: AsyncSandboxClient
+        self, state: vf.State, sandbox_client: SandboxClientType
     ) -> None:
         """Upload Harbor task assets after sandbox creation."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
@@ -124,7 +125,7 @@ class HarborEnv(vf.CliAgentEnv):
         state["harbor_task_dir"] = str(task_dir)
 
     async def prepare_harbor_task(
-        self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
+        self, sandbox_client: SandboxClientType, sandbox_id: str, task_dir: Path
     ) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
         instruction_path = task_dir / "instruction.md"

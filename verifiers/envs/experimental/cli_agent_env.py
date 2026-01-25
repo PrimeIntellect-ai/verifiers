@@ -16,7 +16,6 @@ from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message_tool_call import Function
 from prime_sandboxes import (
     AdvancedConfigs,
-    AsyncSandboxClient,
     BackgroundJob,
     BackgroundJobStatus,
     CreateSandboxRequest,
@@ -24,6 +23,7 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.envs.experimental.sandbox_mixin import SandboxClientType, SandboxMixin
 from verifiers.types import (
     ChatCompletionToolParam,
     Messages,
@@ -36,7 +36,7 @@ from verifiers.types import (
 logger = logging.getLogger(__name__)
 
 
-class CliAgentEnv(vf.MultiTurnEnv):
+class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     """
     Environment for running full agent code inside sandboxes.
     Extends MultiTurnEnv to reuse rollout loop, but intercepts agent's
@@ -63,9 +63,30 @@ class CliAgentEnv(vf.MultiTurnEnv):
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         labels: list[str] | None = None,
+        # Sandbox mixin params (mirror SandboxEnv)
+        max_retries: int = 5,
+        base_delay: float = 0.5,
+        backoff_factor: float = 2.0,
+        max_backoff_seconds: float = 30.0,
+        jitter: float = 1e-3,
+        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
+
+        # Initialize sandbox mixin
+        self.init_sandbox_client(
+            max_retries=max_retries,
+            base_delay=base_delay,
+            backoff_factor=backoff_factor,
+            max_backoff_seconds=max_backoff_seconds,
+            jitter=jitter,
+            sandbox_client_max_workers=sandbox_client_max_workers,
+            sandbox_client_max_connections=sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
+        )
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.interception_port = interception_port
@@ -130,7 +151,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         env_vars = await self.build_env_vars(state)
         docker_image = await self.get_docker_image(state)
 
-        sandbox_client = AsyncSandboxClient()
         sandbox_request = CreateSandboxRequest(
             name=rollout_id,
             docker_image=docker_image,
@@ -149,12 +169,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
         )
-        sandbox = await sandbox_client.create(sandbox_request)
-        state["sandbox_id"] = sandbox.id
-        logger.debug(f"Created sandbox {sandbox.id}")
-        await sandbox_client.wait_for_creation(sandbox.id)
 
-        await self.post_sandbox_setup(state, sandbox_client)
+        # Use mixin's create_sandbox (handles retry, tracking, wait_for_creation, post_sandbox_setup)
+        await self.create_sandbox(state, sandbox_request)
 
         request_id_queue: asyncio.Queue = asyncio.Queue()
         state["request_id_queue"] = request_id_queue
@@ -163,7 +180,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             "request_id_queue": request_id_queue,
         }
 
-        await self.start_agent(state, sandbox_client)
+        await self.start_agent(state, self.sandbox_client)
 
         return state
 
@@ -184,13 +201,13 @@ class CliAgentEnv(vf.MultiTurnEnv):
         return env_vars
 
     async def post_sandbox_setup(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self, state: State, sandbox_client: SandboxClientType
     ) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
     async def start_agent(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self, state: State, sandbox_client: SandboxClientType
     ) -> None:
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
@@ -209,7 +226,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         )
 
     async def wait_for_completion(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self, state: State, sandbox_client: SandboxClientType
     ) -> None:
         """Poll for agent completion using background job API."""
         sandbox_id = state.get("sandbox_id")
@@ -239,9 +256,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
-        sandbox_client = AsyncSandboxClient()
         while True:
-            status: BackgroundJobStatus = await sandbox_client.get_background_job(
+            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
                 sandbox_id, background_job
             )
             if status.completed:
@@ -759,16 +775,21 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
-        """Cleanup sandbox after rollout"""
+        """Cleanup sandbox after rollout."""
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            try:
-                sandbox_client = AsyncSandboxClient()
-                await sandbox_client.delete(sandbox_id)
-                logger.debug(f"Deleted sandbox {sandbox_id}")
-            except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+            await self.delete_sandbox(sandbox_id)  # Retry + logging handled inside
+
+    @vf.teardown
+    async def teardown_remaining_sandboxes(self):
+        """Bulk delete any sandboxes left over on shutdown (Ctrl+C)."""
+        self.teardown_sandboxes()
+
+    @vf.teardown
+    async def teardown_client(self):
+        """Teardown sandbox client threadpool."""
+        self.teardown_sandbox_client()
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
