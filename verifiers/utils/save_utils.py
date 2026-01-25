@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 def state_to_rollout_output(
     state: State, state_columns: list[str] = []
 ) -> RolloutOutput:
+    """Converts a state to a rollout output. Adds state columns to the output."""
     rollout_output = RolloutOutput(
         example_id=state.get("example_id", 0),
         prompt=state.get("prompt"),
@@ -48,6 +49,7 @@ def state_to_rollout_output(
 def states_to_rollout_outputs(
     states: list[State], state_columns: list[str] = []
 ) -> list[RolloutOutput]:
+    """Converts a list of states to a list of rollout outputs."""
     return [state_to_rollout_output(state, state_columns) for state in states]
 
 
@@ -62,6 +64,7 @@ def states_to_generate_metadata(
     start_time: float,
     results_path: Path | None,
 ) -> GenerateMetadata:
+    """Converts a list of states to generate metadata."""
     base_url = str(client.base_url) if hasattr(client, "base_url") else ""
     rewards = [s.get("reward", 0.0) for s in states]
     avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
@@ -126,17 +129,21 @@ def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
 
     def sanitize_rollout(rollout: RolloutOutput) -> dict:
         sanitized_rollout = dict(rollout)
+        # sanitize messages
         sanitized_rollout["prompt"] = sanitize_tool_calls(
             messages_to_printable(rollout["prompt"])
         )
         sanitized_rollout["completion"] = sanitize_tool_calls(
             messages_to_printable(rollout["completion"])
         )
+        # use str repr for error
         sanitized_rollout["error"] = repr(rollout.get("error"))
+        # only include optional fields if present
         if not rollout.get("answer"):
             sanitized_rollout.pop("answer")
         if not rollout.get("info"):
             sanitized_rollout.pop("info")
+        # flatten metrics
         rollout_metrics = rollout.get("metrics", {})
         for k, v in rollout_metrics.items():
             sanitized_rollout[k] = v
