@@ -209,21 +209,6 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 ```
 
-### ProcessedOutputs
-
-```python
-class ProcessedOutputs(TypedDict):
-    prompt_ids: list[list[int]]
-    prompt_mask: list[list[int]]
-    completion_ids: list[list[int]]
-    completion_mask: list[list[int]]
-    completion_logprobs: list[list[float]]
-    rewards: list[float]
-    is_truncated: list[bool]
-```
-
-Tokenized outputs for training.
-
 ---
 
 ## Classes

@@ -176,7 +176,7 @@ class RolloutOutput(TypedDict):
     answer: str
     task: str
     info: Info
-    tools: dict
+    tools: list[ChatCompletionToolParam] | None
     reward: float
     metrics: dict[str, float]
     stop_condition: str | None
@@ -204,18 +204,6 @@ class RolloutScores(TypedDict):
 
     reward: list[float]
     metrics: dict[str, list[float]]
-
-
-class ProcessedOutputs(TypedDict):
-    """TypedDict for processed outputs."""
-
-    prompt_ids: list[list[int]]
-    prompt_mask: list[list[int]]
-    completion_ids: list[list[int]]
-    completion_mask: list[list[int]]
-    completion_logprobs: list[list[float]]
-    rewards: list[float]
-    is_truncated: list[bool]
 
 
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
