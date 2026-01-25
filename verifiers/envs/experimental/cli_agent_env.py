@@ -54,17 +54,13 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_port: int = 8765,
         interception_url: str | None = None,
         max_turns: int = -1,
-        timeout_seconds: float
-        | None = None,  # None = use per-task or CreateSandboxRequest default
+        timeout_seconds: float = -1,  # -1 = use per-task config or default
         poll_interval: float = 2.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
-        cpu_cores: int
-        | None = None,  # None = use per-task or CreateSandboxRequest default
-        memory_gb: int
-        | None = None,  # None = use per-task or CreateSandboxRequest default
-        disk_size_gb: int
-        | None = None,  # None = use per-task or CreateSandboxRequest default
+        cpu_cores: int = -1,  # -1 = use per-task config or default
+        memory_gb: int = -1,  # -1 = use per-task config or default
+        disk_size_gb: int = -1,  # -1 = use per-task config or default
         gpu_count: int = 0,
         timeout_minutes: int = 60,
         environment_vars: dict[str, str] | None = None,
@@ -173,6 +169,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state["agent_completed"] = False
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_id_queue,
+            "turn": 0,
         }
 
         await self.start_agent(state, self.sandbox_client)
@@ -269,8 +266,26 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         except asyncio.TimeoutError:
             logger.warning(f"Agent timed out after {timeout}s")
             state["agent_timed_out"] = True
+            # Try to capture output on timeout
+            try:
+                status = await self.sandbox_client.get_background_job(
+                    sandbox_id, background_job
+                )
+                state["agent_stdout"] = status.stdout
+                state["agent_stderr"] = status.stderr
+            except Exception:
+                pass
         except asyncio.CancelledError:
             logger.debug("Completion wait task cancelled")
+            # Try to capture output on cancel
+            try:
+                status = await self.sandbox_client.get_background_job(
+                    sandbox_id, background_job
+                )
+                state["agent_stdout"] = status.stdout
+                state["agent_stderr"] = status.stderr
+            except Exception:
+                pass
             raise
         except Exception as e:
             logger.debug(f"Completion wait ended: {e}")
@@ -300,15 +315,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             now = time.time()
             if now - last_log_time >= log_interval:
                 elapsed = now - state["agent_start_time"]
-                turns = len(state.get("trajectory", []))
-                max_turns_str = (
-                    str(self.max_turns) if self.max_turns > 0 else "unlimited"
-                )
                 logger.debug(
-                    f"[{state.get('rollout_id', '?')}] Progress: "
-                    f"turn {turns}/{max_turns_str}, "
-                    f"elapsed {elapsed:.0f}s/{timeout:.0f}s"
+                    f"[{state.get('rollout_id', '?')}] Elapsed {elapsed:.0f}s/{timeout:.0f}s"
                 )
+
+                # Log thread pool health for debugging hangs
+                self.sandbox_client.log_thread_pool_state()
+
+                # Fetch agent debug log since last turn delimiter
+                result = await self.sandbox_client.execute_command(
+                    sandbox_id,
+                    "tac /logs/agent_debug.log 2>/dev/null | sed '/^--- TURN/q' | tac",
+                    working_dir=None,
+                )
+                if result.stdout:
+                    logger.debug(
+                        f"[{state.get('rollout_id', '?')}] Agent log (current turn):\n{result.stdout}"
+                    )
+
                 last_log_time = now
 
             await asyncio.sleep(1)
@@ -320,6 +344,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_prompt_messages(self, state: State) -> Messages:
         """Wait for agent to make an API request OR agent completion, whichever comes first."""
         request_id_queue = state["request_id_queue"]
+        rollout_id = state.get("rollout_id", "?")
 
         while True:
             try:
@@ -331,6 +356,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 # Got a request, proceed normally
                 state["current_request_id"] = request_id
                 intercept = self.intercepts[request_id]
+                logger.debug(
+                    f"[LLM_FLOW] [{rollout_id}] REQUEST_PICKUP request_id={request_id} "
+                    f"stream={intercept.get('stream', False)}"
+                )
                 return intercept["messages"]
 
             except asyncio.TimeoutError:
@@ -353,6 +382,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         message_type: MessageType | None = None,
     ) -> ModelResponse:
         """Get model response and unblock the waiting HTTP handler."""
+        rollout_id = state.get("rollout_id", "?")
+        request_id = state.get("current_request_id")
+
         # Handle agent completion case (empty prompt)
         if not prompt:
             return ChatCompletion(
@@ -369,7 +401,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 object="chat.completion",
             )
 
-        request_id = state.get("current_request_id")
         intercept = self.intercepts.get(request_id) if request_id else None
 
         if intercept:
@@ -380,10 +411,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         response: ModelResponse | None = None
         error: BaseException | None = None
+        is_streaming = intercept and intercept.get("stream")
+        llm_start_time = time.time()
+
+        logger.debug(
+            f"[LLM_FLOW] [{rollout_id}] LLM_CALL_START request_id={request_id} "
+            f"stream={is_streaming} model={model}"
+        )
 
         try:
             # Handle streaming requests
-            if intercept and intercept.get("stream"):
+            if is_streaming:
                 response = await self._get_streaming_model_response(
                     state=state,
                     prompt=prompt,
@@ -403,7 +441,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     sampling_args=sampling_args,
                     message_type=message_type,
                 )
+            llm_duration = time.time() - llm_start_time
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] LLM_CALL_END request_id={request_id} "
+                f"duration={llm_duration:.1f}s success=True"
+            )
         except BaseException as e:
+            llm_duration = time.time() - llm_start_time
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] LLM_CALL_END request_id={request_id} "
+                f"duration={llm_duration:.1f}s success=False error={type(e).__name__}: {e}"
+            )
             error = e
             raise
         finally:
@@ -412,8 +460,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 future = intercept.get("response_future")
                 if future and not future.done():
                     if error is not None:
+                        logger.debug(
+                            f"[LLM_FLOW] [{rollout_id}] FUTURE_SET_EXCEPTION "
+                            f"request_id={request_id} error={type(error).__name__}"
+                        )
                         future.set_exception(error)
                     elif response is not None:
+                        logger.debug(
+                            f"[LLM_FLOW] [{rollout_id}] FUTURE_SET_RESULT "
+                            f"request_id={request_id}"
+                        )
                         future.set_result(response)
                 state["current_request_id"] = None
 
@@ -431,6 +487,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     ) -> ChatCompletion:
         """Handle streaming API call, forwarding chunks and accumulating response."""
         chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
+        rollout_id = state.get("rollout_id", "?")
+        request_id = intercept.get("request_id", "?")
 
         # Resolve client and model
         client = client or state["client"]
@@ -454,7 +512,16 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             create_kwargs["tools"] = oai_tools
         create_kwargs.update(sampling_args)
 
+        logger.debug(
+            f"[LLM_FLOW] [{rollout_id}] STREAM_CREATE_START request_id={request_id}"
+        )
+        stream_create_time = time.time()
         stream = await client.chat.completions.create(**create_kwargs)
+        stream_create_duration = time.time() - stream_create_time
+        logger.debug(
+            f"[LLM_FLOW] [{rollout_id}] STREAM_CREATE_END request_id={request_id} "
+            f"duration={stream_create_duration:.1f}s"
+        )
 
         # Accumulate response while streaming chunks
         accumulated_content = ""
@@ -463,9 +530,33 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         completion_id = None
         created_time = int(time.time())
         stream_ended = False
+        chunk_count = 0
+        last_chunk_time = time.time()
+        first_chunk_time: float | None = None
 
         try:
             async for chunk in stream:
+                chunk_count += 1
+                now = time.time()
+
+                # Log first chunk (time to first token)
+                if first_chunk_time is None:
+                    first_chunk_time = now
+                    ttft = first_chunk_time - stream_create_time
+                    logger.debug(
+                        f"[LLM_FLOW] [{rollout_id}] STREAM_FIRST_CHUNK request_id={request_id} "
+                        f"ttft={ttft:.2f}s"
+                    )
+
+                # Log if there's a long gap between chunks (potential hang indicator)
+                chunk_gap = now - last_chunk_time
+                if chunk_gap > 30.0:  # Log if >30s between chunks
+                    logger.warning(
+                        f"[LLM_FLOW] [{rollout_id}] STREAM_CHUNK_GAP request_id={request_id} "
+                        f"gap={chunk_gap:.1f}s chunk_count={chunk_count}"
+                    )
+                last_chunk_time = now
+
                 # Forward chunk to HTTP handler
                 await chunk_queue.put(chunk)
 
@@ -510,9 +601,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             # Signal end of stream
             await chunk_queue.put(None)
             stream_ended = True
+            total_stream_time = time.time() - stream_create_time
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] STREAM_END request_id={request_id} "
+                f"chunks={chunk_count} total_time={total_stream_time:.1f}s "
+                f"finish_reason={finish_reason}"
+            )
         finally:
             # Always signal end of stream to unblock HTTP handler
             if not stream_ended:
+                logger.warning(
+                    f"[LLM_FLOW] [{rollout_id}] STREAM_INTERRUPTED request_id={request_id} "
+                    f"chunks={chunk_count}"
+                )
                 try:
                     chunk_queue.put_nowait(None)
                 except asyncio.QueueFull:
@@ -555,7 +656,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         # Log the accumulated response
         rollout_id = intercept.get("rollout_id", "?")
-        self.log_response(rollout_id, result.model_dump())
+        turn = intercept.get("turn", 0)
+        self.log_response(rollout_id, result.model_dump(), turn=turn)
 
         return result
 
@@ -577,8 +679,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     def truncate(self, s: str, limit: int = 200) -> str:
         return (s[:limit] + "...") if len(s) > limit else s
 
-    def log_request(self, rollout_id: str, body: dict) -> None:
-        logger.debug(f"[{rollout_id}] <- INTERCEPTED REQUEST")
+    def log_request(self, rollout_id: str, body: dict, turn: int = 0) -> None:
+        logger.debug(f"[{rollout_id}] Turn {turn} <- INTERCEPTED REQUEST")
         for msg in body.get("messages", []):
             logger.debug(
                 f"  [{msg.get('role', '?')}] {self.truncate(msg.get('content', ''))}"
@@ -586,8 +688,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if body.get("tools"):
             logger.debug(f"  [tools] {len(body['tools'])} tool(s)")
 
-    def log_response(self, rollout_id: str, response: dict) -> None:
-        logger.debug(f"[{rollout_id}] -> RESPONSE")
+    def log_response(self, rollout_id: str, response: dict, turn: int = 0) -> None:
+        logger.debug(f"[{rollout_id}] Turn {turn} -> RESPONSE")
         msg = response.get("choices", [{}])[0].get("message", {})
         if msg.get("content"):
             logger.debug(f"  [assistant] {self.truncate(msg['content'])}")
@@ -643,7 +745,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
-        self.log_request(rollout_id, request_body)
+        context["turn"] += 1
+        turn = context["turn"]
+        self.log_request(rollout_id, request_body, turn=turn)
 
         is_streaming = request_body.get("stream", False)
         request_id = f"req_{uuid.uuid4().hex[:8]}"
@@ -654,6 +758,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
+            "turn": turn,
             "messages": request_body["messages"],
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
@@ -663,6 +768,12 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         }
 
         self.intercepts[request_id] = intercept
+
+        logger.debug(
+            f"[LLM_FLOW] [{rollout_id}] HTTP_REQUEST_QUEUED request_id={request_id} "
+            f"stream={is_streaming} turn={turn}"
+        )
+        queue_time = time.time()
         await context["request_id_queue"].put(request_id)
 
         if is_streaming:
@@ -672,13 +783,27 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 response_future = cast(
                     asyncio.Future[Any], intercept["response_future"]
                 )
+                logger.debug(
+                    f"[LLM_FLOW] [{rollout_id}] HTTP_AWAIT_FUTURE_START request_id={request_id}"
+                )
                 response = await response_future
+                wait_duration = time.time() - queue_time
+                logger.debug(
+                    f"[LLM_FLOW] [{rollout_id}] HTTP_AWAIT_FUTURE_END request_id={request_id} "
+                    f"duration={wait_duration:.1f}s"
+                )
             except asyncio.CancelledError:
+                logger.debug(
+                    f"[LLM_FLOW] [{rollout_id}] HTTP_FUTURE_CANCELLED request_id={request_id}"
+                )
                 return web.json_response(  # type: ignore
                     {"error": "Rollout cancelled"}, status=499
                 )
             except Exception as e:
-                logger.error(f"Error processing intercepted request: {e}")
+                logger.error(
+                    f"[LLM_FLOW] [{rollout_id}] HTTP_FUTURE_ERROR request_id={request_id} "
+                    f"error={type(e).__name__}: {e}"
+                )
                 return web.json_response(  # type: ignore
                     {"error": str(e)}, status=500
                 )
@@ -689,7 +814,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 else dict(response)
             )
 
-            self.log_response(rollout_id, response_dict)
+            self.log_response(rollout_id, response_dict, turn=intercept["turn"])
             return web.json_response(response_dict)  # type: ignore
 
     async def _handle_streaming_response(
@@ -698,6 +823,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Handle streaming SSE response to the agent."""
         chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
         response_future = cast(asyncio.Future[Any], intercept["response_future"])
+        request_id = intercept.get("request_id", "?")
 
         response = web.StreamResponse(  # type: ignore
             status=200,
@@ -709,15 +835,34 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
         await response.prepare(http_request)
 
+        logger.debug(
+            f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_START request_id={request_id}"
+        )
+        stream_start_time = time.time()
+        chunks_forwarded = 0
+        last_chunk_time = stream_start_time
+
         try:
             while True:
                 # Wait for chunks from get_model_response
                 chunk = await chunk_queue.get()
+                now = time.time()
+
+                # Log if there's a long gap waiting for chunks from the queue
+                chunk_wait = now - last_chunk_time
+                if chunk_wait > 30.0:
+                    logger.warning(
+                        f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_QUEUE_WAIT request_id={request_id} "
+                        f"wait={chunk_wait:.1f}s chunks_forwarded={chunks_forwarded}"
+                    )
+                last_chunk_time = now
 
                 if chunk is None:
                     # End of stream signal
                     await response.write(b"data: [DONE]\n\n")
                     break
+
+                chunks_forwarded += 1
 
                 # Convert chunk to SSE format
                 chunk_dict = (
@@ -727,12 +872,26 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 await response.write(f"data: {chunk_json}\n\n".encode())
 
             # Wait for the accumulated response
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_AWAIT_FUTURE request_id={request_id}"
+            )
             await response_future
+            total_time = time.time() - stream_start_time
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_END request_id={request_id} "
+                f"chunks_forwarded={chunks_forwarded} total_time={total_time:.1f}s"
+            )
 
         except asyncio.CancelledError:
-            logger.debug(f"[{rollout_id}] Streaming cancelled")
+            logger.debug(
+                f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_CANCELLED request_id={request_id} "
+                f"chunks_forwarded={chunks_forwarded}"
+            )
         except Exception as e:
-            logger.error(f"[{rollout_id}] Streaming error: {e}")
+            logger.error(
+                f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_ERROR request_id={request_id} "
+                f"error={type(e).__name__}: {e}"
+            )
 
         await response.write_eof()
         return response
