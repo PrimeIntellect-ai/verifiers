@@ -133,6 +133,10 @@ def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
             messages_to_printable(rollout["completion"])
         )
         sanitized_rollout["error"] = repr(rollout.get("error"))
+        if not rollout.get("answer"):
+            sanitized_rollout.pop("answer")
+        if not rollout.get("info"):
+            sanitized_rollout.pop("info")
         rollout_metrics = rollout.get("metrics", {})
         for k, v in rollout_metrics.items():
             sanitized_rollout[k] = v
