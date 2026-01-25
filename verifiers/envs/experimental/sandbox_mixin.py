@@ -8,10 +8,30 @@ import tenacity as tc
 from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest, SandboxClient
 from prime_sandboxes.core import APIClient
 
+import verifiers as vf
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
     get_or_create_thread_loop,
 )
+
+
+class SandboxCreationError(vf.SandboxError):
+    """Raised when sandbox creation fails."""
+
+    pass
+
+
+class SandboxNotReadyError(vf.SandboxError):
+    """Raised when sandbox fails to become ready."""
+
+    pass
+
+
+class SandboxSetupError(vf.SandboxError):
+    """Raised when post-sandbox setup fails."""
+
+    pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -97,13 +117,36 @@ class SandboxMixin:
         ).wraps
 
     async def create_sandbox(self, state, request: CreateSandboxRequest) -> str:
-        """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook."""
-        sandbox = await self.with_retry(self.sandbox_client.create)(request)
+        """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook.
+
+        Raises:
+            SandboxCreationError: If sandbox creation fails after retries.
+            SandboxNotReadyError: If sandbox fails to become ready.
+            SandboxSetupError: If post_sandbox_setup hook fails.
+        """
+        try:
+            sandbox = await self.with_retry(self.sandbox_client.create)(request)
+        except Exception as e:
+            raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
+
         self.active_sandboxes.add(sandbox.id)
         state["sandbox_id"] = sandbox.id
         logger.debug(f"Created sandbox {sandbox.id}")
-        await self.sandbox_client.wait_for_creation(sandbox.id)
-        await self.post_sandbox_setup(state, self.sandbox_client)
+
+        try:
+            await self.sandbox_client.wait_for_creation(sandbox.id)
+        except Exception as e:
+            raise SandboxNotReadyError(
+                f"Sandbox {sandbox.id} failed to become ready: {e}"
+            ) from e
+
+        try:
+            await self.post_sandbox_setup(state, self.sandbox_client)
+        except vf.SandboxError:
+            raise  # Re-raise if already a SandboxError (from subclass override)
+        except Exception as e:
+            raise SandboxSetupError(f"Sandbox {sandbox.id} setup failed: {e}") from e
+
         return sandbox.id
 
     async def post_sandbox_setup(
