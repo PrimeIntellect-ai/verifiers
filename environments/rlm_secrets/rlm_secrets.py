@@ -318,6 +318,7 @@ def build_dataset(
         Dataset with prompt, answer, and info columns
     """
     rows = []
+    task_name = "rlm-secrets"
 
     for i in range(num_examples):
         puzzle = generate_puzzle(num_files=num_files)
@@ -359,9 +360,11 @@ def build_dataset(
 
         rows.append(
             {
+                "example_id": i,
                 "prompt": prompt,
                 "answer": str(puzzle["correct_position"]),
                 "info": {"puzzle": puzzle},
+                "task": task_name,
             }
         )
 
