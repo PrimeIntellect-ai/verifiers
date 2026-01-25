@@ -18,6 +18,9 @@ from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
+from .envs.actor import Actor  # noqa # isort: skip
+from .envs.protocol import Protocol  # noqa # isort: skip
+from .envs.multiagent_env import MultiAgentEnv, SingleTurnMAEnv  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup
@@ -62,12 +65,16 @@ __all__ = [
     "MCPEnv",
     "Environment",
     "MultiTurnEnv",
+    "MultiAgentEnv",
+    "SingleTurnMAEnv",
     "SingleTurnEnv",
     "PythonEnv",
     "SandboxEnv",
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    "Actor",
+    "Protocol",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -80,6 +87,7 @@ __all__ = [
     "get_model_and_tokenizer",
     "RLTrainer",
     "RLConfig",
+    "MultiAgentOrchestrator",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
@@ -94,6 +102,7 @@ _LAZY_IMPORTS = {
     "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers.rl.trainer:RLConfig",
     "RLTrainer": "verifiers.rl.trainer:RLTrainer",
+    "MultiAgentOrchestrator": "verifiers.rl.trainer:MultiAgentOrchestrator",
     "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
     "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
     "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
@@ -135,6 +144,7 @@ if TYPE_CHECKING:
     from .rl.trainer import (  # noqa: F401
         GRPOConfig,
         GRPOTrainer,
+        MultiAgentOrchestrator,
         RLConfig,
         RLTrainer,
         grpo_defaults,

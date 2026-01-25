@@ -72,7 +72,7 @@ class TrajectoryStep(TypedDict):
     advantage: float | None
     is_truncated: bool
     trajectory_id: str
-    extras: dict[str, Any]
+    extras: dict[str, Any]  # actor_id stored here for multi-agent
 
 
 class BaseRolloutInput(TypedDict):
@@ -114,6 +114,8 @@ class State(dict):
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None
+    # multi-agent / composable training
+    child_states: list["State"] | None  # Child rollout states from protocol.spawn()
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
