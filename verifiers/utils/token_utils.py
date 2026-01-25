@@ -152,7 +152,9 @@ async def tokenize_vllm(
             "model": model,
             "tools_count": len(tools or []),
             "message_summary": _summarize_messages(messages),
-            "extra_kwargs": list(extra_kwargs.keys()) if isinstance(extra_kwargs, dict) else None,
+            "extra_kwargs": list(extra_kwargs.keys())
+            if isinstance(extra_kwargs, dict)
+            else None,
             "client_base_url": str(getattr(tokens_client, "base_url", "")),
             "error_type": type(e).__name__,
             "error_text": error_text,
