@@ -1067,6 +1067,103 @@ class TestSubLLMRequestPaths:
         assert "max_tokens" not in body
         mock_client.chat.completions.create.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_sub_llm_normalizes_messages(self, rlm_env):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+        mock_message.content = "ok"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        rlm_env.interleaved_rollouts = False
+        messages = [
+            {"role": "user", "content": {"type": "text", "text": "hello"}},
+            {"role": "user", "content": {"role": "user", "content": "inner"}},
+        ]
+        state = {}
+
+        await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
+
+        args, kwargs = mock_client.chat.completions.create.call_args
+        assert args == ()
+        sent_messages = kwargs["messages"]
+        assert sent_messages[0]["content"] == [{"type": "text", "text": "hello"}]
+        assert sent_messages[1]["content"] == "inner"
+
+    @pytest.mark.asyncio
+    async def test_interleaved_sub_llm_uses_incremental_prompt_ids(
+        self, rlm_env_with_sub_tools
+    ):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_1"
+        mock_tool_call.function.name = "sample_tool"
+        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
+
+        mock_message1 = MagicMock()
+        mock_message1.tool_calls = [mock_tool_call]
+        mock_message1.content = None
+
+        mock_message2 = MagicMock()
+        mock_message2.tool_calls = None
+        mock_message2.content = "done"
+
+        response1 = MagicMock()
+        response1.choices = [MagicMock(message=mock_message1)]
+        response2 = MagicMock()
+        response2.choices = [MagicMock(message=mock_message2)]
+
+        mock_client.post = AsyncMock(side_effect=[response1, response2])
+
+        rlm_env_with_sub_tools.interleaved_rollouts = True
+        messages = [{"role": "user", "content": "Add 2 and 3"}]
+        state = {"sampling_args": {"max_tokens": 7}}
+
+        token_payload = {
+            "prompt_ids": [1],
+            "prompt_mask": [0],
+            "completion_ids": [2],
+            "completion_mask": [1],
+            "completion_logprobs": [0.0],
+            "overlong_prompt": False,
+            "is_truncated": False,
+        }
+
+        with (
+            patch(
+                "verifiers.envs.experimental.rlm_env.tokenize_vllm",
+                new=AsyncMock(return_value=[1, 2, 3]),
+            ) as mock_tokenize,
+            patch(
+                "verifiers.envs.experimental.rlm_env.get_prompt_ids",
+                new=AsyncMock(return_value=[4, 5, 6]),
+            ) as mock_get_prompt_ids,
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_tokens",
+                new=AsyncMock(return_value=token_payload),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_messages",
+                new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_is_truncated",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await rlm_env_with_sub_tools._run_sub_llm(
+                state, mock_client, "gpt-4", messages
+            )
+
+        assert mock_client.post.await_count == 2
+        mock_tokenize.assert_awaited_once()
+        mock_get_prompt_ids.assert_awaited_once()
+        mock_client.chat.completions.create.assert_not_called()
+
 
 # =============================================================================
 # 8. Root Tool Serialization (pickle)

@@ -73,6 +73,7 @@ from verifiers.utils.response_utils import (
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.token_utils import (
     prepare_sampling_args_for_token_prompts,
+    get_prompt_ids,
     tokenize_vllm,
 )
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
@@ -3078,6 +3079,8 @@ class RLMEnv(vf.StatefulToolEnv):
         model: str,
         messages: ChatMessages,
         tools: list | None = None,
+        *,
+        sub_state: State | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
         normalized_messages = self._normalize_message_content(messages)
@@ -3088,12 +3091,17 @@ class RLMEnv(vf.StatefulToolEnv):
         try:
             prompt_ids: list[int] | None = None
             if self.interleaved_rollouts:
-                prompt_ids = await tokenize_vllm(
-                    client=client,
-                    messages=normalized_messages,
-                    tools=tools,
-                    model=model,
-                )
+                if sub_state is not None and sub_state.get("trajectory"):
+                    prompt_ids = await get_prompt_ids(
+                        sub_state, normalized_messages, client
+                    )
+                else:
+                    prompt_ids = await tokenize_vllm(
+                        client=client,
+                        messages=normalized_messages,
+                        tools=tools,
+                        model=model,
+                    )
             return await asyncio.wait_for(
                 self._call_model_api(
                     client=client,
@@ -3137,6 +3145,19 @@ class RLMEnv(vf.StatefulToolEnv):
         self, state: State, client: Any, model: str, messages: ChatMessages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
+        sub_state: State | None = None
+        if self.interleaved_rollouts:
+            # Track a minimal sub-LLM trajectory so get_prompt_ids() can compute
+            # incremental prompt_ids (same interleaving strategy as the main LLM).
+            # This sub_state is only for tokenization continuity and is not added
+            # to the main trajectory or used for scoring.
+            sub_state = State()
+            sub_state["trajectory"] = []
+            sub_state["client"] = client
+            sub_state["model"] = model
+            sub_state["oai_tools"] = self.sub_oai_tools or []
+            sub_state["sampling_args"] = state.get("sampling_args")
+
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
             response = await self._call_sub_llm_api(state, client, model, messages)
@@ -3171,10 +3192,16 @@ class RLMEnv(vf.StatefulToolEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
+            normalized_messages = self._normalize_message_content(current_messages)
+            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in normalized_messages]
 
             response = await self._call_sub_llm_api(
-                state, client, model, current_messages, tools
+                state,
+                client,
+                model,
+                normalized_messages,
+                tools,
+                sub_state=sub_state,
             )
             if response is None:
                 return self._make_timeout_result(
@@ -3184,6 +3211,32 @@ class RLMEnv(vf.StatefulToolEnv):
                     tool_call_count,
                     num_turns,
                 )
+
+            if sub_state is not None:
+                tokens = await parse_response_tokens(response, "chat", self.max_seq_len)
+                if tokens is None:
+                    sub_state = None
+                else:
+                    completion_messages = await parse_response_messages(
+                        response, "chat"
+                    )
+                    response_is_truncated = await parse_is_truncated(response, "chat")
+                    is_truncated = response_is_truncated or bool(
+                        tokens.get("is_truncated")
+                    )
+                    sub_state["trajectory"].append(
+                        TrajectoryStep(
+                            prompt=cast(Messages, prompt_snapshot),
+                            completion=completion_messages,
+                            response=response,
+                            tokens=tokens,
+                            reward=None,
+                            advantage=None,
+                            is_truncated=is_truncated,
+                            trajectory_id="sub_llm_local",
+                            extras={"is_sub_llm_call": True, "sub_state_only": True},
+                        )
+                    )
 
             prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
             total_prompt_tokens += prompt_tokens
@@ -3239,8 +3292,15 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         )
 
-        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
-        response = await self._call_sub_llm_api(state, client, model, current_messages)
+        normalized_messages = self._normalize_message_content(current_messages)
+        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in normalized_messages]
+        response = await self._call_sub_llm_api(
+            state,
+            client,
+            model,
+            normalized_messages,
+            sub_state=sub_state,
+        )
         if response is None:
             return self._make_timeout_result(
                 turns,
