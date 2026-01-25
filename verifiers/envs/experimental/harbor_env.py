@@ -97,8 +97,8 @@ class HarborEnv(vf.CliAgentEnv):
         return task_info.get("docker_image") or self.docker_image
 
     async def get_timeout_seconds(self, state: vf.State) -> float:
-        """Get timeout: user override > task.toml > CreateSandboxRequest default."""
-        if self.timeout_seconds is not None:
+        """Get timeout: user override > task.toml > default. Use -1 for per-task config."""
+        if self.timeout_seconds > 0:
             return self.timeout_seconds  # User override
         config = (state.get("info") or {}).get("config", {})
         timeout = config.get("agent", {}).get("timeout_sec")
@@ -107,22 +107,22 @@ class HarborEnv(vf.CliAgentEnv):
     async def get_sandbox_request(
         self, state: vf.State, env_vars: dict[str, str], docker_image: str
     ):
-        """Build request: user override > task.toml > CreateSandboxRequest default."""
+        """Build request: user override > task.toml > CreateSandboxRequest default. Use -1 for per-task config."""
         request = await super().get_sandbox_request(state, env_vars, docker_image)
         config = (state.get("info") or {}).get("config", {})
         env_config = config.get("environment", {})
 
         updates = {}
-        # Only apply task.toml values if user didn't explicitly override (None)
-        if self.cpu_cores is None and (cpus := env_config.get("cpus")):
+        # Only apply task.toml values if user didn't explicitly override (-1 = use per-task)
+        if self.cpu_cores < 0 and (cpus := env_config.get("cpus")):
             updates["cpu_cores"] = int(cpus)
-        if self.memory_gb is None and (mem := env_config.get("memory")):
+        if self.memory_gb < 0 and (mem := env_config.get("memory")):
             updates["memory_gb"] = (
                 int(str(mem).rstrip("gG"))
                 if str(mem).upper().endswith("G")
                 else int(mem)
             )
-        if self.disk_size_gb is None and (storage := env_config.get("storage")):
+        if self.disk_size_gb < 0 and (storage := env_config.get("storage")):
             updates["disk_size_gb"] = (
                 int(str(storage).rstrip("gG"))
                 if str(storage).upper().endswith("G")
