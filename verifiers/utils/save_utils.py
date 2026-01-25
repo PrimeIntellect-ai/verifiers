@@ -152,18 +152,27 @@ def save_to_disk(rollouts: list[dict], metadata: dict, path: Path):
     """Saves (sanitized) rollouts and metadata to disk."""
     path.mkdir(parents=True, exist_ok=True)
 
-    def save_results(results_list: list[dict], path: Path):
-        with open(path, "w") as f:
-            for result in results_list:
-                json.dump(result, f)
-                f.write("\n")
+    def save_results(results_list: list[dict], results_path: Path):
+        with open(results_path, "w") as f:
+            for idx, result in enumerate(results_list):
+                example_id = result.get("example_id") or "unknown"
+                try:
+                    json.dump(result, f)
+                    f.write("\n")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to save rollout with index {idx} ({example_id=}): {e}"
+                    )
 
-    def save_metadata(metadata_dict: dict, path: Path):
-        with open(path, "w") as f:
-            json.dump(metadata_dict, f)
+    def save_metadata(metadata_dict: dict, metadata_path: Path):
+        with open(metadata_path, "w") as f:
+            try:
+                json.dump(metadata_dict, f)
+            except Exception as e:
+                logger.error(f"Failed to save metadata: {e}")
 
-    save_results(rollouts, path / "results.jsonl")
     save_metadata(metadata, path / "metadata.json")
+    save_results(rollouts, path / "results.jsonl")
 
 
 def save_generate_outputs(
