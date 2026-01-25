@@ -24,7 +24,10 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    ThreadedAsyncSandboxClient,
+)
 from verifiers.types import (
     ChatCompletionToolParam,
     Messages,
@@ -202,13 +205,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         return env_vars
 
     async def post_sandbox_setup(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self,
+        state: State,
+        sandbox_client: AsyncSandboxClient | ThreadedAsyncSandboxClient,
     ) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
     async def start_agent(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self,
+        state: State,
+        sandbox_client: AsyncSandboxClient | ThreadedAsyncSandboxClient,
     ) -> None:
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
@@ -227,7 +234,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         )
 
     async def wait_for_completion(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self,
+        state: State,
+        sandbox_client: AsyncSandboxClient | ThreadedAsyncSandboxClient,
     ) -> None:
         """Poll for agent completion using background job API."""
         sandbox_id = state.get("sandbox_id")

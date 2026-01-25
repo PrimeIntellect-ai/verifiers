@@ -106,7 +106,9 @@ class SandboxMixin:
         await self.post_sandbox_setup(state, self.sandbox_client)
         return sandbox.id
 
-    async def post_sandbox_setup(self, state, sandbox_client: AsyncSandboxClient):
+    async def post_sandbox_setup(
+        self, state, sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient"
+    ):
         """Hook for subclasses to run setup after sandbox is ready."""
         pass
 
