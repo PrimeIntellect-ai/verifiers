@@ -37,38 +37,43 @@ class SimpleEnvironment(Environment):
     ):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)
-        state = await self.setup_state(state)
+        try:
+            state = await self.setup_state(state)
 
-        prompt_messages = state["prompt"]
-        response = await self.get_model_response(state, prompt_messages)
+            prompt_messages = state["prompt"]
+            response = await self.get_model_response(state, prompt_messages)
 
-        from verifiers.utils.response_utils import parse_response_messages
+            from verifiers.utils.response_utils import parse_response_messages
 
-        completion_messages = await parse_response_messages(response, self.message_type)
-        from verifiers.types import TrajectoryStep
-        from verifiers.utils.response_utils import parse_response_tokens
+            completion_messages = await parse_response_messages(
+                response, self.message_type
+            )
+            from verifiers.types import TrajectoryStep
+            from verifiers.utils.response_utils import parse_response_tokens
 
-        tokens = await parse_response_tokens(response, self.message_type)
-        trajectory_step = TrajectoryStep(
-            prompt=prompt_messages,
-            completion=completion_messages,
-            response=response,
-            tokens=tokens,
-            reward=None,
-            advantage=None,
-            is_truncated=False,
-            trajectory_id=state["trajectory_id"],
-            extras={},
-        )
-        state["trajectory"].append(trajectory_step)
-        state["is_completed"] = True
+            tokens = await parse_response_tokens(response, self.message_type)
+            trajectory_step = TrajectoryStep(
+                prompt=prompt_messages,
+                completion=completion_messages,
+                response=response,
+                tokens=tokens,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id=state["trajectory_id"],
+                extras={},
+            )
+            state["trajectory"].append(trajectory_step)
+            state["is_completed"] = True
 
-        from verifiers.utils.message_utils import concat_messages
+            from verifiers.utils.message_utils import concat_messages
 
-        last_prompt = state["trajectory"][-1]["prompt"]
-        last_completion = state["trajectory"][-1]["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+            last_prompt = state["trajectory"][-1]["prompt"]
+            last_completion = state["trajectory"][-1]["completion"]
+            full_conversation = concat_messages([last_prompt, last_completion])
+            state["completion"] = full_conversation[len(state["prompt"]) :]
+        except vf.Error as e:
+            state["error"] = e
 
         return state
 
@@ -578,8 +583,8 @@ class TestMaybeRetry:
     """Test cases for maybe_retry functionality in Environment.generate()."""
 
     @pytest.mark.asyncio
-    async def test_retry_succeeds_after_transient_infra_error(self, mock_openai_client):
-        """InfraError on first 2 attempts, succeeds on 3rd with max_retries=3."""
+    async def test_retry_after_retryable_error(self, mock_openai_client):
+        """Retry after error on first 2 attempts, succeeds on 3rd with max_retries=3."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RetryCounterEnv(
             fail_count=2, dataset=dataset, parser=Parser(), rubric=Rubric()
@@ -600,31 +605,8 @@ class TestMaybeRetry:
         assert env.call_counts[0] == 3
 
     @pytest.mark.asyncio
-    async def test_retry_fails_after_max_retries_exhausted(self, mock_openai_client):
-        """InfraError persists after all retries exhausted."""
-        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
-        env = RetryCounterEnv(
-            fail_count=10, dataset=dataset, parser=Parser(), rubric=Rubric()
-        )
-
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            )
-        ]
-
-        with pytest.raises(vf.InfraError):
-            await env.generate(
-                inputs, client=mock_openai_client, model="test-model", max_retries=2
-            )
-
-        assert env.call_counts[0] == 3  # 1 initial + 2 retries
-
-    @pytest.mark.asyncio
-    async def test_non_infra_error_not_retried(self, mock_openai_client):
-        """ToolError is NOT retried even with max_retries > 0."""
+    async def test_no_retry_after_non_retryable_error(self, mock_openai_client):
+        """Non-retryable error type is NOT retried even with max_retries > 0."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RetryCounterEnv(
             fail_count=10,
@@ -642,12 +624,37 @@ class TestMaybeRetry:
             )
         ]
 
-        with pytest.raises(vf.ToolError):
-            await env.generate(
-                inputs, client=mock_openai_client, model="test-model", max_retries=3
-            )
+        results = await env.generate(
+            inputs, client=mock_openai_client, model="test-model", max_retries=3
+        )
 
-        assert env.call_counts[0] == 1  # No retries for non-InfraError
+        assert env.call_counts[0] == 1  # No retries for non-retryable error
+        assert results["state"][0].get("error") is not None
+        assert isinstance(results["state"][0]["error"], vf.ToolError)
+
+    @pytest.mark.asyncio
+    async def test_error_in_state_after_max_retries_exhausted(self, mock_openai_client):
+        """Error persists in state after all retries exhausted."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=10, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+
+        inputs = [
+            RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            )
+        ]
+
+        results = await env.generate(
+            inputs, client=mock_openai_client, model="test-model", max_retries=2
+        )
+
+        assert env.call_counts[0] == 3  # 1 initial + 2 retries
+        assert results["state"][0].get("error") is not None
+        assert isinstance(results["state"][0]["error"], vf.InfraError)
 
 
 class TestEmptyModelResponseErrors:
