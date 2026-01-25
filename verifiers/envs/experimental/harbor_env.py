@@ -96,6 +96,38 @@ class HarborEnv(vf.CliAgentEnv):
         task_info: dict[str, Any] = state.get("info") or {}
         return task_info.get("docker_image") or self.docker_image
 
+    async def get_timeout_seconds(self, state: vf.State) -> float:
+        """Get per-task timeout from task.toml [agent].timeout_sec."""
+        config = (state.get("info") or {}).get("config", {})
+        timeout = config.get("agent", {}).get("timeout_sec")
+        return float(timeout) if timeout else self.timeout_seconds
+
+    async def get_sandbox_request(
+        self, state: vf.State, env_vars: dict[str, str], docker_image: str
+    ):
+        """Override per-task resources from task.toml [environment]."""
+        request = await super().get_sandbox_request(state, env_vars, docker_image)
+        config = (state.get("info") or {}).get("config", {})
+        env_config = config.get("environment", {})
+
+        updates = {}
+        if cpus := env_config.get("cpus"):
+            updates["cpu_cores"] = int(cpus)
+        if mem := env_config.get("memory"):
+            updates["memory_gb"] = (
+                int(str(mem).rstrip("gG"))
+                if str(mem).upper().endswith("G")
+                else int(mem)
+            )
+        if storage := env_config.get("storage"):
+            updates["disk_size_gb"] = (
+                int(str(storage).rstrip("gG"))
+                if str(storage).upper().endswith("G")
+                else int(storage)
+            )
+
+        return request.model_copy(update=updates) if updates else request
+
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build env vars with Harbor-specific additions."""
         env_vars = await super().build_env_vars(state)

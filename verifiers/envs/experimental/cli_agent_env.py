@@ -155,20 +155,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         env_vars = await self.build_env_vars(state)
         docker_image = await self.get_docker_image(state)
 
-        sandbox_request = CreateSandboxRequest(
-            name=rollout_id,
-            docker_image=docker_image,
-            start_command=self.start_command,
-            cpu_cores=self.cpu_cores,
-            memory_gb=self.memory_gb,
-            disk_size_gb=self.disk_size_gb,
-            gpu_count=self.gpu_count,
-            timeout_minutes=self.timeout_minutes,
-            environment_vars=env_vars,
-            team_id=self.team_id,
-            advanced_configs=self.advanced_configs,
-            labels=self.labels if self.labels else [],
-        )
+        sandbox_request = await self.get_sandbox_request(state, env_vars, docker_image)
         logger.debug(
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
@@ -191,6 +178,29 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
         return self.docker_image
+
+    async def get_timeout_seconds(self, state: State) -> float:
+        """Get timeout for this rollout. Override for per-task timeouts."""
+        return self.timeout_seconds
+
+    async def get_sandbox_request(
+        self, state: State, env_vars: dict[str, str], docker_image: str
+    ) -> CreateSandboxRequest:
+        """Return sandbox request for this rollout. Override to customize per-task resources."""
+        return CreateSandboxRequest(
+            name=state["rollout_id"],
+            docker_image=docker_image,
+            start_command=self.start_command,
+            cpu_cores=self.cpu_cores,
+            memory_gb=self.memory_gb,
+            disk_size_gb=self.disk_size_gb,
+            gpu_count=self.gpu_count,
+            timeout_minutes=self.timeout_minutes,
+            environment_vars=env_vars,
+            team_id=self.team_id,
+            advanced_configs=self.advanced_configs,
+            labels=self.labels if self.labels else [],
+        )
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""
@@ -246,13 +256,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             state["agent_completed"] = True
             return
 
+        timeout = await self.get_timeout_seconds(state)
         try:
             await asyncio.wait_for(
                 self.poll_job_completion(state, sandbox_id, background_job),
-                timeout=self.timeout_seconds,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Agent timed out after {self.timeout_seconds}s")
+            logger.warning(f"Agent timed out after {timeout}s")
             state["agent_timed_out"] = True
         except asyncio.CancelledError:
             logger.debug("Completion wait task cancelled")
@@ -266,6 +277,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
+        last_log_time = time.time()
+        log_interval = 60  # Log progress every 60 seconds
+        timeout = await self.get_timeout_seconds(state)
+
         while True:
             status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
                 sandbox_id, background_job
@@ -276,6 +291,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 state["agent_stderr"] = status.stderr
                 logger.debug(f"Agent completed with exit_code={status.exit_code}")
                 return
+
+            # Periodic progress logging
+            now = time.time()
+            if now - last_log_time >= log_interval:
+                elapsed = now - state["agent_start_time"]
+                turns = len(state.get("trajectory", []))
+                max_turns_str = (
+                    str(self.max_turns) if self.max_turns > 0 else "unlimited"
+                )
+                logger.debug(
+                    f"[{state.get('rollout_id', '?')}] Progress: "
+                    f"turn {turns}/{max_turns_str}, "
+                    f"elapsed {elapsed:.0f}s/{timeout:.0f}s"
+                )
+                last_log_time = now
+
             await asyncio.sleep(1)
 
     async def check_agent_completed(self, state: State) -> bool:
@@ -303,7 +334,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 if await self.check_agent_completed(state):
                     state["agent_completed"] = True
                     return []
-                if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
+                timeout = await self.get_timeout_seconds(state)
+                if time.time() - state["timing"]["start_time"] > timeout:
                     return []
 
     async def get_model_response(
@@ -773,8 +805,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     @vf.stop
     async def timeout_reached(self, state: State) -> bool:
         """Check rollout timeout"""
+        timeout = await self.get_timeout_seconds(state)
         elapsed = time.time() - state["timing"]["start_time"]
-        return elapsed > self.timeout_seconds
+        return elapsed > timeout
 
     async def post_rollout(self, state: State):
         """
