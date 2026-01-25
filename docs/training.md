@@ -103,6 +103,8 @@ This will launch a tmux session with separate panes for the trainer, orchestrato
 
 ## Training with `vf.RLTrainer`
 
+> **Note:** `vf.RLTrainer` is intended for educational/demo purposes only and is not actively maintained. For production RL training, please use [`prime-rl`](#training-with-prime-rl) instead.
+
 If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with a similar core algorithm as `prime-rl`).
 
 The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `verifiers/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
