@@ -51,14 +51,18 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
+from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
+    ChatCompletionToolParam,
     ChatMessage,
     ChatMessages,
     Messages,
+    MessageType,
     ModelResponse,
+    SamplingArgs,
     State,
     TrajectoryStep,
 )
@@ -4200,6 +4204,120 @@ class RLMEnv(vf.StatefulToolEnv):
     # =========================================================================
     # MultiTurnEnv Interface
     # =========================================================================
+
+    async def get_model_response(
+        self,
+        state: State,
+        prompt: Messages,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
+        oai_tools: list[ChatCompletionToolParam] | None = None,
+        sampling_args: SamplingArgs | None = None,
+        message_type: MessageType | None = None,
+    ) -> ModelResponse:
+        """
+        Override to keep interleaved prompt_id computation scoped to main-LLM steps.
+
+        RLMEnv injects sub-LLM turns into state["trajectory"] for training. If we
+        feed that mixed trajectory into get_prompt_ids, the "previous turn"
+        becomes a sub-LLM step and the main prompt looks unrelated. That produces
+        an empty env_response and breaks /tokenize. We avoid that by filtering
+        trajectory steps to the main trajectory_id only.
+        """
+
+        def resolve_optional_args(
+            client: AsyncOpenAI | None,
+            model: str | None,
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs | None,
+            message_type: MessageType | None,
+        ) -> tuple[
+            AsyncOpenAI,
+            str,
+            list[ChatCompletionToolParam] | None,
+            SamplingArgs,
+            MessageType,
+        ]:
+            client = client or state["client"]
+            model = model or state["model"]
+            assert client is not None and model is not None
+            oai_tools = oai_tools or state["oai_tools"]
+            sampling_args = cast(
+                SamplingArgs, sampling_args or state["sampling_args"] or {}
+            )
+            message_type = message_type or self.message_type
+            return client, model, oai_tools, sampling_args, message_type
+
+        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
+            if "max_tokens" in sampling_args:
+                if sampling_args["max_tokens"] is None:
+                    sampling_args.pop("max_tokens")
+                elif message_type == "chat":
+                    sampling_args["max_completion_tokens"] = sampling_args.pop(
+                        "max_tokens"
+                    )
+            if (
+                "max_completion_tokens" in sampling_args
+                and sampling_args["max_completion_tokens"] is None
+            ):
+                sampling_args.pop("max_completion_tokens")
+            return {k: v for k, v in sampling_args.items() if v is not None}
+
+        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
+            client, model, oai_tools, sampling_args, message_type
+        )
+        sampling_args = normalize_sampling_args(sampling_args)
+        if self.interleaved_rollouts:
+            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
+
+        prompt_ids: list[int] | None = None
+        if (
+            self.interleaved_rollouts
+            and message_type == "chat"
+            and len(state["trajectory"]) > 0
+        ):
+            main_trajectory_id = state.get("trajectory_id")
+            main_steps = [
+                step
+                for step in state["trajectory"]
+                if step.get("trajectory_id") == main_trajectory_id
+            ]
+            if main_steps:
+                # Do not mutate the original state; build a minimal view for
+                # prompt_id computation that excludes sub-LLM turns.
+                prompt_state = State()
+                prompt_state["trajectory"] = main_steps
+                prompt_state["client"] = client
+                prompt_state["model"] = model
+                prompt_state["oai_tools"] = oai_tools or []
+                # Reuse cached suffix ids if available to avoid extra tokenization.
+                if "_cached_suffix_ids" in state:
+                    prompt_state["_cached_suffix_ids"] = state["_cached_suffix_ids"]
+                # Keep sub-LLM debug context for empty-env-response logging.
+                if "_last_sub_llm_root_call" in state:
+                    prompt_state["_last_sub_llm_root_call"] = state[
+                        "_last_sub_llm_root_call"
+                    ]
+                prompt_ids = await get_prompt_ids(prompt_state, prompt, client)
+            else:
+                # If no main steps are present (should be rare), fall back to
+                # full-tokenize so we still use the tokens endpoint.
+                prompt_ids = await tokenize_vllm(
+                    client=client,
+                    messages=prompt,
+                    tools=oai_tools,
+                    model=model,
+                )
+
+        return await self._call_model_api(
+            client=client,
+            model=model,
+            prompt=prompt,
+            oai_tools=oai_tools,
+            sampling_args=sampling_args,
+            message_type=message_type,
+            prompt_ids=prompt_ids,
+        )
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
