@@ -562,6 +562,10 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
         v = results["metrics"][k]
         results_dict[k] = v
 
+    # Add actor_id column for multi-agent environments
+    if "actor_id" in results and results["actor_id"]:
+        results_dict["actor_id"] = results["actor_id"]
+
     # Add selected state columns if specified
     state_columns = results["metadata"]["state_columns"]
     if state_columns:
