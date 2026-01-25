@@ -1036,6 +1036,7 @@ class TestSubLLMRequestPaths:
     async def test_interleaved_uses_tokens_endpoint(self, rlm_env):
         mock_client = MagicMock()
         mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
         mock_client.post = AsyncMock(return_value=mock_response)
         mock_client.chat.completions.create = AsyncMock()
 

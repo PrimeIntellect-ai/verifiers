@@ -51,7 +51,7 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
+from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
@@ -3084,46 +3084,25 @@ class RLMEnv(vf.StatefulToolEnv):
         sampling_args = self._prepare_sub_llm_sampling_args(
             state, interleaved=self.interleaved_rollouts
         )
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": normalized_messages,
-            "tools": tools,
-        }
 
         try:
+            prompt_ids: list[int] | None = None
             if self.interleaved_rollouts:
-                extra_body = sampling_args.pop("extra_body", {})
                 prompt_ids = await tokenize_vllm(
                     client=client,
                     messages=normalized_messages,
                     tools=tools,
                     model=model,
                 )
-                payload = {
-                    "model": model,
-                    "messages": normalized_messages,
-                    "tools": tools,
-                    "tokens": prompt_ids,
-                    **sampling_args,
-                    **extra_body,
-                }
-                return await asyncio.wait_for(
-                    client.post(
-                        "/chat/completions/tokens",
-                        body=payload,
-                        cast_to=ChatCompletion,
-                    ),
-                    timeout=self.sub_llm_api_timeout,
-                )
-            payload = {
-                "model": model,
-                "messages": normalized_messages,
-                "tools": tools,
-                **sampling_args,
-            }
             return await asyncio.wait_for(
-                client.chat.completions.create(
-                    **payload,
+                self._call_model_api(
+                    client=client,
+                    model=model,
+                    prompt=normalized_messages,
+                    oai_tools=tools,
+                    sampling_args=sampling_args,
+                    message_type="chat",
+                    prompt_ids=prompt_ids,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
