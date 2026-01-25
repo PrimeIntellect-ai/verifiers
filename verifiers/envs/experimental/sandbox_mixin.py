@@ -100,9 +100,9 @@ class SandboxMixin:
         """Create sandbox with retry, tracking, wait_for_creation, and post-setup hook."""
         sandbox = await self.with_retry(self.sandbox_client.create)(request)
         self.active_sandboxes.add(sandbox.id)
+        state["sandbox_id"] = sandbox.id
         logger.debug(f"Created sandbox {sandbox.id}")
         await self.sandbox_client.wait_for_creation(sandbox.id)
-        state["sandbox_id"] = sandbox.id
         await self.post_sandbox_setup(state, self.sandbox_client)
         return sandbox.id
 
