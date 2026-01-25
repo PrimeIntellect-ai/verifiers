@@ -19,7 +19,9 @@ from typing import (
     Callable,
     List,
     Literal,
+    Mapping,
     TypeVar,
+    Any,
     cast,
     final,
 )
@@ -490,37 +492,191 @@ class Environment(ABC):
     ) -> ModelResponse:
         """Shared low-level model call used by main and sub-LLM paths."""
 
-        def handle_overlong_prompt(func):
+        def summarize_prompt(prompt: Messages | None) -> dict:
+            if isinstance(prompt, str):
+                return {
+                    "type": "completion",
+                    "chars": len(prompt),
+                    "preview": prompt[:200],
+                }
+            if not isinstance(prompt, list):
+                return {"type": type(prompt).__name__}
+
+            def summarize_message(msg: Mapping[str, Any]) -> dict:
+                summary: dict[str, object] = {"role": msg.get("role")}
+                content = msg.get("content")
+                if isinstance(content, str):
+                    summary.update(
+                        {
+                            "content_type": "text",
+                            "content_chars": len(content),
+                            "content_preview": content[:200],
+                        }
+                    )
+                elif isinstance(content, list):
+                    part_types: list[str] = []
+                    text_preview_parts: list[str] = []
+                    text_chars = 0
+                    for part in content:
+                        if not isinstance(part, dict):
+                            part_types.append(type(part).__name__)
+                            continue
+                        part_type = str(part.get("type", "unknown"))
+                        part_types.append(part_type)
+                        if part_type == "text":
+                            text = str(part.get("text", ""))
+                            if text:
+                                text_chars += len(text)
+                                if len("".join(text_preview_parts)) < 200:
+                                    text_preview_parts.append(text)
+                    summary.update(
+                        {
+                            "content_type": "parts",
+                            "part_types": part_types,
+                            "text_chars": text_chars,
+                            "text_preview": ("".join(text_preview_parts))[:200],
+                        }
+                    )
+                else:
+                    summary.update(
+                        {
+                            "content_type": type(content).__name__,
+                        }
+                    )
+                if "tool_call_id" in msg:
+                    summary["tool_call_id"] = msg.get("tool_call_id")
+                if "name" in msg:
+                    summary["name"] = msg.get("name")
+                return summary
+
+            total = len(prompt)
+            head = [
+                summarize_message(cast(Mapping[str, Any], m))
+                for m in prompt[:3]
+                if isinstance(m, Mapping)
+            ]
+            tail = (
+                [
+                    summarize_message(cast(Mapping[str, Any], m))
+                    for m in prompt[-3:]
+                    if isinstance(m, Mapping)
+                ]
+                if total > 3
+                else []
+            )
+            return {
+                "type": "chat",
+                "message_count": total,
+                "head": head,
+                "tail": tail,
+            }
+
+        def summarize_sampling_args(sampling_args: SamplingArgs) -> dict:
+            keys = list(sampling_args.keys())
+            core = {
+                k: sampling_args.get(k)
+                for k in (
+                    "temperature",
+                    "top_p",
+                    "max_tokens",
+                    "max_completion_tokens",
+                    "presence_penalty",
+                    "frequency_penalty",
+                    "stop",
+                )
+                if k in sampling_args
+            }
+            extra_body = sampling_args.get("extra_body")
+            extra_body_keys = (
+                list(extra_body.keys()) if isinstance(extra_body, dict) else None
+            )
+            return {
+                "keys": keys,
+                "core": core,
+                "extra_body_keys": extra_body_keys,
+            }
+
+        def handle_overlong_prompt(call_kind: str):
             """Decorator to handle overlong prompt errors from the model API."""
 
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    # in case of making a request with an overlong prompt, e.g
-                    # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
-                    # in all other case we raise a generic model error
-                    raise vf.ModelError from e
+            def decorator(func):
+                @functools.wraps(func)
+                async def wrapper(*args, **kwargs):
+                    try:
+                        return await func(*args, **kwargs)
+                    except Exception as e:
+                        error_text = None
+                        if isinstance(e, BadRequestError):
+                            try:
+                                error_text = e.response.text
+                            except Exception:
+                                error_text = None
+                        if error_text:
+                            lower_text = error_text.lower()
+                            context_length_phrases = [
+                                "this model's maximum context length is",
+                                "is longer than the model's context length",
+                                "exceeds the model's context length",
+                                "exceed the configured limit",
+                                "exceeds the configured limit",
+                                "exceeded model",
+                            ]
+                            if any(
+                                phrase in lower_text
+                                for phrase in context_length_phrases
+                            ):
+                                self.logger.debug("Caught overlong prompt.")
+                                raise vf.OverlongPromptError from e
 
-            return wrapper
+                        prompt_arg = kwargs.get("prompt", prompt)
+                        try:
+                            prompt_summary = summarize_prompt(
+                                cast(Messages | None, prompt_arg)
+                            )
+                        except Exception:
+                            prompt_summary = {"type": "unavailable"}
+                        try:
+                            sampling_summary = summarize_sampling_args(
+                                kwargs.get("sampling_args", {})
+                            )
+                        except Exception:
+                            sampling_summary = {"keys": []}
+                        prompt_ids = kwargs.get("prompt_ids")
+                        prompt_ids_summary = None
+                        if isinstance(prompt_ids, list):
+                            prompt_ids_summary = {
+                                "length": len(prompt_ids),
+                                "head": prompt_ids[:10],
+                                "tail": prompt_ids[-10:]
+                                if len(prompt_ids) > 10
+                                else [],
+                            }
+                        error_details = {
+                            "call_kind": call_kind,
+                            "model": kwargs.get("model", model),
+                            "message_type": kwargs.get("message_type", message_type),
+                            "prompt_summary": prompt_summary,
+                            "prompt_ids": prompt_ids_summary,
+                            "sampling_args": sampling_summary,
+                            "tools_count": len(kwargs.get("oai_tools") or []),
+                            "client_base_url": str(
+                                getattr(kwargs.get("client", client), "base_url", "")
+                            ),
+                            "error_type": type(e).__name__,
+                            "error_text": error_text,
+                        }
+                        self.logger.error(
+                            "Model API call failed: %s",
+                            json.dumps(error_details, default=str),
+                        )
+                        # in all other case we raise a generic model error
+                        raise vf.ModelError from e
 
-        @handle_overlong_prompt
+                return wrapper
+
+            return decorator
+
+        @handle_overlong_prompt("messages")
         async def call_with_messages(
             client: AsyncOpenAI,
             model: str,
@@ -580,7 +736,7 @@ class Environment(ABC):
                 )
                 return response
 
-        @handle_overlong_prompt
+        @handle_overlong_prompt("tokens")
         async def call_with_tokens(
             client: AsyncOpenAI,
             model: str,
@@ -599,6 +755,7 @@ class Environment(ABC):
                 "get_model_response_with_tokens is only supported for chat tasks."
             )
 
+            sampling_args = dict(sampling_args)
             extra_body = sampling_args.pop("extra_body", {})
             body = dict(
                 model=model,
