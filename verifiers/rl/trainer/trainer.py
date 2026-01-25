@@ -49,6 +49,11 @@ class RLTrainer(Trainer):
         **kwargs,
     ):
         self.logger = logging.getLogger(__name__)
+        self.logger.warning(
+            "RLTrainer is intended for educational/demo purposes only and is not actively "
+            "maintained. For production RL training, please use prime-rl instead: "
+            "https://github.com/PrimeIntellect-ai/prime-rl"
+        )
 
         # model + tokenizer
         if isinstance(model, str):
