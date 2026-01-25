@@ -54,13 +54,17 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         interception_port: int = 8765,
         interception_url: str | None = None,
         max_turns: int = -1,
-        timeout_seconds: float = 3600.0,
+        timeout_seconds: float
+        | None = None,  # None = use per-task or CreateSandboxRequest default
         poll_interval: float = 2.0,
         docker_image: str = "python:3.11-slim",
         start_command: str = "tail -f /dev/null",
-        cpu_cores: int = 1,
-        memory_gb: int = 2,
-        disk_size_gb: int = 5,
+        cpu_cores: int
+        | None = None,  # None = use per-task or CreateSandboxRequest default
+        memory_gb: int
+        | None = None,  # None = use per-task or CreateSandboxRequest default
+        disk_size_gb: int
+        | None = None,  # None = use per-task or CreateSandboxRequest default
         gpu_count: int = 0,
         timeout_minutes: int = 60,
         environment_vars: dict[str, str] | None = None,

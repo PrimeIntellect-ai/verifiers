@@ -97,29 +97,32 @@ class HarborEnv(vf.CliAgentEnv):
         return task_info.get("docker_image") or self.docker_image
 
     async def get_timeout_seconds(self, state: vf.State) -> float:
-        """Get per-task timeout from task.toml [agent].timeout_sec."""
+        """Get timeout: user override > task.toml > CreateSandboxRequest default."""
+        if self.timeout_seconds is not None:
+            return self.timeout_seconds  # User override
         config = (state.get("info") or {}).get("config", {})
         timeout = config.get("agent", {}).get("timeout_sec")
-        return float(timeout) if timeout else self.timeout_seconds
+        return float(timeout) if timeout else 3600.0  # task.toml or default
 
     async def get_sandbox_request(
         self, state: vf.State, env_vars: dict[str, str], docker_image: str
     ):
-        """Override per-task resources from task.toml [environment]."""
+        """Build request: user override > task.toml > CreateSandboxRequest default."""
         request = await super().get_sandbox_request(state, env_vars, docker_image)
         config = (state.get("info") or {}).get("config", {})
         env_config = config.get("environment", {})
 
         updates = {}
-        if cpus := env_config.get("cpus"):
+        # Only apply task.toml values if user didn't explicitly override (None)
+        if self.cpu_cores is None and (cpus := env_config.get("cpus")):
             updates["cpu_cores"] = int(cpus)
-        if mem := env_config.get("memory"):
+        if self.memory_gb is None and (mem := env_config.get("memory")):
             updates["memory_gb"] = (
                 int(str(mem).rstrip("gG"))
                 if str(mem).upper().endswith("G")
                 else int(mem)
             )
-        if storage := env_config.get("storage"):
+        if self.disk_size_gb is None and (storage := env_config.get("storage")):
             updates["disk_size_gb"] = (
                 int(str(storage).rstrip("gG"))
                 if str(storage).upper().endswith("G")
