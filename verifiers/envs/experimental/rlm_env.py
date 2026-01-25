@@ -316,6 +316,61 @@ def _update_root_tool_metrics(state: State, tool_name: str) -> None:
     state["root_tool_calls"] = tool_calls
 
 
+def _summarize_sub_llm_prompts(prompts: list[Any]) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    for prompt in prompts[:3]:
+        if isinstance(prompt, str):
+            summaries.append(
+                {
+                    "type": "text",
+                    "chars": len(prompt),
+                    "preview": prompt[:200],
+                }
+            )
+        elif isinstance(prompt, dict):
+            summaries.append({"type": "message", "keys": list(prompt.keys())})
+        elif isinstance(prompt, (list, tuple)):
+            summaries.append({"type": "messages", "count": len(prompt)})
+        else:
+            summaries.append({"type": type(prompt).__name__})
+    return {"count": len(prompts), "head": summaries}
+
+
+def _summarize_chat_messages(messages: ChatMessages) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    for msg in messages[:3]:
+        content = msg.get("content")
+        if isinstance(content, str):
+            summaries.append(
+                {
+                    "role": msg.get("role"),
+                    "content_type": "text",
+                    "chars": len(content),
+                    "preview": content[:200],
+                }
+            )
+        elif isinstance(content, list):
+            summaries.append(
+                {
+                    "role": msg.get("role"),
+                    "content_type": "parts",
+                    "part_types": [
+                        str(part.get("type", "unknown"))
+                        for part in content
+                        if isinstance(part, dict)
+                    ],
+                }
+            )
+        else:
+            summaries.append(
+                {
+                    "role": msg.get("role"),
+                    "content_type": type(content).__name__,
+                }
+            )
+    return {"count": len(messages), "head": summaries}
+
+
 class RLMMonitorRubric(vf.Rubric):
     _SIMPLE_METRICS = [
         "sub_llm_call_count",
@@ -580,6 +635,8 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             "except Exception:",
             "    ROOT_TOOL_NAMES = []",
             "",
+            'RLM_LAST_CODE = ""',
+            "",
             "def _call_root_tool(tool_name: str, args: tuple, kwargs: dict):",
             "    if not ROOT_TOOL_URL:",
             '        raise RuntimeError("Root tool URL not configured")',
@@ -594,6 +651,12 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             '        "args": args_payload,',
             '        "kwargs": kwargs_payload,',
             f"    {dict_close}",
+            "    caller = {",
+            '        "language": "python",',
+            '        "code_preview": (RLM_LAST_CODE or "")[:2000],',
+            '        "code_length": len(RLM_LAST_CODE or ""),',
+            "    }",
+            '    payload["caller"] = caller',
             "",
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
@@ -662,6 +725,7 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             "        break",
             "",
             '    code = request.get("code", "")',
+            "    RLM_LAST_CODE = code",
         ]
     )
     if not sandboxed:
@@ -780,6 +844,12 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
             "args": args_payload,
             "kwargs": kwargs_payload,
         }
+        caller = {
+            "language": "bash",
+            "argv": sys.argv[1:],
+            "command": " ".join(sys.argv[1:]),
+        }
+        payload["caller"] = caller
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -3091,17 +3161,36 @@ class RLMEnv(vf.StatefulToolEnv):
         try:
             prompt_ids: list[int] | None = None
             if self.interleaved_rollouts:
-                if sub_state is not None and sub_state.get("trajectory"):
-                    prompt_ids = await get_prompt_ids(
-                        sub_state, normalized_messages, client
+                try:
+                    if sub_state is not None and sub_state.get("trajectory"):
+                        prompt_ids = await get_prompt_ids(
+                            sub_state, normalized_messages, client
+                        )
+                    else:
+                        prompt_ids = await tokenize_vllm(
+                            client=client,
+                            messages=normalized_messages,
+                            tools=tools,
+                            model=model,
+                        )
+                except Exception as e:
+                    debug_context = state.get("_last_sub_llm_root_call")
+                    error_details = {
+                        "error_type": type(e).__name__,
+                        "sub_llm_debug_context": debug_context,
+                        "messages_summary": _summarize_chat_messages(
+                            normalized_messages
+                        ),
+                        "messages": normalized_messages,
+                        "sub_state_turns": len(sub_state.get("trajectory", []))
+                        if sub_state is not None
+                        else 0,
+                    }
+                    logger.error(
+                        "Sub-LLM tokenize/get_prompt_ids failed: %s",
+                        json.dumps(error_details, default=str),
                     )
-                else:
-                    prompt_ids = await tokenize_vllm(
-                        client=client,
-                        messages=normalized_messages,
-                        tools=tools,
-                        model=model,
-                    )
+                    raise
             return await asyncio.wait_for(
                 self._call_model_api(
                     client=client,
@@ -3345,6 +3434,13 @@ class RLMEnv(vf.StatefulToolEnv):
 
         batch_start = perf_counter()
         batch_id = uuid.uuid4().hex[:8]
+        state_ref["_last_sub_llm_root_call"] = {
+            "caller": context.get("caller"),
+            "prompt_summary": _summarize_sub_llm_prompts(prompts),
+            "prompts": prompts,
+            "batch_id": batch_id,
+            "parent_turn": parent_turn,
+        }
         results: list[dict[str, Any] | None] = [None] * len(prompts)
         semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
 
@@ -3618,6 +3714,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         tool_name = request_body.get("tool_name", "")
         serialization = request_body.get("serialization", "pickle")
+        caller = request_body.get("caller")
         if not tool_name:
             return web.json_response({"error": "Tool name not provided"}, status=400)
         if tool_name not in self.root_tool_map:
@@ -3647,6 +3744,7 @@ class RLMEnv(vf.StatefulToolEnv):
             "client": context.get("client"),
             "sub_model": context.get("sub_model") or context.get("model"),
             "parent_turn": parent_turn,
+            "caller": caller,
         }
         token = self._root_tool_context_var.set(root_tool_context)
         try:
