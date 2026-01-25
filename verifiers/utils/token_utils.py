@@ -1,8 +1,9 @@
 import logging
+import json
 from functools import lru_cache
-from typing import Optional, cast
+from typing import Any, Mapping, Optional, cast
 
-from openai import AsyncOpenAI, BaseModel
+from openai import AsyncOpenAI, BadRequestError, BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
@@ -12,6 +13,82 @@ from verifiers.utils.message_utils import concat_messages
 _TOKENS_CLIENT: AsyncOpenAI | None = None
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_messages(messages: Messages) -> dict:
+    if isinstance(messages, str):
+        return {
+            "type": "completion",
+            "chars": len(messages),
+            "preview": messages[:200],
+        }
+    if not isinstance(messages, list):
+        return {"type": type(messages).__name__}
+
+    def summarize_message(msg: Mapping[str, Any]) -> dict:
+        summary: dict[str, object] = {"role": msg.get("role")}
+        content = msg.get("content")
+        if isinstance(content, str):
+            summary.update(
+                {
+                    "content_type": "text",
+                    "content_chars": len(content),
+                    "content_preview": content[:200],
+                }
+            )
+        elif isinstance(content, list):
+            part_types: list[str] = []
+            text_preview_parts: list[str] = []
+            text_chars = 0
+            for part in content:
+                if not isinstance(part, dict):
+                    part_types.append(type(part).__name__)
+                    continue
+                part_type = str(part.get("type", "unknown"))
+                part_types.append(part_type)
+                if part_type == "text":
+                    text = str(part.get("text", ""))
+                    if text:
+                        text_chars += len(text)
+                        if len("".join(text_preview_parts)) < 200:
+                            text_preview_parts.append(text)
+            summary.update(
+                {
+                    "content_type": "parts",
+                    "part_types": part_types,
+                    "text_chars": text_chars,
+                    "text_preview": ("".join(text_preview_parts))[:200],
+                }
+            )
+        else:
+            summary.update({"content_type": type(content).__name__})
+        if "tool_call_id" in msg:
+            summary["tool_call_id"] = msg.get("tool_call_id")
+        if "name" in msg:
+            summary["name"] = msg.get("name")
+        return summary
+
+    total = len(messages)
+    head = [
+        summarize_message(cast(Mapping[str, Any], m))
+        for m in messages[:3]
+        if isinstance(m, Mapping)
+    ]
+    tail = (
+        [
+            summarize_message(cast(Mapping[str, Any], m))
+            for m in messages[-3:]
+            if isinstance(m, Mapping)
+        ]
+        if total > 3
+        else []
+    )
+    return {
+        "type": "chat",
+        "message_count": total,
+        "head": head,
+        "tail": tail,
+    }
 
 
 @lru_cache(maxsize=None)
@@ -65,6 +142,25 @@ async def tokenize_vllm(
             )
         return tokenize_response.tokens
     except Exception as e:
+        error_text = None
+        if isinstance(e, BadRequestError):
+            try:
+                error_text = e.response.text
+            except Exception:
+                error_text = None
+        error_details = {
+            "model": model,
+            "tools_count": len(tools or []),
+            "message_summary": _summarize_messages(messages),
+            "extra_kwargs": list(extra_kwargs.keys()) if isinstance(extra_kwargs, dict) else None,
+            "client_base_url": str(getattr(tokens_client, "base_url", "")),
+            "error_type": type(e).__name__,
+            "error_text": error_text,
+        }
+        logger.error(
+            "Tokenize request failed: %s",
+            json.dumps(error_details, default=str),
+        )
         raise vf.ModelError from e
 
 
@@ -100,7 +196,20 @@ async def get_prompt_ids(
 
     # the env response is all messages after the previous turn
     messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-    env_response = prompt_messages[len(messages) :]
+    if not isinstance(prompt_messages, list):
+        logger.warning(
+            "get_prompt_ids expected list prompt_messages, got %s",
+            type(prompt_messages).__name__,
+        )
+        env_response = []
+    else:
+        if len(messages) > len(prompt_messages):
+            logger.warning(
+                "get_prompt_ids prompt shorter than trajectory (prev_len=%s prompt_len=%s)",
+                len(messages),
+                len(prompt_messages),
+            )
+        env_response = prompt_messages[len(messages) :]
 
     def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
         """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
