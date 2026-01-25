@@ -212,6 +212,22 @@ async def get_prompt_ids(
                 len(prompt_messages),
             )
         env_response = prompt_messages[len(messages) :]
+        if not env_response:
+            debug_context = state.get("_last_sub_llm_root_call")
+            payload: dict[str, Any] = {
+                "trajectory_id": state.get("trajectory_id"),
+                "prompt_messages_len": len(prompt_messages),
+                "prev_messages_len": len(messages),
+                "prompt_messages": prompt_messages,
+                "prev_prompt": prev_turn_prompt,
+                "prev_completion": prev_turn_completion,
+            }
+            if debug_context:
+                payload["sub_llm_debug_context"] = debug_context
+            logger.error(
+                "get_prompt_ids produced empty env_response: %s",
+                json.dumps(payload, default=str),
+            )
 
     def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
         """Returns all tokens after the last occurrence of `value` in `lst`, if any."""

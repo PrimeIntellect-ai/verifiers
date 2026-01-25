@@ -3161,6 +3161,18 @@ class RLMEnv(vf.StatefulToolEnv):
         try:
             prompt_ids: list[int] | None = None
             if self.interleaved_rollouts:
+                if not normalized_messages:
+                    debug_context = state.get("_last_sub_llm_root_call")
+                    logger.error(
+                        "Sub-LLM call has empty messages: %s",
+                        json.dumps(
+                            {
+                                "sub_llm_debug_context": debug_context,
+                                "messages": normalized_messages,
+                            },
+                            default=str,
+                        ),
+                    )
                 try:
                     if sub_state is not None and sub_state.get("trajectory"):
                         prompt_ids = await get_prompt_ids(
@@ -3246,6 +3258,7 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_state["model"] = model
             sub_state["oai_tools"] = self.sub_oai_tools or []
             sub_state["sampling_args"] = state.get("sampling_args")
+            sub_state["_last_sub_llm_root_call"] = state.get("_last_sub_llm_root_call")
 
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
