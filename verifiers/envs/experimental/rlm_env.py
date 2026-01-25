@@ -1140,26 +1140,11 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
                         break
         return buffer
 
-    def _drain_fd():
-        # Drain any immediately-available output (e.g., prompt text) so it
-        # doesn't leak into the next command's captured output.
-        while True:
-            ready, _, _ = select.select([master_fd], [], [], 0)
-            if master_fd not in ready:
-                break
-            try:
-                chunk = os.read(master_fd, 4096)
-            except Exception:
-                break
-            if not chunk:
-                break
-
     def _parse_bool(value: str) -> bool:
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
     try:
         _read_until_marker(init_marker.encode("utf-8"))
-        _drain_fd()
     except Exception:
         pass
 
@@ -1203,7 +1188,6 @@ _RLM_BASH_WORKER_SCRIPT_TEMPLATE = textwrap.dedent(
             continue
 
         raw = _read_until_marker(env_marker.encode("utf-8"))
-        _drain_fd()
         text = raw.decode("utf-8", errors="replace")
 
         output = text
