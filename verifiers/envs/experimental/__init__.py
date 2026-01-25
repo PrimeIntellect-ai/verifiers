@@ -1,3 +1,3 @@
-from verifiers.envs.experimental.sandbox_mixin import SandboxClientType, SandboxMixin
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 
-__all__ = ["SandboxClientType", "SandboxMixin"]
+__all__ = ["SandboxMixin"]
