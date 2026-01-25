@@ -4299,6 +4299,10 @@ class RLMEnv(vf.StatefulToolEnv):
                         "_last_sub_llm_root_call"
                     ]
                 prompt_ids = await get_prompt_ids(prompt_state, prompt, client)
+                # If suffix ids were computed on the temporary state, persist them
+                # on the main state to avoid re-tokenizing every turn.
+                if "_cached_suffix_ids" in prompt_state:
+                    state["_cached_suffix_ids"] = prompt_state["_cached_suffix_ids"]
             else:
                 # If no main steps are present (should be rare), fall back to
                 # full-tokenize so we still use the tokens endpoint.
