@@ -253,14 +253,14 @@ class Orchestrator:
                 completion_ids.append(tokens["completion_ids"])
                 completion_mask.append(tokens["completion_mask"])
                 completion_logprobs.append(tokens["completion_logprobs"])
-                prompts.append(state["prompt"])
-                completions.append(state["completion"])
-                rewards.append(state["reward"])
-                for k, v in state["metrics"].items():
-                    if k not in metrics:
-                        metrics[k] = []
-                    metrics[k].append(v)
                 advantages.append(step["advantage"])
+            prompts.append(state["prompt"])
+            completions.append(state["completion"])
+            rewards.append(state["reward"])
+            for k, v in state["metrics"].items():
+                if k not in metrics:
+                    metrics[k] = []
+                metrics[k].append(v)
 
         # Build rewards_dict from rollout-level data (for logging only)
         rewards_dict = {"reward": rewards}
