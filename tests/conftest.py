@@ -467,6 +467,7 @@ def make_state() -> Callable[..., State]:
             total_ms=0.0,
         ),
         foo: str = "bar",  # custom field
+        **kwargs,
     ) -> State:
         return State(
             example_id=example_id,
@@ -485,6 +486,7 @@ def make_state() -> Callable[..., State]:
             timing=timing,
             error=None,
             foo=foo,
+            **kwargs,
         )
 
     return _make_state

@@ -14,7 +14,6 @@ from pathlib import Path
 from openai import OpenAI
 from pydantic import BaseModel
 
-from verifiers.types import GenerateMetadata, State
 from verifiers.utils.save_utils import (
     make_serializable,
     sanitize_states,
@@ -92,11 +91,10 @@ class TestSerialization:
 
 
 class TestSavingMetadata:
-    def test_serialize_metadata(self):
+    def test_serialize_metadata(self, make_metadata):
         """Test serialization of complex nested structures."""
 
-        metadata = GenerateMetadata(
-            env_id="test-env",
+        metadata = make_metadata(
             env_args={"arg1": "value1"},
             model="test-model",
             base_url="http://localhost:8000",
@@ -129,10 +127,9 @@ class TestSavingMetadata:
 
 
 class TestSavingResults:
-    def test_serialize_states(self):
+    def test_serialize_states(self, make_state):
         states = [
-            State(
-                example_id=0,
+            make_state(
                 prompt=[{"role": "user", "content": "What is 2+2?"}],
                 completion=[{"role": "assistant", "content": "The answer is 4"}],
                 answer="",

@@ -35,17 +35,16 @@ class TestMathRubric:
         ],
         ids=lambda x: f"{x['completion']} == {x['answer']}",
     )
-    async def test_score_valid_answers(self, test_case):
+    async def test_score_valid_answers(self, test_case, make_input):
         """Test scoring a single rollout."""
 
         rubric = vf.MathRubric()
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = test_case["completion"]
@@ -71,17 +70,16 @@ class TestMathRubric:
         ],
         ids=lambda x: f"{x['completion']} != {x['answer']}",
     )
-    async def test_score_invalid_answers(self, test_case):
+    async def test_score_invalid_answers(self, test_case, make_input):
         """Test scoring a single rollout."""
 
         rubric = vf.MathRubric()
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = test_case["completion"]
@@ -100,7 +98,7 @@ class TestMathRubric:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("timeout_seconds", [0.1, 1, 10])
-    async def test_timeout(self, timeout_seconds):
+    async def test_timeout(self, timeout_seconds, make_input):
         """Test scoring a single rollout."""
 
         answer = "1"
@@ -110,11 +108,10 @@ class TestMathRubric:
         rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=answer,
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = completion

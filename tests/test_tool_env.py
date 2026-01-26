@@ -10,7 +10,6 @@ from openai.types.chat.chat_completion_user_message_param import (
 
 import verifiers as vf
 from tests.conftest import faulty_tool, offset_tool, square_tool
-from verifiers.types import RolloutInput
 
 
 def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
@@ -28,7 +27,9 @@ def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
 
 class TestToolEnv:
     @pytest.mark.asyncio
-    async def test_tool_env_calls_tool(self, mock_tool_env, mock_openai_client):
+    async def test_tool_env_calls_tool(
+        self, mock_tool_env, mock_openai_client, make_input
+    ):
         tool_call = _build_tool_call("square_tool", {"x": 4})
         assistant_message = {
             "role": "assistant",
@@ -52,12 +53,7 @@ class TestToolEnv:
         )
 
         state = await mock_tool_env.rollout(
-            input=RolloutInput(
-                prompt=[user_message],
-                answer="",
-                task="",
-                example_id=0,
-            ),
+            input=make_input(prompt=[user_message], answer="", task=""),
             client=mock_openai_client,
             model="test-model",
         )
@@ -71,7 +67,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_completion_without_tool_calls(
-        self, mock_tool_env, mock_openai_client
+        self, mock_tool_env, mock_openai_client, make_input
     ):
         mock_openai_client.add_chat_response(
             messages=[{"role": "user", "content": "Hello"}],
@@ -79,11 +75,8 @@ class TestToolEnv:
         )
 
         state = await mock_tool_env.rollout(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="",
-                task="",
-                example_id=0,
+            input=make_input(
+                prompt=[{"role": "user", "content": "Hello"}], answer="", task=""
             ),
             client=mock_openai_client,
             model="test-model",
@@ -96,7 +89,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_openai_client, sample_chat_dataset, make_input
     ):
         """Test that ToolEnv stops rollout when tool call is not JSON-parsable."""
 
@@ -137,11 +130,8 @@ class TestToolEnv:
         )
 
         state = await env.rollout(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Square 4"}],
-                answer="",
-                task="",
-                example_id=0,
+            input=make_input(
+                prompt=[{"role": "user", "content": "Square 4"}], answer="", task=""
             ),
             client=mock_openai_client,
             model="test-model",
@@ -163,7 +153,7 @@ class TestToolEnv:
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_call_error(
-        self, mock_openai_client, sample_chat_dataset
+        self, mock_openai_client, sample_chat_dataset, make_input
     ):
         """Test that ToolEnv stops rollout when tool raises an exception."""
 
@@ -186,11 +176,8 @@ class TestToolEnv:
         )
 
         state = await env.rollout(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Invoke"}],
-                answer="",
-                task="",
-                example_id=0,
+            input=make_input(
+                prompt=[{"role": "user", "content": "Invoke"}], answer="", task=""
             ),
             client=mock_openai_client,
             model="test-model",
