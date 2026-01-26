@@ -166,13 +166,12 @@ class DOMMode:
     ) -> str:
         """Find possible actions on the page matching the instruction."""
         try:
-            options = {}
             if llm_config:
-                options["model"] = llm_config
-
-            response = await session.observe(
-                instruction=instruction, options=options if options else None
-            )
+                response = await session.observe(
+                    instruction=instruction, options={"model": llm_config}
+                )
+            else:
+                response = await session.observe(instruction=instruction)
             actions = [
                 {
                     "description": a.description,
@@ -190,13 +189,12 @@ class DOMMode:
     async def act(self, instruction: str, session: Any, llm_config: Any = None) -> str:
         """Execute an action described in natural language."""
         try:
-            options = {}
             if llm_config:
-                options["model"] = llm_config
-
-            response = await session.act(
-                input=instruction, options=options if options else None
-            )
+                response = await session.act(
+                    input=instruction, options={"model": llm_config}
+                )
+            else:
+                response = await session.act(input=instruction)
             result = response.data.result
             status = "Success" if result.success else "Failed"
             return f"{status}: {result.message}"
@@ -213,15 +211,17 @@ class DOMMode:
         """Extract structured data from the page."""
         try:
             schema = json.loads(schema_json)
-            options = {}
             if llm_config:
-                options["model"] = llm_config
-
-            response = await session.extract(
-                instruction=instruction,
-                schema=schema,
-                options=options if options else None,
-            )
+                response = await session.extract(
+                    instruction=instruction,
+                    schema=schema,
+                    options={"model": llm_config},
+                )
+            else:
+                response = await session.extract(
+                    instruction=instruction,
+                    schema=schema,
+                )
             return json.dumps(response.data.result, indent=2)
         except json.JSONDecodeError as e:
             return f"Error parsing schema JSON: {str(e)}"
