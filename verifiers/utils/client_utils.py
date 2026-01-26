@@ -7,7 +7,7 @@ import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 
-from verifiers.types import ClientConfig
+from verifiers.types import Client, ClientConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def load_prime_config() -> dict:
 
 def setup_client(
     config: ClientConfig,
-) -> AsyncOpenAI:
+) -> Client:
     """
     A helper function to setup an AsyncOpenAI client.
     """

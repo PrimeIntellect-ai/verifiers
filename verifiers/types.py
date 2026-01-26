@@ -36,6 +36,7 @@ from openai.types.shared_params import (  # noqa: F401
 from pydantic import BaseModel
 
 # typing aliases
+Client = AsyncOpenAI
 ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
@@ -99,7 +100,7 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI
+    client: Client
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout

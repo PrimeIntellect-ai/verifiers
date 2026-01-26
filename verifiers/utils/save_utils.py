@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
-from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
+    Client,
     GenerateMetadata,
     GenerateOutputs,
     SamplingArgs,
@@ -44,7 +44,7 @@ def states_to_generate_metadata(
     env_id: str,
     env_args: dict,
     model: str,
-    client: AsyncOpenAI,
+    client: Client,
     states: list[State],
     state_columns: list[str] | None,
     sampling_args: SamplingArgs,

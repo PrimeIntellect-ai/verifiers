@@ -16,13 +16,13 @@ from typing import Callable
 
 import pytest
 from datasets import Dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.envs.environment import Environment
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
+    Client,
     GenerateOutputs,
     RolloutInput,
     SamplingArgs,
@@ -85,9 +85,9 @@ class DummyEnvironment(Environment):
 
 
 @pytest.fixture
-def make_dummy_env() -> Callable[[AsyncOpenAI, Dataset | None], DummyEnvironment]:
+def make_dummy_env() -> Callable[[Client, Dataset | None], DummyEnvironment]:
     def _make_dummy_env(
-        mock_openai_client: AsyncOpenAI, dataset: Dataset | None = None, **kwargs
+        mock_openai_client: Client, dataset: Dataset | None = None, **kwargs
     ) -> DummyEnvironment:
         dataset = dataset or Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
         return DummyEnvironment(

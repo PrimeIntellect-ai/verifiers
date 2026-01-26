@@ -2,10 +2,9 @@ import time
 from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 
 from datasets import Dataset, concatenate_datasets
-from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import Client, RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     pass
@@ -266,7 +265,7 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:

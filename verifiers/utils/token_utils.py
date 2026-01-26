@@ -2,20 +2,20 @@ import logging
 from functools import lru_cache
 from typing import Optional, cast
 
-from openai import AsyncOpenAI, BaseModel
+from openai import BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
-from verifiers.types import Messages, SamplingArgs
+from verifiers.types import Client, Messages, SamplingArgs
 from verifiers.utils.message_utils import concat_messages
 
-_TOKENS_CLIENT: AsyncOpenAI | None = None
+_TOKENS_CLIENT: Client | None = None
 
 logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=None)
-def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
+def get_tokens_client(client: Client) -> Client:
     logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
     base_url = str(client.base_url).rstrip("/")
     if base_url.endswith("/v1"):
@@ -25,7 +25,7 @@ def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
 
 
 async def tokenize_vllm(
-    client: AsyncOpenAI,
+    client: Client,
     messages: Messages,
     tools: list[ChatCompletionToolParam] | None,
     model: str,
@@ -82,7 +82,7 @@ def prepare_sampling_args_for_token_prompts(
 
 
 async def get_prompt_ids(
-    state: vf.State, prompt_messages: Messages, client: AsyncOpenAI
+    state: vf.State, prompt_messages: Messages, client: Client
 ) -> list[int]:
     """
     Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
