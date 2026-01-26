@@ -107,7 +107,7 @@ class _MockChat:
         self.completions = _MockChatCompletions()
 
 
-class MockClient:
+class MockAsyncOpenAI:
     def __init__(self):
         self.chat = _MockChat()
         self.completions = _MockCompletions()
@@ -128,7 +128,7 @@ def toy_env_class():
 
 @pytest.fixture
 def client():
-    return MockClient()
+    return MockAsyncOpenAI()
 
 
 # ----------------- Tests -----------------

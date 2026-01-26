@@ -6,6 +6,7 @@ import uuid
 from typing import Any, cast
 
 from aiohttp import web
+from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessage,
@@ -25,7 +26,6 @@ from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
     ChatCompletionToolParam,
-    Client,
     Messages,
     MessageType,
     ModelResponse,
@@ -284,7 +284,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self,
         state: State,
         prompt: Messages,
-        client: Client | None = None,
+        client: AsyncOpenAI | None = None,
         model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -362,7 +362,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         state: State,
         prompt: Messages,
         intercept: dict,
-        client: Client | None = None,
+        client: AsyncOpenAI | None = None,
         model: str | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,

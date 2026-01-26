@@ -80,8 +80,8 @@ def think_parser_with_extractor():
 # Async test fixtures for Environment testing
 
 
-class MockClient:
-    """Mock Client that maps conversation inputs to outputs."""
+class MockAsyncOpenAI:
+    """Mock AsyncOpenAI client that maps conversation inputs to outputs."""
 
     def __init__(self):
         self.chat_completions = {}  # Maps conversation history to responses
@@ -207,8 +207,8 @@ class MockClient:
 
 @pytest.fixture
 def mock_openai_client():
-    """Return a mocked Client with input-output mapping."""
-    return MockClient()
+    """Return a mocked AsyncOpenAI client with input-output mapping."""
+    return MockAsyncOpenAI()
 
 
 @pytest.fixture
