@@ -41,9 +41,7 @@ def extract_system_messages(messages: list) -> tuple[list, list]:
 
 
 class AntClient(Client[AsyncAnthropic, Completion, Message]):
-    def __init__(self, config: ClientConfig):
-        """Setup an AsyncOpenAI client based on client config."""
-        super().__init__(config)
+    """Wrapper for AsyncAnthropic client."""
 
     def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
         return AsyncAnthropic(
@@ -92,11 +90,6 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
         sampling_args: SamplingArgs,
         tools: list | None = None,
     ) -> Message:
-        if tools is not None:
-            raise NotImplementedError(
-                "Tools are not yet supported for Anthropic client."
-            )
-
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             max_tokens = sampling_args.pop("max_tokens")
             sampling_args.pop("n", None)

@@ -49,9 +49,7 @@ def handle_overlong_prompt(func):
 
 
 class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
-    def __init__(self, config: ClientConfig):
-        """Setup an AsyncOpenAI client based on client config."""
-        super().__init__(config)
+    """Wrapper for AsyncOpenAI client."""
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return AsyncOpenAI(
