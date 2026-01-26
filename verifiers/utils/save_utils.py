@@ -135,8 +135,9 @@ def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[
         sanitized_state["completion"] = sanitize_tool_calls(
             messages_to_printable(state["completion"])
         )
-        # use str repr for error
-        sanitized_state["error"] = repr(state.get("error"))
+        # use repr for error
+        if state.get("error") is not None:
+            sanitized_state["error"] = repr(state.get("error"))
         # only include optional fields if non-empty
         if "answer" in sanitized_state and not sanitized_state["answer"]:
             sanitized_state.pop("answer")
