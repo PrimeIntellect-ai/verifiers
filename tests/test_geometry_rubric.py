@@ -160,6 +160,27 @@ class TestVerifyNoOverlap:
         rubric = GeometryRubric()
         assert rubric.verify_no_overlap([]) is True
 
+    def test_linestring_through_polygon_fails(self):
+        """LineString passing through a polygon is detected as collision."""
+        rubric = GeometryRubric()
+        path = LineString([(0, 0), (10, 10)])
+        obstacle = Polygon([(3, 3), (7, 3), (7, 7), (3, 7)])
+        assert rubric.verify_no_overlap([path, obstacle]) is False
+
+    def test_linestring_separate_from_polygon_passes(self):
+        """LineString not touching polygon passes."""
+        rubric = GeometryRubric()
+        path = LineString([(0, 0), (1, 1)])
+        obstacle = Polygon([(5, 5), (6, 5), (6, 6), (5, 6)])
+        assert rubric.verify_no_overlap([path, obstacle]) is True
+
+    def test_intersecting_linestrings_fail(self):
+        """Two intersecting LineStrings are detected as collision."""
+        rubric = GeometryRubric()
+        line1 = LineString([(0, 0), (2, 2)])
+        line2 = LineString([(0, 2), (2, 0)])
+        assert rubric.verify_no_overlap([line1, line2]) is False
+
 
 class TestVerifyContains:
     """Tests for verify_contains (containment check)."""

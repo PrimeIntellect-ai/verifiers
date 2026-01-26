@@ -310,7 +310,12 @@ class GeometryRubric(Rubric):
                     continue
                 try:
                     intersection = a.intersection(b)
+                    # Check area for polygon overlaps
                     if intersection.area > tol:
+                        return False
+                    # For LineStrings/Points (zero area geometries), check if they
+                    # intersect, ignore boundary-only contact between polygons
+                    if not intersection.is_empty and (a.area == 0 or b.area == 0):
                         return False
                 except Exception as e:
                     self.logger.debug(f"Overlap check failed: {e}")
