@@ -109,9 +109,7 @@ class TestSingleTurnEnv:
 
         state = await mock_singleturn_env.rollout(
             input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
+                prompt=prompt, answer=answer, example_id=0, task="default"
             ),
             client=mock_singleturn_env.client,
             model="test-model",
@@ -143,6 +141,7 @@ class TestSingleTurnEnv:
                 prompt=prompt,
                 answer=answer,
                 example_id=0,
+                task="default",
             ),
             client=mock_singleturn_env_completion.client,
             model="test-model",
@@ -169,9 +168,7 @@ class TestSingleTurnEnv:
 
         state = await mock_singleturn_env.rollout(
             input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
+                prompt=prompt, answer=answer, example_id=0, task="default"
             ),
             client=mock_singleturn_env.client,
             model="test-model",
@@ -296,18 +293,18 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = await mock_singleturn_env.generate(
+        outputs = await mock_singleturn_env.generate(
             inputs_list,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
-        assert len(results["state"]) == 2
-        assert results["reward"] == [1.0, 1.0]
+        states = outputs["states"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
+            assert state["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_a_generate_with_dataset(
@@ -323,16 +320,18 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = await mock_singleturn_env.generate(
+        outputs = await mock_singleturn_env.generate(
             sample_chat_dataset,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        states = outputs["states"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
+            assert state["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_a_generate_no_scoring(self, mock_singleturn_env):
@@ -348,17 +347,17 @@ class TestSingleTurnEnv:
             ),
         ]
 
-        results = await mock_singleturn_env.generate(
+        outputs = await mock_singleturn_env.generate(
             inputs_list,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results  # reward attribute exists
-        # Scoring always happens now, so rewards will be set
-        assert len(results["reward"]) >= 0
+        states = outputs["states"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 0.0
 
     def test_generate_sync_wrapper(self, mock_singleturn_env):
         """Test the synchronous generate wrapper."""
@@ -382,15 +381,17 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = mock_singleturn_env.generate_sync(
+        outputs = mock_singleturn_env.generate_sync(
             inputs,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
+        states = outputs["states"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_different_message_types_in_same_env(
@@ -422,6 +423,7 @@ class TestSingleTurnEnv:
                 prompt=[{"role": "user", "content": "Hello"}],
                 answer="Hi",
                 example_id=0,
+                task="default",
             ),
             client=mock_openai_client,
             model="test-model",
@@ -435,6 +437,7 @@ class TestSingleTurnEnv:
                 prompt="Complete this:",
                 answer="Done",
                 example_id=0,
+                task="default",
             ),
             client=mock_openai_client,
             model="test-model",

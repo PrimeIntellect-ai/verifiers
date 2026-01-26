@@ -6,7 +6,7 @@ Covers:
 
 from pathlib import Path
 
-from verifiers.types import GenerateMetadata, GenerateOutputs
+from verifiers.types import GenerateMetadata, GenerateOutputs, State
 
 
 def _make_metadata(
@@ -26,6 +26,7 @@ def _make_metadata(
         avg_metrics={},
         state_columns=[],
         path_to_save=Path("test.jsonl"),
+        tools=None,
     )
 
 
@@ -53,23 +54,30 @@ def test_print_results_rollout_indexing(capsys):
     # Metric follows same pattern
     metric_values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
-    results = GenerateOutputs(
-        prompt=[[{"role": "user", "content": f"q{i}"}] for i in range(6)],
-        completion=[[{"role": "assistant", "content": f"a{i}"}] for i in range(6)],
-        answer=[""] * 6,
-        state=[{"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}]
-        * 6,
-        task=["default"] * 6,
-        info=[{}] * 6,
-        example_id=example_ids,
-        reward=rewards,
-        metrics={"test_metric": metric_values},
-        is_truncated=[False] * 6,
-        stop_conditions=[None] * 6,
+    outputs = GenerateOutputs(
+        states=[
+            State(
+                example_id=example_ids[i],
+                prompt=[{"role": "user", "content": f"q{i}"}],
+                completion=[{"role": "assistant", "content": f"a{i}"}],
+                answer="",
+                info={},
+                task="default",
+                reward=rewards[i],
+                metrics={"test_metric": metric_values[i]},
+                is_truncated=False,
+                stop_condition=None,
+                timing={
+                    "generation_ms": 100.0,
+                    "scoring_ms": 50.0,
+                    "total_ms": 150.0,
+                },
+            )
+            for i in range(6)
+        ],
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
-
-    print_results(results)
+    print_results(outputs)
     captured = capsys.readouterr()
 
     # Verify rollout groupings are correct
@@ -94,18 +102,26 @@ def test_print_results_single_rollout(capsys):
     example_ids = [0, 1, 2]
 
     results = GenerateOutputs(
-        prompt=[[{"role": "user", "content": f"q{i}"}] for i in range(3)],
-        completion=[[{"role": "assistant", "content": f"a{i}"}] for i in range(3)],
-        answer=[""] * 3,
-        state=[{"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}]
-        * 3,
-        task=["default"] * 3,
-        info=[{}] * 3,
-        example_id=example_ids,
-        reward=rewards,
-        metrics={},
-        is_truncated=[False] * 3,
-        stop_conditions=[None] * 3,
+        states=[
+            State(
+                example_id=example_ids[i],
+                prompt=[{"role": "user", "content": f"q{i}"}],
+                completion=[{"role": "assistant", "content": f"a{i}"}],
+                answer="",
+                info={},
+                task="default",
+                reward=rewards[i],
+                metrics={},
+                is_truncated=False,
+                stop_condition=None,
+                timing={
+                    "generation_ms": 100.0,
+                    "scoring_ms": 50.0,
+                    "total_ms": 150.0,
+                },
+            )
+            for i in range(3)
+        ],
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
 
@@ -128,18 +144,26 @@ def test_print_results_three_rollouts(capsys):
     example_ids = [0, 0, 0, 1, 1, 1]
 
     results = GenerateOutputs(
-        prompt=[[{"role": "user", "content": f"q{i}"}] for i in range(6)],
-        completion=[[{"role": "assistant", "content": f"a{i}"}] for i in range(6)],
-        answer=[""] * 6,
-        state=[{"timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0}}]
-        * 6,
-        task=["default"] * 6,
-        info=[{}] * 6,
-        example_id=example_ids,
-        reward=rewards,
-        metrics={},
-        is_truncated=[False] * 6,
-        stop_conditions=[None] * 6,
+        states=[
+            State(
+                example_id=example_ids[i],
+                prompt=[{"role": "user", "content": f"q{i}"}],
+                completion=[{"role": "assistant", "content": f"a{i}"}],
+                answer="",
+                info={},
+                task="default",
+                reward=rewards[i],
+                metrics={},
+                is_truncated=False,
+                stop_condition=None,
+                timing={
+                    "generation_ms": 100.0,
+                    "scoring_ms": 50.0,
+                    "total_ms": 150.0,
+                },
+            )
+            for i in range(6)
+        ],
         metadata=_make_metadata(num_examples, rollouts_per_example),
     )
 

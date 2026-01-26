@@ -26,9 +26,10 @@ from verifiers.types import (
     GenerateOutputs,
     RolloutInput,
     SamplingArgs,
+    State,
 )
-from verifiers.utils.eval_utils import make_dataset as build_dataset
 from verifiers.utils.message_utils import sanitize_tool_calls
+from verifiers.utils.save_utils import make_dataset as build_dataset
 
 
 # Local simple concrete Environment for testing
@@ -101,6 +102,7 @@ def _make_metadata(
         avg_metrics={},
         state_columns=[],
         path_to_save=Path("test.jsonl"),
+        tools=None,
     )
 
 
@@ -165,10 +167,11 @@ def test_run_rollouts_with_max_concurrent(mock_openai_client):
             prompt=[{"role": "user", "content": "hi"}],
             answer="",
             example_id=i,
+            task="default",
         )
         for i in range(3)
     ]
-    results = asyncio.run(
+    outputs = asyncio.run(
         env.generate(
             inputs,
             client=mock_openai_client,
@@ -176,7 +179,8 @@ def test_run_rollouts_with_max_concurrent(mock_openai_client):
             max_concurrent=2,
         )
     )
-    assert len(results["state"]) == 3
+    states = outputs["states"]
+    assert len(states) == 3
 
 
 def test_run_rollouts_with_semaphore(mock_openai_client):
@@ -186,10 +190,11 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
             prompt=[{"role": "user", "content": "hi"}],
             answer="",
             example_id=i,
+            task="default",
         )
         for i in range(3)
     ]
-    results = asyncio.run(
+    outputs = asyncio.run(
         env.generate(
             inputs,
             client=mock_openai_client,
@@ -197,7 +202,8 @@ def test_run_rollouts_with_semaphore(mock_openai_client):
             max_concurrent=2,
         )
     )
-    assert len(results["state"]) == 3
+    states = outputs["states"]
+    assert len(states) == 3
 
 
 def test_evaluate_fallback_and_repeat(mock_openai_client):
@@ -206,7 +212,7 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
 
     ds = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
     env = _make_env(mock_openai_client, dataset=ds)
-    res = asyncio.run(
+    outputs = asyncio.run(
         env.evaluate(
             client=mock_openai_client,
             model="test-model",
@@ -215,8 +221,8 @@ def test_evaluate_fallback_and_repeat(mock_openai_client):
         )
     )
     # Expect n * r rollouts in outputs
-    assert len(res["prompt"]) == 2 * 2
-    assert len(res["completion"]) == 2 * 2
+    states = outputs["states"]
+    assert len(states) == 2 * 2
 
 
 @pytest.mark.asyncio
@@ -227,11 +233,14 @@ async def test_generate_inside_running_loop(mock_openai_client):
             prompt=[{"role": "user", "content": "Hi"}],
             answer="",
             example_id=0,
+            task="default",
         )
     ]
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
-    out = await env.generate(inputs, client=mock_openai_client, model="test-model")
-    assert "completion" in out and len(out["completion"]) == 1
+    outputs = await env.generate(inputs, client=mock_openai_client, model="test-model")
+    states = outputs["states"]
+    assert len(states) == 1
+    assert states[0].get("completion") is not None
 
 
 def test_sanitize_tool_calls_outputs_strings():
@@ -259,23 +268,16 @@ def test_sanitize_tool_calls_outputs_strings():
 
 def test_make_dataset_basic_without_tools(mock_openai_client):
     results = GenerateOutputs(
-        prompt=[[{"role": "user", "content": "Hi"}]],
-        completion=[[{"role": "assistant", "content": "Hello"}]],
-        answer=[""],
-        state=[
-            {
-                "timing": {
-                    "generation_ms": 0.0,
-                    "scoring_ms": 0.0,
-                    "total_ms": 0.0,
-                }
-            }
+        states=[
+            State(  # noqa: F821
+                prompt=[{"role": "user", "content": "Hi"}],
+                completion=[{"role": "assistant", "content": "Hello"}],
+                answer="",
+                info={},
+                task="default",
+                metrics={"foo": 1.0},
+            )
         ],
-        info=[{}],
-        task=["default"],
-        reward=[1.0],
-        metrics={"foo": [0.1]},
-        example_id=[0],
         metadata=_make_metadata(num_examples=1),
     )
     ds = build_dataset(results)

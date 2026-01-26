@@ -223,6 +223,7 @@ def print_info(outputs: GenerateOutputs):
     print(
         f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
+    print(outputs["states"])
     stop_conditions = [s["stop_condition"] for s in outputs["states"]]
     counter = Counter(stop_conditions)
     print(

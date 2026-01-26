@@ -418,14 +418,15 @@ class TestEnvGroup:
             ),
         ]
 
-        results = await env_group.generate(
+        outputs = await env_group.generate(
             inputs, client=mock_openai_client, model="test-model"
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        states = outputs["states"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
 
     def test_env_group_with_mixed_datasets(self, mock_openai_client):
         """Test EnvGroup with environments having different dataset configurations."""

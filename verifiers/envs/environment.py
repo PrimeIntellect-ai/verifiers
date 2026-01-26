@@ -648,7 +648,7 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
-        state_input = deepcopy(input)
+        state_input = dict(input)  # shallow copy to preserve references
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:

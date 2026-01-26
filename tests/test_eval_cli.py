@@ -30,6 +30,7 @@ def _make_metadata(config) -> GenerateMetadata:
         avg_metrics={},
         state_columns=config.state_columns or [],
         path_to_save=Path("test.jsonl"),
+        tools=None,
     )
 
 
@@ -46,26 +47,27 @@ def _make_generate_outputs(
     rewards = rewards or [1.0] * n
     tasks = tasks or ["default"] * n
     return GenerateOutputs(
-        prompt=[[{"role": "user", "content": "p"}] for _ in range(n)],
-        completion=[[{"role": "assistant", "content": "c"}] for _ in range(n)],
-        answer=["" for _ in range(n)],
-        state=[
+        states=[
             State(
+                example_id=i,
+                prompt=[{"role": "user", "content": "p"}],
+                completion=[{"role": "assistant", "content": "c"}],
+                answer="",
+                info={},
+                task=tasks[i],
+                reward=rewards[i],
+                metrics={"accuracy": rewards[i]},
                 timing={
                     "generation_ms": 100.0,
                     "scoring_ms": 50.0,
                     "total_ms": 150.0,
-                }
+                },
+                stop_condition="max_turns_reached",
+                is_truncated=False,
+                oai_tools=None,
             )
-            for _ in range(n)
+            for i in range(n)
         ],
-        task=tasks,
-        info=[{} for _ in range(n)],
-        example_id=list(range(n)),
-        reward=rewards,
-        metrics={"accuracy": rewards},
-        stop_conditions=[None for _ in range(n)],
-        is_truncated=[False for _ in range(n)],
         metadata=GenerateMetadata(
             env_id=env_id,
             env_args={},
@@ -80,6 +82,7 @@ def _make_generate_outputs(
             avg_metrics={},
             state_columns=[],
             path_to_save=Path("test.jsonl"),
+            tools=None,
         ),
     )
 
@@ -138,28 +141,11 @@ def _run_cli(monkeypatch, overrides, capture_all_configs: bool = False):
     async def fake_run_evaluation(config, **kwargs):
         captured["sampling_args"] = dict(config.sampling_args)
         captured["configs"].append(config)
-        metadata = _make_metadata(config)
-        return GenerateOutputs(
-            prompt=[[{"role": "user", "content": "p"}]],
-            completion=[[{"role": "assistant", "content": "c"}]],
-            answer=[""],
-            state=[
-                State(
-                    timing={
-                        "generation_ms": 0.0,
-                        "scoring_ms": 0.0,
-                        "total_ms": 0.0,
-                    }
-                )
-            ],
-            task=["default"],
-            info=[{}],
-            example_id=[0],
-            reward=[1.0],
-            metrics={},
-            stop_conditions=[None],
-            is_truncated=[False],
-            metadata=metadata,
+        return _make_generate_outputs(
+            env_id=config.env_id,
+            model=config.model,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
         )
 
     monkeypatch.setattr(

@@ -180,6 +180,12 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
     save_results(results, path / "results.jsonl")
 
 
+def make_dataset(outputs: GenerateOutputs) -> Dataset:
+    state_columns = outputs["metadata"]["state_columns"]
+    sanitized_states = sanitize_states(outputs["states"], state_columns)
+    return Dataset.from_list(sanitized_states)
+
+
 def save_generate_outputs(
     outputs: GenerateOutputs,
     push_to_hf_hub: bool = False,
@@ -194,7 +200,8 @@ def save_generate_outputs(
     if push_to_hf_hub:
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
         try:
-            Dataset.from_list(sanitized_states).push_to_hub(dataset_name)
+            dataset = make_dataset(outputs)
+            dataset.push_to_hub(dataset_name)
             logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
         except Exception as e:
             logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")
