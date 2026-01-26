@@ -44,9 +44,13 @@ prime eval run wiki-search \
 ```
 
 Notes:
-- Set `OPENAI_API_KEY` in your environment for both judge and embedding calls.
 - The first run builds the Chroma index and may take a few minutes.
 
+### Required Environment Variables
+
+| Variable | Description |
+| -------- | ----------- |
+| `OPENAI_API_KEY` | Required for judge and embedding calls (or set custom vars via `judge_api_key_var`/`embed_api_key_var`) |
 
 ### Environment Arguments
 | Arg | Type | Default | Description |

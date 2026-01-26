@@ -96,6 +96,7 @@ View local evaluation results in the terminal UI:
 ```bash
 prime eval tui
 ```
+In the TUI, press `c` to open Copy Mode for prompt/completion text; highlight and press `c` again to copy.
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
 ```bash

@@ -14,11 +14,11 @@ def load_environment(
     base_url: str = "http://0.0.0.0:8000/v1",
     api_key_var: str = "JUDGE_API_KEY",
 ):
+    vf.ensure_keys([api_key_var])
+
     dataset = load_dataset(dataset_name, dataset_subset, split=dataset_split)
     judge_prompt = "Q: {question}\nA: {answer}\nGiven: {response}\nRespond with a score between 0.0 and 1.0."
-    judge_client = AsyncOpenAI(
-        base_url=base_url, api_key=os.getenv(api_key_var, "EMPTY")
-    )
+    judge_client = AsyncOpenAI(base_url=base_url, api_key=os.environ[api_key_var])
     rubric = vf.JudgeRubric(
         judge_client=judge_client,
         judge_model=judge_model,

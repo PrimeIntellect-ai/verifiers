@@ -14,6 +14,8 @@ def load_environment(
     max_examples: int = -1,
     **kwargs,
 ) -> vf.Environment:
+    vf.ensure_keys([judge_api_key_var])
+
     """
     Loads the toxicity explanation environment.
 
@@ -74,7 +76,7 @@ Respond in the following format:
 
     parser = vf.Parser()
     judge_client = AsyncOpenAI(
-        api_key=os.getenv(judge_api_key_var), base_url=judge_base_url
+        api_key=os.environ[judge_api_key_var], base_url=judge_base_url
     )
 
     judge_prompt = """Evaluate this toxicity classification task.
