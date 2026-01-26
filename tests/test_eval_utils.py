@@ -4,33 +4,10 @@ Covers:
 - print_results indexing with multiple rollouts per example
 """
 
-from pathlib import Path
-
-from verifiers.types import GenerateMetadata, GenerateOutputs, State
+from verifiers.types import GenerateOutputs
 
 
-def _make_metadata(
-    num_examples: int, rollouts_per_example: int = 1
-) -> GenerateMetadata:
-    return GenerateMetadata(
-        env_id="test-env",
-        env_args={},
-        model="test-model",
-        base_url="http://localhost",
-        num_examples=num_examples,
-        rollouts_per_example=rollouts_per_example,
-        sampling_args={},
-        date="1970-01-01",
-        time_ms=0.0,
-        avg_reward=0.0,
-        avg_metrics={},
-        state_columns=[],
-        path_to_save=Path("test.jsonl"),
-        tools=None,
-    )
-
-
-def test_print_results_rollout_indexing(capsys):
+def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_input):
     """Test that print_results correctly groups results by rollout when sorted by example_id.
 
     Results are sorted by example_id, giving order: [ex0_r0, ex0_r1, ex1_r0, ex1_r1, ...]
@@ -54,29 +31,16 @@ def test_print_results_rollout_indexing(capsys):
     # Metric follows same pattern
     metric_values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
-    outputs = GenerateOutputs(
-        states=[
-            State(
-                example_id=example_ids[i],
-                prompt=[{"role": "user", "content": f"q{i}"}],
-                completion=[{"role": "assistant", "content": f"a{i}"}],
-                answer="",
-                info={},
-                task="default",
-                reward=rewards[i],
-                metrics={"test_metric": metric_values[i]},
-                is_truncated=False,
-                stop_condition=None,
-                timing={
-                    "generation_ms": 100.0,
-                    "scoring_ms": 50.0,
-                    "total_ms": 150.0,
-                },
-            )
-            for i in range(6)
-        ],
-        metadata=_make_metadata(num_examples, rollouts_per_example),
+    metadata = make_metadata(
+        num_examples=num_examples, rollouts_per_example=rollouts_per_example
     )
+    inputs = [make_input(example_id=example_id) for example_id in example_ids]
+    states = [
+        make_state(**input, reward=reward, metrics={"test_metric": metric_value})
+        for input, reward, metric_value in zip(inputs, rewards, metric_values)
+    ]
+
+    outputs = GenerateOutputs(states=states, metadata=metadata)
     print_results(outputs)
     captured = capsys.readouterr()
 
@@ -91,7 +55,7 @@ def test_print_results_rollout_indexing(capsys):
     assert "r2: [2.0, 4.0, 6.0]" in captured.out
 
 
-def test_print_results_single_rollout(capsys):
+def test_print_results_single_rollout(capsys, make_metadata, make_state, make_input):
     """Test print_results with single rollout per example (edge case)."""
     from verifiers.utils.eval_utils import print_results
 
@@ -101,29 +65,15 @@ def test_print_results_single_rollout(capsys):
     rewards = [0.1, 0.2, 0.3]
     example_ids = [0, 1, 2]
 
-    results = GenerateOutputs(
-        states=[
-            State(
-                example_id=example_ids[i],
-                prompt=[{"role": "user", "content": f"q{i}"}],
-                completion=[{"role": "assistant", "content": f"a{i}"}],
-                answer="",
-                info={},
-                task="default",
-                reward=rewards[i],
-                metrics={},
-                is_truncated=False,
-                stop_condition=None,
-                timing={
-                    "generation_ms": 100.0,
-                    "scoring_ms": 50.0,
-                    "total_ms": 150.0,
-                },
-            )
-            for i in range(3)
-        ],
-        metadata=_make_metadata(num_examples, rollouts_per_example),
+    metadata = make_metadata(
+        num_examples=num_examples, rollouts_per_example=rollouts_per_example
     )
+    states = [
+        make_state(**make_input(example_id=example_id), reward=reward)
+        for example_id, reward in zip(example_ids, rewards)
+    ]
+
+    results = GenerateOutputs(states=states, metadata=metadata)
 
     print_results(results)
     captured = capsys.readouterr()
@@ -132,7 +82,7 @@ def test_print_results_single_rollout(capsys):
     assert "r1: [0.1, 0.2, 0.3]" in captured.out
 
 
-def test_print_results_three_rollouts(capsys):
+def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_input):
     """Test print_results with three rollouts per example."""
     from verifiers.utils.eval_utils import print_results
 
@@ -143,29 +93,15 @@ def test_print_results_three_rollouts(capsys):
     rewards = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     example_ids = [0, 0, 0, 1, 1, 1]
 
-    results = GenerateOutputs(
-        states=[
-            State(
-                example_id=example_ids[i],
-                prompt=[{"role": "user", "content": f"q{i}"}],
-                completion=[{"role": "assistant", "content": f"a{i}"}],
-                answer="",
-                info={},
-                task="default",
-                reward=rewards[i],
-                metrics={},
-                is_truncated=False,
-                stop_condition=None,
-                timing={
-                    "generation_ms": 100.0,
-                    "scoring_ms": 50.0,
-                    "total_ms": 150.0,
-                },
-            )
-            for i in range(6)
-        ],
-        metadata=_make_metadata(num_examples, rollouts_per_example),
+    inputs = [make_input(example_id=example_id) for example_id in example_ids]
+    states = [
+        make_state(**input, reward=reward) for input, reward in zip(inputs, rewards)
+    ]
+    metadata = make_metadata(
+        num_examples=num_examples, rollouts_per_example=rollouts_per_example
     )
+
+    results = GenerateOutputs(states=states, metadata=metadata)
 
     print_results(results)
     captured = capsys.readouterr()
