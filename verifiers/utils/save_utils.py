@@ -2,8 +2,9 @@ import json
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from datasets import Dataset
 from openai import AsyncOpenAI
@@ -18,6 +19,30 @@ from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_c
 from verifiers.utils.path_utils import get_results_path
 
 logger = logging.getLogger(__name__)
+
+
+def make_serializable(value: Any) -> Any:
+    """Recursively convert value to JSON-serializable types."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if hasattr(value, "model_dump"):
+        return make_serializable(value.model_dump())
+
+    # dates and datetimes
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    # standard collections (recursive)
+    if isinstance(value, dict):
+        return {str(k): make_serializable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [make_serializable(v) for v in value]
+    if isinstance(value, set):
+        return [make_serializable(v) for v in value]
+
+    # fallback: repr() for anything else (e.g. exceptions, arbitrary objects)
+    return repr(value)
 
 
 def states_to_generate_metadata(
@@ -133,31 +158,33 @@ def sanitize_metadata(metadata: GenerateMetadata) -> dict:
     return metadata_dict
 
 
-def save_to_disk(rollouts: list[dict], metadata: dict, path: Path):
+def save_to_disk(results: list[dict], metadata: dict, path: Path):
     """Saves (sanitized) rollouts and metadata to disk."""
     path.mkdir(parents=True, exist_ok=True)
 
-    def save_results(results_list: list[dict], results_path: Path):
+    def save_results(results: list[dict], results_path: Path):
         with open(results_path, "w") as f:
-            for idx, result in enumerate(results_list):
+            for idx, result in enumerate(results):
                 example_id = result.get("example_id") or "unknown"
                 try:
-                    json.dump(result, f)
+                    serializable_result = make_serializable(result)
+                    json.dump(serializable_result, f)
                     f.write("\n")
                 except Exception as e:
                     logger.error(
-                        f"Failed to save rollout with index {idx} ({example_id=}): {e}"
+                        f"Failed to save result with index {idx} ({example_id=}): {e}"
                     )
 
     def save_metadata(metadata_dict: dict, metadata_path: Path):
         with open(metadata_path, "w") as f:
             try:
-                json.dump(metadata_dict, f)
+                serializable_metadata = make_serializable(metadata_dict)
+                json.dump(serializable_metadata, f)
             except Exception as e:
                 logger.error(f"Failed to save metadata: {e}")
 
     save_metadata(metadata, path / "metadata.json")
-    save_results(rollouts, path / "results.jsonl")
+    save_results(results, path / "results.jsonl")
 
 
 def save_generate_outputs(

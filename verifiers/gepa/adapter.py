@@ -3,13 +3,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from openai import AsyncOpenAI, OpenAI
-
 from gepa.core.adapter import EvaluationBatch
+from openai import AsyncOpenAI, OpenAI
 
 from verifiers.envs.environment import Environment
 from verifiers.types import ClientConfig, Messages, RolloutInput, SamplingArgs, State
 from verifiers.utils.message_utils import message_to_printable, messages_to_printable
+from verifiers.utils.save_utils import make_serializable
 
 if TYPE_CHECKING:
     from verifiers.gepa.display import GEPADisplay
@@ -96,13 +96,15 @@ class VerifiersGEPAAdapter:
         n_examples = len(results["reward"])
         outputs: list[dict[str, Any]] = []
         for i in range(n_examples):
-            outputs.append({
-                "prompt": results["prompt"][i],
-                "completion": results["completion"][i],
-                "answer": results["answer"][i],
-                "reward": results["reward"][i],
-                "example_id": results["example_id"][i],
-            })
+            outputs.append(
+                {
+                    "prompt": results["prompt"][i],
+                    "completion": results["completion"][i],
+                    "answer": results["answer"][i],
+                    "reward": results["reward"][i],
+                    "example_id": results["example_id"][i],
+                }
+            )
 
         # Update display if configured
         if self.display is not None:
@@ -153,7 +155,7 @@ class VerifiersGEPAAdapter:
 
             for col in self.state_columns:
                 if col in state:
-                    record[col] = _serialize(state[col])
+                    record[col] = make_serializable(state[col])
 
             records.append(record)
 
@@ -201,16 +203,3 @@ def _extract_user_query(prompt: Messages) -> str:
                 return content
             return str(content) if content else ""
     return ""
-
-
-def _serialize(value: Any) -> Any:
-    """Make value JSON-serializable."""
-    if hasattr(value, "model_dump"):
-        return value.model_dump()
-    if isinstance(value, list):
-        return [_serialize(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _serialize(v) for k, v in value.items()}
-    if isinstance(value, Exception):
-        return repr(value)
-    return value
