@@ -162,21 +162,11 @@ class RolloutTiming(TypedDict, total=False):
 
 ```python
 class GenerateOutputs(TypedDict):
-    prompt: list[Messages]
-    completion: list[Messages]
-    answer: list[str]
-    state: list[State]
-    task: list[str]
-    info: list[Info]
-    example_id: list[int]
-    reward: list[float]
-    metrics: dict[str, list[float]]
-    stop_conditions: list[str | None]
-    is_truncated: list[bool]
+    states: list[State]
     metadata: GenerateMetadata
 ```
 
-Output from `Environment.generate()`.
+Output from `Environment.generate()`. Contains a list of `State` objects (one per rollout) and generation metadata. Each `State` contains the rollout's prompt, completion, answer, reward, metrics, and other per-rollout data.
 
 ### GenerateMetadata
 
@@ -195,6 +185,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
+    tools: list[ChatCompletionToolParam] | None
 ```
 
 ### RolloutScore / RolloutScores
