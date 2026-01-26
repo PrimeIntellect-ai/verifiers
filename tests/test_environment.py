@@ -12,7 +12,6 @@ from verifiers.types import (
     GenerateOutputs,
     Messages,
     RolloutInput,
-    RolloutScores,
     SamplingArgs,
 )
 from verifiers.utils.save_utils import make_dataset as build_dataset
@@ -301,40 +300,6 @@ class TestEnvironmentBase:
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
         assert "foo" in dataset.column_names  # custom field from make_state fixture
-
-    @pytest.mark.asyncio
-    @pytest.mark.skip(reason="This test is not working as expected")
-    async def test_generate_state_preserves_references(
-        self, mock_openai_client, make_input
-    ):
-        """Test that generate creates state with preserved references instead of deep copying"""
-        env = SimpleEnvironment(
-            eval_dataset=Dataset.from_dict(
-                {"question": ["test question"], "answer": ["test answer"]}
-            ),
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
-            return_value=RolloutScores(reward=[1.0], metrics={})
-        )
-
-        inputs = [make_input()]
-        outputs = await env.generate(
-            inputs,
-            client=mock_openai_client,
-            model="test-model",
-        )
-
-        states = outputs["states"]
-        assert len(states) == 1
-        state = states[0]
-
-        assert state["completion"] == inputs[0].get("completion")
-        assert state["answer"] == inputs[0].get("answer")
-        assert state["info"] == inputs[0].get("info")
-        assert state["example_id"] == inputs[0]["example_id"]
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_openai_client):
