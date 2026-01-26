@@ -39,6 +39,8 @@ from verifiers.types import (
     DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
+    LLMClient,
+    LLMClientMap,
     LogCallback,
     Messages,
     MessageType,
@@ -426,7 +428,7 @@ class Environment(ABC):
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            client = client or state["client"][state["current_client"]]
             model = model or state["model"]
             assert client is not None and model is not None
             oai_tools = oai_tools or state["oai_tools"]
@@ -636,7 +638,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: LLMClientMap | LLMClient,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -653,7 +655,13 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+
+        if isinstance(client, LLMClient):
+            client = {"default": client}
+        
         state["client"] = client
+        state["current_client"] = list(client.keys())[0]
+
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
@@ -683,7 +691,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: LLMClientMap | LLMClient,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:

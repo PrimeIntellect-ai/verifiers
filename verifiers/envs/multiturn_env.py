@@ -6,6 +6,8 @@ from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import (
+    LLMClient,
+    LLMClientMap,
     Messages,
     ModelResponse,
     RolloutInput,
@@ -65,6 +67,12 @@ class MultiTurnEnv(vf.Environment):
         """Check if env_response signaled termination via final_env_response."""
         return state.get("final_env_response") is not None
 
+    def get_next_client(self, state: State) -> str:
+        """
+        Override to implement client switching logic. Must be a key of the dictionary in state["client"]. 
+        """
+        return state["current_client"]
+
     async def setup_state(self, state: State) -> State:
         """Override to add environment-specific state fields."""
         return state
@@ -78,6 +86,13 @@ class MultiTurnEnv(vf.Environment):
             prev_turn_completion = state["trajectory"][-1]["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
+            next_client = self.get_next_client(state)
+            state["current_client"] = next_client
+
+            # TODO: reconstruct messages in the form compatible with the next client
+            # System messages rewrite, etc.
+            # if next_client == "anthropic":
+            #     <logic>
             return concat_messages([messages, env_response])
 
     async def render_completion(self, state: State):
@@ -129,7 +144,7 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: LLMClientMap | LLMClient,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
