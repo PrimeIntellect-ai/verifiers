@@ -324,10 +324,10 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
+    # set up client with high limits to prevent timeouts
     client = setup_client(config.client_config)
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
+        f"Initialized {client.__class__.__name__} client with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment

@@ -121,6 +121,13 @@ def main():
         help="Name of model to evaluate",
     )
     parser.add_argument(
+        "--client-type",
+        type=str,
+        default="openai",
+        help="Which client to use ('openai' or 'anthropic')",
+        choices=["openai", "anthropic"],
+    )
+    parser.add_argument(
         "--api-key-var",
         "-k",
         type=str,
@@ -336,6 +343,7 @@ def main():
         endpoints = load_endpoints(endpoints_path)
 
         raw_model = raw.get("model", DEFAULT_MODEL)
+        raw_client_type = raw.get("client_type", "openai")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
 
@@ -396,6 +404,7 @@ def main():
         assert api_key_var is not None
         assert api_base_url is not None
         client_config = ClientConfig(
+            client_type=raw_client_type,
             api_key_var=api_key_var,
             api_base_url=api_base_url,
             extra_headers=merged_headers,
