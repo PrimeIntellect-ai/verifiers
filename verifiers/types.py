@@ -42,6 +42,7 @@ Client = AsyncOpenAI | AsyncAnthropic
 ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
+Tool = ChatCompletionToolParam
 
 ChatMessages = list[ChatMessage]
 Message = str | ChatMessage

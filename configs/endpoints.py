@@ -23,19 +23,19 @@ ENDPOINTS = {
     },
     # anthropic
     "haiku": {
-        "model": "anthropic/claude-4.5-haiku",
-        "url": "https://api.pinference.ai/api/v1",
-        "key": "PRIME_API_KEY",
+        "model": "claude-haiku-4-5",
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
     },
     "sonnet": {
-        "model": "anthropic/claude-4.5-sonnet",
-        "url": "https://api.pinference.ai/api/v1",
-        "key": "PRIME_API_KEY",
+        "model": "claude-sonnet-4-5",
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
     },
     "opus": {
-        "model": "anthropic/claude-4.5-opus",
-        "url": "https://api.pinference.ai/api/v1",
-        "key": "PRIME_API_KEY",
+        "model": "claude-opus-4-5",
+        "url": "https://api.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
     },
     # google
     "gemini-2.5-flash": {

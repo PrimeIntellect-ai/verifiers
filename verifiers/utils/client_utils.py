@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 
 import httpx
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
 
-from verifiers.types import Client, ClientConfig
+from verifiers.types import (
+    ClientConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +23,6 @@ def load_prime_config() -> dict:
     except (RuntimeError, json.JSONDecodeError, OSError) as e:
         logger.warning(f"Failed to load prime config: {e}")
     return {}
-
-
-def setup_client(config: ClientConfig) -> Client:
-    """Setup a client based on the client config."""
-    if config.client_type == "openai":
-        return setup_openai_client(config)
-    elif config.client_type == "anthropic":
-        return setup_anthropic_client(config)
-    else:
-        raise ValueError(f"Unsupported client type: {config.client_type}")
 
 
 def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
@@ -71,28 +61,3 @@ def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
         timeout=timeout,
         headers=headers,
     )
-
-
-def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
-    """Setup an AsyncAnthropic client based on client config.."""
-    http_client = setup_http_client(config)
-    return AsyncAnthropic(
-        api_key=os.getenv(config.api_key_var) or "EMPTY",
-        base_url=config.api_base_url,
-        max_retries=config.max_retries,
-        http_client=http_client,
-    )
-
-
-def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
-    """Setup an AsyncOpenAI client based on client config."""
-    # Setup timeouts and limits
-    http_client = setup_http_client(config)
-    client = AsyncOpenAI(
-        api_key=os.getenv(config.api_key_var) or "EMPTY",
-        base_url=config.api_base_url,
-        max_retries=config.max_retries,
-        http_client=http_client,
-    )
-
-    return client

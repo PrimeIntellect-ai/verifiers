@@ -2,7 +2,7 @@ import logging
 from functools import lru_cache
 from typing import Optional, cast
 
-from openai import BaseModel
+from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
@@ -82,7 +82,7 @@ def prepare_sampling_args_for_token_prompts(
 
 
 async def get_prompt_ids(
-    state: vf.State, prompt_messages: Messages, client: Client
+    state: vf.State, prompt_messages: Messages, client: AsyncOpenAI
 ) -> list[int]:
     """
     Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
