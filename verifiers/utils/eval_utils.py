@@ -197,15 +197,13 @@ def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
 
 
 def print_rewards(outputs: GenerateOutputs):
-    metadata = outputs["metadata"]
-    n = metadata["num_examples"]
-    r = metadata["rollouts_per_example"]
-
     rewards = [s["reward"] for s in outputs["states"]]
     print("Rewards:")
     print(
         f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
     )
+    r = outputs["metadata"]["rollouts_per_example"]
+    n = len(rewards) // r
     # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
         trials = [round(rewards[i + (j * r)], 3) for j in range(n)]
