@@ -183,9 +183,9 @@ def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
 
 def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
     """Get only the rollouts for a given task."""
-    rollouts = [r for r in results["rollouts"] if r["task"] == task]
+    states = [s for s in results["states"] if s["task"] == task]
     return GenerateOutputs(
-        rollouts=rollouts,
+        states=states,
         metadata=results["metadata"],  # duplicate metadata
     )
 
@@ -195,7 +195,7 @@ def print_rewards(outputs: GenerateOutputs):
     n = metadata["num_examples"]
     r = metadata["rollouts_per_example"]
 
-    rewards = [r["reward"] for r in outputs["rollouts"]]
+    rewards = [s["reward"] for s in outputs["states"]]
     print("Rewards:")
     print(
         f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
@@ -206,7 +206,7 @@ def print_rewards(outputs: GenerateOutputs):
         out = f"r{i + 1}: {trials}"
         print(out)
 
-    metrics = [r["metrics"] for r in outputs["rollouts"]]
+    metrics = [s["metrics"] for s in outputs["states"]]
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
         v = metrics_col[k]
@@ -218,17 +218,17 @@ def print_rewards(outputs: GenerateOutputs):
 
 
 def print_info(outputs: GenerateOutputs):
-    is_truncated = [r["is_truncated"] for r in outputs["rollouts"]]
+    is_truncated = [s["is_truncated"] for s in outputs["states"]]
     print("Info:")
     print(
         f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    stop_conditions = [r["stop_condition"] for r in outputs["rollouts"]]
+    stop_conditions = [s["stop_condition"] for s in outputs["states"]]
     counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [r.get("error") for r in outputs["rollouts"]]
+    errors = [s.get("error") for s in outputs["states"]]
     has_errors = [e is not None for e in errors]
     if any(has_errors):
         print(
@@ -243,7 +243,7 @@ def print_info(outputs: GenerateOutputs):
 
 def print_timing(outputs: GenerateOutputs):
     print("Timing:")
-    timing = [r["timing"] for r in outputs["rollouts"]]
+    timing = [s["timing"] for s in outputs["states"]]
     timing_col = to_col_order(cast(list[dict], timing))
     generation_ms_arr = np.array(timing_col["generation_ms"])
     scoring_ms_arr = np.array(timing_col["scoring_ms"])
@@ -273,14 +273,12 @@ def print_results(outputs: GenerateOutputs, num_samples: int = 1):
     print(f"Rollouts per example: {outputs['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [
-        messages_to_printable(r["prompt"]) for r in outputs["rollouts"]
-    ]
+    printable_prompts = [messages_to_printable(s["prompt"]) for s in outputs["states"]]
     printable_completions = [
-        messages_to_printable(r["completion"]) for r in outputs["rollouts"]
+        messages_to_printable(s["completion"]) for s in outputs["states"]
     ]
-    rewards = [r["reward"] for r in outputs["rollouts"]]
-    errors = [r.get("error") for r in outputs["rollouts"]]
+    rewards = [s["reward"] for s in outputs["states"]]
+    errors = [s.get("error") for s in outputs["states"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
@@ -294,7 +292,7 @@ def print_results(outputs: GenerateOutputs, num_samples: int = 1):
     print_info(outputs)
     print_timing(outputs)
 
-    tasks = set([r["task"] for r in outputs["rollouts"]])
+    tasks = set([s["task"] for s in outputs["states"]])
     if len(tasks) > 1:
         for task in tasks:
             task_outputs = get_task_outputs(outputs, task)

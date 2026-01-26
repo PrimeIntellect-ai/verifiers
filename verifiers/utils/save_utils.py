@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
-    RolloutOutput,
     SamplingArgs,
     State,
 )
@@ -19,38 +18,6 @@ from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_c
 from verifiers.utils.path_utils import get_results_path
 
 logger = logging.getLogger(__name__)
-
-
-def state_to_rollout_output(
-    state: State, state_columns: list[str] = []
-) -> RolloutOutput:
-    """Converts a state to a rollout output. Adds state columns to the output."""
-    rollout_output = RolloutOutput(
-        example_id=state.get("example_id", 0),
-        prompt=state.get("prompt"),
-        completion=state.get("completion"),
-        answer=state.get("answer", ""),
-        task=state.get("task", "default"),
-        info=state.get("info", {}),
-        tools=state.get("oai_tools", {}),
-        reward=state.get("reward", 0.0),
-        metrics=state.get("metrics", {}),
-        stop_condition=state.get("stop_condition", None),
-        is_truncated=state.get("is_truncated", False),
-        timing=state.get("timing", {}),
-        error=state.get("error", None),
-    )
-    for col in state_columns:
-        rollout_output[col] = state.get(col)
-
-    return rollout_output
-
-
-def states_to_rollout_outputs(
-    states: list[State], state_columns: list[str] = []
-) -> list[RolloutOutput]:
-    """Converts a list of states to a list of rollout outputs."""
-    return [state_to_rollout_output(state, state_columns) for state in states]
 
 
 def states_to_generate_metadata(
@@ -124,33 +91,36 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     return dataset_name
 
 
-def sanitize_rollouts(rollouts: list[RolloutOutput]) -> list[dict]:
+def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[dict]:
     """Sanitizes a list of rollouts before saving to disk."""
 
-    def sanitize_rollout(rollout: RolloutOutput) -> dict:
-        sanitized_rollout = dict(rollout)
+    def sanitize_state(state: State) -> dict:
+        sanitized_state = dict(state)
         # sanitize messages
-        sanitized_rollout["prompt"] = sanitize_tool_calls(
-            messages_to_printable(rollout["prompt"])
+        sanitized_state["prompt"] = sanitize_tool_calls(
+            messages_to_printable(state["prompt"])
         )
-        sanitized_rollout["completion"] = sanitize_tool_calls(
-            messages_to_printable(rollout["completion"])
+        sanitized_state["completion"] = sanitize_tool_calls(
+            messages_to_printable(state["completion"])
         )
         # use str repr for error
-        sanitized_rollout["error"] = repr(rollout.get("error"))
+        sanitized_state["error"] = repr(state.get("error"))
         # only include optional fields if present
-        if not rollout.get("answer"):
-            sanitized_rollout.pop("answer")
-        if not rollout.get("info"):
-            sanitized_rollout.pop("info")
+        if not state.get("answer"):
+            sanitized_state.pop("answer")
+        if not state.get("info"):
+            sanitized_state.pop("info")
         # flatten metrics
-        rollout_metrics = rollout.get("metrics", {})
-        for k, v in rollout_metrics.items():
-            sanitized_rollout[k] = v
+        state_metrics = state.get("metrics", {})
+        for k, v in state_metrics.items():
+            sanitized_state[k] = v
+        # add state columns
+        for col in state_columns:
+            sanitized_state[col] = state.get(col)
 
-        return sanitized_rollout
+        return sanitized_state
 
-    return [sanitize_rollout(rollout) for rollout in rollouts]
+    return [sanitize_state(state) for state in states]
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
@@ -196,14 +166,15 @@ def save_generate_outputs(
     hf_hub_dataset_name: str | None = None,
 ):
     path_to_save = outputs["metadata"]["path_to_save"]
-    sanitized_rollouts = sanitize_rollouts(outputs["rollouts"])
+    state_columns = outputs["metadata"]["state_columns"]
+    sanitized_states = sanitize_states(outputs["states"], state_columns)
     sanitized_metadata = sanitize_metadata(outputs["metadata"])
-    save_to_disk(sanitized_rollouts, sanitized_metadata, path_to_save)
+    save_to_disk(sanitized_states, sanitized_metadata, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
         dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
         try:
-            Dataset.from_list(sanitized_rollouts).push_to_hub(dataset_name)
+            Dataset.from_list(sanitized_states).push_to_hub(dataset_name)
             logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
         except Exception as e:
             logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")

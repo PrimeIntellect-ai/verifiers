@@ -54,10 +54,9 @@ from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.save_utils import (
-    sanitize_rollouts,
+    sanitize_states,
     save_generate_outputs,
     states_to_generate_metadata,
-    states_to_rollout_outputs,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
@@ -798,7 +797,7 @@ class Environment(ABC):
 
     def _build_generate_outputs(
         self,
-        all_states: list[State],
+        states: list[State],
         model: str,
         client: AsyncOpenAI,
         state_columns: list[str] | None,
@@ -807,19 +806,18 @@ class Environment(ABC):
         start_time: float,
     ) -> GenerateOutputs:
         """Prepare GenerateOutputs from a list of completed states."""
-        rollouts = states_to_rollout_outputs(all_states, state_columns or [])
         metadata = states_to_generate_metadata(
             self.env_id,
             self.env_args,
             model,
             client,
-            all_states,
+            states,
             state_columns,
             sampling_args,
             start_time,
             results_path,
         )
-        return GenerateOutputs(rollouts=rollouts, metadata=metadata)
+        return GenerateOutputs(states=states, metadata=metadata)
 
     async def generate(
         self,
@@ -1175,7 +1173,9 @@ class Environment(ABC):
         self.score_rollouts = score_rollouts
 
     make_dataset = staticmethod(
-        lambda x: Dataset.from_list(sanitize_rollouts(x["rollouts"]))
+        lambda x: Dataset.from_list(
+            sanitize_states(x["states"], x["metadata"]["state_columns"])
+        )
     )  # backwards compatibility
 
 
