@@ -397,6 +397,10 @@ class GeometryRubric(Rubric):
         if not path.is_simple:
             return False
         
+        # Must not be empty (prevents IndexError and rejects degenerate paths)
+        if path.is_empty:
+            return False
+        
         # Check start point
         if start is not None:
             start_pt = Point(start) if not isinstance(start, Point) else start

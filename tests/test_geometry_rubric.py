@@ -246,6 +246,13 @@ class TestVerifyConnectivity:
         path = LineString([(0, 0), (2, 2), (2, 0), (0, 2)])
         assert rubric.verify_connectivity(path) is False
 
+    def test_empty_path_fails(self):
+        """Empty LineString fails instead of raising IndexError."""
+        rubric = GeometryRubric()
+        path = LineString()
+        assert rubric.verify_connectivity(path) is False
+        assert rubric.verify_connectivity(path, start=(0, 0), end=(1, 1)) is False
+
     def test_path_connects_start_end(self):
         """Path connecting start and end passes."""
         rubric = GeometryRubric()
