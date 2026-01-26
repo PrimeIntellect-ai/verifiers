@@ -54,6 +54,8 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "GeometryRubric",
+    "GeometryParser",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
@@ -99,6 +101,8 @@ _LAZY_IMPORTS = {
     "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
     "lora_defaults": "verifiers.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
+    "GeometryRubric": "verifiers.rubrics.geometry_rubric:GeometryRubric",
+    "GeometryParser": "verifiers.rubrics.geometry_rubric:GeometryParser",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
     "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
@@ -145,3 +149,4 @@ if TYPE_CHECKING:
         get_model_and_tokenizer,
     )
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .rubrics.geometry_rubric import GeometryRubric, GeometryParser  # noqa: F401

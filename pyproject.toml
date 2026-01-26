@@ -40,6 +40,7 @@ dependencies = [
     "pydantic>=2.11.9",
     "requests",
     "rich",
+    "shapely>=2.0.0",
     "tenacity>=8.5.0",
     "textual",
     "tomli; python_version < '3.11'",
