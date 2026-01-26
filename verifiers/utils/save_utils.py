@@ -167,10 +167,10 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
                         f"Failed to save result with index {idx} ({example_id=}): {e}"
                     )
 
-    def save_metadata(metadata_dict: dict, metadata_path: Path):
+    def save_metadata(metadata: dict, metadata_path: Path):
         with open(metadata_path, "w") as f:
             try:
-                json.dump(metadata_dict, f, default=make_serializable)
+                json.dump(metadata, f, default=make_serializable)
             except Exception as e:
                 logger.error(f"Failed to save metadata: {e}")
 
