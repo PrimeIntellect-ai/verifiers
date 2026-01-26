@@ -178,6 +178,8 @@ def load_toml_config(path: Path) -> list[dict]:
 
 def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
     """Convert a list of dictionaries to a dictionary of lists, ordered by the keys of the first dictionary."""
+    if not list_of_dicts:
+        return {}
     return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
 
 
