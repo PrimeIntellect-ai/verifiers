@@ -125,10 +125,10 @@ def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[
         )
         # use str repr for error
         sanitized_state["error"] = repr(state.get("error"))
-        # only include optional fields if present
-        if not state.get("answer"):
+        # only include optional fields if non-empty
+        if "answer" in sanitized_state and not sanitized_state["answer"]:
             sanitized_state.pop("answer")
-        if not state.get("info"):
+        if "info" in sanitized_state and not sanitized_state["info"]:
             sanitized_state.pop("info")
         # flatten metrics
         state_metrics = state.get("metrics", {})
