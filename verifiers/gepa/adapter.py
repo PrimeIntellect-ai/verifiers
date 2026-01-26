@@ -76,7 +76,7 @@ class VerifiersGEPAAdapter:
         batch: list[RolloutInput],
         candidate: dict[str, str],
         capture_traces: bool = False,
-    ) -> EvaluationBatch[State, dict[str, Any]]:
+    ) -> EvaluationBatch[State, State]:
         """
         Run verifiers evaluation with the candidate system prompt.
         """
@@ -93,18 +93,9 @@ class VerifiersGEPAAdapter:
             )
         )
 
-        n_examples = len(results["reward"])
-        outputs: list[dict[str, Any]] = []
-        for i in range(n_examples):
-            outputs.append(
-                {
-                    "prompt": results["prompt"][i],
-                    "completion": results["completion"][i],
-                    "answer": results["answer"][i],
-                    "reward": results["reward"][i],
-                    "example_id": results["example_id"][i],
-                }
-            )
+        states = results["states"]
+        example_ids = [s["example_id"] for s in states]
+        rewards = [s["reward"] for s in states]
 
         # Update display if configured
         if self.display is not None:
@@ -115,15 +106,15 @@ class VerifiersGEPAAdapter:
 
             self.display.update_eval(
                 candidate_idx=candidate_idx,
-                scores=results["reward"],
-                example_ids=results["example_id"],
+                scores=rewards,
+                example_ids=example_ids,
                 capture_traces=capture_traces,
             )
 
         return EvaluationBatch(
-            outputs=outputs,
-            scores=results["reward"],
-            trajectories=results["state"] if capture_traces else None,
+            outputs=states,
+            scores=rewards,
+            trajectories=states if capture_traces else None,
         )
 
     def make_reflective_dataset(
