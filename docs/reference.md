@@ -535,6 +535,10 @@ LLM-as-judge evaluation.
 
 Math-specific evaluation using `math-verify`.
 
+#### GeometryRubric
+
+Geometry-specific evaluation using Shapely for collision detection, containment, path validation, and IoU.
+
 #### RubricGroup
 
 Combines rubrics for `EnvGroup`.
