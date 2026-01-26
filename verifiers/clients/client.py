@@ -5,7 +5,7 @@ from typing import Generic, TypeVar
 from openai.types import Completion
 from openai.types.chat import ChatCompletion
 
-from verifiers.types import ClientConfig, SamplingArgs
+from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
 
 ClientT = TypeVar("ClientT")
 TextResponseT = TypeVar("TextResponseT")
@@ -30,7 +30,7 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
 
     @abstractmethod
     async def get_text_response(
-        self, prompt: str, model: str, sampling_args: SamplingArgs
+        self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
     ) -> TextResponseT: ...
 
     @abstractmethod
@@ -44,10 +44,10 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
     @abstractmethod
     async def get_message_response(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None,
+        tools: list[Tool] | None,
     ) -> MessageResponseT: ...
 
     @abstractmethod
@@ -60,7 +60,7 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
 
     async def get_text(
         self,
-        prompt: str,
+        prompt: TextMessages,
         model: str,
         sampling_args: SamplingArgs,
     ) -> NormalizedTextResponse:
@@ -70,10 +70,10 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
 
     async def get_message(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> NormalizedMessageResponse:
         response = await self.get_message_response(prompt, model, sampling_args, tools)
         await self.raise_from_message_response(response)
@@ -82,9 +82,9 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
     @abstractmethod
     async def get_message_with_tokens(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         prompt_ids: list[int],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> NormalizedMessageResponse: ...

@@ -6,16 +6,16 @@ from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
-from verifiers.types import Client, Messages, SamplingArgs
+from verifiers.types import Messages, SamplingArgs
 from verifiers.utils.message_utils import concat_messages
 
-_TOKENS_CLIENT: Client | None = None
+_TOKENS_CLIENT: AsyncOpenAI | None = None
 
 logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=None)
-def get_tokens_client(client: Client) -> Client:
+def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
     logger.debug("Lazily copying OpenAI client for requests to /tokenize API")
     base_url = str(client.base_url).rstrip("/")
     if base_url.endswith("/v1"):
@@ -25,7 +25,7 @@ def get_tokens_client(client: Client) -> Client:
 
 
 async def tokenize_vllm(
-    client: Client,
+    client: AsyncOpenAI,
     messages: Messages,
     tools: list[ChatCompletionToolParam] | None,
     model: str,

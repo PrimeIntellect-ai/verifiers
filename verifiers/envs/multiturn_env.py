@@ -3,8 +3,8 @@ from abc import abstractmethod
 from typing import final
 
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.types import (
-    Client,
     Messages,
     ModelResponse,
     RolloutInput,

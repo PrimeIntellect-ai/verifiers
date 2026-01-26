@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import sys
-from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -11,13 +13,16 @@ from datasets import Dataset
 
 from verifiers.errors import Error
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from verifiers.clients import Client
+
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
 else:
     from typing import TypedDict
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
@@ -38,18 +43,22 @@ from pydantic import BaseModel
 
 # typing aliases
 ClientType = Literal["openai", "anthropic"]
-Client = AsyncOpenAI | AsyncAnthropic
-ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
-ModelResponse = Completion | ChatCompletion | None
+
+TextMessage = str
+TextMessages = str
+ChatMessage = ChatCompletionMessageParam
+ChatMessages = list[ChatMessage]
+Message = TextMessage | ChatMessage
+Messages = str | list[ChatMessage]
+
+TextResponse = Completion
+ChatResponse = ChatCompletion
+ModelResponse = TextResponse | ChatResponse | None
+
 Tool = ChatCompletionToolParam
 
-ChatMessages = list[ChatMessage]
-Message = str | ChatMessage
-
-Messages = str | list[ChatMessage]
 Info = dict[str, Any]
-
 SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]

@@ -16,7 +16,7 @@ from verifiers.errors import (
     ModelError,
     OverlongPromptError,
 )
-from verifiers.types import ClientConfig, SamplingArgs
+from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
 from verifiers.utils.client_utils import setup_http_client
 
 
@@ -61,7 +61,7 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
 
     @handle_overlong_prompt
     async def get_text_response(
-        self, prompt: str, model: str, sampling_args: SamplingArgs
+        self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
     ) -> Completion:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -93,10 +93,10 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
     @handle_overlong_prompt
     async def get_message_response(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> ChatCompletion:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             if "max_tokens" in sampling_args:
@@ -143,11 +143,11 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
     @handle_overlong_prompt
     async def get_message_with_tokens(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         prompt_ids: list[int],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> NormalizedMessageResponse:
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(

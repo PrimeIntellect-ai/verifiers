@@ -2,9 +2,10 @@ from typing import Any
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
+from verifiers.clients import Client
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Client, Messages, State
+from verifiers.types import Messages, State
 from verifiers.utils.async_utils import maybe_await
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \

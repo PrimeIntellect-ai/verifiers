@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 from datasets import Dataset, concatenate_datasets
 
 import verifiers as vf
-from verifiers.types import Client, RolloutInput, SamplingArgs
+from verifiers.clients import Client
+from verifiers.types import RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     pass

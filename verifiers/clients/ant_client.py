@@ -22,7 +22,7 @@ from verifiers.clients.client import (
     NormalizedMessageResponse,
     NormalizedTextResponse,
 )
-from verifiers.types import ClientConfig, SamplingArgs
+from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
 from verifiers.utils.client_utils import setup_http_client
 
 
@@ -52,7 +52,7 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
         )
 
     async def get_text_response(
-        self, prompt: str, model: str, sampling_args: SamplingArgs
+        self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
     ) -> Completion:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -85,10 +85,10 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
 
     async def get_message_response(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> Message:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             max_tokens = sampling_args.pop("max_tokens")
@@ -161,10 +161,10 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
 
     async def get_message_with_tokens(
         self,
-        prompt: list,
+        prompt: ChatMessages,
         prompt_ids: list[int],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list | None = None,
+        tools: list[Tool] | None,
     ) -> NormalizedMessageResponse:
         raise NotImplementedError("TITO is not yet implemented for Anthropic client.")
