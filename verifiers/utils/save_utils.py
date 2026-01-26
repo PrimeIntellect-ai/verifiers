@@ -8,6 +8,7 @@ from typing import Any
 
 from datasets import Dataset
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 from verifiers.types import (
     GenerateMetadata,
@@ -22,27 +23,19 @@ logger = logging.getLogger(__name__)
 
 
 def make_serializable(value: Any) -> Any:
-    """Recursively convert value to JSON-serializable types."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
+    """Convert value to JSON-serializable types for non-standard types.
 
-    if hasattr(value, "model_dump"):
-        return make_serializable(value.model_dump())
-
-    # dates and datetimes
-    if isinstance(value, (datetime, date)):
+    Example:
+    >>> json.dumps(value, default=make_serializable)
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    elif isinstance(value, (datetime, date)):
         return value.isoformat()
-
-    # standard collections (recursive)
-    if isinstance(value, dict):
-        return {str(k): make_serializable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [make_serializable(v) for v in value]
-    if isinstance(value, set):
-        return [make_serializable(v) for v in value]
-
-    # fallback: repr() for anything else (e.g. exceptions, arbitrary objects)
-    return repr(value)
+    elif isinstance(value, Path):
+        return value.as_posix()
+    else:
+        return repr(value)
 
 
 def states_to_generate_metadata(
@@ -167,8 +160,7 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
             for idx, result in enumerate(results):
                 example_id = result.get("example_id") or "unknown"
                 try:
-                    serializable_result = make_serializable(result)
-                    json.dump(serializable_result, f)
+                    json.dump(result, f, default=make_serializable)
                     f.write("\n")
                 except Exception as e:
                     logger.error(
@@ -178,8 +170,7 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
     def save_metadata(metadata_dict: dict, metadata_path: Path):
         with open(metadata_path, "w") as f:
             try:
-                serializable_metadata = make_serializable(metadata_dict)
-                json.dump(serializable_metadata, f)
+                json.dump(metadata_dict, f, default=make_serializable)
             except Exception as e:
                 logger.error(f"Failed to save metadata: {e}")
 
