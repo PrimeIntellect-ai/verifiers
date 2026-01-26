@@ -16,6 +16,7 @@ if sys.version_info < (3, 12):
 else:
     from typing import TypedDict
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
@@ -36,7 +37,8 @@ from openai.types.shared_params import (  # noqa: F401
 from pydantic import BaseModel
 
 # typing aliases
-Client = AsyncOpenAI
+ClientType = Literal["openai", "anthropic"]
+Client = AsyncOpenAI | AsyncAnthropic
 ChatMessage = ChatCompletionMessageParam
 MessageType = Literal["chat", "completion"]
 ModelResponse = Completion | ChatCompletion | None
@@ -196,6 +198,7 @@ Endpoints = dict[str, Endpoint]
 class ClientConfig(BaseModel):
     """Pydantic model for OpenAI client configuration."""
 
+    client_type: ClientType = "openai"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     timeout: float = 3600.0

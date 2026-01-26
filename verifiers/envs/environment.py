@@ -1095,7 +1095,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | Client,
+        client: OpenAI,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
