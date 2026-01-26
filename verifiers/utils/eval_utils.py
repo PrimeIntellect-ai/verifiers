@@ -3,8 +3,12 @@ import importlib.util
 import logging
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
+
+from datasets import disable_progress_bar, enable_progress_bar
+from datasets.utils import logging as ds_logging
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -302,6 +306,18 @@ def print_results(outputs: GenerateOutputs, num_samples: int = 1):
             print_rewards(task_outputs)
             print_info(task_outputs)
             print_timing(task_outputs)
+
+
+@contextmanager
+def quiet_datasets():
+    prev_level = ds_logging.get_verbosity()
+    ds_logging.set_verbosity(ds_logging.WARNING)
+    disable_progress_bar()
+    try:
+        yield
+    finally:
+        ds_logging.set_verbosity(prev_level)
+        enable_progress_bar()
 
 
 async def run_evaluation(
