@@ -115,7 +115,19 @@ def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[
     """Sanitizes a list of rollouts before saving to disk."""
 
     def sanitize_state(state: State) -> dict:
-        sanitized_state = dict(state)
+        sanitized_state = {
+            "example_id": state.get("example_id", 0),
+            "prompt": state.get("prompt"),
+            "completion": state.get("completion"),
+            "answer": state.get("answer", ""),
+            "task": state.get("task", "default"),
+            "info": state.get("info", {}),
+            "reward": state.get("reward", 0.0),
+            "error": state.get("error", None),
+            "total_ms": state.get("timing", {}).get("total_ms", 0.0),
+            "generation_ms": state.get("timing", {}).get("generation_ms", 0.0),
+            "scoring_ms": state.get("timing", {}).get("scoring_ms", 0.0),
+        }
         # sanitize messages
         sanitized_state["prompt"] = sanitize_tool_calls(
             messages_to_printable(state["prompt"])
