@@ -34,8 +34,10 @@ def make_serializable(value: Any) -> Any:
         return value.isoformat()
     elif isinstance(value, Path):
         return value.as_posix()
-    else:
+    elif isinstance(value, (BaseException)):
         return repr(value)
+    else:
+        return str(value)
 
 
 def states_to_generate_metadata(
