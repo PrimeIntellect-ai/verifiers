@@ -21,6 +21,7 @@ Key features:
 """
 
 import asyncio
+import functools
 import base64
 import contextvars
 import inspect
@@ -51,8 +52,10 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionFunctionToolParam
+from openai import AsyncOpenAI, BadRequestError
+from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
+from openai.types.chat.chat_completion import Choice
+from openai.types.completion_choice import CompletionChoice
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
@@ -69,6 +72,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.message_utils import strip_nones_from_content
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
@@ -150,6 +154,214 @@ def _merge_tool_lists(
         reserved_names=set(),
     )
     return deduped_all, deduped_map
+
+
+def _normalize_sampling_args_for_model_call(
+    sampling_args: SamplingArgs, message_type: MessageType
+) -> SamplingArgs:
+    sampling_args = dict(sampling_args)
+    extra_body = sampling_args.get("extra_body")
+    if isinstance(extra_body, dict):
+        sampling_args["extra_body"] = dict(extra_body)
+    if "max_tokens" in sampling_args:
+        if sampling_args["max_tokens"] is None:
+            sampling_args.pop("max_tokens")
+        elif message_type == "chat":
+            sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
+    if (
+        "max_completion_tokens" in sampling_args
+        and sampling_args["max_completion_tokens"] is None
+    ):
+        sampling_args.pop("max_completion_tokens")
+    return {k: v for k, v in sampling_args.items() if v is not None}
+
+
+def _validate_model_response(
+    response: ModelResponse, message_type: MessageType
+) -> None:
+    if response is None:
+        raise vf.EmptyModelResponseError("Model returned no response")
+    if response.choices is None:
+        raise vf.EmptyModelResponseError("Model returned no response choices")
+    if not len(response.choices) == 1:
+        raise vf.InvalidModelResponseError(
+            f"Model returned {len(response.choices)} choices, expected 1"
+        )
+    if isinstance(response.choices[0], Choice):
+        if not (
+            response.choices[0].message.content
+            or response.choices[0].message.tool_calls
+        ):
+            raise vf.EmptyModelResponseError(
+                "Model returned no content and did not call any tools"
+            )
+    elif isinstance(response.choices[0], CompletionChoice):
+        if not response.choices[0].text:
+            raise vf.EmptyModelResponseError("Model returned no content")
+
+
+class _RLMModelCaller:
+    """RLM-local model caller to avoid core Environment changes.
+
+    We replicate Environment.get_model_response's request/validation logic here to:
+    1) keep RLM-specific prompt-id filtering local to this file,
+    2) share identical behavior across root and sub-LLM calls, and
+    3) avoid introducing RLM concepts into core verifiers.
+
+    This duplication is intentional until a broader refactor is agreed upon.
+    """
+
+    def __init__(self, normalize_messages: Callable[[ChatMessages], ChatMessages]):
+        self._normalize_messages = normalize_messages
+
+    async def call(
+        self,
+        *,
+        client: AsyncOpenAI,
+        model: str,
+        prompt: Messages,
+        oai_tools: list[ChatCompletionToolParam] | None,
+        sampling_args: SamplingArgs,
+        message_type: MessageType,
+        prompt_ids: list[int] | None = None,
+    ) -> ModelResponse:
+        def handle_overlong_prompt(func):
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    if isinstance(e, BadRequestError):
+                        error_text = e.response.text.lower()
+                        context_length_phrases = [
+                            "this model's maximum context length is",
+                            "is longer than the model's context length",
+                            "exceeds the model's context length",
+                            "exceed the configured limit",
+                            "exceeds the configured limit",
+                            "exceeded model",
+                        ]
+                        if any(
+                            phrase in error_text for phrase in context_length_phrases
+                        ):
+                            raise vf.OverlongPromptError from e
+                    raise vf.ModelError from e
+
+            return wrapper
+
+        @handle_overlong_prompt
+        async def call_with_messages(
+            *,
+            client: AsyncOpenAI,
+            model: str,
+            prompt: Messages,
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs,
+            message_type: MessageType,
+        ) -> ModelResponse:
+            if message_type == "chat":
+                assert isinstance(prompt, list)
+                prompt = self._normalize_messages(cast(ChatMessages, prompt))
+                prompt = strip_nones_from_content(prompt)
+
+                has_audio = False
+                try:
+                    for msg in prompt:
+                        content = msg.get("content")
+                        if isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and str(
+                                    part.get("type", "")
+                                ).startswith("input_audio"):
+                                    has_audio = True
+                                    break
+                        if has_audio:
+                            break
+                except Exception:
+                    has_audio = False
+                if has_audio and "modalities" not in sampling_args:
+                    sampling_args = {
+                        **sampling_args,
+                        "modalities": ["text"],
+                    }
+
+                if oai_tools:
+                    return await client.chat.completions.create(
+                        model=model,
+                        messages=prompt,
+                        tools=oai_tools,
+                        **sampling_args,
+                    )
+                return await client.chat.completions.create(
+                    model=model,
+                    messages=prompt,
+                    **sampling_args,
+                )
+
+            if oai_tools:
+                raise ValueError("oai_tools are not supported for completion tasks.")
+            assert isinstance(prompt, str)
+            return await client.completions.create(
+                model=model, prompt=prompt, **sampling_args
+            )
+
+        @handle_overlong_prompt
+        async def call_with_tokens(
+            *,
+            client: AsyncOpenAI,
+            model: str,
+            prompt: Messages,
+            prompt_ids: list[int],
+            oai_tools: list[ChatCompletionToolParam] | None,
+            sampling_args: SamplingArgs,
+            message_type: MessageType,
+        ) -> ModelResponse:
+            assert message_type == "chat", (
+                "token prompts are only supported for chat tasks."
+            )
+            assert isinstance(prompt, list)
+            prompt = self._normalize_messages(cast(ChatMessages, prompt))
+            prompt = strip_nones_from_content(prompt)
+
+            extra_body = sampling_args.pop("extra_body", {})
+            body = dict(
+                model=model,
+                messages=prompt,
+                tools=oai_tools,
+                tokens=prompt_ids,
+                **sampling_args,
+                **extra_body,
+            )
+
+            return await client.post(
+                "/chat/completions/tokens",
+                body=body,
+                cast_to=ChatCompletion,
+            )
+
+        sampling_args = dict(sampling_args)
+        if prompt_ids is not None:
+            response = await call_with_tokens(
+                client=client,
+                model=model,
+                prompt=prompt,
+                prompt_ids=prompt_ids,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
+        else:
+            response = await call_with_messages(
+                client=client,
+                model=model,
+                prompt=prompt,
+                oai_tools=oai_tools,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
+
+        _validate_model_response(response, message_type)
+        return response
 
 
 class RLMCodeExecutionTimeout(Exception):
@@ -2717,6 +2929,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self._root_tool_context_var: contextvars.ContextVar[dict[str, Any] | None] = (
             contextvars.ContextVar("rlm_root_tool_context", default=None)
         )
+        self._model_caller = _RLMModelCaller(self._normalize_message_content)
 
         # Interception server state (shared across rollouts)
         self._interception_server: Any = None
@@ -3001,21 +3214,6 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
-    @staticmethod
-    def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
-        """Normalize sampling args to match main model behavior."""
-        if "max_tokens" in sampling_args:
-            if sampling_args["max_tokens"] is None:
-                sampling_args.pop("max_tokens")
-            else:
-                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-        if (
-            "max_completion_tokens" in sampling_args
-            and sampling_args["max_completion_tokens"] is None
-        ):
-            sampling_args.pop("max_completion_tokens")
-        return {k: v for k, v in sampling_args.items() if v is not None}
-
     def _prepare_sub_llm_sampling_args(
         self, state: State, *, interleaved: bool
     ) -> dict[str, Any]:
@@ -3023,7 +3221,7 @@ class RLMEnv(vf.StatefulToolEnv):
         extra_body = sampling_args.get("extra_body")
         if isinstance(extra_body, dict):
             sampling_args["extra_body"] = dict(extra_body)
-        sampling_args = self._normalize_sampling_args(sampling_args)
+        sampling_args = _normalize_sampling_args_for_model_call(sampling_args, "chat")
         if interleaved:
             return prepare_sampling_args_for_token_prompts(sampling_args)
         return sampling_args
@@ -3107,7 +3305,7 @@ class RLMEnv(vf.StatefulToolEnv):
                         model=model,
                     )
             return await asyncio.wait_for(
-                self._call_model_api(
+                self._model_caller.call(
                     client=client,
                     model=model,
                     prompt=normalized_messages,
@@ -4225,48 +4423,18 @@ class RLMEnv(vf.StatefulToolEnv):
         trajectory steps to the main trajectory_id only.
         """
 
-        def resolve_optional_args(
-            client: AsyncOpenAI | None,
-            model: str | None,
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs | None,
-            message_type: MessageType | None,
-        ) -> tuple[
-            AsyncOpenAI,
-            str,
-            list[ChatCompletionToolParam] | None,
-            SamplingArgs,
-            MessageType,
-        ]:
-            client = client or state["client"]
-            model = model or state["model"]
-            assert client is not None and model is not None
-            oai_tools = oai_tools or state["oai_tools"]
-            sampling_args = cast(
-                SamplingArgs, sampling_args or state["sampling_args"] or {}
-            )
-            message_type = message_type or self.message_type
-            return client, model, oai_tools, sampling_args, message_type
-
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
-            if "max_tokens" in sampling_args:
-                if sampling_args["max_tokens"] is None:
-                    sampling_args.pop("max_tokens")
-                elif message_type == "chat":
-                    sampling_args["max_completion_tokens"] = sampling_args.pop(
-                        "max_tokens"
-                    )
-            if (
-                "max_completion_tokens" in sampling_args
-                and sampling_args["max_completion_tokens"] is None
-            ):
-                sampling_args.pop("max_completion_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
-
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
+        client = client or state["client"]
+        model = model or state["model"]
+        assert client is not None and model is not None
+        oai_tools = oai_tools or state["oai_tools"]
+        sampling_args = cast(
+            SamplingArgs, sampling_args or state["sampling_args"] or {}
         )
-        sampling_args = normalize_sampling_args(sampling_args)
+        message_type = message_type or self.message_type
+
+        sampling_args = _normalize_sampling_args_for_model_call(
+            sampling_args, message_type
+        )
         if self.interleaved_rollouts:
             sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
@@ -4313,7 +4481,7 @@ class RLMEnv(vf.StatefulToolEnv):
                     model=model,
                 )
 
-        return await self._call_model_api(
+        return await self._model_caller.call(
             client=client,
             model=model,
             prompt=prompt,

@@ -456,40 +456,6 @@ class Environment(ABC):
                 sampling_args.pop("max_completion_tokens")
             return {k: v for k, v in sampling_args.items() if v is not None}
 
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
-        )
-        sampling_args = normalize_sampling_args(sampling_args)
-        if self.interleaved_rollouts:
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
-
-        prompt_ids: list[int] | None = None
-        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
-            prompt_ids = await get_prompt_ids(state, prompt, client)
-
-        return await self._call_model_api(
-            client=client,
-            model=model,
-            prompt=prompt,
-            oai_tools=oai_tools,
-            sampling_args=sampling_args,
-            message_type=message_type,
-            prompt_ids=prompt_ids,
-        )
-
-    async def _call_model_api(
-        self,
-        *,
-        client: AsyncOpenAI,
-        model: str,
-        prompt: Messages,
-        oai_tools: list[ChatCompletionToolParam] | None,
-        sampling_args: SamplingArgs,
-        message_type: MessageType,
-        prompt_ids: list[int] | None = None,
-    ) -> ModelResponse:
-        """Shared low-level model call used by main and sub-LLM paths."""
-
         def handle_overlong_prompt(func):
             """Decorator to handle overlong prompt errors from the model API."""
 
@@ -521,7 +487,7 @@ class Environment(ABC):
             return wrapper
 
         @handle_overlong_prompt
-        async def call_with_messages(
+        async def get_model_response_with_messages(
             client: AsyncOpenAI,
             model: str,
             prompt: Messages,
@@ -581,7 +547,7 @@ class Environment(ABC):
                 return response
 
         @handle_overlong_prompt
-        async def call_with_tokens(
+        async def get_model_response_with_tokens(
             client: AsyncOpenAI,
             model: str,
             prompt: Messages,
@@ -615,8 +581,16 @@ class Environment(ABC):
                 cast_to=ChatCompletion,
             )
 
-        if prompt_ids is not None:
-            response = await call_with_tokens(
+        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
+            client, model, oai_tools, sampling_args, message_type
+        )
+        sampling_args = normalize_sampling_args(sampling_args)
+        if self.interleaved_rollouts:
+            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
+
+        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
+            prompt_ids = await get_prompt_ids(state, prompt, client)
+            response = await get_model_response_with_tokens(
                 client=client,
                 model=model,
                 prompt=prompt,
@@ -626,7 +600,7 @@ class Environment(ABC):
                 message_type=message_type,
             )
         else:
-            response = await call_with_messages(
+            response = await get_model_response_with_messages(
                 client=client,
                 model=model,
                 prompt=prompt,

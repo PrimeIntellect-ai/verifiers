@@ -1164,6 +1164,53 @@ class TestSubLLMRequestPaths:
         mock_get_prompt_ids.assert_awaited_once()
         mock_client.chat.completions.create.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_interleaved_main_prompt_ids_ignore_sub_llm_steps(self, rlm_env):
+        rlm_env.interleaved_rollouts = True
+
+        main_id = "main-123"
+        main_step = {
+            "trajectory_id": main_id,
+            "prompt": [{"role": "user", "content": "hi"}],
+            "completion": [{"role": "assistant", "content": "ok"}],
+            "tokens": {
+                "prompt_ids": [1],
+                "completion_ids": [2],
+                "prompt_mask": [1],
+                "completion_mask": [1],
+                "completion_logprobs": [0.0],
+            },
+        }
+        sub_step = {
+            "trajectory_id": "sub-1",
+            "extras": {"is_sub_llm_call": True},
+        }
+        state = {
+            "client": MagicMock(),
+            "model": "gpt-4",
+            "oai_tools": None,
+            "sampling_args": {},
+            "trajectory": [main_step, sub_step],
+            "trajectory_id": main_id,
+        }
+        prompt = [{"role": "user", "content": "next"}]
+
+        captured = {}
+
+        async def fake_get_prompt_ids(prompt_state, prompt_messages, client):
+            captured["trajectory"] = list(prompt_state["trajectory"])
+            return [1, 2, 3]
+
+        rlm_env._model_caller.call = AsyncMock(return_value=MagicMock())
+        with patch(
+            "verifiers.envs.experimental.rlm_env.get_prompt_ids",
+            new=fake_get_prompt_ids,
+        ):
+            await rlm_env.get_model_response(state, prompt)
+
+        assert len(captured["trajectory"]) == 1
+        assert captured["trajectory"][0]["trajectory_id"] == main_id
+
 
 # =============================================================================
 # 8. Root Tool Serialization (pickle)
@@ -1306,6 +1353,73 @@ class TestSubLLMTrajectorySteps:
     @pytest.mark.asyncio
     async def test_include_sub_llm_in_trajectory_default(self, rlm_env):
         assert rlm_env.include_sub_llm_in_trajectory is True
+
+    @pytest.mark.asyncio
+    async def test_sub_llm_steps_added_to_trajectory(self, rlm_env):
+        rlm_env.include_sub_llm_in_trajectory = True
+        state = {"trajectory": [], "sampling_args": {}}
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+        mock_message.content = "ok"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+
+        result = {
+            "final_content": "ok",
+            "turns": [
+                {
+                    "prompt_messages": [{"role": "user", "content": "hi"}],
+                    "response": mock_response,
+                    "tool_call_count": 0,
+                }
+            ],
+            "total_prompt_tokens": 1,
+            "total_completion_tokens": 1,
+            "tool_call_count": 0,
+            "num_turns": 1,
+            "max_turns_reached": False,
+        }
+
+        token_payload = {
+            "prompt_ids": [1],
+            "prompt_mask": [0],
+            "completion_ids": [2],
+            "completion_mask": [1],
+            "completion_logprobs": [0.0],
+            "overlong_prompt": False,
+            "is_truncated": False,
+        }
+
+        with (
+            patch.object(rlm_env, "_run_sub_llm", new=AsyncMock(return_value=result)),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_tokens",
+                new=AsyncMock(return_value=token_payload),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_messages",
+                new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_is_truncated",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert len(state["trajectory"]) == 1
+        assert state["trajectory"][0]["trajectory_id"] == "b1_r1"
+        assert state["trajectory"][0]["extras"]["is_sub_llm_call"] is True
 
 
 # =============================================================================
