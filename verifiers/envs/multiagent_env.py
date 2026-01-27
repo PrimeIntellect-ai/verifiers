@@ -29,7 +29,6 @@ from openai import AsyncOpenAI
 import verifiers as vf
 from verifiers.envs.multiturn_env import MultiTurnEnv
 
-from verifiers.envs.protocol import GenerateResult
 from verifiers.types import (
     Messages,
     RolloutInput,
@@ -231,51 +230,6 @@ class MultiAgentEnv(MultiTurnEnv):
         await self.add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
-    # Direct Actor Invocation
-    # -------------------------------------------------------------------------
-
-    async def call_actor(
-        self,
-        actor_id: str,
-        messages: Messages,
-        state: State,
-        sampling_args: SamplingArgs | None = None,
-    ) -> GenerateResult:
-        """
-        Directly call a specific actor outside the standard rollout loop.
-
-        Useful for custom rollouts (like RPS simultaneous moves) or
-        spawning patterns. Handles system prompt injection and sampling
-        args merging automatically.
-        """
-        actor = self.get_actor(actor_id)
-
-        # Mark who is speaking
-        state["extras"]["current_actor_id"] = actor_id
-
-        # Build messages with actor's system prompt
-        system_msg = actor.get_system_message()
-        actor_messages = [system_msg] if system_msg else []
-        actor_messages.extend(messages)
-
-        # Merge sampling args: environment → actor → call overrides
-        merged_args = actor.merge_sampling_args(state.get("sampling_args") or {})
-        if sampling_args:
-            merged_args.update(sampling_args)
-
-        # Call model and record in trajectory
-        response = await self.get_model_response(state, actor_messages, sampling_args=merged_args)
-        await self.add_model_response(state, actor_messages, response)
-
-        return GenerateResult(
-            actor_id=actor_id,
-            state=state,
-            is_trainable=actor.is_trainable,
-            episode_id=state["extras"]["episode_id"],
-            parent_episode_id=state["extras"]["parent_episode_id"],
-        )
-
-    # -------------------------------------------------------------------------
     # Prompt Building
     # -------------------------------------------------------------------------
 
@@ -409,18 +363,6 @@ class MultiAgentEnv(MultiTurnEnv):
         Set state["final_env_response"] to terminate early.
         """
         pass
-
-    # -------------------------------------------------------------------------
-    # Actor Helpers
-    # -------------------------------------------------------------------------
-
-    def get_trainable_actors(self) -> list["Actor"]:
-        """Get actors with is_trainable=True (will be trained)."""
-        return [a for a in self.protocol.actors.values() if a.is_trainable]
-
-    def get_frozen_actors(self) -> list["Actor"]:
-        """Get actors with is_trainable=False (frozen, not trained)."""
-        return [a for a in self.protocol.actors.values() if not a.is_trainable]
 
     # -------------------------------------------------------------------------
     # Per-Actor State Creation
@@ -624,54 +566,4 @@ class MultiAgentEnv(MultiTurnEnv):
             for s in all_states
         ]
         return result
-
-    def build_generate_result(self, state: State) -> GenerateResult:
-        """
-        Build a GenerateResult tree from completed state with children attached.
-
-        Creates a hierarchical structure linking parent episodes to children,
-        useful for hierarchical credit assignment (e.g., Proposer-Solver).
-        """
-        extras = state["extras"]
-
-        # Determine root actor (first in history, or first declared)
-        actor_history = extras["actor_history"]
-        root_actor_id = actor_history[0][0] if actor_history else (self.actors[0] if self.actors else "unknown")
-
-        # Get trainability (default True if actor not found)
-        try:
-            is_trainable = self.get_actor(root_actor_id).is_trainable
-        except KeyError:
-            is_trainable = True
-
-        # Create root result
-        root_result = GenerateResult(
-            actor_id=root_actor_id,
-            state=state,
-            is_trainable=is_trainable,
-            episode_id=extras["episode_id"],
-            parent_episode_id=extras["parent_episode_id"],
-        )
-
-        # Attach child states as GenerateResults linked to parent
-        parent_episode_id = extras["episode_id"]
-        for child_state in state["child_states"]:
-            child_extras = child_state.get("extras", {})
-            child_actor_id = child_extras.get("current_actor_id", "unknown")
-
-            try:
-                child_trainable = self.get_actor(child_actor_id).is_trainable
-            except KeyError:
-                child_trainable = True
-
-            child_result = GenerateResult(
-                actor_id=child_actor_id,
-                state=child_state,
-                is_trainable=child_trainable,
-                episode_id=child_extras.get("episode_id", uuid.uuid4().hex),
-                parent_episode_id=parent_episode_id,
-            )
-            root_result.add_child(child_result)
-
-        return root_result
 
