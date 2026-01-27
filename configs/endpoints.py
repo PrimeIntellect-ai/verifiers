@@ -75,6 +75,19 @@ ENDPOINTS = {
         "key": "PRIME_API_KEY",
         "client_type": "openai",
     },
+    # deepseek
+    "deepseek-chat": {
+        "model": "deepseek-chat",
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+        "client_type": "openai",
+    },
+    "deepseek-reasoner": {
+        "model": "deepseek-reasoner",
+        "url": "https://api.deepseek.com/v1",
+        "key": "DEEPSEEK_API_KEY",
+        "client_type": "openai",
+    },
     # qwen
     "qwen3-30b-i": {
         "model": "qwen/qwen3-30b-a3b-instruct-2507",

@@ -67,7 +67,7 @@ def parse_chat_response(response: ChatResponse) -> ChatMessage:
     chat_message = AssistantMessage(
         role="assistant",
         content=message.content,
-        reasoning_content=None,  # TODO
+        reasoning_content=message.reasoning_content,
         tool_calls=message.tool_calls,
     )
     return chat_message

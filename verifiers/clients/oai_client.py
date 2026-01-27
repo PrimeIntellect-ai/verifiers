@@ -84,6 +84,12 @@ def handle_overlong_prompt(func):
     return wrapper
 
 
+DEFAULT_REASONING_FIELDS = [
+    "reasoning",  # vLLM
+    "reasoning_content",  # DeepSeek API
+]
+
+
 class OAIClient(
     Client[
         AsyncOpenAI,
@@ -220,13 +226,13 @@ class OAIClient(
                         )
                         for tool_call in message["tool_calls"]
                     ]
-                    return ChatCompletionAssistantMessageParam(
-                        role="assistant",
-                        content=message["content"],
-                        tool_calls=oai_tool_calls,
-                    )
+                else:
+                    oai_tool_calls = None
                 return ChatCompletionAssistantMessageParam(
-                    role="assistant", content=message["content"]
+                    role="assistant",
+                    content=message["content"],
+                    tool_calls=oai_tool_calls,
+                    reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
                 )
             elif message["role"] == "tool":
                 return ChatCompletionToolMessageParam(
@@ -260,13 +266,13 @@ class OAIClient(
                         )
                         for tool_call in message.tool_calls
                     ]
-                    return ChatCompletionAssistantMessageParam(
-                        role="assistant",
-                        content=message.content,
-                        tool_calls=oai_tool_calls,
-                    )
+                else:
+                    oai_tool_calls = None
                 return ChatCompletionAssistantMessageParam(
-                    role="assistant", content=message.content
+                    role="assistant",
+                    content=message.content,
+                    tool_calls=oai_tool_calls,
+                    reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
                 )
             elif isinstance(message, ToolMessage):
                 return ChatCompletionToolMessageParam(
@@ -434,6 +440,15 @@ class OAIClient(
                 completion_logprobs=completion_logprobs,
             )
 
+        def parse_reasoning_content(
+            response: ChatCompletion,
+        ) -> str | None:
+            message_dict = response.choices[0].message.model_dump()
+            for field in DEFAULT_REASONING_FIELDS:
+                if field in message_dict:
+                    return message_dict[field]
+            return None
+
         return ChatResponse(
             id=response.id,
             created=response.created,
@@ -441,6 +456,7 @@ class OAIClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
+                reasoning_content=parse_reasoning_content(response),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
