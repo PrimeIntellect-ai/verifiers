@@ -18,6 +18,7 @@ Key concepts:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -37,8 +38,6 @@ from verifiers.types import (
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import concat_messages
-from verifiers.utils.async_utils import maybe_semaphore
-from verifiers.utils.eval_utils import save_rollout_results
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
@@ -556,8 +555,75 @@ class MultiAgentEnv(MultiTurnEnv):
         return actor_states
 
     # -------------------------------------------------------------------------
-    # Result Building
+    # run_group Override (Flattening for prime-rl)
     # -------------------------------------------------------------------------
+
+    async def run_group(
+        self,
+        group_inputs: list[RolloutInput],
+        client: AsyncOpenAI,
+        model: str,
+        gen_sampling_args: SamplingArgs,
+        gen_sem: asyncio.Semaphore,
+        score_sem: asyncio.Semaphore,
+        score: bool = True,
+    ) -> list[State]:
+        """
+        Run rollouts and flatten to per-actor states for training.
+
+        This is what prime-rl calls. Returns flattened states so GRPO
+        advantages get computed per-actor automatically.
+
+        Flow:
+        1. Run game rollouts via parent (each produces one game trajectory)
+        2. Flatten: split each game into per-actor states
+        3. Include any spawned child_states (proposer-solver pattern)
+        4. Score all flattened states together (per-actor GRPO)
+        """
+        # Run game rollouts (don't score yet - we'll score after flattening)
+        game_states = await super().run_group(
+            group_inputs, client, model, gen_sampling_args,
+            gen_sem, score_sem, score=False
+        )
+
+        # Flatten: one game → multiple per-actor states
+        flattened = []
+        for game_state in game_states:
+            # Split game trajectory by actor_id
+            flattened.extend(self.create_actor_states(game_state))
+            # Include spawned children (proposer-solver pattern)
+            flattened.extend(game_state.get("child_states", []))
+
+        # Score flattened states (per-actor GRPO advantages)
+        if score and self.rubric:
+            await self.rubric.score_group(flattened, score_sem=score_sem)
+
+        return flattened
+
+    # -------------------------------------------------------------------------
+    # Result Building (for generate/eval)
+    # -------------------------------------------------------------------------
+
+    def _prepare_rollout_results(
+        self,
+        all_states: list[State],
+        model: str,
+        client: AsyncOpenAI,
+        state_columns: list[str] | None,
+        results_path,
+        gen_sampling_args: SamplingArgs,
+        start_time: float,
+    ):
+        """Add actor_id to result dict for multi-agent environments."""
+        result = super()._prepare_rollout_results(
+            all_states, model, client, state_columns,
+            results_path, gen_sampling_args, start_time
+        )
+        result["actor_id"] = [
+            s.get("extras", {}).get("current_actor_id", "unknown")
+            for s in all_states
+        ]
+        return result
 
     def build_generate_result(self, state: State) -> GenerateResult:
         """
@@ -609,112 +675,3 @@ class MultiAgentEnv(MultiTurnEnv):
 
         return root_result
 
-    # -------------------------------------------------------------------------
-    # Generate Override (Flattening & Per-Actor Scoring)
-    # -------------------------------------------------------------------------
-
-    async def generate(self, inputs, client, model, **kwargs):
-        """
-        Generate rollouts, flatten child_states, then score per-actor.
-
-        The parent's generate() returns one state per game. For multi-agent,
-        we need one state per actor per game for proper per-actor rewards.
-
-        Flow:
-        1. Intercept save/score options (we'll handle them after flattening)
-        2. Run parent's generate() to get game states
-        3. Flatten: Replace each game state with its child_states (per-actor)
-        4. Score all flattened states together (proper GRPO grouping)
-        5. Rebuild result arrays to match flattened states
-        6. Update metadata and save
-
-        Before: result["state"] = [game1, game2]
-        After:  result["state"] = [g1_actor1, g1_actor2, g2_actor1, g2_actor2]
-        """
-        # Intercept options - we'll handle them after flattening
-        original_save_results = kwargs.pop("save_results", False)
-        push_to_hf_hub = kwargs.pop("push_to_hf_hub", False)
-        hf_hub_dataset_name = kwargs.pop("hf_hub_dataset_name", None)
-
-        # Disable parent's scoring - we'll score after flattening
-        original_score_rollouts = getattr(self, 'score_rollouts', True)
-        self.score_rollouts = False
-
-        try:
-            result = await super().generate(inputs, client, model, save_results=False, **kwargs)
-        finally:
-            self.score_rollouts = original_score_rollouts
-
-        # Flatten: replace parent states with their child_states
-        original_states = result.get("state", [])
-        flattened_states = []
-        needs_flatten = False
-
-        for state in original_states:
-            child_states = state.get("child_states", [])
-            if child_states:
-                flattened_states.extend(child_states)
-                needs_flatten = True
-            else:
-                flattened_states.append(state)
-
-        # Early exit if no flattening occurred
-        if not needs_flatten:
-            # Still need to score since we disabled it above
-            if original_states and self.rubric and original_score_rollouts:
-                score_sem = await maybe_semaphore(-1)
-                await self.rubric.score_group(original_states, score_sem=score_sem)
-                result["reward"] = [s.get("reward", 0.0) for s in original_states]
-            if original_save_results:
-                save_rollout_results(result, push_to_hf_hub, hf_hub_dataset_name)
-            return result
-
-        # Score all flattened states together for proper GRPO grouping
-        if flattened_states and self.rubric and original_score_rollouts:
-            score_sem = await maybe_semaphore(-1)
-            await self.rubric.score_group(flattened_states, score_sem=score_sem)
-
-        # Rebuild all result columns from flattened states
-        prompts, completions, answers, tasks, example_ids, rewards, infos, actor_ids = [], [], [], [], [], [], [], []
-        metrics: dict[str, list[float]] = {}
-
-        for s in flattened_states:
-            prompts.append(s.get("prompt", []))
-            completions.append(s.get("completion"))
-            answers.append(s.get("answer", ""))
-            tasks.append(s.get("task", "default"))
-            example_ids.append(s.get("example_id", 0))
-            rewards.append(s.get("reward", 0.0))
-            infos.append(s.get("info", {}))
-            actor_ids.append(s.get("extras", {}).get("current_actor_id", "unknown"))
-
-            state_metrics = s.get("metrics")
-            if state_metrics:
-                for name, value in state_metrics.items():
-                    if name not in metrics:
-                        metrics[name] = []
-                    metrics[name].append(value)
-
-        # Update result with flattened data
-        result["state"] = flattened_states
-        result["prompt"] = prompts
-        result["completion"] = completions
-        result["answer"] = answers
-        result["task"] = tasks
-        result["example_id"] = example_ids
-        result["reward"] = rewards
-        result["info"] = infos
-        result["actor_id"] = actor_ids  # New field for multi-agent
-        result["metrics"] = metrics
-
-        # Update metadata to reflect flattened counts
-        if "metadata" in result and rewards:
-            num_examples = len(set(example_ids))
-            result["metadata"]["avg_reward"] = sum(rewards) / len(rewards)
-            result["metadata"]["num_examples"] = num_examples
-            result["metadata"]["rollouts_per_example"] = len(flattened_states) // num_examples if num_examples > 0 else 1
-
-        if original_save_results:
-            save_rollout_results(result, push_to_hf_hub, hf_hub_dataset_name)
-
-        return result

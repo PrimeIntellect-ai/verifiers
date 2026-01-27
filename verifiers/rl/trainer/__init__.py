@@ -3,7 +3,6 @@ import logging
 import torch._dynamo
 
 from .config import RLConfig
-from .multiagent_orchestrator import MultiAgentOrchestrator
 from .trainer import RLTrainer
 
 torch._dynamo.config.suppress_errors = True
@@ -31,7 +30,6 @@ def lora_defaults(**kwargs):
 __all__ = [
     "RLConfig",
     "RLTrainer",
-    "MultiAgentOrchestrator",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
