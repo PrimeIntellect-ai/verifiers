@@ -1,5 +1,5 @@
 import functools
-from typing import cast
+from typing import TypeAlias, cast
 
 from openai import AsyncOpenAI, BadRequestError
 from openai.types import Completion
@@ -38,15 +38,15 @@ from verifiers.types import (
     AssistantMessage,
     ChatMessage,
     ChatMessages,
-    ChatResponse,
     ClientConfig,
     FinishReason,
+    Messages,
+    Response,
     ResponseMessage,
     ResponseTokens,
     SamplingArgs,
+    State,
     SystemMessage,
-    TextMessages,
-    TextResponse,
     Tool,
     ToolCall,
     ToolMessage,
@@ -54,6 +54,7 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.token_utils import get_prompt_ids
 
 
 def handle_overlong_prompt(func):
@@ -89,40 +90,46 @@ DEFAULT_REASONING_FIELDS = [
     "reasoning_content",  # DeepSeek API
 ]
 
-OpenAITextResponse = Completion
-OpenAIChatResponse = ChatCompletion
 OpenAITextMessages = str
-OpenAIChatMessage = ChatCompletionMessageParam
-OpenAIChatMessages = list[OpenAIChatMessage]
-OpenAITool = ChatCompletionToolParam
+OpenAITextResponse = Completion
 
 
-class OAIClient(
+class OAICompletionsClient(
     Client[
         AsyncOpenAI,
-        OpenAITextResponse,
-        OpenAIChatResponse,
         OpenAITextMessages,
-        OpenAIChatMessages,
-        ChatCompletionToolParam,
+        OpenAITextResponse,
+        None,
     ]
 ):
-    """Wrapper for AsyncOpenAI client."""
+    """Wrapper for Completions API via AsyncOpenAI client."""
 
-    @staticmethod
-    def setup_client(config: ClientConfig) -> AsyncOpenAI:
+    def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
 
-    def to_native_text_prompt(
-        self, messages: TextMessages
+    async def to_native_prompt(
+        self, messages: Messages
     ) -> tuple[OpenAITextMessages, dict]:
-        return messages, {}
+        prompt = ""
+        for message in messages:
+            prompt += message.content or ""
+        return prompt, {}
+
+    async def to_native_tool(self, tool: Tool) -> None:
+        raise ValueError("Tools are not supported for Completions API")
 
     @handle_overlong_prompt
-    async def get_native_text_response(
-        self, prompt: OpenAITextMessages, model: str, sampling_args: SamplingArgs
+    async def get_native_response(
+        self,
+        prompt: OpenAITextMessages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools: list[None] | None = None,
+        **kwargs,
     ) -> OpenAITextResponse:
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
+        assert tools is None, "Tools are not supported for Completions API"
+
+        def normalize_sampling_args(sampling_args: SamplingArgs):
             return {k: v for k, v in sampling_args.items() if v is not None}
 
         response = await self.client.completions.create(
@@ -132,9 +139,7 @@ class OAIClient(
         )
         return response
 
-    async def raise_from_native_text_response(
-        self, response: OpenAITextResponse
-    ) -> None:
+    async def raise_from_native_response(self, response: OpenAITextResponse) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -146,7 +151,7 @@ class OAIClient(
         if not response.choices[0].text:
             raise EmptyModelResponseError("Model returned no content")
 
-    def from_native_text_response(self, response: OpenAITextResponse) -> TextResponse:
+    async def from_native_response(self, response: OpenAITextResponse) -> Response:
         def parse_usage(response: OpenAITextResponse) -> Usage | None:
             if response.usage is None:
                 return None
@@ -195,7 +200,7 @@ class OAIClient(
                 completion_logprobs=completion_logprobs,
             )
 
-        return TextResponse(
+        return Response(
             id=response.id,
             created=response.created,
             model=response.model,
@@ -210,11 +215,29 @@ class OAIClient(
             ),
         )
 
-    def to_native_chat_prompt(
+
+OpenAIChatMessage: TypeAlias = ChatCompletionMessageParam
+OpenAIChatMessages: TypeAlias = list[OpenAIChatMessage]
+OpenAIChatResponse: TypeAlias = ChatCompletion
+OpenAITool: TypeAlias = ChatCompletionToolParam
+
+
+class OAIChatCompletionsClient(
+    Client[
+        AsyncOpenAI,
+        OpenAIChatMessages,
+        OpenAIChatResponse,
+        OpenAITool,
+    ]
+):
+    """Wrapper for Chat Completions API via AsyncOpenAI client."""
+
+    def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
+        return setup_openai_client(config)
+
+    async def to_native_prompt(
         self, messages: ChatMessages
     ) -> tuple[OpenAIChatMessages, dict]:
-        """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
-
         def from_legacy_chat_message(message: dict) -> OpenAIChatMessage:
             if message["role"] == "system":
                 return ChatCompletionSystemMessageParam(
@@ -304,8 +327,7 @@ class OAIClient(
                 from_legacy_chat_message(cast(dict, message)) for message in messages
             ], {}
 
-    def to_native_tool(self, tool: Tool) -> OpenAITool:
-        """Convert a unified Tool to OpenAI's ChatCompletionToolParam format."""
+    async def to_native_tool(self, tool: Tool) -> OpenAITool:
         return OpenAITool(
             type="function",
             function=FunctionDefinition(
@@ -317,12 +339,13 @@ class OAIClient(
         )
 
     @handle_overlong_prompt
-    async def get_native_chat_response(
+    async def get_native_response(
         self,
         prompt: OpenAIChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[OpenAITool] | None,
+        tools: list[OpenAITool] | None = None,
+        **kwargs,
     ) -> OpenAIChatResponse:
         def normalize_sampling_args(sampling_args: SamplingArgs):
             if "max_tokens" in sampling_args:
@@ -344,9 +367,7 @@ class OAIClient(
             )
         return response
 
-    async def raise_from_native_chat_response(
-        self, response: OpenAIChatResponse
-    ) -> None:
+    async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -363,9 +384,7 @@ class OAIClient(
                 "Model returned no content and did not call any tools"
             )
 
-    def from_native_chat_response(self, response: OpenAIChatResponse) -> ChatResponse:
-        """Converts a OpenAI ChatCompletion to a vf.ChatResponse."""
-
+    async def from_native_response(self, response: OpenAIChatResponse) -> Response:
         def parse_tool_calls(response: OpenAIChatResponse) -> list[ToolCall]:
             result: list[ToolCall] = []
             for tool_call in response.choices[0].message.tool_calls or []:
@@ -456,7 +475,7 @@ class OAIClient(
                     return message_dict[field]
             return None
 
-        return ChatResponse(
+        return Response(
             id=response.id,
             created=response.created,
             model=response.model,
@@ -473,30 +492,48 @@ class OAIClient(
             ),
         )
 
+
+class OAIChatCompletionsTokenClient(OAIChatCompletionsClient):
+    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client. To be used for interleaved thinking."""
+
     @handle_overlong_prompt
-    async def get_chat_response_with_tokens(
+    async def get_native_response(
         self,
-        prompt: ChatMessages,
-        prompt_ids: list[int],
+        prompt: OpenAIChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[Tool] | None,
-    ) -> ChatResponse:
+        tools: list[OpenAITool] | None = None,
+        **kwargs,
+    ) -> OpenAIChatResponse:
+        def normalize_sampling_args(sampling_args: SamplingArgs):
+            sampling_args["logprobs"] = True
+            extra_body = dict(return_token_ids=True)
+            if "extra_body" in sampling_args:
+                sampling_args["extra_body"].update(extra_body)
+            else:
+                sampling_args["extra_body"] = extra_body
+            return sampling_args
+
+        sampling_args = normalize_sampling_args(sampling_args)
+        state = cast(State, kwargs.pop("state"))
+        # use /v1/chat/completions for first turn to avoid redundant tokenization
+        if len(state["trajectory"]) == 0:
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools
+            )
+        prompt_ids = await get_prompt_ids(state, prompt, tools, self.client)
         extra_body = sampling_args.pop("extra_body", {})
-        native_prompt, _ = self.to_native_chat_prompt(prompt)
-        native_tools = self.to_native_tools(tools)
         body = dict(
             model=model,
-            messages=native_prompt,
-            tools=native_tools,
+            messages=prompt,
+            tools=tools,
             tokens=prompt_ids,
             **sampling_args,
             **extra_body,
         )
 
-        response = await self.client.post(
+        return await self.client.post(
             "/chat/completions/tokens",
             body=body,
             cast_to=ChatCompletion,
         )
-        return self.from_native_chat_response(response)

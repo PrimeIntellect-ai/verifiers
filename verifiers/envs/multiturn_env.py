@@ -105,7 +105,7 @@ class MultiTurnEnv(vf.Environment):
         response: Response,
     ):
         assert response is not None
-        completion_messages = await parse_response_message(response, self.message_type)
+        completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)
         is_truncated = response.message.is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))

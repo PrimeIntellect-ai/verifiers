@@ -3,29 +3,36 @@ import time
 
 from anthropic import AsyncAnthropic
 from anthropic.types import (
-    Completion,
+    Completion as AnthropicCompletion,
+)
+from anthropic.types import (
     ContentBlock,
-    Message,
-    MessageParam,
     TextBlockParam,
-    ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
+)
+from anthropic.types import (
+    Message as AnthropicMessage,
+)
+from anthropic.types import (
+    MessageParam as AnthropicMessageParam,
+)
+from anthropic.types import (
+    ToolParam as AnthropicToolParam,
 )
 
 from verifiers.clients.client import Client
 from verifiers.types import (
     AssistantMessage,
-    ChatMessage,
     ChatMessages,
-    ChatResponse,
     ClientConfig,
     FinishReason,
+    Message,
+    Messages,
+    Response,
     ResponseMessage,
     SamplingArgs,
     SystemMessage,
-    TextMessages,
-    TextResponse,
     Tool,
     ToolCall,
     ToolMessage,
@@ -33,61 +40,63 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_anthropic_client
 
-AnthropicTextResponse = Completion
-AnthropicChatResponse = Message
-AnthropicTextMessages = str
-AnthropicChatMessage = MessageParam
-AnthropicChatMessages = list[MessageParam]
-AnthropicTool = ToolParam
 
-
-class AntClient(
+class AnthropicCompletionsClient(
     Client[
         AsyncAnthropic,
-        AnthropicTextResponse,
-        AnthropicChatResponse,
-        AnthropicTextMessages,
-        AnthropicChatMessages,
-        AnthropicTool,
+        str,
+        AnthropicCompletion,
+        None,
     ]
 ):
-    """Wrapper for AsyncAnthropic client."""
+    """Wrapper for Anthropic Completions API via AsyncAnthropic client."""
 
-    @staticmethod
-    def setup_client(config: ClientConfig) -> AsyncAnthropic:
+    def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
         return setup_anthropic_client(config)
 
-    def to_native_text_prompt(
-        self, messages: TextMessages
-    ) -> tuple[AnthropicTextMessages, dict]:
-        return messages, {}
+    async def to_native_prompt(self, messages: Messages) -> tuple[str, dict]:
+        prompt = "\n\nHuman:"
+        for message in messages:
+            prompt += message.content or ""
+        prompt += "\n\nAssistant:"
+        return prompt, {}
 
-    async def get_native_text_response(
+    async def to_native_tool(self, tool: Tool) -> None:
+        raise ValueError("Tools are not supported for Anthropic Completions API")
+
+    async def get_native_response(
         self,
-        prompt: AnthropicTextMessages,
+        prompt: str,
         model: str,
         sampling_args: SamplingArgs,
+        tools: list[None] | None = None,
         **kwargs,
-    ) -> AnthropicTextResponse:
+    ) -> AnthropicCompletion:
+        if tools is not None:
+            raise ValueError("Tools are not supported for Anthropic Completions API")
+
         def normalize_sampling_args(sampling_args: SamplingArgs):
+            sampling_args.pop("n", None)
+            sampling_args["max_tokens_to_sample"] = (
+                sampling_args.pop("max_tokens", None) or 4096
+            )
+            sampling_args["stop_sequences"] = sampling_args.pop("stop", None)
+
             return {k: v for k, v in sampling_args.items() if v is not None}
 
+        normalized_sampling_args = normalize_sampling_args(sampling_args)
+        print(normalized_sampling_args)
         return await self.client.completions.create(
             model=model,
             prompt=prompt,
-            **normalize_sampling_args(sampling_args),
-            **kwargs,
+            **normalized_sampling_args,
         )
 
-    async def raise_from_native_text_response(
-        self, response: AnthropicTextResponse
-    ) -> None:
+    async def raise_from_native_response(self, response: AnthropicCompletion) -> None:
         pass
 
-    def from_native_text_response(
-        self, response: AnthropicTextResponse
-    ) -> TextResponse:
-        return TextResponse(
+    async def from_native_response(self, response: AnthropicCompletion) -> Response:
+        return Response(
             id=response.id,
             model=response.model,
             created=int(time.time()),
@@ -102,11 +111,23 @@ class AntClient(
             ),
         )
 
-    def to_native_chat_prompt(
-        self, messages: ChatMessages
-    ) -> tuple[AnthropicChatMessages, dict]:
-        """Converts vf.ChatMessages to Anthropic chat messages."""
 
+class AnthropicMessagesClient(
+    Client[
+        AsyncAnthropic,
+        list[AnthropicMessageParam],
+        AnthropicMessage,
+        AnthropicToolParam,
+    ]
+):
+    """Wrapper for Messages API via AsyncAnthropic client."""
+
+    def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
+        return setup_anthropic_client(config)
+
+    async def to_native_prompt(
+        self, messages: ChatMessages
+    ) -> tuple[list[AnthropicMessageParam], dict]:
         def _parse_tool_args(tc_args: str | dict | object) -> dict:
             """Parse tool arguments from string or dict."""
             if isinstance(tc_args, str):
@@ -118,13 +139,12 @@ class AntClient(
                 return tc_args
             return {}
 
-        def from_legacy_chat_message(message: dict) -> AnthropicChatMessage | None:
-            """Convert dict-based message to Anthropic format. Returns None for system."""
+        def from_legacy_chat_message(message: dict) -> AnthropicMessageParam | None:
             if message["role"] == "system":
                 return None  # handled separately
 
             elif message["role"] == "user":
-                return MessageParam(role="user", content=message["content"])
+                return AnthropicMessageParam(role="user", content=message["content"])
 
             elif message["role"] == "assistant":
                 tool_calls = message.get("tool_calls")
@@ -143,10 +163,14 @@ class AntClient(
                                 input=json.loads(tool_call["arguments"]),  # TODO: safe
                             )
                         )
-                    return MessageParam(role="assistant", content=content_blocks)
-                return MessageParam(role="assistant", content=message["content"])
+                    return AnthropicMessageParam(
+                        role="assistant", content=content_blocks
+                    )
+                return AnthropicMessageParam(
+                    role="assistant", content=message["content"]
+                )
             elif message["role"] == "tool":
-                return MessageParam(
+                return AnthropicMessageParam(
                     role="user",
                     content=[
                         ToolResultBlockParam(
@@ -160,12 +184,11 @@ class AntClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def from_chat_message(message: ChatMessage) -> AnthropicChatMessage | None:
-            """Convert Pydantic message to Anthropic format. Returns None for system."""
+        def from_chat_message(message: Message) -> AnthropicMessageParam | None:
             if isinstance(message, SystemMessage):
                 return None
             elif isinstance(message, UserMessage):
-                return MessageParam(role="user", content=message.content)
+                return AnthropicMessageParam(role="user", content=message.content)
             elif isinstance(message, AssistantMessage):
                 if message.tool_calls:
                     content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
@@ -182,10 +205,14 @@ class AntClient(
                                 input=_parse_tool_args(tc.arguments),
                             )
                         )
-                    return MessageParam(role="assistant", content=content_blocks)
-                return MessageParam(role="assistant", content=message.content or "")
+                    return AnthropicMessageParam(
+                        role="assistant", content=content_blocks
+                    )
+                return AnthropicMessageParam(
+                    role="assistant", content=message.content or ""
+                )
             elif isinstance(message, ToolMessage):
-                return MessageParam(
+                return AnthropicMessageParam(
                     role="user",
                     content=[
                         ToolResultBlockParam(
@@ -198,7 +225,7 @@ class AntClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def extract_system_content(messages: ChatMessages) -> str:
+        def extract_system_content(messages: Messages) -> str:
             """Extract and concatenate system message contents."""
             system_contents = []
             for msg in messages:
@@ -228,21 +255,21 @@ class AntClient(
 
         return prompt, {"system": system}
 
-    def to_native_tool(self, tool: Tool) -> ToolParam:
-        return ToolParam(
+    async def to_native_tool(self, tool: Tool) -> AnthropicToolParam:
+        return AnthropicToolParam(
             name=tool.name,
             description=tool.description,
             input_schema=tool.parameters,
         )
 
-    async def get_native_chat_response(
+    async def get_native_response(
         self,
-        prompt: AnthropicChatMessages,
+        prompt: list[AnthropicMessageParam],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[AnthropicTool] | None,
+        tools: list[AnthropicToolParam] | None = None,
         **kwargs,
-    ) -> AnthropicChatResponse:
+    ) -> AnthropicMessage:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             max_tokens = sampling_args.pop("max_tokens")
             sampling_args.pop("n", None)
@@ -261,31 +288,25 @@ class AntClient(
                 messages=prompt,
                 tools=tools,
                 **normalize_sampling_args(sampling_args),
-                **kwargs,
             )
         else:
             return await self.client.messages.create(
                 model=model,
                 messages=prompt,
                 **normalize_sampling_args(sampling_args),
-                **kwargs,
             )
 
-    async def raise_from_native_chat_response(
-        self, response: AnthropicChatResponse
-    ) -> None:
+    async def raise_from_native_response(self, response: AnthropicMessage) -> None:
         pass
 
-    def from_native_chat_response(
-        self, response: AnthropicChatResponse
-    ) -> ChatResponse:
+    async def from_native_response(self, response: AnthropicMessage) -> Response:
         def parse_content(
             content_blocks: list[ContentBlock],
-        ) -> tuple[AnthropicTextMessages, str, list[ToolCall]]:
+        ) -> tuple[str, str, list[ToolCall]]:
             content = ""
             reasoning_content = ""
             tool_calls = []
-            for content_block in response.content:
+            for content_block in content_blocks:
                 if content_block.type == "text":
                     content += content_block.text
                 elif content_block.type == "thinking":
@@ -302,7 +323,7 @@ class AntClient(
                     raise ValueError(f"Unsupported content type: {content_block.type}")
             return content, reasoning_content, tool_calls
 
-        def parse_finish_reason(response: AnthropicChatResponse) -> FinishReason:
+        def parse_finish_reason(response: AnthropicMessage) -> FinishReason:
             match response.stop_reason:
                 case "end_turn":
                     return "stop"
@@ -315,7 +336,7 @@ class AntClient(
 
         content, reasoning_content, tool_calls = parse_content(response.content)
 
-        return ChatResponse(
+        return Response(
             id=response.id,
             model=response.model,
             created=int(time.time()),
@@ -329,13 +350,3 @@ class AntClient(
                 tokens=None,
             ),
         )
-
-    async def get_chat_response_with_tokens(
-        self,
-        prompt: ChatMessages,
-        prompt_ids: list[int],
-        model: str,
-        sampling_args: SamplingArgs,
-        tools: list[Tool] | None,
-    ) -> ChatResponse:
-        raise NotImplementedError("TITO is not yet implemented for Anthropic client.")

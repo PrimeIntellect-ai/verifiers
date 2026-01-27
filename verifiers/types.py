@@ -93,8 +93,8 @@ class ToolMessage(CustomBaseModel):
 ChatMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ChatMessages = list[ChatMessage]
 
-Message = TextMessage | ChatMessage
-Messages = TextMessages | ChatMessages
+Message = ChatMessage
+Messages = ChatMessages
 
 
 class Tool(CustomBaseModel):
@@ -128,25 +128,13 @@ class ResponseMessage(AssistantMessage):
     tokens: ResponseTokens | None = None
 
 
-class TextResponse(CustomBaseModel):
-    type: Literal["text_response"] = "text_response"
-    id: str
-    created: int
-    model: str
-    usage: Usage | None = None
-    message: ResponseMessage  # cannot call tools
-
-
-class ChatResponse(CustomBaseModel):
-    type: Literal["chat_response"] = "chat_response"
+class Response(CustomBaseModel):
     id: str
     created: int
     model: str
     usage: Usage | None = None
     message: ResponseMessage  # can call tools
 
-
-Response = TextResponse | ChatResponse | None
 
 Info = dict[str, Any]
 SamplingArgs = dict[str, Any]

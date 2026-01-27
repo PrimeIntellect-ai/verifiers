@@ -3,10 +3,9 @@ from functools import lru_cache
 from typing import Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletionToolParam
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
 import verifiers as vf
-from verifiers.types import Messages, SamplingArgs
 from verifiers.utils.message_utils import concat_messages
 
 _TOKENS_CLIENT: AsyncOpenAI | None = None
@@ -26,7 +25,7 @@ def get_tokens_client(client: AsyncOpenAI) -> AsyncOpenAI:
 
 async def tokenize_vllm(
     client: AsyncOpenAI,
-    messages: Messages,
+    messages: str | list[ChatCompletionMessageParam],
     tools: list[ChatCompletionToolParam] | None,
     model: str,
     extra_kwargs: dict = {},
@@ -68,21 +67,11 @@ async def tokenize_vllm(
         raise vf.ModelError from e
 
 
-def prepare_sampling_args_for_token_prompts(
-    sampling_args: SamplingArgs,
-) -> SamplingArgs:
-    """Ensures necessary fields are set for token prompts to work."""
-    sampling_args["logprobs"] = True
-    extra_body = dict(return_token_ids=True)
-    if "extra_body" in sampling_args:
-        sampling_args["extra_body"].update(extra_body)
-    else:
-        sampling_args["extra_body"] = extra_body
-    return sampling_args
-
-
 async def get_prompt_ids(
-    state: vf.State, prompt_messages: Messages, client: AsyncOpenAI
+    state: vf.State,
+    prompt_messages: list[ChatCompletionMessageParam],
+    oai_tools: list[ChatCompletionToolParam] | None,
+    client: AsyncOpenAI,
 ) -> list[int]:
     """
     Build prompt_ids (token prompt) corresponding to prompt_messages. We assume
@@ -154,7 +143,7 @@ async def get_prompt_ids(
     if state.get("_cached_suffix_ids") is None:
         dummy_content = "World!"
         dummy_messages = cast(
-            vf.Messages,
+            list[ChatCompletionMessageParam],
             [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": dummy_content},
@@ -163,13 +152,13 @@ async def get_prompt_ids(
         dummy_content_ids = await tokenize_vllm(
             client=client,
             messages=dummy_content,
-            tools=state["oai_tools"],
+            tools=oai_tools,
             model=state["model"],
         )
         dummy_messages_ids = await tokenize_vllm(
             client=client,
             messages=dummy_messages,
-            tools=state["oai_tools"],
+            tools=oai_tools,
             model=state["model"],
             extra_kwargs=dict(add_generation_prompt=False),
         )

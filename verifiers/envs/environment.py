@@ -24,8 +24,10 @@ from typing import (
 from anthropic import Anthropic, AsyncAnthropic
 from datasets import Dataset
 from openai import AsyncOpenAI, OpenAI
+from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
+from verifiers.clients import resolve_client
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -43,6 +45,7 @@ from verifiers.types import (
     StartCallback,
     State,
     Tool,
+    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
@@ -51,10 +54,6 @@ from verifiers.utils.save_utils import (
     make_dataset,
     save_generate_outputs,
     states_to_generate_metadata,
-)
-from verifiers.utils.token_utils import (
-    get_prompt_ids,
-    prepare_sampling_args_for_token_prompts,
 )
 
 if TYPE_CHECKING:
@@ -232,7 +231,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -268,9 +267,7 @@ class Environment(ABC):
         else:
             if system_prompt is not None:
 
-                def prepend_system_prompt(
-                    prompt: list[ChatMessage],
-                ) -> list[ChatMessage]:
+                def prepend_system_prompt(prompt: Messages) -> list[ChatMessage]:
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
                     )
@@ -398,7 +395,7 @@ class Environment(ABC):
         client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
-        oai_tools: list[Tool] | None = None,  # for backwards compatibility
+        oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
     ) -> Response:
@@ -415,11 +412,9 @@ class Environment(ABC):
         recommended for general use.
         """
         if oai_tools is not None:
-            assert tool_defs is None, "tool_defs and oai_tools cannot be used together"
-            self.logger.warning(
+            raise DeprecationWarning(
                 "The oai_tools parameter is deprecated. Please use tool_defs instead."
             )
-            tool_defs = oai_tools
 
         def resolve_optional_args(
             client: AsyncOpenAI | AsyncAnthropic | None,
@@ -435,56 +430,34 @@ class Environment(ABC):
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
+            message_type = message_type or self.message_type
+            assert message_type is not None
             vf_client = (
-                vf.Client.from_client(client) if client is not None else state["client"]
+                resolve_client(client, message_type, self.interleaved_rollouts)
+                if client is not None
+                else state["client"]
             )
+            assert vf_client is not None
             vf_client.set_interleaved_thinking(self.interleaved_thinking)
             model = model or state["model"]
-            assert vf_client is not None and model is not None
+            assert model is not None
             tool_defs = tool_defs or state["tool_defs"]
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
-            message_type = message_type or self.message_type
             return vf_client, model, tool_defs, sampling_args, message_type
 
         vf_client, model, tool_defs, sampling_args, message_type = (
             resolve_optional_args(client, model, tool_defs, sampling_args, message_type)
         )
 
-        if self.interleaved_rollouts:
-            assert isinstance(prompt, list), (
-                "Prompt must be a list of messages for interleaved rollouts."
-            )
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
-            prompt_ids = await get_prompt_ids(state, prompt, vf_client.client)
-            response = await vf_client.get_chat_response_with_tokens(
-                prompt=prompt,
-                prompt_ids=prompt_ids,
-                model=model,
-                sampling_args=sampling_args,
-                tools=tool_defs,
-            )
-        else:
-            if message_type == "completion":
-                assert isinstance(prompt, str)
-                response = await vf_client.get_text_response(
-                    prompt=prompt,
-                    model=model,
-                    sampling_args=sampling_args,
-                )
-            elif message_type == "chat":
-                assert isinstance(prompt, list)
-                response = await vf_client.get_chat_response(
-                    prompt=prompt,
-                    model=model,
-                    tools=tool_defs,
-                    sampling_args=sampling_args,
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported client type: {client.__class__.__name__}"
-                )
+        response = await vf_client.get_response(
+            prompt=prompt,
+            model=model,
+            tools=tool_defs,
+            sampling_args=sampling_args,
+            state=state,  # only used to build tokens prompt in OpenAIChatCompletionsTokenClient
+        )
 
         return response
 
@@ -510,11 +483,14 @@ class Environment(ABC):
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
 
-        state["prompt"] = [
-            prompt if isinstance(prompt, str) else to_chat_message(prompt)  # type: ignore[arg-type]
-            for prompt in input["prompt"]
-        ]
-        state["client"] = vf.Client.from_client(client)
+        state["prompt"] = (
+            [UserMessage(content=input["prompt"])]
+            if isinstance(input["prompt"], str)
+            else [to_chat_message(dict(message)) for message in input["prompt"]]
+        )
+        state["client"] = resolve_client(
+            client, self.message_type, self.interleaved_rollouts
+        )
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False

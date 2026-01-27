@@ -1,12 +1,7 @@
 from verifiers.types import (
     AssistantMessage,
-    ChatMessage,
-    ChatResponse,
     Messages,
-    MessageType,
     Response,
-    TextMessage,
-    TextResponse,
     TrajectoryStepTokens,
 )
 
@@ -58,27 +53,12 @@ async def parse_response_tokens(
     )
 
 
-def parse_text_response(response: TextResponse) -> TextMessage:
-    return response.message.content or ""
-
-
-def parse_chat_response(response: ChatResponse) -> ChatMessage:
-    message = response.message
-    chat_message = AssistantMessage(
+async def parse_response_message(response: Response) -> Messages:
+    response_message = response.message
+    message = AssistantMessage(
         role="assistant",
-        content=message.content,
-        reasoning_content=message.reasoning_content,
-        tool_calls=message.tool_calls,
+        content=response_message.content,
+        reasoning_content=response_message.reasoning_content,
+        tool_calls=response_message.tool_calls,
     )
-    return chat_message
-
-
-async def parse_response_message(
-    response: Response, message_type: MessageType
-) -> Messages:
-    if message_type == "chat":
-        assert isinstance(response, ChatResponse)
-        return [parse_chat_response(response)]
-    else:
-        assert isinstance(response, TextResponse)
-        return parse_text_response(response)
+    return [message]
