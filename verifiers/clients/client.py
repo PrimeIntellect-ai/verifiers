@@ -35,7 +35,9 @@ class Client(
     def setup_client(self, config: ClientConfig) -> ClientT: ...
 
     @abstractmethod
-    def to_native_text_messages(self, messages: TextMessages) -> TextMessagesT: ...
+    def to_native_text_prompt(
+        self, messages: TextMessages
+    ) -> tuple[TextMessagesT, dict]: ...
 
     @abstractmethod
     async def get_native_text_response(
@@ -51,7 +53,9 @@ class Client(
     def from_native_text_response(self, response: TextResponseT) -> TextResponse: ...
 
     @abstractmethod
-    def to_native_chat_messages(self, messages: ChatMessages) -> ChatMessagesT: ...
+    def to_native_chat_prompt(
+        self, messages: ChatMessages
+    ) -> tuple[ChatMessagesT, dict]: ...
 
     @abstractmethod
     async def get_native_chat_response(
@@ -76,9 +80,9 @@ class Client(
         model: str,
         sampling_args: SamplingArgs,
     ) -> TextResponse:
-        native_prompt = self.to_native_text_messages(prompt)
+        native_prompt, kwargs = self.to_native_text_prompt(prompt)
         native_response = await self.get_native_text_response(
-            native_prompt, model, sampling_args
+            native_prompt, model, sampling_args, **kwargs
         )
         await self.raise_from_native_text_response(native_response)
         response = self.from_native_text_response(native_response)
@@ -91,9 +95,9 @@ class Client(
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
     ) -> ChatResponse:
-        native_prompt = self.to_native_chat_messages(prompt)
+        native_prompt, kwargs = self.to_native_chat_prompt(prompt)
         native_response = await self.get_native_chat_response(
-            native_prompt, model, sampling_args, tools
+            native_prompt, model, sampling_args, tools, **kwargs
         )
         await self.raise_from_native_chat_response(native_response)
         response = self.from_native_chat_response(native_response)

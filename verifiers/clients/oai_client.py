@@ -98,8 +98,8 @@ class OAIClient(
             http_client=setup_http_client(config),
         )
 
-    def to_native_text_messages(self, messages: TextMessages) -> str:
-        return messages
+    def to_native_text_prompt(self, messages: TextMessages) -> tuple[str, dict]:
+        return messages, {}
 
     @handle_overlong_prompt
     async def get_native_text_response(
@@ -145,7 +145,7 @@ class OAIClient(
                 case "length":
                     return "length"
                 case _:
-                    return "unknown"
+                    return None
 
         def parse_is_truncated(response: Completion) -> bool:
             return response.choices[0].finish_reason == "length"
@@ -191,9 +191,9 @@ class OAIClient(
             ),
         )
 
-    def to_native_chat_messages(
+    def to_native_chat_prompt(
         self, messages: ChatMessages
-    ) -> list[ChatCompletionMessageParam]:
+    ) -> tuple[list[ChatCompletionMessageParam], dict]:
         """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
 
         def legacy_from_chat_message(message: dict) -> ChatCompletionMessageParam:
@@ -259,14 +259,14 @@ class OAIClient(
                 raise ValueError(f"Invalid chat message: {message}")
 
         try:
-            return [from_chat_message(message) for message in messages]
+            return [from_chat_message(message) for message in messages], {}
         except Exception:
             self.logger.warning(
                 "Found invalid chat message type, falling back to legacy dict parsing"
             )
             return [
                 legacy_from_chat_message(cast(dict, message)) for message in messages
-            ]
+            ], {}
 
     @handle_overlong_prompt
     async def get_native_chat_response(
@@ -359,7 +359,7 @@ class OAIClient(
                 case "tool_calls":
                     return "tool_calls"
                 case _:
-                    return "unknown"
+                    return None
 
         def parse_tokens(response: ChatCompletion) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"

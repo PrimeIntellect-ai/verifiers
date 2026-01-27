@@ -104,7 +104,7 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
-FinishReason = Literal["stop", "length", "tool_calls", "unknown"]
+FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 
 class ResponseTokens(CustomBaseModel):
@@ -117,7 +117,7 @@ class ResponseTokens(CustomBaseModel):
 
 class ResponseMessage(AssistantMessage):
     finish_reason: FinishReason
-    is_truncated: bool
+    is_truncated: bool | None
     tokens: ResponseTokens | None = None
 
 
