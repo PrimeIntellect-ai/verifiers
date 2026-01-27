@@ -383,7 +383,6 @@ def load_environment(
     Protocol(
         actors=[THINKER, GUESSER],
         envs=[env],
-        dataset=dataset,
     )
 
     return env

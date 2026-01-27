@@ -41,9 +41,10 @@ class EnvEvalState:
     total: int = 0  # total rollouts
     num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
     rollouts_per_example: int = 1  # rollouts per example (from config)
-    reward: float = 0.0  # reward (rolling avg)
+    reward: float = 0.0  # reward (rolling avg, 0.0 for multi-agent)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     error_rate: float = 0.0  # error rate (rolling avg)
+    is_multiagent: bool = False  # whether this env has multiple actors
 
     # path where results were saved (if save_results=true)
     save_path: Path | None = None
@@ -192,6 +193,7 @@ class EvalDisplay(BaseDisplay):
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
         error_rate: float | None = None,
+        is_multiagent: bool | None = None,
         error: str | None = None,
         save_path: Path | None = None,
         log_message: str | None = None,
@@ -226,6 +228,9 @@ class EvalDisplay(BaseDisplay):
         if error_rate is not None:
             env_state.error_rate = error_rate
 
+        if is_multiagent is not None:
+            env_state.is_multiagent = is_multiagent
+
         if error is not None:
             env_state.error = error
 
@@ -247,10 +252,17 @@ class EvalDisplay(BaseDisplay):
         return "white"
 
     def _make_metrics_row(
-        self, reward: float, metrics: dict[str, float], error_rate: float
+        self,
+        reward: float,
+        metrics: dict[str, float],
+        error_rate: float,
+        is_multiagent: bool = False,
     ) -> Table | None:
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
-        metrics = {"reward": reward, **metrics}
+        # For multi-agent, per-actor rewards are already in metrics
+        # For single-agent, show combined "reward"
+        if not is_multiagent:
+            metrics = {"reward": reward, **metrics}
 
         # build the left-aligned metrics text
         metrics_text = Text()
@@ -364,7 +376,7 @@ class EvalDisplay(BaseDisplay):
 
         # metrics display
         metrics_content = self._make_metrics_row(
-            env_state.reward, env_state.metrics, env_state.error_rate
+            env_state.reward, env_state.metrics, env_state.error_rate, env_state.is_multiagent
         )
 
         # log message for special events

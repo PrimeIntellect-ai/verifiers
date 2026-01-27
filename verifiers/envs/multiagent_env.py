@@ -35,7 +35,6 @@ from verifiers.types import (
     State,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import concat_messages
 
 if TYPE_CHECKING:
     from verifiers.envs.actor import Actor
@@ -178,44 +177,18 @@ class MultiAgentEnv(MultiTurnEnv):
         await super().add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
-    # Prompt Building
+    # Prompt Building Hook
     # -------------------------------------------------------------------------
 
-    async def get_prompt_messages(self, state: State) -> Messages:
-        """
-        Build prompt messages, injecting current actor's system prompt.
-
-        For each turn:
-        1. First turn: Use initial prompt from dataset
-        2. Later turns: Concatenate previous turn + env_response()
-        3. Always: Replace/prepend system prompt for current actor
-
-        This ensures each actor sees their own instructions regardless
-        of what accumulated in the conversation context.
-        """
+    def modify_prompt_messages(self, messages: Messages, state: State) -> Messages:
+        """Inject current actor's system prompt."""
         current_actor_id = state["extras"]["current_actor_id"]
-
-        # Build base messages
-        if len(state["trajectory"]) == 0:
-            # First turn: start with dataset prompt
-            messages = list(state["prompt"])  # Copy to avoid mutation
-        else:
-            # Later turns: build from previous turn + env_response
-            prev_turn_prompt = state["trajectory"][-1]["prompt"]
-            prev_turn_completion = state["trajectory"][-1]["completion"]
-            messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-            env_response = await self.env_response(messages, state)
-            messages = concat_messages([messages, env_response])
-
-        # Inject current actor's system prompt
         actor = self.get_actor(current_actor_id)
         system_prompt = actor.system_prompt
 
         if messages and messages[0].get("role") == "system":
-            # Replace existing system prompt with actor's
             messages[0] = {"role": "system", "content": system_prompt}
         elif system_prompt:
-            # Prepend actor's system prompt
             messages = [{"role": "system", "content": system_prompt}] + messages
 
         return messages

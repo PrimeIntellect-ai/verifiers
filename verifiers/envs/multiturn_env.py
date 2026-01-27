@@ -88,15 +88,20 @@ class MultiTurnEnv(vf.Environment):
         pass
 
     async def get_prompt_messages(self, state: State) -> Messages:
-        """Override for rollouts with non-linear message sequences."""
+        """Build prompt messages for the current turn."""
         if len(state["trajectory"]) == 0:
-            return state["prompt"]
+            messages = list(state["prompt"])  # Copy to avoid mutation
         else:
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
-            return concat_messages([messages, env_response])
+            messages = concat_messages([messages, env_response])
+        return self.modify_prompt_messages(messages, state)
+
+    def modify_prompt_messages(self, messages: Messages, state: State) -> Messages:
+        """Override to transform prompt before sending to model (e.g., inject system prompt)."""
+        return messages
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""

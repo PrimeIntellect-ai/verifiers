@@ -423,37 +423,58 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         env_config: EvalConfig, env_idx: int
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
-        reward_accum = 0
-        metrics_accum = defaultdict(float)
-        error_accum = 0
+        actor_rewards: dict[str, list[float]] = defaultdict(list)
+        metrics_values: dict[str, list[float]] = defaultdict(list)
+        error_count = 0
+        is_multiagent = False
 
         def on_start(total: int) -> None:
-            # total is num_examples * rollouts_per_example
-            # compute actual num_examples (resolves -1 to actual count)
             num_examples = total // env_config.rollouts_per_example
             display.update_env_state(env_idx, total=total, num_examples=num_examples)
 
         def on_progress(all_states: list[State], new_states: list[State]) -> None:
-            nonlocal error_accum, reward_accum, metrics_accum
-
-            # Progress is always rollout-based
+            nonlocal error_count, is_multiagent
             completed = len(all_states)
 
             for s in new_states:
                 if s.get("error") is not None:
-                    error_accum += 1
+                    error_count += 1
+
+                # Track rewards per-actor
+                actor_id = s.get("extras", {}).get("current_actor_id")
                 reward = s.get("reward")
                 if reward is not None:
-                    reward_accum += reward
-                state_metrics = s.get("metrics") or {}
-                for name, value in state_metrics.items():
-                    if value is not None:
-                        metrics_accum[name] += value
+                    key = actor_id if actor_id else "_single"
+                    actor_rewards[key].append(reward)
+                    if actor_id:
+                        is_multiagent = True
 
-            # Compute averages over completed rollouts
-            reward = reward_accum / completed
-            metrics = {name: metrics_accum[name] / completed for name in metrics_accum}
-            error_rate = error_accum / completed
+                # Track metrics (skip *_reward for multi-agent, we compute those ourselves)
+                for name, value in (s.get("metrics") or {}).items():
+                    if value is not None and not (is_multiagent and name.endswith("_reward")):
+                        metrics_values[name].append(value)
+
+            # Build display values
+            metrics: dict[str, float] = {}
+
+            if is_multiagent:
+                # Multi-agent: per-actor rewards first
+                reward = 0.0
+                for aid in sorted(actor_rewards.keys()):
+                    vals = actor_rewards[aid]
+                    if vals:
+                        metrics[aid] = sum(vals) / len(vals)
+            else:
+                # Single-agent: combined reward
+                vals = actor_rewards.get("_single", [])
+                reward = sum(vals) / len(vals) if vals else 0.0
+
+            # Add other metrics
+            for name, vals in metrics_values.items():
+                if vals:
+                    metrics[name] = sum(vals) / len(vals)
+
+            error_rate = error_count / completed if completed > 0 else 0.0
 
             display.update_env_state(
                 env_idx,
@@ -461,6 +482,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 reward=reward,
                 metrics=metrics,
                 error_rate=error_rate,
+                is_multiagent=is_multiagent,
             )
 
         def on_log(message: str) -> None:
