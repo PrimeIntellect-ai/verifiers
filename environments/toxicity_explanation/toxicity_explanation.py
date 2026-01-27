@@ -14,8 +14,6 @@ def load_environment(
     max_examples: int = -1,
     **kwargs,
 ) -> vf.Environment:
-    vf.ensure_keys([judge_api_key_var])
-
     """
     Loads the toxicity explanation environment.
 
@@ -28,6 +26,7 @@ def load_environment(
     Args:
         max_examples: Maximum number of examples to load (-1 for all examples)
     """
+    vf.ensure_keys([judge_api_key_var])
 
     dataset = load_dataset("google/civil_comments", split="train")
 
