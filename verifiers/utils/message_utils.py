@@ -45,12 +45,18 @@ def concat_messages(messages_list: list[Messages | ChatMessage]) -> Messages:
         return out
 
 
+def get_message_dict(message: ChatMessage) -> dict:
+    if isinstance(message, dict):
+        return message
+    return message.model_dump()
+
+
 def message_to_printable(message: ChatMessage) -> ChatMessage:
     """
     Removes image_url objects from message content.
     """
     new_message: dict[str, object] = {}
-    message = message.model_dump()
+    message = get_message_dict(message)
     new_message["role"] = message["role"]
     new_message["content"] = []
     if "tool_calls" in message:

@@ -24,7 +24,6 @@ if sys.version_info < (3, 12):
 else:
     from typing import TypedDict
 
-from openai.types.chat.chat_completion import ChatCompletion
 
 # openai types
 from openai.types.chat.chat_completion_message_tool_call import (
@@ -34,12 +33,11 @@ from openai.types.chat.chat_completion_role import ChatCompletionRole  # noqa: F
 from openai.types.chat.chat_completion_tool_param import (
     ChatCompletionToolParam,  # noqa: F401
 )
-from openai.types.completion import Completion
 from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # typing aliases
 ClientType = Literal["openai", "anthropic"]
@@ -49,43 +47,98 @@ TextMessage = str
 TextMessages = str
 
 
-class SystemMessage(BaseModel):
+class CustomBaseModel(BaseModel):
+    """Allow extras and dict-like attribute access."""
+
+    model_config = ConfigDict(extra="allow")
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
+class SystemMessage(CustomBaseModel):
     role: Literal["system"] = "system"
     content: str
 
 
-class UserMessage(BaseModel):
+class UserMessage(CustomBaseModel):
     role: Literal["user"] = "user"
     content: str
 
 
-class ToolCall(BaseModel):
+class ToolCall(CustomBaseModel):
     id: str
     name: str
     arguments: str
 
 
-class AssistantMessage(BaseModel):
+class AssistantMessage(CustomBaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] | None = None
 
 
-class ToolMessage(BaseModel):
+class ToolMessage(CustomBaseModel):
     role: Literal["tool"] = "tool"
     tool_call_id: str
     content: str
 
 
-ChatMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
+ChatMessage: TypeAlias = (
+    SystemMessage | UserMessage | AssistantMessage | ToolMessage | dict
+)  # dict for legacy support
 ChatMessages = list[ChatMessage]
 
 Message = TextMessage | ChatMessage
 Messages = TextMessages | ChatMessages
 
-TextResponse = Completion
-ChatResponse = ChatCompletion
+
+class Usage(CustomBaseModel):
+    prompt_tokens: int
+    reasoning_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+FinishReason = Literal["stop", "length", "tool_calls", "unknown"]
+
+
+class ResponseTokens(CustomBaseModel):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+
+
+class ResponseMessage(AssistantMessage):
+    finish_reason: FinishReason
+    is_truncated: bool
+    tokens: ResponseTokens | None = None
+
+
+class TextResponse(CustomBaseModel):
+    type: Literal["text_response"] = "text_response"
+    id: str
+    created: int
+    model: str
+    usage: Usage | None = None
+    message: ResponseMessage  # cannot call tools
+
+
+class ChatResponse(CustomBaseModel):
+    type: Literal["chat_response"] = "chat_response"
+    id: str
+    created: int
+    model: str
+    usage: Usage | None = None
+    message: ResponseMessage  # can call tools
+
+
 Response = TextResponse | ChatResponse | None
 
 Tool = ChatCompletionToolParam

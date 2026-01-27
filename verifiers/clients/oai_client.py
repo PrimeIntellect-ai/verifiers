@@ -1,9 +1,14 @@
 import functools
 import os
+from typing import cast
 
 from openai import AsyncOpenAI, BadRequestError
 from openai.types import Completion
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageParam,
+)
 from openai.types.chat.chat_completion_assistant_message_param import (
     ChatCompletionAssistantMessageParam,
 )
@@ -34,13 +39,18 @@ from verifiers.types import (
     ChatMessages,
     ChatResponse,
     ClientConfig,
+    FinishReason,
+    ResponseMessage,
+    ResponseTokens,
     SamplingArgs,
     SystemMessage,
     TextMessage,
     TextMessages,
     TextResponse,
     Tool,
+    ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_http_client
@@ -117,41 +127,137 @@ class OAIClient(
             raise EmptyModelResponseError("Model returned no content")
 
     def to_text_message(self, response: Completion) -> TextResponse:
-        return response
+        def parse_usage(response: Completion) -> Usage | None:
+            if response.usage is None:
+                return None
+            return Usage(
+                prompt_tokens=response.usage.prompt_tokens,
+                reasoning_tokens=0,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+            )
+
+        def parse_finish_reason(response: Completion) -> FinishReason:
+            match response.choices[0].finish_reason:
+                case "stop":
+                    return "stop"
+                case "length":
+                    return "length"
+                case _:
+                    return "unknown"
+
+        def parse_is_truncated(response: Completion) -> bool:
+            return response.choices[0].finish_reason == "length"
+
+        def parse_tokens(response: Completion) -> ResponseTokens | None:
+            if not hasattr(response.choices[0], "prompt_token_ids"):
+                return None
+            if not hasattr(response.choices[0], "token_ids"):
+                return None
+            if not hasattr(response.choices[0], "logprobs"):
+                return None
+            if response.choices[0].logprobs is None:
+                return None
+            if not hasattr(response.choices[0].logprobs, "token_logprobs"):
+                return None
+            prompt_ids = getattr(response.choices[0], "prompt_token_ids")
+            prompt_mask = [0] * len(prompt_ids)
+            completion_ids = getattr(response.choices[0], "token_ids")
+            completion_mask = [1] * len(completion_ids)
+            completion_logprobs = getattr(
+                response.choices[0].logprobs, "token_logprobs"
+            )
+            return ResponseTokens(
+                prompt_ids=prompt_ids,
+                prompt_mask=prompt_mask,
+                completion_ids=completion_ids,
+                completion_mask=completion_mask,
+                completion_logprobs=completion_logprobs,
+            )
+
+        return TextResponse(
+            id=response.id,
+            created=response.created,
+            model=response.model,
+            usage=parse_usage(response),
+            message=ResponseMessage(
+                content=response.choices[0].text,
+                finish_reason=parse_finish_reason(response),
+                is_truncated=parse_is_truncated(response),
+                tokens=parse_tokens(response),
+                reasoning_content=None,
+                tool_calls=None,
+            ),
+        )
 
     def from_chat_message(self, message: ChatMessage) -> ChatCompletionMessageParam:
         """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
-        if isinstance(message, SystemMessage):
-            return ChatCompletionSystemMessageParam(
-                role="system", content=message.content
-            )
-        elif isinstance(message, UserMessage):
-            return ChatCompletionUserMessageParam(role="user", content=message.content)
-        elif isinstance(message, AssistantMessage):
-            if message.tool_calls is not None:
-                oai_tool_calls = [
-                    ChatCompletionMessageFunctionToolCallParam(
-                        type="function",
-                        id=tool_call.id,
-                        function=Function(
-                            name=tool_call.name,
-                            arguments=tool_call.arguments,
-                        ),
-                    )
-                    for tool_call in message.tool_calls
-                ]
-                return ChatCompletionAssistantMessageParam(
-                    role="assistant", content=message.content, tool_calls=oai_tool_calls
+
+        def legacy_from_chat_message(message: dict) -> ChatCompletionMessageParam:
+            if message["role"] == "system":
+                return ChatCompletionSystemMessageParam(
+                    role="system", content=message["content"]
                 )
-            return ChatCompletionAssistantMessageParam(
-                role="assistant", content=message.content
+            elif message["role"] == "user":
+                return ChatCompletionUserMessageParam(
+                    role="user", content=message["content"]
+                )
+            elif message["role"] == "assistant":
+                if message["tool_calls"] is not None:
+                    oai_tool_calls = [
+                        ChatCompletionMessageFunctionToolCallParam(
+                            type="function",
+                            id=tool_call.id,
+                            function=Function(
+                                name=tool_call.name,
+                                arguments=tool_call.arguments,
+                            ),
+                        )
+                        for tool_call in message["tool_calls"]
+                    ]
+                    return ChatCompletionAssistantMessageParam(
+                        role="assistant",
+                        content=message["content"],
+                        tool_calls=oai_tool_calls,
+                    )
+                return ChatCompletionAssistantMessageParam(
+                    role="assistant", content=message["content"]
+                )
+            elif message["role"] == "tool":
+                return ChatCompletionToolMessageParam(
+                    role="tool",
+                    tool_call_id=message["tool_call_id"],
+                    content=message["content"],
+                )
+            else:
+                raise ValueError(f"Invalid chat message: {message}")
+
+        try:
+            if isinstance(message, SystemMessage):
+                return ChatCompletionSystemMessageParam(
+                    role="system", content=message.content
+                )
+            elif isinstance(message, UserMessage):
+                return ChatCompletionUserMessageParam(
+                    role="user", content=message.content
+                )
+            elif isinstance(message, AssistantMessage):
+                return ChatCompletionAssistantMessageParam(
+                    role="assistant", content=message.content
+                )
+            elif isinstance(message, ToolMessage):
+                return ChatCompletionToolMessageParam(
+                    role="tool",
+                    tool_call_id=message.tool_call_id,
+                    content=message.content,
+                )
+            else:
+                raise ValueError(f"Invalid chat message: {message}")
+        except Exception:
+            self.logger.warning(
+                f"Found invalid chat message type: {type(message)}, falling back to legacy dict parsing"
             )
-        elif isinstance(message, ToolMessage):
-            return ChatCompletionToolMessageParam(
-                role="tool", tool_call_id=message.tool_call_id, content=message.content
-            )
-        else:
-            raise ValueError(f"Invalid chat message: {message}")
+            return legacy_from_chat_message(cast(dict, message))
 
     @handle_overlong_prompt
     async def get_chat_response(
@@ -200,10 +306,110 @@ class OAIClient(
 
     def to_chat_message(self, response: ChatCompletion) -> ChatResponse:
         """Converts a OpenAI ChatCompletion to a vf.ChatResponse."""
-        return response
+
+        def parse_tool_calls(
+            response: ChatCompletion,
+        ) -> list[ToolCall]:
+            result: list[ToolCall] = []
+            for tool_call in response.choices[0].message.tool_calls or []:
+                if isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
+                    result.append(
+                        ToolCall(
+                            id=tool_call.id,
+                            name=tool_call.function.name,
+                            arguments=tool_call.function.arguments,
+                        )
+                    )
+                else:
+                    self.logger.warning(
+                        f"Unsupported tool call type: {type(tool_call)}"
+                    )
+            return result
+
+        def parse_usage(response: ChatCompletion) -> Usage | None:
+            if response.usage is None:
+                return None
+            return Usage(
+                prompt_tokens=response.usage.prompt_tokens,
+                reasoning_tokens=0,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+            )
+
+        def parse_is_truncated(response: ChatCompletion) -> bool:
+            return response.choices[0].finish_reason == "length"
+
+        def parse_finish_reason(
+            response: ChatCompletion,
+        ) -> FinishReason:
+            match response.choices[0].finish_reason:
+                case "stop":
+                    return "stop"
+                case "length":
+                    return "length"
+                case "tool_calls":
+                    return "tool_calls"
+                case _:
+                    return "unknown"
+
+        def parse_tokens(response: ChatCompletion) -> ResponseTokens | None:
+            assert len(response.choices) == 1, "Response should always have one choice"
+            choice = response.choices[0]
+            if not hasattr(choice, "token_ids"):
+                return None
+            if not hasattr(response, "prompt_token_ids"):
+                return None
+            if not hasattr(response.choices[0], "logprobs"):
+                return None
+            if response.choices[0].logprobs is None:
+                return None
+            has_logprobs_obj = (
+                hasattr(response.choices[0].logprobs, "content")
+                and response.choices[0].logprobs.content is not None
+            )
+            has_logprobs_dict = (
+                isinstance(response.choices[0].logprobs, dict)
+                and "content" in response.choices[0].logprobs.keys()
+                and response.choices[0].logprobs["content"] is not None
+            )
+            if not (has_logprobs_obj or has_logprobs_dict):
+                return None
+            prompt_ids = getattr(response, "prompt_token_ids")
+            prompt_mask = [0] * len(prompt_ids)
+            completion_ids = getattr(response.choices[0], "token_ids")
+            completion_mask = [1] * len(completion_ids)
+            if has_logprobs_obj:
+                assert response.choices[0].logprobs.content is not None
+                logprobs_content = response.choices[0].logprobs.content
+                completion_logprobs = [token.logprob for token in logprobs_content]
+            else:
+                assert isinstance(response.choices[0].logprobs, dict)
+                logprobs_content = response.choices[0].logprobs["content"]
+                completion_logprobs = [token["logprob"] for token in logprobs_content]
+            return ResponseTokens(
+                prompt_ids=prompt_ids,
+                prompt_mask=prompt_mask,
+                completion_ids=completion_ids,
+                completion_mask=completion_mask,
+                completion_logprobs=completion_logprobs,
+            )
+
+        return ChatResponse(
+            id=response.id,
+            created=response.created,
+            model=response.model,
+            usage=parse_usage(response),
+            message=ResponseMessage(
+                content=response.choices[0].message.content,
+                finish_reason=parse_finish_reason(response),
+                is_truncated=parse_is_truncated(response),
+                tokens=parse_tokens(response),
+                tool_calls=parse_tool_calls(response),
+            ),
+        )
 
     @handle_overlong_prompt
-    async def get_message_with_tokens(
+    async def get_chat_with_tokens(
         self,
         prompt: ChatMessages,
         prompt_ids: list[int],
@@ -221,8 +427,9 @@ class OAIClient(
             **extra_body,
         )
 
-        return await self.client.post(
+        response = await self.client.post(
             "/chat/completions/tokens",
             body=body,
             cast_to=ChatCompletion,
         )
+        return self.to_chat_message(response)

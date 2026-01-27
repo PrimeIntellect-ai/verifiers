@@ -14,8 +14,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
+    parse_response_message,
     parse_response_tokens,
 )
 
@@ -103,12 +102,10 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages: Messages,
         response: Response,
     ):
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
-        is_truncated = response_is_truncated or (
+        assert response is not None
+        completion_messages = await parse_response_message(response, self.message_type)
+        tokens = await parse_response_tokens(response, self.max_seq_len)
+        is_truncated = response.message.is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
         trajectory_step = TrajectoryStep(

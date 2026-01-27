@@ -96,11 +96,11 @@ class Client(
         return normalized_response
 
     @abstractmethod
-    async def get_message_with_tokens(
+    async def get_chat_with_tokens(
         self,
         prompt: ChatMessages,
         prompt_ids: list[int],
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> ChatResponseT: ...
+    ) -> ChatResponse: ...
