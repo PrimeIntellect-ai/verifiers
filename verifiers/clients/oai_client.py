@@ -44,7 +44,6 @@ from verifiers.types import (
     ResponseTokens,
     SamplingArgs,
     SystemMessage,
-    TextMessage,
     TextMessages,
     TextResponse,
     Tool,
@@ -85,7 +84,9 @@ def handle_overlong_prompt(func):
 
 
 class OAIClient(
-    Client[AsyncOpenAI, Completion, ChatCompletion, str, ChatCompletionMessageParam]
+    Client[
+        AsyncOpenAI, Completion, ChatCompletion, str, list[ChatCompletionMessageParam]
+    ]
 ):
     """Wrapper for AsyncOpenAI client."""
 
@@ -97,11 +98,11 @@ class OAIClient(
             http_client=setup_http_client(config),
         )
 
-    def from_text_message(self, message: TextMessage) -> str:
-        return message
+    def to_native_text_messages(self, messages: TextMessages) -> str:
+        return messages
 
     @handle_overlong_prompt
-    async def get_text_response(
+    async def get_native_text_response(
         self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
     ) -> Completion:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
@@ -114,7 +115,7 @@ class OAIClient(
         )
         return response
 
-    async def raise_from_text_response(self, response: Completion) -> None:
+    async def raise_from_native_text_response(self, response: Completion) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -126,7 +127,7 @@ class OAIClient(
         if not response.choices[0].text:
             raise EmptyModelResponseError("Model returned no content")
 
-    def to_text_message(self, response: Completion) -> TextResponse:
+    def from_native_text_response(self, response: Completion) -> TextResponse:
         def parse_usage(response: Completion) -> Usage | None:
             if response.usage is None:
                 return None
@@ -190,7 +191,9 @@ class OAIClient(
             ),
         )
 
-    def from_chat_message(self, message: ChatMessage) -> ChatCompletionMessageParam:
+    def to_native_chat_messages(
+        self, messages: ChatMessages
+    ) -> list[ChatCompletionMessageParam]:
         """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
 
         def legacy_from_chat_message(message: dict) -> ChatCompletionMessageParam:
@@ -232,7 +235,7 @@ class OAIClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        try:
+        def from_chat_message(message: ChatMessage) -> ChatCompletionMessageParam:
             if isinstance(message, SystemMessage):
                 return ChatCompletionSystemMessageParam(
                     role="system", content=message.content
@@ -241,6 +244,7 @@ class OAIClient(
                 return ChatCompletionUserMessageParam(
                     role="user", content=message.content
                 )
+
             elif isinstance(message, AssistantMessage):
                 return ChatCompletionAssistantMessageParam(
                     role="assistant", content=message.content
@@ -253,14 +257,19 @@ class OAIClient(
                 )
             else:
                 raise ValueError(f"Invalid chat message: {message}")
+
+        try:
+            return [from_chat_message(message) for message in messages]
         except Exception:
             self.logger.warning(
-                f"Found invalid chat message type: {type(message)}, falling back to legacy dict parsing"
+                "Found invalid chat message type, falling back to legacy dict parsing"
             )
-            return legacy_from_chat_message(cast(dict, message))
+            return [
+                legacy_from_chat_message(cast(dict, message)) for message in messages
+            ]
 
     @handle_overlong_prompt
-    async def get_chat_response(
+    async def get_native_chat_response(
         self,
         prompt: list[ChatCompletionMessageParam],
         model: str,
@@ -287,7 +296,7 @@ class OAIClient(
             )
         return response
 
-    async def raise_from_chat_response(self, response: ChatCompletion) -> None:
+    async def raise_from_native_chat_response(self, response: ChatCompletion) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -304,7 +313,7 @@ class OAIClient(
                 "Model returned no content and did not call any tools"
             )
 
-    def to_chat_message(self, response: ChatCompletion) -> ChatResponse:
+    def from_native_chat_response(self, response: ChatCompletion) -> ChatResponse:
         """Converts a OpenAI ChatCompletion to a vf.ChatResponse."""
 
         def parse_tool_calls(
@@ -409,7 +418,7 @@ class OAIClient(
         )
 
     @handle_overlong_prompt
-    async def get_chat_with_tokens(
+    async def get_chat_response_with_tokens(
         self,
         prompt: ChatMessages,
         prompt_ids: list[int],
@@ -432,4 +441,4 @@ class OAIClient(
             body=body,
             cast_to=ChatCompletion,
         )
-        return self.to_chat_message(response)
+        return self.from_native_chat_response(response)

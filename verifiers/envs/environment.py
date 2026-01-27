@@ -23,7 +23,6 @@ from typing import (
 
 from datasets import Dataset
 from openai import OpenAI
-from requests import Response
 
 import verifiers as vf
 from verifiers.clients.client import Client
@@ -31,7 +30,6 @@ from verifiers.clients.oai_client import OAIClient
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    AssistantMessage,
     ChatMessage,
     ClientConfig,
     DatasetBuilder,
@@ -40,18 +38,17 @@ from verifiers.types import (
     Messages,
     MessageType,
     ProgressCallback,
+    Response,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
-    SystemMessage,
     Tool,
-    ToolMessage,
-    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.message_utils import to_chat_message
 from verifiers.utils.save_utils import (
     make_dataset,
     save_generate_outputs,
@@ -272,7 +269,7 @@ class Environment(ABC):
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
                     )
-                    if prompt and prompt[0].role == "system":
+                    if prompt and prompt[0]["role"] == "system":
                         return prompt
                     sys_msg = cast(
                         ChatMessage, {"role": "system", "content": system_prompt}
@@ -449,7 +446,7 @@ class Environment(ABC):
             )
             sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
             prompt_ids = await get_prompt_ids(state, prompt, client.client)
-            response = await client.get_message_with_tokens(
+            response = await client.get_chat_response_with_tokens(
                 prompt=prompt,
                 prompt_ids=prompt_ids,
                 model=model,
@@ -459,14 +456,14 @@ class Environment(ABC):
         else:
             if message_type == "completion":
                 assert isinstance(prompt, str)
-                response = await client.get_text(
+                response = await client.get_text_response(
                     prompt=prompt,
                     model=model,
                     sampling_args=sampling_args,
                 )
             elif message_type == "chat":
                 assert isinstance(prompt, list)
-                response = await client.get_message(
+                response = await client.get_chat_response(
                     prompt=prompt,
                     model=model,
                     tools=oai_tools,
@@ -501,19 +498,10 @@ class Environment(ABC):
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
 
-        def make_message(prompt: dict):
-            if prompt["role"] == "system":
-                return SystemMessage.model_validate(prompt)
-            elif prompt["role"] == "user":
-                return UserMessage.model_validate(prompt)
-            elif prompt["role"] == "assistant":
-                return AssistantMessage.model_validate(prompt)
-            elif prompt["role"] == "tool":
-                return ToolMessage.model_validate(prompt)
-            else:
-                raise ValueError(f"Unknown role: {prompt['role']}")
-
-        state["prompt"] = [make_message(prompt) for prompt in input["prompt"]]
+        state["prompt"] = [
+            prompt if isinstance(prompt, str) else to_chat_message(prompt)  # type: ignore[arg-type]
+            for prompt in input["prompt"]
+        ]
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args

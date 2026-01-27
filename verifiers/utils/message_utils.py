@@ -5,7 +5,14 @@ from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
 )
 
-from verifiers.types import ChatMessage, Messages
+from verifiers.types import (
+    AssistantMessage,
+    ChatMessage,
+    Messages,
+    SystemMessage,
+    ToolMessage,
+    UserMessage,
+)
 
 
 def strip_nones_from_content(messages: list[ChatMessage]) -> list[ChatMessage]:
@@ -45,7 +52,20 @@ def concat_messages(messages_list: list[Messages | ChatMessage]) -> Messages:
         return out
 
 
-def get_message_dict(message: ChatMessage) -> dict:
+def to_chat_message(message: dict) -> ChatMessage:
+    if message["role"] == "system":
+        return SystemMessage.model_validate(message)
+    elif message["role"] == "user":
+        return UserMessage.model_validate(message)
+    elif message["role"] == "assistant":
+        return AssistantMessage.model_validate(message)
+    elif message["role"] == "tool":
+        return ToolMessage.model_validate(message)
+    else:
+        raise ValueError(f"Unknown role: {message['role']}")
+
+
+def to_message_dict(message: ChatMessage) -> dict:
     if isinstance(message, dict):
         return message
     return message.model_dump()
@@ -56,7 +76,7 @@ def message_to_printable(message: ChatMessage) -> ChatMessage:
     Removes image_url objects from message content.
     """
     new_message: dict[str, object] = {}
-    message = get_message_dict(message)
+    message = to_message_dict(message)
     new_message["role"] = message["role"]
     new_message["content"] = []
     if "tool_calls" in message:
@@ -99,7 +119,8 @@ def sanitize_tool_calls(messages: Messages):
     if not isinstance(messages, list):
         return messages
     sanitized_messages = []
-    for m in messages:
+    message_dicts = [to_message_dict(m) for m in messages]
+    for m in message_dicts:
         if "tool_calls" in m:
             assistant_msg = cast(ChatCompletionAssistantMessageParam, m)
             tool_calls_json = []
