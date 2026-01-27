@@ -19,6 +19,12 @@ from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
 
+# Multi-agent support
+from .envs.actor import Actor  # noqa # isort: skip
+from .envs.protocol import Protocol  # noqa # isort: skip
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
+from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
+
 # main imports
 from .envs.env_group import EnvGroup
 from .envs.singleturn_env import SingleTurnEnv
@@ -55,6 +61,11 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "MultiAgentRubric",
+    # Multi-agent support
+    "Actor",
+    "Protocol",
+    "MultiAgentEnv",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",

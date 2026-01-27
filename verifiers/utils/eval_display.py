@@ -8,6 +8,7 @@ Provides a visual progress display that works in two modes:
 
 import json
 import time
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -496,7 +497,20 @@ class EvalDisplay(BaseDisplay):
             examples_str = str(num_examples)
             rollouts_str = str(config.rollouts_per_example)
 
-            reward = f"{env_state.reward:.3f}"
+            # Per-actor rewards for multi-agent, otherwise single reward
+            results = env_state.results
+            actor_ids = results.get("actor_id") if results else None
+            if actor_ids:
+                actor_rewards: dict[str, list[float]] = defaultdict(list)
+                for aid, rew in zip(actor_ids, results["reward"]):
+                    actor_rewards[aid].append(rew)
+                reward_parts = [
+                    f"{aid}: {sum(rews)/len(rews):.2f}"
+                    for aid, rews in actor_rewards.items()
+                ]
+                reward = " | ".join(reward_parts)
+            else:
+                reward = f"{env_state.reward:.3f}"
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -568,77 +582,149 @@ class EvalDisplay(BaseDisplay):
         """Create detailed content for a single environment's summary."""
         items: list[Panel] = []
 
+        # Check if multi-agent (has actor_id field)
+        actor_ids = results.get("actor_id", [])
+        is_multiagent = bool(actor_ids)
+
         # Example 0 prompt/completion
         if results["prompt"] and results["completion"]:
-            prompt = messages_to_printable(results["prompt"][0])
-            completion = messages_to_printable(results["completion"][0])
-            reward_0 = results["reward"][0] if results["reward"] else 0.0
-            error_0 = results["state"][0].get("error") if results["state"] else None
+            if is_multiagent:
+                # Multi-agent: show one panel per unique actor for example 0
+                example_ids = results.get("example_id", [])
+                first_example_id = example_ids[0] if example_ids else 0
 
-            # Prompt panel
-            items.append(
-                Panel(
-                    _format_messages(prompt),
-                    title="[dim]example 0 — prompt[/dim]",
-                    border_style="dim",
+                # Find first occurrence of each actor in example 0
+                seen_actors: set[str] = set()
+                for idx, (eid, aid) in enumerate(zip(example_ids, actor_ids)):
+                    if eid != first_example_id:
+                        continue
+                    if aid in seen_actors:
+                        continue
+                    seen_actors.add(aid)
+
+                    if len(seen_actors) > 4:  # Limit to 4 actors max
+                        break
+
+                    completion = messages_to_printable(results["completion"][idx])
+                    reward_i = results["reward"][idx]
+                    error_i = results["state"][idx].get("error")
+
+                    completion_text = _format_messages(completion)
+                    if error_i is not None:
+                        completion_text.append("\n\nerror: ", style="bold red")
+                        completion_text.append(str(ErrorChain(error_i)), style="bold red")
+                    completion_text.append("\n\nreward: ", style="bold cyan")
+                    completion_text.append(f"{reward_i:.3f}", style="bold cyan")
+
+                    items.append(
+                        Panel(
+                            completion_text,
+                            title=f"[dim]example 0 — {aid}[/dim]",
+                            border_style="dim",
+                        )
+                    )
+            else:
+                # Single-agent: original behavior
+                prompt = messages_to_printable(results["prompt"][0])
+                completion = messages_to_printable(results["completion"][0])
+                reward_0 = results["reward"][0] if results["reward"] else 0.0
+                error_0 = results["state"][0].get("error") if results["state"] else None
+
+                # Prompt panel
+                items.append(
+                    Panel(
+                        _format_messages(prompt),
+                        title="[dim]example 0 — prompt[/dim]",
+                        border_style="dim",
+                    )
                 )
-            )
 
-            # Completion panel (with error if any)
-            completion_text = _format_messages(completion)
-            if error_0 is not None:
-                completion_text.append("\n\nerror: ", style="bold red")
-                completion_text.append(str(ErrorChain(error_0)), style="bold red")
-            completion_text.append("\n\nreward: ", style="bold cyan")
-            completion_text.append(f"{reward_0:.3f}", style="bold cyan")
+                # Completion panel (with error if any)
+                completion_text = _format_messages(completion)
+                if error_0 is not None:
+                    completion_text.append("\n\nerror: ", style="bold red")
+                    completion_text.append(str(ErrorChain(error_0)), style="bold red")
+                completion_text.append("\n\nreward: ", style="bold cyan")
+                completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 
-            items.append(
-                Panel(
-                    completion_text,
-                    title="[dim]example 0 — completion[/dim]",
-                    border_style="dim",
+                items.append(
+                    Panel(
+                        completion_text,
+                        title="[dim]example 0 — completion[/dim]",
+                        border_style="dim",
+                    )
                 )
-            )
 
         # Reward distribution
         rewards = results["reward"]
         if rewards:
-            # All rollouts histogram
-            all_rollouts_content = Group(
-                Text("all rollouts:", style="bold"),
-                _make_histogram(rewards, bins=8, width=25),
-            )
+            if is_multiagent:
+                # Multi-agent: show per-actor histograms
+                actor_rewards: dict[str, list[float]] = defaultdict(list)
+                for aid, rew in zip(actor_ids, rewards):
+                    actor_rewards[aid].append(rew)
 
-            # Per-example averages if multiple rollouts
-            rollouts_per = config.rollouts_per_example
-            if rollouts_per > 1 and len(rewards) >= rollouts_per:
-                num_examples = len(rewards) // rollouts_per
-                example_avgs = []
-                for i in range(num_examples):
-                    example_rewards = rewards[i * rollouts_per : (i + 1) * rollouts_per]
-                    example_avgs.append(sum(example_rewards) / len(example_rewards))
+                # Build per-actor content with histogram for each
+                actor_contents = []
+                for aid, rews in actor_rewards.items():
+                    avg_rew = sum(rews) / len(rews) if rews else 0.0
+                    actor_content = Group(
+                        Text(f"{aid}: ", style="bold cyan"),
+                        Text(f"{avg_rew:.3f} avg ({len(rews)} rollouts)"),
+                        _make_histogram(rews, bins=6, width=20),
+                    )
+                    actor_contents.append(actor_content)
 
-                per_example_content = Group(
-                    Text("per-example avg:", style="bold"),
-                    _make_histogram(example_avgs, bins=8, width=25),
-                )
+                # Display side by side if 2 actors, otherwise stacked
+                if len(actor_contents) == 2:
+                    reward_display = Columns(actor_contents, equal=True, expand=True)
+                else:
+                    reward_display = Group(*actor_contents)
 
-                # Side by side
-                reward_display = Columns(
-                    [all_rollouts_content, per_example_content],
-                    equal=True,
-                    expand=True,
+                items.append(
+                    Panel(
+                        reward_display,
+                        title="[dim]reward distribution (per-actor)[/dim]",
+                        border_style="dim",
+                    )
                 )
             else:
-                reward_display = all_rollouts_content
-
-            items.append(
-                Panel(
-                    reward_display,
-                    title="[dim]reward distribution[/dim]",
-                    border_style="dim",
+                # Single-agent: original behavior
+                all_rollouts_content = Group(
+                    Text("all rollouts:", style="bold"),
+                    _make_histogram(rewards, bins=8, width=25),
                 )
-            )
+
+                # Per-example averages if multiple rollouts
+                rollouts_per = config.rollouts_per_example
+                if rollouts_per > 1 and len(rewards) >= rollouts_per:
+                    num_examples = len(rewards) // rollouts_per
+                    example_avgs = []
+                    for i in range(num_examples):
+                        example_rewards = rewards[i * rollouts_per : (i + 1) * rollouts_per]
+                        example_avgs.append(sum(example_rewards) / len(example_rewards))
+
+                    per_example_content = Group(
+                        Text("per-example avg:", style="bold"),
+                        _make_histogram(example_avgs, bins=8, width=25),
+                    )
+
+                    # Side by side
+                    reward_display = Columns(
+                        [all_rollouts_content, per_example_content],
+                        equal=True,
+                        expand=True,
+                    )
+                else:
+                    reward_display = all_rollouts_content
+
+                items.append(
+                    Panel(
+                        reward_display,
+                        title="[dim]reward distribution[/dim]",
+                        border_style="dim",
+                    )
+                )
 
         # Metrics
         if env_state.metrics:
