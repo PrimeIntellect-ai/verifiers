@@ -1,10 +1,11 @@
 import time
 from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 
+from anthropic import AsyncAnthropic
 from datasets import Dataset, concatenate_datasets
+from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.clients import Client
 from verifiers.types import RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
@@ -266,7 +267,7 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
@@ -293,3 +294,9 @@ class EnvGroup(vf.Environment):
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)
+
+    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
+        """Set the interleaved thinking flag for this environment group and all sub-environments."""
+        self.interleaved_thinking = interleaved_thinking
+        for env in self.envs:
+            env.set_interleaved_thinking(interleaved_thinking)

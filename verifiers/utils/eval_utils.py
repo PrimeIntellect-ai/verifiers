@@ -334,13 +334,14 @@ async def run_evaluation(
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
+    # set interleaved thinking (will propagate to vf.Client)
+    logger.info(f"Setting interleaved thinking: {config.interleaved_thinking}")
+    vf_env.set_interleaved_thinking(config.interleaved_thinking)
+
     # set extra environment kwargs
-    extra_env_kwargs = {
-        "interleaved_thinking": config.interleaved_thinking,
-        **config.extra_env_kwargs,
-    }
-    logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
-    vf_env.set_kwargs(**extra_env_kwargs)
+    if config.extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+        vf_env.set_kwargs(**config.extra_env_kwargs)
 
     # run evaluation
     results_path = get_eval_results_path(config)
