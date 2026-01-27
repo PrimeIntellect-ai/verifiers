@@ -176,7 +176,7 @@ class TestSingleTurnEnv:
     async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
         """Test rollout with task and info parameters."""
         input = make_input(
-            prompt=["Test question"],
+            prompt=[{"role": "user", "content": "Test question"}],
             answer="Test answer",
             task="math",
             info={"difficulty": "easy"},
@@ -239,7 +239,11 @@ class TestSingleTurnEnv:
         """Test async generation with basic inputs."""
         inputs_list = [
             make_input(),
-            make_input(example_id=1, prompt=["What is 3+3?"], answer="6"),
+            make_input(
+                example_id=1,
+                prompt=[{"role": "user", "content": "What is 3+3?"}],
+                answer="6",
+            ),
         ]
 
         # Mock the rubric scoring to set rewards in states
@@ -355,7 +359,9 @@ class TestSingleTurnEnv:
 
         # Test chat rollout
         chat_state = await chat_env.rollout(
-            input=make_input(prompt=["Hello"], answer="Hi"),
+            input=make_input(
+                prompt=[{"role": "user", "content": "Hello"}], answer="Hi"
+            ),
             client=mock_openai_client,
             model="test-model",
         )

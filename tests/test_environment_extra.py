@@ -138,7 +138,7 @@ async def test_get_model_response_completion_rejects_tools(
     env = make_dummy_env(mock_openai_client, message_type="completion")
     with pytest.raises(vf.ModelError):
         state = await env.init_state(
-            input=make_input(prompt=["Complete this"]),
+            input=make_input(prompt=[{"role": "user", "content": "Complete this"}]),
             client=mock_openai_client,
             model="test-model",
         )
