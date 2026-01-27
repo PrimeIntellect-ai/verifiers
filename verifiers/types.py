@@ -42,9 +42,6 @@ from pydantic import BaseModel, ConfigDict
 ClientType = Literal["openai", "anthropic"]
 MessageType = Literal["chat", "completion"]
 
-TextMessage = str
-TextMessages = str
-
 
 class CustomBaseModel(BaseModel):
     """Allow extras and dict-like attribute access."""
@@ -59,6 +56,11 @@ class CustomBaseModel(BaseModel):
 
     def __contains__(self, key):
         return hasattr(self, key)
+
+
+class TextMessage(CustomBaseModel):
+    role: Literal["text"] = "text"
+    content: str
 
 
 class SystemMessage(CustomBaseModel):
@@ -90,11 +92,10 @@ class ToolMessage(CustomBaseModel):
     content: str
 
 
-ChatMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
-ChatMessages = list[ChatMessage]
-
-Message = ChatMessage
-Messages = ChatMessages
+Message: TypeAlias = (
+    SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage
+)
+Messages = list[Message]
 
 
 class Tool(CustomBaseModel):
@@ -111,15 +112,15 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
-FinishReason = Literal["stop", "length", "tool_calls"] | None
-
-
 class ResponseTokens(CustomBaseModel):
     prompt_ids: list[int]
     prompt_mask: list[int]
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+
+
+FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 
 class ResponseMessage(AssistantMessage):

@@ -24,7 +24,6 @@ from anthropic.types import (
 from verifiers.clients.client import Client
 from verifiers.types import (
     AssistantMessage,
-    ChatMessages,
     ClientConfig,
     FinishReason,
     Message,
@@ -126,7 +125,7 @@ class AnthropicMessagesClient(
         return setup_anthropic_client(config)
 
     async def to_native_prompt(
-        self, messages: ChatMessages
+        self, messages: Messages
     ) -> tuple[list[AnthropicMessageParam], dict]:
         def _parse_tool_args(tc_args: str | dict | object) -> dict:
             """Parse tool arguments from string or dict."""
@@ -185,6 +184,7 @@ class AnthropicMessagesClient(
                 raise ValueError(f"Invalid chat message: {message}")
 
         def from_chat_message(message: Message) -> AnthropicMessageParam | None:
+            assert not isinstance(message, str)
             if isinstance(message, SystemMessage):
                 return None
             elif isinstance(message, UserMessage):

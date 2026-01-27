@@ -6,7 +6,7 @@ from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import Messages, RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     pass
@@ -211,7 +211,7 @@ class EnvGroup(vf.Environment):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: vf.ChatMessages | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},

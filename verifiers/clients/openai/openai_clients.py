@@ -36,10 +36,9 @@ from verifiers.errors import (
 )
 from verifiers.types import (
     AssistantMessage,
-    ChatMessage,
-    ChatMessages,
     ClientConfig,
     FinishReason,
+    Message,
     Messages,
     Response,
     ResponseMessage,
@@ -236,7 +235,7 @@ class OAIChatCompletionsClient(
         return setup_openai_client(config)
 
     async def to_native_prompt(
-        self, messages: ChatMessages
+        self, messages: Messages
     ) -> tuple[OpenAIChatMessages, dict]:
         def from_legacy_chat_message(message: dict) -> OpenAIChatMessage:
             if message["role"] == "system":
@@ -277,7 +276,7 @@ class OAIChatCompletionsClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def from_chat_message(message: ChatMessage) -> OpenAIChatMessage:
+        def from_chat_message(message: Message) -> OpenAIChatMessage:
             if isinstance(message, SystemMessage):
                 return ChatCompletionSystemMessageParam(
                     role="system", content=message.content
@@ -365,6 +364,7 @@ class OAIChatCompletionsClient(
                 messages=prompt,
                 **normalize_sampling_args(sampling_args),
             )
+        self.logger.debug(f"{response.model_dump_json(indent=2)}")
         return response
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:

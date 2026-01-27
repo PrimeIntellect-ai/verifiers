@@ -31,10 +31,10 @@ from verifiers.clients import resolve_client
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    ChatMessage,
     DatasetBuilder,
     GenerateOutputs,
     LogCallback,
+    Message,
     Messages,
     MessageType,
     ProgressCallback,
@@ -44,12 +44,12 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
+    TextMessage,
     Tool,
-    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import to_chat_message
+from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.save_utils import (
     make_dataset,
     save_generate_outputs,
@@ -70,7 +70,7 @@ class Environment(ABC):
         dataset: Dataset | DatasetBuilder | None = None,
         eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -239,7 +239,7 @@ class Environment(ABC):
         """Ensure prompt column exists."""
         if "prompt" not in dataset.column_names:
 
-            def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
+            def format_prompt_fn(prompt_str: str) -> Messages:
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
@@ -267,14 +267,14 @@ class Environment(ABC):
         else:
             if system_prompt is not None:
 
-                def prepend_system_prompt(prompt: Messages) -> list[ChatMessage]:
+                def prepend_system_prompt(prompt: Messages) -> Messages:
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
                     )
                     if prompt and prompt[0]["role"] == "system":
                         return prompt
                     sys_msg = cast(
-                        ChatMessage, {"role": "system", "content": system_prompt}
+                        Message, {"role": "system", "content": system_prompt}
                     )
                     return [sys_msg, *prompt]
 
@@ -304,7 +304,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -484,9 +484,9 @@ class Environment(ABC):
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
 
         state["prompt"] = (
-            [UserMessage(content=input["prompt"])]
+            [TextMessage(content=input["prompt"])]
             if isinstance(input["prompt"], str)
-            else [to_chat_message(dict(message)) for message in input["prompt"]]
+            else [from_raw_message(dict(m)) for m in input["prompt"]]
         )
         state["client"] = resolve_client(
             client, self.message_type, self.interleaved_rollouts

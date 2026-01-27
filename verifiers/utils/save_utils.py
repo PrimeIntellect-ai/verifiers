@@ -17,7 +17,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
 )
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
+from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_results_path
 
 logger = logging.getLogger(__name__)
@@ -130,12 +130,8 @@ def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[
             "scoring_ms": state.get("timing", {}).get("scoring_ms", 0.0),
         }
         # sanitize messages
-        sanitized_state["prompt"] = sanitize_tool_calls(
-            messages_to_printable(state["prompt"])
-        )
-        sanitized_state["completion"] = sanitize_tool_calls(
-            messages_to_printable(state["completion"])
-        )
+        sanitized_state["prompt"] = messages_to_printable(state["prompt"])
+        sanitized_state["completion"] = messages_to_printable(state["completion"])
         # use repr for error
         if state.get("error") is not None:
             sanitized_state["error"] = repr(state.get("error"))
