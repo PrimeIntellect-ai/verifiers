@@ -2,8 +2,10 @@ import logging
 from abc import abstractmethod
 from typing import final
 
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
+
 import verifiers as vf
-from verifiers.clients import Client
 from verifiers.types import (
     Messages,
     Response,
@@ -125,7 +127,7 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:

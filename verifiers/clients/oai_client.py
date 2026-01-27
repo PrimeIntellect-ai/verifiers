@@ -7,6 +7,7 @@ from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessageFunctionToolCall,
     ChatCompletionMessageParam,
+    ChatCompletionToolParam,
 )
 from openai.types.chat.chat_completion_assistant_message_param import (
     ChatCompletionAssistantMessageParam,
@@ -24,6 +25,7 @@ from openai.types.chat.chat_completion_tool_message_param import (
 from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
+from openai.types.shared_params import FunctionDefinition
 
 from verifiers.clients.client import Client
 from verifiers.errors import (
@@ -84,7 +86,12 @@ def handle_overlong_prompt(func):
 
 class OAIClient(
     Client[
-        AsyncOpenAI, Completion, ChatCompletion, str, list[ChatCompletionMessageParam]
+        AsyncOpenAI,
+        Completion,
+        ChatCompletion,
+        str,
+        list[ChatCompletionMessageParam],
+        ChatCompletionToolParam,
     ]
 ):
     """Wrapper for AsyncOpenAI client."""
@@ -241,6 +248,23 @@ class OAIClient(
                 )
 
             elif isinstance(message, AssistantMessage):
+                if message.tool_calls is not None:
+                    oai_tool_calls = [
+                        ChatCompletionMessageFunctionToolCallParam(
+                            type="function",
+                            id=tool_call.id,
+                            function=Function(
+                                name=tool_call.name,
+                                arguments=tool_call.arguments,
+                            ),
+                        )
+                        for tool_call in message.tool_calls
+                    ]
+                    return ChatCompletionAssistantMessageParam(
+                        role="assistant",
+                        content=message.content,
+                        tool_calls=oai_tool_calls,
+                    )
                 return ChatCompletionAssistantMessageParam(
                     role="assistant", content=message.content
                 )
@@ -263,13 +287,25 @@ class OAIClient(
                 legacy_from_chat_message(cast(dict, message)) for message in messages
             ], {}
 
+    def to_native_tool(self, tool: Tool) -> ChatCompletionToolParam:
+        """Convert a unified Tool to OpenAI's ChatCompletionToolParam format."""
+        return ChatCompletionToolParam(
+            type="function",
+            function=FunctionDefinition(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                strict=True,
+            ),
+        )
+
     @handle_overlong_prompt
     async def get_native_chat_response(
         self,
         prompt: list[ChatCompletionMessageParam],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[Tool] | None,
+        tools: list[ChatCompletionToolParam] | None,
     ) -> ChatCompletion:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             if "max_tokens" in sampling_args:

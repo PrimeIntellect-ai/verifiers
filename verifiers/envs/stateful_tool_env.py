@@ -3,13 +3,9 @@ import json
 from abc import abstractmethod
 from typing import Callable, cast
 
-from openai.types.chat import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionFunctionToolParam,
-)
-
 import verifiers as vf
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
+from verifiers.types import Tool
+from verifiers.utils.tool_utils import convert_func_to_tool
 
 
 def filter_signature(func, args_to_skip):
@@ -60,9 +56,7 @@ class StatefulToolEnv(vf.ToolEnv):
             **kwargs,
         )
         self.tools: list[Callable] = tools or []
-        self.oai_tools: list[ChatCompletionFunctionToolParam] = [
-            convert_func_to_oai_tool(tool) for tool in self.tools
-        ]
+        self.tool_defs: list[Tool] = [convert_func_to_tool(tool) for tool in self.tools]
         self.tool_map: dict[str, Callable] = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.tools
@@ -80,10 +74,8 @@ class StatefulToolEnv(vf.ToolEnv):
         Assumes all non-skipped args use standard JSON types (no remaining $ref/$defs).
         """
         self.tools.append(tool)
-        oai_tool = convert_func_to_oai_tool(filter_signature(tool, args_to_skip))
-        assert "function" in oai_tool
-        assert "parameters" in oai_tool["function"]
-        params = oai_tool["function"]["parameters"]
+        tool_def = convert_func_to_tool(filter_signature(tool, args_to_skip))
+        params = tool_def.parameters
         for arg in args_to_skip:
             if (
                 "properties" in params
@@ -104,9 +96,9 @@ class StatefulToolEnv(vf.ToolEnv):
                 cast(list[str], params["required"]).remove(arg)
         if "$defs" in params and not params["$defs"]:
             params.pop("$defs")
-        if self.oai_tools is None:
-            self.oai_tools = []
-        self.oai_tools.append(oai_tool)
+        if self.tool_defs is None:
+            self.tool_defs = []
+        self.tool_defs.append(tool_def)
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map[tool_name] = tool
         self.skipped_args[tool_name] = args_to_skip
@@ -115,10 +107,8 @@ class StatefulToolEnv(vf.ToolEnv):
     def remove_tool(self, tool: Callable):
         self.tools.remove(tool)
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
-        self.oai_tools = [
-            oai_tool
-            for oai_tool in self.oai_tools
-            if oai_tool["function"]["name"] != tool_name
+        self.tool_defs = [
+            tool_def for tool_def in self.tool_defs if tool_def.name != tool_name
         ]
         self.tool_map.pop(tool_name)
         self.skipped_args.pop(tool_name)
@@ -140,16 +130,14 @@ class StatefulToolEnv(vf.ToolEnv):
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
         assert isinstance(messages, list)
-        assert "tool_calls" in messages[-1]
+        last_msg = cast(vf.AssistantMessage, messages[-1])
+        assert last_msg.tool_calls is not None
         tool_messages = []
-        last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
-        for tool_call in last_msg.get("tool_calls", []):
-            tool_call_id: str = tool_call.get("id", "")
+        for tool_call in last_msg.tool_calls:
+            tool_call_id = tool_call.id
             try:
-                tool_name: str = tool_call.get("function", {}).get("name", "")
-                parsed_args = json.loads(
-                    tool_call.get("function", {}).get("arguments", "")
-                )
+                tool_name: str = tool_call.name
+                parsed_args = json.loads(tool_call.arguments)
                 if not isinstance(parsed_args, dict):
                     raise ValueError(
                         f"Expected tool arguments to be a dict, got {type(parsed_args).__name__}: {parsed_args}"
@@ -174,21 +162,16 @@ class StatefulToolEnv(vf.ToolEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
             try:
-                tool_message: vf.Message = await self.call_tool(
-                    tool_name, tool_args, tool_call_id
-                )
+                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e
                 tool_messages.append(
-                    cast(
-                        vf.Message,
-                        {
-                            "role": "tool",
-                            "content": self.error_formatter(e),
-                            "tool_call_id": tool_call_id,
-                        },
+                    vf.ToolMessage(
+                        role="tool",
+                        content=self.error_formatter(e),
+                        tool_call_id=tool_call_id,
                     )
                 )
 

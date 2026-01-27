@@ -2,7 +2,9 @@ import json
 import time
 
 from anthropic import AsyncAnthropic
-from anthropic.types import ContentBlock, MessageParam
+
+# Anthropic native tool type
+from anthropic.types import ContentBlock, MessageParam, ToolParam
 from anthropic.types.completion import Completion
 from anthropic.types.message import Message
 
@@ -24,7 +26,9 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_anthropic_client
 
 
-class AntClient(Client[AsyncAnthropic, Completion, Message, str, list[MessageParam]]):
+class AntClient(
+    Client[AsyncAnthropic, Completion, Message, str, list[MessageParam], ToolParam]
+):
     """Wrapper for AsyncAnthropic client."""
 
     @staticmethod
@@ -88,12 +92,19 @@ class AntClient(Client[AsyncAnthropic, Completion, Message, str, list[MessagePar
 
         return prompt, {"system": system}
 
+    def to_native_tool(self, tool: Tool) -> ToolParam:
+        return ToolParam(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.parameters,
+        )
+
     async def get_native_chat_response(
         self,
         prompt: list[MessageParam],
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[Tool] | None,
+        tools: list[ToolParam] | None,
         **kwargs,
     ) -> Message:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
@@ -108,12 +119,21 @@ class AntClient(Client[AsyncAnthropic, Completion, Message, str, list[MessagePar
 
             return {k: v for k, v in sampling_args.items() if v is not None}
 
-        return await self.client.messages.create(
-            model=model,
-            messages=prompt,
-            **normalize_sampling_args(sampling_args),
-            **kwargs,
-        )
+        if tools:
+            return await self.client.messages.create(
+                model=model,
+                messages=prompt,
+                tools=tools,
+                **normalize_sampling_args(sampling_args),
+                **kwargs,
+            )
+        else:
+            return await self.client.messages.create(
+                model=model,
+                messages=prompt,
+                **normalize_sampling_args(sampling_args),
+                **kwargs,
+            )
 
     async def raise_from_native_chat_response(self, response: Message) -> None:
         pass

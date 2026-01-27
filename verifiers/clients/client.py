@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, overload
 
 from verifiers.types import (
     ChatMessages,
@@ -24,10 +24,12 @@ TextMessagesT = TypeVar("TextMessagesT")
 ChatMessagesT = TypeVar("ChatMessagesT")
 TextResponseT = TypeVar("TextResponseT")
 ChatResponseT = TypeVar("ChatResponseT")
+ToolT = TypeVar("ToolT")
 
 
 class Client(
-    ABC, Generic[ClientT, TextResponseT, ChatResponseT, TextMessagesT, ChatMessagesT]
+    ABC,
+    Generic[ClientT, TextResponseT, ChatResponseT, TextMessagesT, ChatMessagesT, ToolT],
 ):
     def __init__(self, client_or_config: ClientT | ClientConfig) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -98,7 +100,7 @@ class Client(
         prompt: ChatMessagesT,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[Tool] | None,
+        tools: list[ToolT] | None,
     ) -> ChatResponseT: ...
 
     @abstractmethod
@@ -108,6 +110,17 @@ class Client(
 
     @abstractmethod
     def from_native_chat_response(self, response: ChatResponseT) -> ChatResponse: ...
+
+    @abstractmethod
+    def to_native_tool(self, tool: Tool) -> ToolT:
+        """Convert a unified Tool to the native tool format for this client."""
+        ...
+
+    def to_native_tools(self, tools: list[Tool] | None) -> list[Any] | None:
+        """Convert a list of unified Tools to native tool format for this client."""
+        if tools is None:
+            return None
+        return [self.to_native_tool(tool) for tool in tools]
 
     async def get_text_response(
         self,
@@ -131,8 +144,9 @@ class Client(
         tools: list[Tool] | None,
     ) -> ChatResponse:
         native_prompt, kwargs = self.to_native_chat_prompt(prompt)
+        native_tools = self.to_native_tools(tools)
         native_response = await self.get_native_chat_response(
-            native_prompt, model, sampling_args, tools, **kwargs
+            native_prompt, model, sampling_args, native_tools, **kwargs
         )
         await self.raise_from_native_chat_response(native_response)
         response = self.from_native_chat_response(native_response)

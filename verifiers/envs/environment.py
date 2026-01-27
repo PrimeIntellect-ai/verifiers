@@ -76,7 +76,7 @@ class Environment(ABC):
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
-        oai_tools: list[Tool] | None = None,
+        tool_defs: list[Tool] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
@@ -88,7 +88,7 @@ class Environment(ABC):
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: MessageType = message_type
-        self.oai_tools: list[Tool] | None = oai_tools
+        self.tool_defs: list[Tool] | None = tool_defs
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
@@ -390,7 +390,7 @@ class Environment(ABC):
         prompt: Messages,
         client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
-        oai_tools: list[Tool] | None = None,
+        tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
     ) -> Response:
@@ -410,7 +410,7 @@ class Environment(ABC):
         def resolve_optional_args(
             client: AsyncOpenAI | AsyncAnthropic | None,
             model: str | None,
-            oai_tools: list[Tool] | None,
+            tool_defs: list[Tool] | None,
             sampling_args: SamplingArgs | None,
             message_type: MessageType | None,
         ) -> tuple[
@@ -426,15 +426,15 @@ class Environment(ABC):
             )
             model = model or state["model"]
             assert vf_client is not None and model is not None
-            oai_tools = oai_tools or state["oai_tools"]
+            tool_defs = tool_defs or state["tool_defs"]
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
             message_type = message_type or self.message_type
-            return vf_client, model, oai_tools, sampling_args, message_type
+            return vf_client, model, tool_defs, sampling_args, message_type
 
-        vf_client, model, oai_tools, sampling_args, message_type = (
-            resolve_optional_args(client, model, oai_tools, sampling_args, message_type)
+        vf_client, model, tool_defs, sampling_args, message_type = (
+            resolve_optional_args(client, model, tool_defs, sampling_args, message_type)
         )
 
         if self.interleaved_rollouts:
@@ -448,7 +448,7 @@ class Environment(ABC):
                 prompt_ids=prompt_ids,
                 model=model,
                 sampling_args=sampling_args,
-                tools=oai_tools,
+                tools=tool_defs,
             )
         else:
             if message_type == "completion":
@@ -463,7 +463,7 @@ class Environment(ABC):
                 response = await vf_client.get_chat_response(
                     prompt=prompt,
                     model=model,
-                    tools=oai_tools,
+                    tools=tool_defs,
                     sampling_args=sampling_args,
                 )
             else:
@@ -504,13 +504,13 @@ class Environment(ABC):
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
-        state["oai_tools"] = None
-        if "info" in state and hasattr(state["info"], "oai_tools"):
-            state["oai_tools"] = state["info"]["oai_tools"]
-        elif hasattr(self, "oai_tools"):
-            state["oai_tools"] = self.oai_tools
+        state["tool_defs"] = None
+        if "info" in state and hasattr(state["info"], "tool_defs"):
+            state["tool_defs"] = state["info"]["tool_defs"]
+        elif hasattr(self, "tool_defs"):
+            state["tool_defs"] = self.tool_defs
         else:
-            state["oai_tools"] = []
+            state["tool_defs"] = []
         state["trajectory"] = []
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None

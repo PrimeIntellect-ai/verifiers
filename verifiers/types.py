@@ -57,6 +57,9 @@ class CustomBaseModel(BaseModel):
     def get(self, key, default=None):
         return getattr(self, key, default)
 
+    def __contains__(self, key):
+        return hasattr(self, key)
+
 
 class SystemMessage(CustomBaseModel):
     role: Literal["system"] = "system"
@@ -94,6 +97,34 @@ ChatMessages = list[ChatMessage]
 
 Message = TextMessage | ChatMessage
 Messages = TextMessages | ChatMessages
+
+
+class Tool(CustomBaseModel):
+    """Unified tool definition that works across OpenAI and Anthropic APIs.
+
+    This is the normalized format for tool definitions. Use client.to_native_tool()
+    to convert to the native format for each API.
+    """
+
+    name: str
+    """Name of the tool/function. Must be a-z, A-Z, 0-9, underscores and dashes."""
+
+    description: str
+    """Description of what the tool does. Used by the model to decide when to call it."""
+
+    parameters: dict[str, object]
+    """JSON Schema object describing the function parameters.
+
+    For OpenAI, this maps to function.parameters.
+    For Anthropic, this maps to input_schema.
+    """
+
+    strict: bool | None = None
+    """OpenAI-specific: Whether to enable strict schema adherence.
+
+    When True, the model will follow the exact schema defined in parameters.
+    Ignored for Anthropic API.
+    """
 
 
 class Usage(CustomBaseModel):
@@ -139,8 +170,6 @@ class ChatResponse(CustomBaseModel):
 
 
 Response = TextResponse | ChatResponse | None
-
-Tool = ChatCompletionToolParam
 
 Info = dict[str, Any]
 SamplingArgs = dict[str, Any]
@@ -203,7 +232,7 @@ class State(dict):
     is_completed: bool
     is_truncated: bool
     stop_condition: str | None
-    oai_tools: list[ChatCompletionToolParam]
+    oai_tools: list[Tool]
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
@@ -261,7 +290,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
-    tools: list[ChatCompletionToolParam] | None
+    tools: list[Tool] | None
 
 
 class GenerateOutputs(TypedDict):
