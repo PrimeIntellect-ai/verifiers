@@ -2,17 +2,15 @@
 Protocol: Orchestrates multiple environments and actors for composable training.
 
 - Protocol: Top-level coordinator owning actors, environments, and dataset
-- EpisodeRequest: Request to spawn a child episode
-- GenerateResult: Result from an episode, supporting tree structures
+- Enables cross-environment spawning via spawn()
+- Manages dataset for multi-environment training
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
-import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, List
 
 from datasets import Dataset
 from openai import AsyncOpenAI
@@ -32,71 +30,6 @@ if TYPE_CHECKING:
 _ctx_client: contextvars.ContextVar[AsyncOpenAI | None] = contextvars.ContextVar("client", default=None)
 _ctx_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("model", default=None)
 _ctx_sampling_args: contextvars.ContextVar[SamplingArgs | None] = contextvars.ContextVar("sampling_args", default=None)
-
-
-
-@dataclass
-class EpisodeRequest:
-    """Request to spawn a child episode with env_id, artifact, and is_trainable flag."""
-
-    env_id: str
-    artifact: Any = None
-    is_trainable: bool = True
-    meta: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        """Generate unique episode ID if not provided."""
-        if "episode_id" not in self.meta:
-            self.meta["episode_id"] = uuid.uuid4().hex
-
-
-@dataclass
-class GenerateResult:
-    """Result from an episode, supporting hierarchical trees with children."""
-
-    actor_id: str
-    state: "State"
-    children: list["GenerateResult"] = field(default_factory=list)
-    is_trainable: bool = True
-    episode_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    parent_episode_id: str | None = None
-
-    def flatten(self) -> list["GenerateResult"]:
-        """Flatten tree into list of all results (depth-first)."""
-        results = [self]
-        for child in self.children:
-            results.extend(child.flatten())
-        return results
-
-    def get_trainable(self) -> list["GenerateResult"]:
-        """Get only trainable results (is_trainable=True) from tree."""
-        return [r for r in self.flatten() if r.is_trainable]
-
-    def get_children_by_actor(self, actor_id: str) -> list["GenerateResult"]:
-        """Get direct children with a specific actor ID."""
-        return [c for c in self.children if c.actor_id == actor_id]
-
-    def add_child(self, child: "GenerateResult") -> None:
-        """Add a child result and set its parent reference."""
-        child.parent_episode_id = self.episode_id
-        self.children.append(child)
-
-    def get_rewards_by_actor(self) -> dict[str, list[float]]:
-        """Collect rewards grouped by actor ID from all descendants."""
-        rewards: dict[str, list[float]] = {}
-        for result in self.flatten():
-            actor_id = result.actor_id
-            reward = result.state.get("reward", 0.0) or 0.0
-            if actor_id not in rewards:
-                rewards[actor_id] = []
-            rewards[actor_id].append(reward)
-        return rewards
-
-    def __repr__(self) -> str:
-        n_children = len(self.children)
-        trainable_str = "trainable" if self.is_trainable else "frozen"
-        children_str = f", {n_children} children" if n_children else ""
-        return f"GenerateResult(actor={self.actor_id!r}, {trainable_str}{children_str})"
 
 
 class Protocol:
@@ -219,16 +152,6 @@ class Protocol:
             n = min(n, len(dataset))
             return dataset.select(range(n))
         return dataset
-
-    def get_inputs(
-        self, n: int = -1, rollouts_per_example: int = 1, seed: int | None = None
-    ) -> List[RolloutInput]:
-        """Get training inputs from the dataset."""
-        dataset = self.get_dataset(n=n, seed=seed)
-        inputs = dataset.to_list()
-        if rollouts_per_example > 1:
-            inputs = inputs * rollouts_per_example
-        return inputs
 
     def get_eval_inputs(
         self, n: int = -1, rollouts_per_example: int = 1, seed: int | None = None

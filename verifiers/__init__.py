@@ -21,7 +21,7 @@ from .envs.tool_env import ToolEnv  # noqa # isort: skip
 
 # Multi-agent support
 from .envs.actor import Actor  # noqa # isort: skip
-from .envs.protocol import EpisodeRequest, GenerateResult, Protocol  # noqa # isort: skip
+from .envs.protocol import Protocol  # noqa # isort: skip
 from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
 from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
 
@@ -63,8 +63,6 @@ __all__ = [
     "MultiAgentRubric",
     # Multi-agent support
     "Actor",
-    "EpisodeRequest",
-    "GenerateResult",
     "Protocol",
     "MultiAgentEnv",
     "TextArenaEnv",
