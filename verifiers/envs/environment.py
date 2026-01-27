@@ -77,6 +77,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
         tool_defs: list[Tool] | None = None,
+        oai_tools: list[Tool] | None = None,  # for backwards compatibility
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
@@ -88,7 +89,11 @@ class Environment(ABC):
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: MessageType = message_type
-        self.tool_defs: list[Tool] | None = tool_defs
+        if oai_tools is not None:
+            self.logger.warning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
+        self.tool_defs: list[Tool] | None = tool_defs or oai_tools
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
@@ -391,6 +396,7 @@ class Environment(ABC):
         client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
+        oai_tools: list[Tool] | None = None,  # for backwards compatibility
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
     ) -> Response:
@@ -406,6 +412,12 @@ class Environment(ABC):
         hand-crafted feature for PRIME-RL's vLLM server extension, and is not
         recommended for general use.
         """
+        if oai_tools is not None:
+            assert tool_defs is None, "tool_defs and oai_tools cannot be used together"
+            self.logger.warning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
+            tool_defs = oai_tools
 
         def resolve_optional_args(
             client: AsyncOpenAI | AsyncAnthropic | None,
@@ -507,6 +519,11 @@ class Environment(ABC):
         state["tool_defs"] = None
         if "info" in state and hasattr(state["info"], "tool_defs"):
             state["tool_defs"] = state["info"]["tool_defs"]
+        if "info" in state and hasattr(state["info"], "oai_tools"):
+            self.logger.warning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
+            state["oai_tools"] = state["info"]["oai_tools"]
         elif hasattr(self, "tool_defs"):
             state["tool_defs"] = self.tool_defs
         else:

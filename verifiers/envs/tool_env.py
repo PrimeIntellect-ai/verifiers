@@ -123,7 +123,7 @@ class ToolEnv(vf.MultiTurnEnv):
         last_message = state["trajectory"][-1]["completion"][-1]
         is_assistant_message = last_message["role"] == "assistant"
         no_tool_calls = (
-            "tool_calls" not in last_message or last_message["tool_calls"] is None
+            "tool_calls" not in last_message or not last_message["tool_calls"]
         )
         return is_assistant_message and no_tool_calls
 
