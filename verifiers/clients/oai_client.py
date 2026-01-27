@@ -1,5 +1,4 @@
 import functools
-import os
 from typing import cast
 
 from openai import AsyncOpenAI, BadRequestError
@@ -52,7 +51,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_http_client
+from verifiers.utils.client_utils import setup_openai_client
 
 
 def handle_overlong_prompt(func):
@@ -90,13 +89,9 @@ class OAIClient(
 ):
     """Wrapper for AsyncOpenAI client."""
 
-    def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
-        return AsyncOpenAI(
-            api_key=os.getenv(config.api_key_var) or "EMPTY",
-            base_url=config.api_base_url,
-            max_retries=config.max_retries,
-            http_client=setup_http_client(config),
-        )
+    @staticmethod
+    def setup_client(config: ClientConfig) -> AsyncOpenAI:
+        return setup_openai_client(config)
 
     def to_native_text_prompt(self, messages: TextMessages) -> tuple[str, dict]:
         return messages, {}

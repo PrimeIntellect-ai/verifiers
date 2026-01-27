@@ -21,17 +21,15 @@ from typing import (
     final,
 )
 
+from anthropic import Anthropic, AsyncAnthropic
 from datasets import Dataset
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 import verifiers as vf
-from verifiers.clients.client import Client
-from verifiers.clients.oai_client import OAIClient
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatMessage,
-    ClientConfig,
     DatasetBuilder,
     GenerateOutputs,
     LogCallback,
@@ -390,7 +388,7 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages,
-        client: Client | None = None,
+        client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
         oai_tools: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -410,43 +408,42 @@ class Environment(ABC):
         """
 
         def resolve_optional_args(
-            client: Client | None,
+            client: AsyncOpenAI | AsyncAnthropic | None,
             model: str | None,
             oai_tools: list[Tool] | None,
             sampling_args: SamplingArgs | None,
             message_type: MessageType | None,
         ) -> tuple[
-            Client,
+            vf.Client,
             str,
             list[Tool] | None,
             SamplingArgs,
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            vf_client = (
+                vf.Client.from_client(client) if client is not None else state["client"]
+            )
             model = model or state["model"]
-            assert client is not None and model is not None
+            assert vf_client is not None and model is not None
             oai_tools = oai_tools or state["oai_tools"]
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
             message_type = message_type or self.message_type
-            return client, model, oai_tools, sampling_args, message_type
+            return vf_client, model, oai_tools, sampling_args, message_type
 
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
+        vf_client, model, oai_tools, sampling_args, message_type = (
+            resolve_optional_args(client, model, oai_tools, sampling_args, message_type)
         )
 
         if self.interleaved_rollouts:
-            assert isinstance(client, OAIClient), (
-                "Interleaved rollouts are only supported for OpenAI clients."
-            )
             assert isinstance(prompt, list), (
                 "Prompt must be a list of messages for interleaved rollouts."
             )
             sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
-            prompt_ids = await get_prompt_ids(state, prompt, client.client)
-            response = await client.get_chat_response_with_tokens(
+            prompt_ids = await get_prompt_ids(state, prompt, vf_client.client)
+            response = await vf_client.get_chat_response_with_tokens(
                 prompt=prompt,
                 prompt_ids=prompt_ids,
                 model=model,
@@ -456,14 +453,14 @@ class Environment(ABC):
         else:
             if message_type == "completion":
                 assert isinstance(prompt, str)
-                response = await client.get_text_response(
+                response = await vf_client.get_text_response(
                     prompt=prompt,
                     model=model,
                     sampling_args=sampling_args,
                 )
             elif message_type == "chat":
                 assert isinstance(prompt, list)
-                response = await client.get_chat_response(
+                response = await vf_client.get_chat_response(
                     prompt=prompt,
                     model=model,
                     tools=oai_tools,
@@ -480,7 +477,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -502,7 +499,7 @@ class Environment(ABC):
             prompt if isinstance(prompt, str) else to_chat_message(prompt)  # type: ignore[arg-type]
             for prompt in input["prompt"]
         ]
-        state["client"] = client
+        state["client"] = vf.Client.from_client(client)
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
@@ -532,7 +529,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -589,7 +586,7 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
@@ -616,7 +613,7 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
@@ -647,7 +644,7 @@ class Environment(ABC):
         self,
         states: list[State],
         model: str,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         state_columns: list[str] | None,
         results_path: Path | None,
         sampling_args: SamplingArgs,
@@ -670,7 +667,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -843,17 +840,22 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: Client | OpenAI,
+        client: OpenAI | Anthropic,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
-            client_config = ClientConfig(
-                api_key_var=client.api_key, api_base_url=str(client.base_url)
+            async_client = AsyncOpenAI(
+                api_key=client.api_key, base_url=str(client.base_url)
             )
-            client = OAIClient(client_config)
+        elif isinstance(client, Anthropic):
+            async_client = AsyncAnthropic(
+                api_key=client.api_key, base_url=str(client.base_url)
+            )
+        else:
+            raise ValueError(f"Unsupported client type: {type(client)}")
         coro = self.generate(
             inputs,
-            client=client,
+            client=async_client,
             **kwargs,
         )
         # check if we're in existing event loop (e.g. Jupyter)
@@ -892,7 +894,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: Client,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -943,7 +945,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI,
+        client: OpenAI | Anthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,

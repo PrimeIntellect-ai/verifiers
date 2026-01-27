@@ -12,12 +12,11 @@ from typing import (
 
 from datasets import Dataset
 
-from verifiers.errors import Error
-
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from verifiers.clients import Client
+    from verifiers.clients.client import Client as VfClient
+    from verifiers.errors import Error as VfError
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -197,7 +196,7 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: Client
+    client: VfClient
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
@@ -211,7 +210,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: VfError | None
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists

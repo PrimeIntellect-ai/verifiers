@@ -10,7 +10,7 @@ from typing import Any, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-from verifiers.clients import AntClient, Client, OAIClient
+from verifiers.utils.client_utils import setup_client
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -21,7 +21,6 @@ import numpy as np
 
 import verifiers as vf
 from verifiers.types import (
-    ClientConfig,
     Endpoints,
     EvalConfig,
     EvalRunConfig,
@@ -318,16 +317,6 @@ def quiet_datasets():
     finally:
         ds_logging.set_verbosity(prev_level)
         enable_progress_bar()
-
-
-def setup_client(config: ClientConfig) -> Client:
-    """Setup a client based on the client config."""
-    if config.client_type == "openai":
-        return OAIClient(config)
-    elif config.client_type == "anthropic":
-        return AntClient(config)
-    else:
-        raise ValueError(f"Unsupported client type: {config.client_type}")
 
 
 async def run_evaluation(

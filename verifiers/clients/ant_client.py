@@ -1,5 +1,4 @@
 import json
-import os
 import time
 
 from anthropic import AsyncAnthropic
@@ -22,22 +21,15 @@ from verifiers.types import (
     Tool,
     ToolCall,
 )
-from verifiers.utils.client_utils import setup_http_client
-
-# Extract system messages and pass as top-level parameter
-# Anthropic API doesn't accept "system" role in messages list
+from verifiers.utils.client_utils import setup_anthropic_client
 
 
 class AntClient(Client[AsyncAnthropic, Completion, Message, str, list[MessageParam]]):
     """Wrapper for AsyncAnthropic client."""
 
-    def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
-        return AsyncAnthropic(
-            api_key=os.getenv(config.api_key_var) or "EMPTY",
-            base_url=config.api_base_url,
-            max_retries=config.max_retries,
-            http_client=setup_http_client(config),
-        )
+    @staticmethod
+    def setup_client(config: ClientConfig) -> AsyncAnthropic:
+        return setup_anthropic_client(config)
 
     def to_native_text_prompt(self, messages: TextMessages) -> tuple[str, dict]:
         return messages, {}

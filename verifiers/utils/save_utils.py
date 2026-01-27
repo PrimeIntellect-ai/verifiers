@@ -6,10 +6,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from anthropic import AsyncAnthropic
 from datasets import Dataset
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from verifiers.clients.client import Client
 from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
@@ -44,7 +45,7 @@ def states_to_generate_metadata(
     env_id: str,
     env_args: dict,
     model: str,
-    client: Client,
+    client: AsyncOpenAI | AsyncAnthropic,
     states: list[State],
     state_columns: list[str] | None,
     sampling_args: SamplingArgs,
@@ -52,7 +53,7 @@ def states_to_generate_metadata(
     results_path: Path | None,
 ) -> GenerateMetadata:
     """Converts a list of states to generate metadata."""
-    base_url = str(client.client) if hasattr(client, "base_url") else ""
+    base_url = str(client) if hasattr(client, "base_url") else ""
     rewards = [s.get("reward", 0.0) for s in states]
     avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
 

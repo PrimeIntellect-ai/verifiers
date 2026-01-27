@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 
 import httpx
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
-from verifiers.types import (
-    ClientConfig,
-)
+from verifiers.types import ClientConfig
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +61,56 @@ def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
         timeout=timeout,
         headers=headers,
     )
+
+
+def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
+    assert config.client_type == "openai"
+    return AsyncOpenAI(
+        api_key=os.getenv(config.api_key_var) or "EMPTY",
+        base_url=config.api_base_url,
+        max_retries=config.max_retries,
+        http_client=setup_http_client(config),
+    )
+
+
+def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
+    assert config.client_type == "anthropic"
+    return AsyncAnthropic(
+        api_key=os.getenv(config.api_key_var) or "EMPTY",
+        base_url=config.api_base_url,
+        max_retries=config.max_retries,
+        http_client=setup_http_client(config),
+    )
+
+
+def setup_client(config: ClientConfig) -> AsyncOpenAI | AsyncAnthropic:
+    if config.client_type == "openai":
+        return setup_openai_client(config)
+    elif config.client_type == "anthropic":
+        return setup_anthropic_client(config)
+    else:
+        raise ValueError(f"Unsupported client type: {config.client_type}")
+
+
+# def setup_client(config: ClientConfig) -> Client:
+#     if config.client_type == "openai":
+#         return OAIClient(config)
+#     elif config.client_type == "anthropic":
+#         return AntClient(config)
+#     else:
+#         raise ValueError(f"Unsupported client type: {config.client_type}")
+#
+#
+# def resolve_client(
+#     client_or_config: Client | ClientConfig | AsyncOpenAI | AsyncAnthropic,
+# ) -> Client:
+#     if isinstance(client_or_config, Client):
+#         return client_or_config
+#     elif isinstance(client_or_config, ClientConfig):
+#         return setup_client(client_or_config)
+#     elif isinstance(client_or_config, AsyncOpenAI):
+#         return OAIClient(client_or_config)
+#     elif isinstance(client_or_config, AsyncAnthropic):
+#         return AntClient(client_or_config)
+#     else:
+#         raise ValueError(f"Unsupported client type: {type(client_or_config)}")

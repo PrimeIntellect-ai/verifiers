@@ -18,7 +18,9 @@ from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
-from .clients import Client, AntClient, OAIClient  # noqa # isort: skip
+from .clients.client import Client  # noqa # isort: skip
+from .clients.ant_client import AntClient  # noqa # isort: skip
+from .clients.oai_client import OAIClient  # noqa # isort: skip
 
 # main imports
 from .envs.env_group import EnvGroup

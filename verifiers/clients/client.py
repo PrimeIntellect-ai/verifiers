@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar, overload
 
 from verifiers.types import (
     ChatMessages,
@@ -12,6 +12,13 @@ from verifiers.types import (
     Tool,
 )
 
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
+
+    from verifiers.clients.ant_client import AntClient
+    from verifiers.clients.oai_client import OAIClient
+
 ClientT = TypeVar("ClientT")
 TextMessagesT = TypeVar("TextMessagesT")
 ChatMessagesT = TypeVar("ChatMessagesT")
@@ -22,17 +29,45 @@ ChatResponseT = TypeVar("ChatResponseT")
 class Client(
     ABC, Generic[ClientT, TextResponseT, ChatResponseT, TextMessagesT, ChatMessagesT]
 ):
-    def __init__(self, config: ClientConfig):
+    def __init__(self, client_or_config: ClientT | ClientConfig) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.config = config
-        self._client = self.setup_client(config)
+        if isinstance(client_or_config, ClientConfig):
+            self._client = self.setup_client(client_or_config)
+        else:
+            self._client = client_or_config
+
+    @overload
+    @classmethod
+    def from_client(cls, client: "AsyncOpenAI") -> "OAIClient": ...
+
+    @overload
+    @classmethod
+    def from_client(cls, client: "AsyncAnthropic") -> "AntClient": ...
+
+    @classmethod
+    def from_client(
+        cls, client: "AsyncOpenAI | AsyncAnthropic"
+    ) -> "OAIClient | AntClient":
+        from anthropic import AsyncAnthropic
+        from openai import AsyncOpenAI
+
+        from verifiers.clients.ant_client import AntClient
+        from verifiers.clients.oai_client import OAIClient
+
+        if isinstance(client, AsyncOpenAI):
+            return OAIClient(client)
+        elif isinstance(client, AsyncAnthropic):
+            return AntClient(client)
+        else:
+            raise TypeError(f"Unsupported client type: {type(client)}")
 
     @property
     def client(self) -> ClientT:
         return self._client
 
+    @staticmethod
     @abstractmethod
-    def setup_client(self, config: ClientConfig) -> ClientT: ...
+    def setup_client(config: ClientConfig) -> ClientT: ...
 
     @abstractmethod
     def to_native_text_prompt(
