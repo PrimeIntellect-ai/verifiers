@@ -4,7 +4,7 @@ Multi-agent environment with turn order management and hierarchical spawning.
 This module provides the base class for multi-agent RL environments, extending
 MultiTurnEnv with support for:
 - Multiple actors with distinct system prompts and sampling args
-- Turn order management via get_initial_actor() / get_next_actor()
+- Turn order management via get_initial_actor() / get_next_actor() / get_active_actors()
 - Per-actor trajectory tagging for credit assignment
 - Per-actor state splitting for individual reward computation
 - Hierarchical episode spawning via Protocol.spawn()
@@ -12,7 +12,13 @@ MultiTurnEnv with support for:
 Key concepts:
 - Actor: A trainable entity with its own system prompt (defined in actor.py)
 - Protocol: Wires actors to environments, enables spawning (defined in protocol.py)
-- State splitting: One game state → multiple actor states for per-actor rewards
+- State splitting: One game state -> multiple actor states for per-actor rewards
+
+Game Implementation:
+- Subclasses implement two main hooks:
+  - build_actor_prompt(actor_id, state): Build fresh prompt for this actor
+  - on_turn_complete(state): Update game state after each turn
+- Framework handles timing automatically
 
 """
 
@@ -66,7 +72,8 @@ class MultiAgentEnv(MultiTurnEnv):
     Subclasses must implement:
     - get_initial_actor(): Who goes first
     - get_next_actor(): Who goes next (for alternating turns)
-    - env_response(): Game logic between turns
+    - build_actor_prompt(): Build prompt for current actor
+    - on_turn_complete(): Game logic after each turn
 
     The Protocol reference is injected by Protocol.__init__ when wiring
     actors to environments.
@@ -95,7 +102,7 @@ class MultiAgentEnv(MultiTurnEnv):
         super().__init__(**kwargs)
 
     # -------------------------------------------------------------------------
-    # Turn Management (Abstract Methods)
+    # Turn Management
     # -------------------------------------------------------------------------
 
     @abstractmethod
@@ -118,11 +125,14 @@ class MultiAgentEnv(MultiTurnEnv):
 
     def get_active_actors(self, state: State) -> list[str]:
         """
-        Return actor IDs that can act this turn.
+        Return actor IDs that act this turn.
 
         Default: Single actor (standard alternating turns).
         Override for simultaneous moves (e.g., RPS returns ["player1", "player2"]).
         """
+        current = state["extras"].get("current_actor_id")
+        if current is None:
+            return [self.get_initial_actor(state)]
         return [self.get_next_actor(state)]
 
     def get_actor(self, actor_id: str) -> "Actor":
@@ -158,6 +168,63 @@ class MultiAgentEnv(MultiTurnEnv):
         return state
 
     # -------------------------------------------------------------------------
+    # Game Hooks (Subclasses Implement These)
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
+        """
+        Build the prompt for the given actor's turn.
+
+        This is called BEFORE the model generates a response.
+        Build a fresh prompt with whatever context this actor needs.
+
+        Args:
+            actor_id: The actor who will respond (e.g., "guesser", "player1")
+            state: Current game state with trajectory and extras
+
+        Returns:
+            Messages list with system prompt and user content
+        """
+        pass
+
+    @abstractmethod
+    async def on_turn_complete(self, state: State) -> None:
+        """
+        Update game state after a turn completes.
+
+        This is called AFTER the model response is stored in trajectory.
+        Use this for game logic:
+        - Update scores, counters, flags
+        - Check win conditions (set state["extras"]["won"] = True, etc.)
+        - Store choices for later resolution (simultaneous moves)
+
+        The last turn's info is in state["trajectory"][-1]:
+        - ["completion"][-1]["content"]: The model's response text
+        - ["extras"]["actor_id"]: Which actor just responded
+
+        Args:
+            state: Current game state (mutate extras as needed)
+        """
+        pass
+
+    # -------------------------------------------------------------------------
+    # Parent Class Requirement (env_response)
+    # -------------------------------------------------------------------------
+
+    async def env_response(
+        self, messages: Messages, state: State, **kwargs
+    ) -> Messages:
+        """
+        Satisfy MultiTurnEnv's abstract requirement.
+
+        MultiAgentEnv uses on_turn_complete() instead, which is called
+        explicitly in our rollout() after storing the response.
+        This method is not used in the multi-agent flow.
+        """
+        return []
+
+    # -------------------------------------------------------------------------
     # Trajectory Management
     # -------------------------------------------------------------------------
 
@@ -177,64 +244,66 @@ class MultiAgentEnv(MultiTurnEnv):
         await super().add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
-    # Prompt Building Hook
+    # Main Rollout Loop
     # -------------------------------------------------------------------------
 
-    def modify_prompt_messages(self, messages: Messages, state: State) -> Messages:
-        """Inject current actor's system prompt."""
-        current_actor_id = state["extras"]["current_actor_id"]
-        actor = self.get_actor(current_actor_id)
-        system_prompt = actor.system_prompt
-
-        if messages and messages[0].get("role") == "system":
-            messages[0] = {"role": "system", "content": system_prompt}
-        elif system_prompt:
-            messages = [{"role": "system", "content": system_prompt}] + messages
-
-        return messages
-
-    # -------------------------------------------------------------------------
-    # Rollout Hooks (called by MultiTurnEnv.rollout)
-    # -------------------------------------------------------------------------
-
-    async def before_loop(self, state: State) -> None:
-        """Set initial actor before loop starts."""
-        initial_actor_id = self.get_initial_actor(state)
-        state["extras"]["current_actor_id"] = initial_actor_id
-
-    async def get_turn_sampling_args(
-        self, state: State, sampling_args: SamplingArgs
-    ) -> SamplingArgs:
-        """Get current actor's sampling args (max_tokens, temperature, etc.)."""
-        current_actor_id = state["extras"]["current_actor_id"]
-        actor = self.get_actor(current_actor_id)
-        return actor.merge_sampling_args(sampling_args)
-
-    async def after_turn(self, state: State) -> None:
-        """Advance to next actor after each turn."""
-        next_actor_id = self.get_next_actor(state)
-        state["extras"]["current_actor_id"] = next_actor_id
-
-    # -------------------------------------------------------------------------
-    # Abstract: Game Logic
-    # -------------------------------------------------------------------------
-
-    @abstractmethod
-    async def env_response(
-        self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
+    async def rollout(
+        self,
+        input,
+        client,
+        model,
+        sampling_args=None,
+    ) -> State:
         """
-        Generate environment response between turns.
+        Run a multi-agent episode.
 
-        This is where game logic lives:
-        - Process the last actor's output
-        - Update game state (scores, flags, etc.)
-        - Build the prompt for the next actor
-
-        Return [] if no additional messages needed.
-        Set state["final_env_response"] to terminate early.
+        Flow:
+        1. Setup state
+        2. Loop until game ends:
+           a. Get active actors (1 for alternating, multiple for simultaneous)
+           b. For each actor:
+              - Build prompt via build_actor_prompt()
+              - Get model response
+              - Store in trajectory
+              - Process via on_turn_complete()
+        3. Return final state
         """
-        pass
+        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.setup_state(state)
+
+        while not await self.is_completed(state):
+            active_actors = self.get_active_actors(state)
+
+            for actor_id in active_actors:
+                state["extras"]["current_actor_id"] = actor_id
+
+                try:
+                    # 1. Build prompt for this actor
+                    prompt_messages = await self.build_actor_prompt(actor_id, state)
+
+                    # 2. Get model response with actor's sampling args
+                    actor = self.get_actor(actor_id)
+                    merged_args = actor.merge_sampling_args(sampling_args or {})
+                    response = await self.get_model_response(
+                        state, prompt_messages, sampling_args=merged_args
+                    )
+
+                    # 3. Store in trajectory
+                    await self.add_model_response(state, prompt_messages, response)
+
+                    # 4. Process turn (game logic)
+                    await self.on_turn_complete(state)
+
+                except vf.Error as e:
+                    state["error"] = e
+                    break
+
+            # Check if we should stop after processing all active actors
+            if await self.is_completed(state):
+                break
+
+        await self.render_completion(state)
+        return state
 
     # -------------------------------------------------------------------------
     # Per-Actor State Creation
@@ -249,7 +318,7 @@ class MultiAgentEnv(MultiTurnEnv):
     #   Player2 state: trajectory=[p2, p2, p2], prompt="You are Player 2..."
     # -------------------------------------------------------------------------
 
-    # Fields shared by reference across all actor states 
+    # Fields shared by reference across all actor states
     # NOTE: "input" is deliberately NOT shared because State.__getitem__/__setitem__
     # forward reads/writes for INPUT_FIELDS (prompt, answer, etc.) to input[key].
     # If we shared input, all actor_states would read the same prompt.
@@ -400,7 +469,7 @@ class MultiAgentEnv(MultiTurnEnv):
             gen_sem, score_sem, score=False
         )
 
-        # Flatten: one game → multiple per-actor states
+        # Flatten: one game -> multiple per-actor states
         flattened = []
         for game_state in game_states:
             # Split game trajectory by actor_id
@@ -438,4 +507,3 @@ class MultiAgentEnv(MultiTurnEnv):
             for s in all_states
         ]
         return result
-

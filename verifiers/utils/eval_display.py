@@ -511,7 +511,7 @@ class EvalDisplay(BaseDisplay):
 
             # Per-actor rewards for multi-agent, otherwise single reward
             results = env_state.results
-            actor_ids = results.get("actor_id") if results else None
+            actor_ids = results.get("actor_id", []) if results else []
             if actor_ids:
                 actor_rewards: dict[str, list[float]] = defaultdict(list)
                 for aid, rew in zip(actor_ids, results["reward"]):

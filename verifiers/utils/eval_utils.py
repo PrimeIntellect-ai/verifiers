@@ -434,7 +434,6 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
         def on_progress(all_states: list[State], new_states: list[State]) -> None:
             nonlocal error_count, is_multiagent
-            completed = len(all_states)
 
             for s in new_states:
                 if s.get("error") is not None:
@@ -473,6 +472,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             for name, vals in metrics_values.items():
                 if vals:
                     metrics[name] = sum(vals) / len(vals)
+
+            # Count completed: unique games for multi-agent, total states for single-agent
+            if is_multiagent:
+                # Multi-agent: count unique games (by trajectory_id), not per-actor states
+                completed = len(set(s.get("trajectory_id") for s in all_states))
+            else:
+                completed = len(all_states)
 
             error_rate = error_count / completed if completed > 0 else 0.0
 
