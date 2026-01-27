@@ -286,7 +286,9 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoint = TypedDict(
+    "Endpoint", {"key": str, "url": str, "model": str, "client_type": ClientType}
+)
 Endpoints = dict[str, Endpoint]
 
 
