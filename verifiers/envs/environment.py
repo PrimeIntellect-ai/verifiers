@@ -84,6 +84,7 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
+        interleaved_thinking: bool = True,
         score_rollouts: bool = True,
         **kwargs,
     ):
@@ -109,6 +110,7 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
+        self.set_interleaved_thinking(interleaved_thinking)
         self.set_score_rollouts(score_rollouts)
 
         if self.message_type != "chat" and (self.system_prompt or self.few_shot):
@@ -436,6 +438,7 @@ class Environment(ABC):
             vf_client = (
                 vf.Client.from_client(client) if client is not None else state["client"]
             )
+            vf_client.set_interleaved_thinking(self.interleaved_thinking)
             model = model or state["model"]
             assert vf_client is not None and model is not None
             tool_defs = tool_defs or state["tool_defs"]
@@ -1037,6 +1040,10 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
+        """Set the interleaved thinking flag for this environment."""
+        self.interleaved_thinking = interleaved_thinking
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

@@ -37,6 +37,7 @@ class Client(
             self._client = self.setup_client(client_or_config)
         else:
             self._client = client_or_config
+        self.interleaved_thinking = True
 
     @overload
     @classmethod
@@ -66,6 +67,9 @@ class Client(
     @property
     def client(self) -> ClientT:
         return self._client
+
+    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
+        self.interleaved_thinking = interleaved_thinking
 
     @staticmethod
     @abstractmethod

@@ -246,6 +246,12 @@ def main():
         help="Score each rollout individually instead of scoring by group",
     )
     parser.add_argument(
+        "--no-interleaved-thinking",
+        default=False,
+        action="store_true",
+        help="Disable interleaved thinking",
+    )
+    parser.add_argument(
         "--save-to-hf-hub",
         "-H",
         default=False,
@@ -434,6 +440,7 @@ def main():
             save_results=raw.get("save_results", False),
             save_every=raw.get("save_every", DEFAULT_SAVE_EVERY),
             independent_scoring=raw.get("independent_scoring", False),
+            interleaved_thinking=not raw.get("no_interleaved_thinking", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
         )

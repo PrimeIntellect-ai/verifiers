@@ -456,7 +456,9 @@ class OAIClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content(response),
+                reasoning_content=parse_reasoning_content(response)
+                if self.interleaved_thinking
+                else None,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
