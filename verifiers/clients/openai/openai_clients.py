@@ -364,7 +364,6 @@ class OAIChatCompletionsClient(
                 messages=prompt,
                 **normalize_sampling_args(sampling_args),
             )
-        self.logger.debug(f"{response.model_dump_json(indent=2)}")
         return response
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:

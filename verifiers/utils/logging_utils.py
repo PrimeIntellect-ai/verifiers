@@ -82,23 +82,23 @@ def print_prompt_completions_sample(
 ) -> None:
     def format_tool_call(tool_call: ToolCall) -> Text:
         out = Text()
-        arguments = json.loads(tool_call.arguments)
+        arguments = json.loads(tool_call["arguments"])
         out.append(
-            f"{tool_call.name}({','.join([f'{k}={repr(v)}' for k, v in arguments.items()])}) ",
+            f"{tool_call['name']}({','.join([f'{k}={repr(v)}' for k, v in arguments.items()])}) ",
             style="bold",
         )
         return out
 
     def format_message(message: Message) -> Text:
         text = Text()
-        style = "bright_cyan" if message.role == "assistant" else "bright_magenta"
-        text.append(f"{message.role}: ", style="bold")
-        if message.role == "assistant" and message.reasoning_content:
-            text.append(message.reasoning_content, style=f"dim {style}")
+        style = "bright_cyan" if message["role"] == "assistant" else "bright_magenta"
+        text.append(f"{message['role']}: ", style="bold")
+        if message["role"] == "assistant" and message["reasoning_content"]:
+            text.append(message["reasoning_content"], style=f"dim {style}")
             text.append("\n\n")
-        text.append(message.content or "", style=style)
-        if message.role == "assistant":
-            for tool_call in message.tool_calls or []:
+        text.append(message["content"] or "", style=style)
+        if message["role"] == "assistant":
+            for tool_call in message["tool_calls"] or []:
                 text.append(format_tool_call(tool_call))
         return text
 
