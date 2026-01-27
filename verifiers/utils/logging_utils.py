@@ -80,26 +80,33 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
-    def format_tool_call(tool_call: ToolCall) -> Text:
-        out = Text()
-        arguments = json.loads(tool_call["arguments"])
-        out.append(
-            f"{tool_call['name']}({','.join([f'{k}={repr(v)}' for k, v in arguments.items()])}) ",
-            style="bold",
-        )
-        return out
+    def _normalize_tool_call(tool_call: ToolCall) -> dict[str, str]:
+        """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
+        name = tool_call["name"]
+        args = json.loads(tool_call["arguments"])
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args)
+            except Exception:
+                args = str(args)
+        return {"name": name, "args": args}
 
     def format_message(message: Message) -> Text:
         text = Text()
         style = "bright_cyan" if message["role"] == "assistant" else "bright_magenta"
         text.append(f"{message['role']}: ", style="bold")
         if message["role"] == "assistant" and message["reasoning_content"]:
-            text.append(message["reasoning_content"], style=f"dim {style}")
-            text.append("\n\n")
-        text.append(message["content"] or "", style=style)
+            text.append(message["reasoning_content"] + "\n\n", style=f"dim {style}")
+        if message["content"]:
+            text.append(message["content"], style=style)
         if message["role"] == "assistant":
             for tool_call in message["tool_calls"] or []:
-                text.append(format_tool_call(tool_call))
+                payload = _normalize_tool_call(tool_call)
+                text.append(
+                    "\n\n[tool call]\n"
+                    + json.dumps(payload, indent=2, ensure_ascii=False),
+                    style=style,
+                )
         return text
 
     def format_messages(messages: Messages) -> Text:
