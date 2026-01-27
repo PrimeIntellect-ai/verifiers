@@ -53,7 +53,7 @@ def states_to_generate_metadata(
     results_path: Path | None,
 ) -> GenerateMetadata:
     """Converts a list of states to generate metadata."""
-    base_url = str(client) if hasattr(client, "base_url") else ""
+    base_url = str(client.base_url) if hasattr(client, "base_url") else ""
     rewards = [s.get("reward", 0.0) for s in states]
     avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
 

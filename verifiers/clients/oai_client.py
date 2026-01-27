@@ -89,14 +89,21 @@ DEFAULT_REASONING_FIELDS = [
     "reasoning_content",  # DeepSeek API
 ]
 
+OpenAITextResponse = Completion
+OpenAIChatResponse = ChatCompletion
+OpenAITextMessages = str
+OpenAIChatMessage = ChatCompletionMessageParam
+OpenAIChatMessages = list[OpenAIChatMessage]
+OpenAITool = ChatCompletionToolParam
+
 
 class OAIClient(
     Client[
         AsyncOpenAI,
-        Completion,
-        ChatCompletion,
-        str,
-        list[ChatCompletionMessageParam],
+        OpenAITextResponse,
+        OpenAIChatResponse,
+        OpenAITextMessages,
+        OpenAIChatMessages,
         ChatCompletionToolParam,
     ]
 ):
@@ -106,13 +113,15 @@ class OAIClient(
     def setup_client(config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
 
-    def to_native_text_prompt(self, messages: TextMessages) -> tuple[str, dict]:
+    def to_native_text_prompt(
+        self, messages: TextMessages
+    ) -> tuple[OpenAITextMessages, dict]:
         return messages, {}
 
     @handle_overlong_prompt
     async def get_native_text_response(
-        self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
-    ) -> Completion:
+        self, prompt: OpenAITextMessages, model: str, sampling_args: SamplingArgs
+    ) -> OpenAITextResponse:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
             return {k: v for k, v in sampling_args.items() if v is not None}
 
@@ -123,7 +132,9 @@ class OAIClient(
         )
         return response
 
-    async def raise_from_native_text_response(self, response: Completion) -> None:
+    async def raise_from_native_text_response(
+        self, response: OpenAITextResponse
+    ) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -135,8 +146,8 @@ class OAIClient(
         if not response.choices[0].text:
             raise EmptyModelResponseError("Model returned no content")
 
-    def from_native_text_response(self, response: Completion) -> TextResponse:
-        def parse_usage(response: Completion) -> Usage | None:
+    def from_native_text_response(self, response: OpenAITextResponse) -> TextResponse:
+        def parse_usage(response: OpenAITextResponse) -> Usage | None:
             if response.usage is None:
                 return None
             return Usage(
@@ -146,7 +157,7 @@ class OAIClient(
                 total_tokens=response.usage.total_tokens,
             )
 
-        def parse_finish_reason(response: Completion) -> FinishReason:
+        def parse_finish_reason(response: OpenAITextResponse) -> FinishReason:
             match response.choices[0].finish_reason:
                 case "stop":
                     return "stop"
@@ -155,10 +166,10 @@ class OAIClient(
                 case _:
                     return None
 
-        def parse_is_truncated(response: Completion) -> bool:
+        def parse_is_truncated(response: OpenAITextResponse) -> bool:
             return response.choices[0].finish_reason == "length"
 
-        def parse_tokens(response: Completion) -> ResponseTokens | None:
+        def parse_tokens(response: OpenAITextResponse) -> ResponseTokens | None:
             if not hasattr(response.choices[0], "prompt_token_ids"):
                 return None
             if not hasattr(response.choices[0], "token_ids"):
@@ -201,10 +212,10 @@ class OAIClient(
 
     def to_native_chat_prompt(
         self, messages: ChatMessages
-    ) -> tuple[list[ChatCompletionMessageParam], dict]:
+    ) -> tuple[OpenAIChatMessages, dict]:
         """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
 
-        def from_legacy_chat_message(message: dict) -> ChatCompletionMessageParam:
+        def from_legacy_chat_message(message: dict) -> OpenAIChatMessage:
             if message["role"] == "system":
                 return ChatCompletionSystemMessageParam(
                     role="system", content=message["content"]
@@ -243,7 +254,7 @@ class OAIClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def from_chat_message(message: ChatMessage) -> ChatCompletionMessageParam:
+        def from_chat_message(message: ChatMessage) -> OpenAIChatMessage:
             if isinstance(message, SystemMessage):
                 return ChatCompletionSystemMessageParam(
                     role="system", content=message.content
@@ -293,9 +304,9 @@ class OAIClient(
                 from_legacy_chat_message(cast(dict, message)) for message in messages
             ], {}
 
-    def to_native_tool(self, tool: Tool) -> ChatCompletionToolParam:
+    def to_native_tool(self, tool: Tool) -> OpenAITool:
         """Convert a unified Tool to OpenAI's ChatCompletionToolParam format."""
-        return ChatCompletionToolParam(
+        return OpenAITool(
             type="function",
             function=FunctionDefinition(
                 name=tool.name,
@@ -308,12 +319,12 @@ class OAIClient(
     @handle_overlong_prompt
     async def get_native_chat_response(
         self,
-        prompt: list[ChatCompletionMessageParam],
+        prompt: OpenAIChatMessages,
         model: str,
         sampling_args: SamplingArgs,
-        tools: list[ChatCompletionToolParam] | None,
-    ) -> ChatCompletion:
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
+        tools: list[OpenAITool] | None,
+    ) -> OpenAIChatResponse:
+        def normalize_sampling_args(sampling_args: SamplingArgs):
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -333,7 +344,9 @@ class OAIClient(
             )
         return response
 
-    async def raise_from_native_chat_response(self, response: ChatCompletion) -> None:
+    async def raise_from_native_chat_response(
+        self, response: OpenAIChatResponse
+    ) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -350,12 +363,10 @@ class OAIClient(
                 "Model returned no content and did not call any tools"
             )
 
-    def from_native_chat_response(self, response: ChatCompletion) -> ChatResponse:
+    def from_native_chat_response(self, response: OpenAIChatResponse) -> ChatResponse:
         """Converts a OpenAI ChatCompletion to a vf.ChatResponse."""
 
-        def parse_tool_calls(
-            response: ChatCompletion,
-        ) -> list[ToolCall]:
+        def parse_tool_calls(response: OpenAIChatResponse) -> list[ToolCall]:
             result: list[ToolCall] = []
             for tool_call in response.choices[0].message.tool_calls or []:
                 if isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
@@ -372,7 +383,7 @@ class OAIClient(
                     )
             return result
 
-        def parse_usage(response: ChatCompletion) -> Usage | None:
+        def parse_usage(response: OpenAIChatResponse) -> Usage | None:
             if response.usage is None:
                 return None
             return Usage(
@@ -382,12 +393,10 @@ class OAIClient(
                 total_tokens=response.usage.total_tokens,
             )
 
-        def parse_is_truncated(response: ChatCompletion) -> bool:
+        def parse_is_truncated(response: OpenAIChatResponse) -> bool:
             return response.choices[0].finish_reason == "length"
 
-        def parse_finish_reason(
-            response: ChatCompletion,
-        ) -> FinishReason:
+        def parse_finish_reason(response: OpenAIChatResponse) -> FinishReason:
             match response.choices[0].finish_reason:
                 case "stop":
                     return "stop"
@@ -398,7 +407,7 @@ class OAIClient(
                 case _:
                     return None
 
-        def parse_tokens(response: ChatCompletion) -> ResponseTokens | None:
+        def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"
             choice = response.choices[0]
             if not hasattr(choice, "token_ids"):
@@ -440,9 +449,7 @@ class OAIClient(
                 completion_logprobs=completion_logprobs,
             )
 
-        def parse_reasoning_content(
-            response: ChatCompletion,
-        ) -> str | None:
+        def parse_reasoning_content(response: OpenAIChatResponse) -> str | None:
             message_dict = response.choices[0].message.model_dump()
             for field in DEFAULT_REASONING_FIELDS:
                 if field in message_dict:
@@ -476,10 +483,12 @@ class OAIClient(
         tools: list[Tool] | None,
     ) -> ChatResponse:
         extra_body = sampling_args.pop("extra_body", {})
+        native_prompt, _ = self.to_native_chat_prompt(prompt)
+        native_tools = self.to_native_tools(tools)
         body = dict(
             model=model,
-            messages=prompt,
-            tools=tools,
+            messages=native_prompt,
+            tools=native_tools,
             tokens=prompt_ids,
             **sampling_args,
             **extra_body,

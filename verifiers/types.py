@@ -98,31 +98,10 @@ Messages = TextMessages | ChatMessages
 
 
 class Tool(CustomBaseModel):
-    """Unified tool definition that works across OpenAI and Anthropic APIs.
-
-    This is the normalized format for tool definitions. Use client.to_native_tool()
-    to convert to the native format for each API.
-    """
-
     name: str
-    """Name of the tool/function. Must be a-z, A-Z, 0-9, underscores and dashes."""
-
     description: str
-    """Description of what the tool does. Used by the model to decide when to call it."""
-
     parameters: dict[str, object]
-    """JSON Schema object describing the function parameters.
-
-    For OpenAI, this maps to function.parameters.
-    For Anthropic, this maps to input_schema.
-    """
-
     strict: bool | None = None
-    """OpenAI-specific: Whether to enable strict schema adherence.
-
-    When True, the model will follow the exact schema defined in parameters.
-    Ignored for Anthropic API.
-    """
 
 
 class Usage(CustomBaseModel):
