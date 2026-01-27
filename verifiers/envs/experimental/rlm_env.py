@@ -2753,9 +2753,10 @@ class RLMEnv(vf.StatefulToolEnv):
         disallowed_modules: Space-separated module names that user code may not import.
         disallowed_builtins: Space-separated builtin names removed from user code execution.
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
-                   When True (default), sub-LLM turns are prepended to the trajectory as
-                   TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
-                   When False, sub-LLM calls happen but are not stored.
+                   When True, sub-LLM turns are added to the trajectory as TrajectoryStep
+                   objects with tokens, enabling training on sub-LLM calls. Interleaved
+                   rollouts are not supported in this mode. When False (default), sub-LLM
+                   calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
@@ -2808,7 +2809,7 @@ class RLMEnv(vf.StatefulToolEnv):
         pip_install_packages: str = "",
         disallowed_modules: str = "",
         disallowed_builtins: str = "",
-        include_sub_llm_in_trajectory: bool = True,
+        include_sub_llm_in_trajectory: bool = False,
         context_warning_threshold: float = 0.80,
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
@@ -3214,16 +3215,14 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
-    def _prepare_sub_llm_sampling_args(
-        self, state: State, *, interleaved: bool
-    ) -> dict[str, Any]:
+    def _prepare_sub_llm_sampling_args(self, state: State) -> dict[str, Any]:
         sampling_args = dict(state.get("sampling_args") or {})
         extra_body = sampling_args.get("extra_body")
         if isinstance(extra_body, dict):
             sampling_args["extra_body"] = dict(extra_body)
         sampling_args = _normalize_sampling_args_for_model_call(sampling_args, "chat")
-        if interleaved:
-            return prepare_sampling_args_for_token_prompts(sampling_args)
+        if self.include_sub_llm_in_trajectory:
+            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
         return sampling_args
 
     async def _call_sub_tool(
@@ -3281,29 +3280,12 @@ class RLMEnv(vf.StatefulToolEnv):
         model: str,
         messages: ChatMessages,
         tools: list | None = None,
-        *,
-        sub_state: State | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
         normalized_messages = self._normalize_message_content(messages)
-        sampling_args = self._prepare_sub_llm_sampling_args(
-            state, interleaved=self.interleaved_rollouts
-        )
+        sampling_args = self._prepare_sub_llm_sampling_args(state)
 
         try:
-            prompt_ids: list[int] | None = None
-            if self.interleaved_rollouts:
-                if sub_state is not None and sub_state.get("trajectory"):
-                    prompt_ids = await get_prompt_ids(
-                        sub_state, normalized_messages, client
-                    )
-                else:
-                    prompt_ids = await tokenize_vllm(
-                        client=client,
-                        messages=normalized_messages,
-                        tools=tools,
-                        model=model,
-                    )
             return await asyncio.wait_for(
                 self._model_caller.call(
                     client=client,
@@ -3312,7 +3294,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     oai_tools=tools,
                     sampling_args=sampling_args,
                     message_type="chat",
-                    prompt_ids=prompt_ids,
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
@@ -3347,19 +3328,6 @@ class RLMEnv(vf.StatefulToolEnv):
         self, state: State, client: Any, model: str, messages: ChatMessages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
-        sub_state: State | None = None
-        if self.interleaved_rollouts:
-            # Track a minimal sub-LLM trajectory so get_prompt_ids() can compute
-            # incremental prompt_ids (same interleaving strategy as the main LLM).
-            # This sub_state is only for tokenization continuity and is not added
-            # to the main trajectory or used for scoring.
-            sub_state = State()
-            sub_state["trajectory"] = []
-            sub_state["client"] = client
-            sub_state["model"] = model
-            sub_state["oai_tools"] = self.sub_oai_tools or []
-            sub_state["sampling_args"] = state.get("sampling_args")
-
         # Fast path: no tools configured - single LLM call
         if not self.sub_tools:
             response = await self._call_sub_llm_api(state, client, model, messages)
@@ -3403,7 +3371,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 model,
                 normalized_messages,
                 tools,
-                sub_state=sub_state,
             )
             if response is None:
                 return self._make_timeout_result(
@@ -3413,32 +3380,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     tool_call_count,
                     num_turns,
                 )
-
-            if sub_state is not None:
-                tokens = await parse_response_tokens(response, "chat", self.max_seq_len)
-                if tokens is None:
-                    sub_state = None
-                else:
-                    completion_messages = await parse_response_messages(
-                        response, "chat"
-                    )
-                    response_is_truncated = await parse_is_truncated(response, "chat")
-                    is_truncated = response_is_truncated or bool(
-                        tokens.get("is_truncated")
-                    )
-                    sub_state["trajectory"].append(
-                        TrajectoryStep(
-                            prompt=cast(Messages, prompt_snapshot),
-                            completion=completion_messages,
-                            response=response,
-                            tokens=tokens,
-                            reward=None,
-                            advantage=None,
-                            is_truncated=is_truncated,
-                            trajectory_id="sub_llm_local",
-                            extras={"is_sub_llm_call": True, "sub_state_only": True},
-                        )
-                    )
 
             prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
             total_prompt_tokens += prompt_tokens
@@ -3501,7 +3442,6 @@ class RLMEnv(vf.StatefulToolEnv):
             client,
             model,
             normalized_messages,
-            sub_state=sub_state,
         )
         if response is None:
             return self._make_timeout_result(
@@ -3978,6 +3918,14 @@ class RLMEnv(vf.StatefulToolEnv):
     # State Management
     # =========================================================================
 
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        if interleaved_rollouts and self.include_sub_llm_in_trajectory:
+            raise ValueError(
+                "RLMEnv does not support interleaved rollouts when "
+                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
+            )
+        super().set_interleaved_rollouts(interleaved_rollouts)
+
     def update_tool_args(
         self,
         tool_name: str,
@@ -4038,6 +3986,12 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.execution_backend == "sandbox":
             state["rlm_fs_root_remote"] = f"/tmp/rlm_{rollout_id}/rlm_fs"
             state["rlm_control_dir_remote"] = f"/tmp/rlm_{rollout_id}/rlm_control"
+
+        if self.include_sub_llm_in_trajectory and self.interleaved_rollouts:
+            raise ValueError(
+                "RLMEnv does not support interleaved rollouts when "
+                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
+            )
 
         # 1. Setup interception and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
