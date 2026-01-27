@@ -273,75 +273,26 @@ class MultiAgentEnv(MultiTurnEnv):
         return messages
 
     # -------------------------------------------------------------------------
-    # Main Rollout Loop
+    # Rollout Hooks (called by MultiTurnEnv.rollout)
     # -------------------------------------------------------------------------
 
-    async def rollout(
-        self,
-        input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> State:
-        """
-        Standard alternating-turn rollout using get_initial_actor/get_next_actor.
-
-        Flow:
-        1. init_state() - create base state from input
-        2. setup_state() - initialize multi-agent fields
-        3. Loop until stop condition:
-           a. get_prompt_messages() - build prompt for current actor
-           b. get_model_response() - call the model
-           c. add_model_response() - store in trajectory (tagged)
-           d. get_next_actor() - determine next speaker
-        4. render_completion() - finalize state
-
-        For simultaneous moves (like RPS), override this entirely and use
-        get_active_actors() instead.
-        """
-        state = await self.init_state(input, client, model, sampling_args)
-
-        try:
-            state = await self.setup_state(state)
-        except vf.Error as e:
-            state["error"] = e
-            return state
-
-        # Set first actor
+    async def before_loop(self, state: State) -> None:
+        """Set initial actor before loop starts."""
         initial_actor_id = self.get_initial_actor(state)
         state["extras"]["current_actor_id"] = initial_actor_id
 
-        # Main loop
-        while not await self.is_completed(state):
-            try:
-                current_actor_id = state["extras"]["current_actor_id"]
+    async def get_turn_sampling_args(
+        self, state: State, sampling_args: SamplingArgs
+    ) -> SamplingArgs:
+        """Get current actor's sampling args (max_tokens, temperature, etc.)."""
+        current_actor_id = state["extras"]["current_actor_id"]
+        actor = self.get_actor(current_actor_id)
+        return actor.merge_sampling_args(sampling_args)
 
-                # Build prompt and check for early termination
-                prompt_messages = await self.get_prompt_messages(state)
-                if state.get("final_env_response") is not None:
-                    break
-
-                # Get actor-specific sampling args and call model
-                actor = self.get_actor(current_actor_id)
-                merged_args = actor.merge_sampling_args(sampling_args or {})
-
-                response = await self.get_model_response(state, prompt_messages, sampling_args=merged_args)
-                await self.add_model_response(state, prompt_messages, response)
-
-                # Advance to next actor
-                next_actor_id = self.get_next_actor(state)
-                state["extras"]["current_actor_id"] = next_actor_id
-
-            except vf.Error as e:
-                if isinstance(e, vf.OverlongPromptError):
-                    state["prompt_too_long"] = True
-                    state["is_truncated"] = True
-                else:
-                    state["error"] = e
-                break
-
-        await self.render_completion(state)
-        return state
+    async def after_turn(self, state: State) -> None:
+        """Advance to next actor after each turn."""
+        next_actor_id = self.get_next_actor(state)
+        state["extras"]["current_actor_id"] = next_actor_id
 
     # -------------------------------------------------------------------------
     # Abstract: Game Logic
