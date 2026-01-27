@@ -52,7 +52,7 @@ prime eval run browser-dom-example -m gpt-4.1-mini -b https://api.openai.com/v1 
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `max_turns` | `10` | Maximum conversation turns |
+| `max_turns` | `10` | Maximum conversation turns (recommended: 50 for complex tasks) |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
 | `stagehand_model` | `"openai/gpt-4o-mini"` | Model for Stagehand DOM operations |
 

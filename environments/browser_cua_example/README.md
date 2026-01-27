@@ -109,7 +109,7 @@ prime eval run browser-cua-example -m openai/gpt-4.1-mini -b https://api.openai.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `max_turns` | `15` | Maximum conversation turns |
+| `max_turns` | `15` | Maximum conversation turns (recommended: 50 for complex tasks) |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
 | `use_sandbox` | `True` | Auto-deploy CUA server to sandbox |
 | `use_prebuilt_image` | `True` | Use pre-built Docker image (fastest startup) |
