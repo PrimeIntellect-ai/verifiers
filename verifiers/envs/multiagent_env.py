@@ -21,14 +21,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from datasets import Dataset
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.envs.multiturn_env import MultiTurnEnv
-
 from verifiers.types import (
     Messages,
     RolloutInput,
@@ -37,11 +36,6 @@ from verifiers.types import (
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import concat_messages
-from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
-    parse_response_tokens,
-)
 
 if TYPE_CHECKING:
     from verifiers.envs.actor import Actor
@@ -168,66 +162,20 @@ class MultiAgentEnv(MultiTurnEnv):
     # Trajectory Management
     # -------------------------------------------------------------------------
 
+    def get_trajectory_step_extras(self, state: State) -> dict:
+        """Tag trajectory steps with actor_id for credit assignment."""
+        current_actor_id = state["extras"]["current_actor_id"]
+        return {"actor_id": current_actor_id} if current_actor_id else {}
+
     async def add_trajectory_step(
         self, state: State, trajectory_step: TrajectoryStep
     ) -> None:
-        """
-        Add trajectory step, tagging with current actor for credit assignment.
-
-        This tagging is critical for create_actor_states() which filters
-        the trajectory by actor_id to split into per-actor states.
-        """
+        """Record actor history for credit assignment."""
         current_actor_id = state["extras"]["current_actor_id"]
-
         if current_actor_id:
-            # Tag this step with who generated it
-            if "extras" not in trajectory_step:
-                trajectory_step["extras"] = {}
-            trajectory_step["extras"]["actor_id"] = current_actor_id
-
-            # Record in history: "actor X spoke at turn Y"
             turn_index = len(state["trajectory"])
             state["extras"]["actor_history"].append((current_actor_id, turn_index))
-
         await super().add_trajectory_step(state, trajectory_step)
-
-    async def add_model_response(
-        self,
-        state: State,
-        prompt_messages: Messages,
-        response: Any,
-    ) -> None:
-        """
-        Parse API response and add to trajectory with actor_id tag.
-
-        Extracts completion text, truncation status, and token data,
-        then creates a TrajectoryStep tagged with the current actor.
-        """
-        current_actor_id = state["extras"]["current_actor_id"]
-
-        # Parse the raw API response
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
-        is_truncated = response_is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
-        )
-
-        # Build trajectory step with actor tag
-        trajectory_step = TrajectoryStep(
-            prompt=prompt_messages,
-            completion=completion_messages,
-            response=response,
-            tokens=tokens,
-            reward=None,      # Filled by rubric later
-            advantage=None,   # Filled by GRPO later
-            is_truncated=is_truncated,
-            trajectory_id=state["trajectory_id"],
-            extras={"actor_id": current_actor_id},  # Critical for splitting
-        )
-        await self.add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
     # Prompt Building

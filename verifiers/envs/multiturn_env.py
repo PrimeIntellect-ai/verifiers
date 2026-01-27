@@ -116,6 +116,10 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
+    def get_trajectory_step_extras(self, state: State) -> dict:
+        """Override to add custom extras to trajectory steps (e.g., actor_id)."""
+        return {}
+
     async def add_model_response(
         self,
         state: State,
@@ -139,7 +143,7 @@ class MultiTurnEnv(vf.Environment):
             advantage=None,
             is_truncated=is_truncated,
             trajectory_id=state["trajectory_id"],
-            extras={},
+            extras=self.get_trajectory_step_extras(state),
         )
         await self.add_trajectory_step(state, trajectory_step)
 
