@@ -2,12 +2,13 @@ import logging
 from abc import abstractmethod
 from typing import final
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import (
     Messages,
-    ModelResponse,
+    Response,
     RolloutInput,
     SamplingArgs,
     State,
@@ -15,8 +16,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
+    parse_response_message,
     parse_response_tokens,
 )
 
@@ -102,14 +102,12 @@ class MultiTurnEnv(vf.Environment):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
-        is_truncated = response_is_truncated or (
+        assert response is not None
+        completion_messages = await parse_response_message(response)
+        tokens = await parse_response_tokens(response, self.max_seq_len)
+        is_truncated = response.message.is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
         trajectory_step = TrajectoryStep(
@@ -129,7 +127,7 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:

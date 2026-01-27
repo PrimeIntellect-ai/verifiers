@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from verifiers.parsers.parser import Parser
-from verifiers.types import ChatMessage, Messages
+from verifiers.types import Messages
 
 
 class XMLParser(Parser):
@@ -132,7 +132,7 @@ class XMLParser(Parser):
         - Fields have proper content and spacing
         """
 
-        def format_reward_func(completion: list[ChatMessage]):
+        def format_reward_func(completion: Messages):
             """Reward function that checks if each step follows the expected format."""
             model_messages = self.get_assistant_messages(completion)
             if not model_messages:

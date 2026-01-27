@@ -1,7 +1,6 @@
 import json
 import logging
 import sys
-from collections.abc import Mapping
 from contextlib import contextmanager
 
 from rich.console import Console
@@ -10,7 +9,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.errors import Error
-from verifiers.types import Messages
+from verifiers.types import Message, Messages, ToolCall
 from verifiers.utils.error_utils import ErrorChain
 
 LOGGER_NAME = "verifiers"
@@ -81,23 +80,10 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
-    def _attr_or_key(obj, key: str, default=None):
-        """Return obj.key if present, else obj[key] if Mapping, else default."""
-        val = getattr(obj, key, None)
-        if val is not None:
-            return val
-        if isinstance(obj, Mapping):
-            return obj.get(key, default)
-        return default
-
-    def _normalize_tool_call(tc):
+    def _normalize_tool_call(tool_call: ToolCall) -> dict[str, str]:
         """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
-        src = (
-            _attr_or_key(tc, "function") or tc
-        )  # prefer nested function object if present
-        name = _attr_or_key(src, "name", "") or ""
-        args = _attr_or_key(src, "arguments", {}) or {}
-
+        name = tool_call["name"]
+        args = json.loads(tool_call["arguments"])
         if not isinstance(args, str):
             try:
                 args = json.dumps(args)
@@ -105,34 +91,34 @@ def print_prompt_completions_sample(
                 args = str(args)
         return {"name": name, "args": args}
 
-    def _format_messages(messages) -> Text:
-        if isinstance(messages, str):
-            return Text(messages)
-
-        out = Text()
-        for idx, msg in enumerate(messages):
-            if idx:
-                out.append("\n\n")
-
-            assert isinstance(msg, dict)
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            style = "bright_cyan" if role == "assistant" else "bright_magenta"
-
-            out.append(f"{role}: ", style="bold")
-            out.append(content, style=style)
-
-            for tc in msg.get("tool_calls") or []:  # treat None as empty list
-                payload = _normalize_tool_call(tc)
-                out.append(
+    def format_message(message: Message) -> Text:
+        text = Text()
+        style = "bright_cyan" if message["role"] == "assistant" else "bright_magenta"
+        text.append(f"{message['role']}: ", style="bold")
+        if message["role"] == "assistant" and message["reasoning_content"]:
+            text.append(message["reasoning_content"] + "\n\n", style=f"dim {style}")
+        if message["content"]:
+            text.append(message["content"], style=style)
+        if message["role"] == "assistant":
+            for tool_call in message["tool_calls"] or []:
+                payload = _normalize_tool_call(tool_call)
+                text.append(
                     "\n\n[tool call]\n"
                     + json.dumps(payload, indent=2, ensure_ascii=False),
                     style=style,
                 )
+        return text
+
+    def format_messages(messages: Messages) -> Text:
+        out = Text()
+        for idx, message in enumerate(messages):
+            if idx:
+                out.append("\n\n")
+            out.append(format_message(message))
 
         return out
 
-    def _format_error(error: BaseException) -> Text:
+    def format_error(error: BaseException) -> Text:
         out = Text()
         out.append(f"error: {ErrorChain(error)}", style="bold red")
 
@@ -156,10 +142,10 @@ def print_prompt_completions_sample(
         error = errors[i]
         reward = reward_values[i]
 
-        formatted_prompt = _format_messages(prompt)
-        formatted_completion = _format_messages(completion)
+        formatted_prompt = format_messages(prompt)
+        formatted_completion = format_messages(completion)
         if error is not None:
-            formatted_completion += Text("\n\n") + _format_error(error)
+            formatted_completion += Text("\n\n") + format_error(error)
 
         table.add_row(formatted_prompt, formatted_completion, Text(f"{reward:.2f}"))
         if i < samples_to_show - 1:

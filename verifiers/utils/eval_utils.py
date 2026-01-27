@@ -10,6 +10,8 @@ from typing import Any, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
+from verifiers.utils.client_utils import setup_client
+
 try:
     import tomllib  # type: ignore[import-not-found]
 except ImportError:
@@ -29,7 +31,6 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable
@@ -324,14 +325,18 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
+    # set up client with high limits to prevent timeouts
     client = setup_client(config.client_config)
     logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
+        f"Initialized {client.__class__.__name__} client with base_url: {config.client_config.api_base_url}"
     )
 
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+
+    # set interleaved thinking (will propagate to vf.Client)
+    logger.info(f"Setting interleaved thinking: {config.interleaved_thinking}")
+    vf_env.set_interleaved_thinking(config.interleaved_thinking)
 
     # set extra environment kwargs
     if config.extra_env_kwargs:

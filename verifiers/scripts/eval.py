@@ -37,6 +37,7 @@ DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_SAVE_EVERY = -1
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_CLIENT_TYPE = "openai"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -119,6 +120,13 @@ def main():
         type=str,
         default=DEFAULT_MODEL,
         help="Name of model to evaluate",
+    )
+    parser.add_argument(
+        "--client-type",
+        type=str,
+        default="openai",
+        help="Which client to use ('openai' or 'anthropic')",
+        choices=["openai", "anthropic"],
     )
     parser.add_argument(
         "--api-key-var",
@@ -238,6 +246,12 @@ def main():
         help="Score each rollout individually instead of scoring by group",
     )
     parser.add_argument(
+        "--no-interleaved-thinking",
+        default=False,
+        action="store_true",
+        help="Disable interleaved thinking",
+    )
+    parser.add_argument(
         "--save-to-hf-hub",
         "-H",
         default=False,
@@ -336,11 +350,13 @@ def main():
         endpoints = load_endpoints(endpoints_path)
 
         raw_model = raw.get("model", DEFAULT_MODEL)
+        raw_client_type = raw.get("client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
 
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
+        client_type_override = raw_client_type is not None
 
         if raw_model in endpoints:
             endpoint = endpoints[raw_model]
@@ -349,12 +365,14 @@ def main():
                 raw_api_base_url if api_base_url_override else endpoint["url"]
             )
             model = endpoint["model"]
-            if api_key_override or api_base_url_override:
+            client_type = endpoint["client_type"]
+            if api_key_override or api_base_url_override or client_type_override:
                 logger.debug(
-                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s)",
+                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, client_type: %s)",
                     model,
                     "override" if api_key_override else "registry",
                     "override" if api_base_url_override else "registry",
+                    "override" if client_type_override else "registry",
                 )
             else:
                 logger.debug(
@@ -371,6 +389,7 @@ def main():
             api_base_url = (
                 raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
             )
+            client_type = raw_client_type if client_type_override else "openai"
 
         # Merge sampling args
         merged_sampling_args: dict = {}
@@ -396,6 +415,7 @@ def main():
         assert api_key_var is not None
         assert api_base_url is not None
         client_config = ClientConfig(
+            client_type=client_type,
             api_key_var=api_key_var,
             api_base_url=api_base_url,
             extra_headers=merged_headers,
@@ -420,6 +440,7 @@ def main():
             save_results=raw.get("save_results", False),
             save_every=raw.get("save_every", DEFAULT_SAVE_EVERY),
             independent_scoring=raw.get("independent_scoring", False),
+            interleaved_thinking=not raw.get("no_interleaved_thinking", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
         )

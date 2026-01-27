@@ -1,6 +1,5 @@
 import asyncio
 import atexit
-import functools
 import inspect
 import json
 import logging
@@ -17,50 +16,44 @@ from typing import (
     Awaitable,
     Callable,
     List,
-    Literal,
     TypeVar,
     cast,
     final,
 )
 
+from anthropic import Anthropic, AsyncAnthropic
 from datasets import Dataset
-from openai import AsyncOpenAI, BadRequestError, OpenAI
-from openai.types.chat import ChatCompletion
-from openai.types.chat.chat_completion import Choice
-from openai.types.completion_choice import CompletionChoice
+from openai import AsyncOpenAI, OpenAI
+from openai.types.chat import ChatCompletionToolParam
 
 import verifiers as vf
+from verifiers.clients import resolve_client
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
-    ChatCompletionToolParam,
-    ChatMessage,
     DatasetBuilder,
     GenerateOutputs,
     LogCallback,
+    Message,
     Messages,
     MessageType,
-    ModelResponse,
     ProgressCallback,
+    Response,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
+    TextMessage,
+    Tool,
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import (
-    strip_nones_from_content,
-)
+from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.save_utils import (
     make_dataset,
     save_generate_outputs,
     states_to_generate_metadata,
-)
-from verifiers.utils.token_utils import (
-    get_prompt_ids,
-    prepare_sampling_args_for_token_prompts,
 )
 
 if TYPE_CHECKING:
@@ -77,24 +70,30 @@ class Environment(ABC):
         dataset: Dataset | DatasetBuilder | None = None,
         eval_dataset: Dataset | DatasetBuilder | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
+        oai_tools: list[Tool] | None = None,  # for backwards compatibility
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
+        interleaved_thinking: bool = True,
         score_rollouts: bool = True,
         **kwargs,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.message_type: Literal["chat", "completion"] = message_type
-        self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
+        self.message_type: MessageType = message_type
+        if oai_tools is not None:
+            self.logger.warning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
+        self.tool_defs: list[Tool] | None = tool_defs or oai_tools
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
@@ -110,6 +109,7 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
+        self.set_interleaved_thinking(interleaved_thinking)
         self.set_score_rollouts(score_rollouts)
 
         if self.message_type != "chat" and (self.system_prompt or self.few_shot):
@@ -231,7 +231,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -239,7 +239,7 @@ class Environment(ABC):
         """Ensure prompt column exists."""
         if "prompt" not in dataset.column_names:
 
-            def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
+            def format_prompt_fn(prompt_str: str) -> Messages:
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
@@ -267,16 +267,14 @@ class Environment(ABC):
         else:
             if system_prompt is not None:
 
-                def prepend_system_prompt(
-                    prompt: list[ChatMessage],
-                ) -> list[ChatMessage]:
+                def prepend_system_prompt(prompt: Messages) -> Messages:
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
                     )
-                    if prompt and prompt[0].get("role") == "system":
+                    if prompt and prompt[0]["role"] == "system":
                         return prompt
                     sys_msg = cast(
-                        ChatMessage, {"role": "system", "content": system_prompt}
+                        Message, {"role": "system", "content": system_prompt}
                     )
                     return [sys_msg, *prompt]
 
@@ -306,7 +304,7 @@ class Environment(ABC):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -394,12 +392,13 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages,
-        client: AsyncOpenAI | None = None,
+        client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
+        tool_defs: list[Tool] | None = None,
         oai_tools: list[ChatCompletionToolParam] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
-    ) -> ModelResponse:
+    ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
 
@@ -412,224 +411,53 @@ class Environment(ABC):
         hand-crafted feature for PRIME-RL's vLLM server extension, and is not
         recommended for general use.
         """
+        if oai_tools is not None:
+            raise DeprecationWarning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
 
         def resolve_optional_args(
-            client: AsyncOpenAI | None,
+            client: AsyncOpenAI | AsyncAnthropic | None,
             model: str | None,
-            oai_tools: list[ChatCompletionToolParam] | None,
+            tool_defs: list[Tool] | None,
             sampling_args: SamplingArgs | None,
             message_type: MessageType | None,
         ) -> tuple[
-            AsyncOpenAI,
+            vf.Client,
             str,
-            list[ChatCompletionToolParam] | None,
+            list[Tool] | None,
             SamplingArgs,
             MessageType,
         ]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            client = client or state["client"]
+            message_type = message_type or self.message_type
+            assert message_type is not None
+            vf_client = (
+                resolve_client(client, message_type, self.interleaved_rollouts)
+                if client is not None
+                else state["client"]
+            )
+            assert vf_client is not None
+            vf_client.set_interleaved_thinking(self.interleaved_thinking)
             model = model or state["model"]
-            assert client is not None and model is not None
-            oai_tools = oai_tools or state["oai_tools"]
+            assert model is not None
+            tool_defs = tool_defs or state["tool_defs"]
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
-            message_type = message_type or self.message_type
-            return client, model, oai_tools, sampling_args, message_type
+            return vf_client, model, tool_defs, sampling_args, message_type
 
-        def normalize_sampling_args(sampling_args: SamplingArgs) -> SamplingArgs:
-            """
-            Normalize sampling arguments. Mainly does 2 things:
-            - if max_tokens is provided for chat, rename to max_completion_tokens
-            - drop any None-valued entries to avoid sending to the client
-            """
-            if "max_tokens" in sampling_args:
-                if sampling_args["max_tokens"] is None:
-                    sampling_args.pop("max_tokens")
-                elif message_type == "chat":
-                    sampling_args["max_completion_tokens"] = sampling_args.pop(
-                        "max_tokens"
-                    )
-            if (
-                "max_completion_tokens" in sampling_args
-                and sampling_args["max_completion_tokens"] is None
-            ):
-                sampling_args.pop("max_completion_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
-
-        def handle_overlong_prompt(func):
-            """Decorator to handle overlong prompt errors from the model API."""
-
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    # in case of making a request with an overlong prompt, e.g
-                    # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
-                    # in all other case we raise a generic model error
-                    raise vf.ModelError from e
-
-            return wrapper
-
-        @handle_overlong_prompt
-        async def get_model_response_with_messages(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """Convenience function for wrapping (chat, completion) API calls."""
-            if message_type == "chat":
-                assert isinstance(prompt, list)
-                prompt = strip_nones_from_content(prompt)
-                # --- detect audio parts and force text-only modality if caller didn't set one ---
-                has_audio = False
-                try:
-                    for m in prompt:
-                        c = m.get("content")
-                        if isinstance(c, list):
-                            for p in c:
-                                if isinstance(p, dict) and str(
-                                    p.get("type", "")
-                                ).startswith("input_audio"):
-                                    has_audio = True
-                                    break
-                        if has_audio:
-                            break
-                except Exception:
-                    has_audio = False
-                if has_audio and "modalities" not in sampling_args:
-                    sampling_args = {
-                        **sampling_args,
-                        "modalities": ["text"],
-                    }
-
-                if oai_tools:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        tools=oai_tools,
-                        **sampling_args,
-                    )
-                else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=prompt,
-                        **sampling_args,
-                    )
-                return response
-            elif message_type == "completion":
-                if oai_tools:
-                    raise ValueError(
-                        "oai_tools are not supported for completion tasks."
-                    )
-                assert isinstance(prompt, str)
-                response = await client.completions.create(
-                    model=model, prompt=prompt, **sampling_args
-                )
-                return response
-
-        @handle_overlong_prompt
-        async def get_model_response_with_tokens(
-            client: AsyncOpenAI,
-            model: str,
-            prompt: Messages,
-            prompt_ids: list[int],
-            oai_tools: list[ChatCompletionToolParam] | None,
-            sampling_args: SamplingArgs,
-            message_type: MessageType,
-        ) -> ModelResponse:
-            """
-            Get a model response with pre-tokenized prompt from custom
-            /v1/chat/completions/tokens endpoint (only available in PRIME-RL's
-            vLLM server extension)
-            """
-            assert message_type == "chat", (
-                "get_model_response_with_tokens is only supported for chat tasks."
-            )
-
-            extra_body = sampling_args.pop("extra_body", {})
-            body = dict(
-                model=model,
-                messages=prompt,
-                tools=oai_tools,
-                tokens=prompt_ids,
-                **sampling_args,
-                **extra_body,
-            )
-
-            return await client.post(
-                "/chat/completions/tokens",
-                body=body,
-                cast_to=ChatCompletion,
-            )
-
-        client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
-            client, model, oai_tools, sampling_args, message_type
+        vf_client, model, tool_defs, sampling_args, message_type = (
+            resolve_optional_args(client, model, tool_defs, sampling_args, message_type)
         )
-        sampling_args = normalize_sampling_args(sampling_args)
-        if self.interleaved_rollouts:
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
 
-        if self.interleaved_rollouts and len(state["trajectory"]) > 0:
-            prompt_ids = await get_prompt_ids(state, prompt, client)
-            response = await get_model_response_with_tokens(
-                client=client,
-                model=model,
-                prompt=prompt,
-                prompt_ids=prompt_ids,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
-        else:
-            response = await get_model_response_with_messages(
-                client=client,
-                model=model,
-                prompt=prompt,
-                oai_tools=oai_tools,
-                sampling_args=sampling_args,
-                message_type=message_type,
-            )
-
-        # Some providers (e.g. OpenRouter) may return None for response or response.choices
-        if response is None:
-            raise vf.EmptyModelResponseError("Model returned no response")
-        if response.choices is None:
-            raise vf.EmptyModelResponseError("Model returned no response choices")
-        if not len(response.choices) == 1:
-            raise vf.InvalidModelResponseError(
-                f"Model returned {len(response.choices)} choices, expected 1"
-            )
-        if isinstance(response.choices[0], Choice):
-            if not (
-                response.choices[0].message.content
-                or response.choices[0].message.tool_calls
-            ):
-                raise vf.EmptyModelResponseError(
-                    "Model returned no content and did not call any tools"
-                )
-        elif isinstance(response.choices[0], CompletionChoice):
-            if not response.choices[0].text:
-                raise vf.EmptyModelResponseError("Model returned no content")
+        response = await vf_client.get_response(
+            prompt=prompt,
+            model=model,
+            tools=tool_defs,
+            sampling_args=sampling_args,
+            state=state,  # only used to build tokens prompt in OpenAIChatCompletionsTokenClient
+        )
 
         return response
 
@@ -637,7 +465,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -654,18 +482,31 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
-        state["client"] = client
+
+        state["prompt"] = (
+            [TextMessage(content=input["prompt"])]
+            if isinstance(input["prompt"], str)
+            else [from_raw_message(dict(m)) for m in input["prompt"]]
+        )
+        state["client"] = resolve_client(
+            client, self.message_type, self.interleaved_rollouts
+        )
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
-        state["oai_tools"] = None
+        state["tool_defs"] = None
+        if "info" in state and hasattr(state["info"], "tool_defs"):
+            state["tool_defs"] = state["info"]["tool_defs"]
         if "info" in state and hasattr(state["info"], "oai_tools"):
+            self.logger.warning(
+                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+            )
             state["oai_tools"] = state["info"]["oai_tools"]
-        elif hasattr(self, "oai_tools"):
-            state["oai_tools"] = self.oai_tools
+        elif hasattr(self, "tool_defs"):
+            state["tool_defs"] = self.tool_defs
         else:
-            state["oai_tools"] = []
+            state["tool_defs"] = []
         state["trajectory"] = []
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
@@ -684,7 +525,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -741,7 +582,7 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
@@ -768,7 +609,7 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
@@ -799,7 +640,7 @@ class Environment(ABC):
         self,
         states: list[State],
         model: str,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         state_columns: list[str] | None,
         results_path: Path | None,
         sampling_args: SamplingArgs,
@@ -822,7 +663,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -995,14 +836,22 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client: OpenAI | Anthropic,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
-            client = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
+            async_client = AsyncOpenAI(
+                api_key=client.api_key, base_url=str(client.base_url)
+            )
+        elif isinstance(client, Anthropic):
+            async_client = AsyncAnthropic(
+                api_key=client.api_key, base_url=str(client.base_url)
+            )
+        else:
+            raise ValueError(f"Unsupported client type: {type(client)}")
         coro = self.generate(
             inputs,
-            client=client,
+            client=async_client,
             **kwargs,
         )
         # check if we're in existing event loop (e.g. Jupyter)
@@ -1041,7 +890,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1092,7 +941,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client: OpenAI | Anthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1167,6 +1016,10 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
+        """Set the interleaved thinking flag for this environment."""
+        self.interleaved_thinking = interleaved_thinking
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""
