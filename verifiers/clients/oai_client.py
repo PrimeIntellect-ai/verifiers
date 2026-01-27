@@ -198,7 +198,7 @@ class OAIClient(
     ) -> tuple[list[ChatCompletionMessageParam], dict]:
         """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
 
-        def legacy_from_chat_message(message: dict) -> ChatCompletionMessageParam:
+        def from_legacy_chat_message(message: dict) -> ChatCompletionMessageParam:
             if message["role"] == "system":
                 return ChatCompletionSystemMessageParam(
                     role="system", content=message["content"]
@@ -284,7 +284,7 @@ class OAIClient(
                 "Found invalid chat message type, falling back to legacy dict parsing"
             )
             return [
-                legacy_from_chat_message(cast(dict, message)) for message in messages
+                from_legacy_chat_message(cast(dict, message)) for message in messages
             ], {}
 
     def to_native_tool(self, tool: Tool) -> ChatCompletionToolParam:

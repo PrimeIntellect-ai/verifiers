@@ -3,8 +3,15 @@ import time
 
 from anthropic import AsyncAnthropic
 
-# Anthropic native tool type
-from anthropic.types import ContentBlock, MessageParam, ToolParam
+# Anthropic native types
+from anthropic.types import (
+    ContentBlock,
+    MessageParam,
+    TextBlockParam,
+    ToolParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+)
 from anthropic.types.completion import Completion
 from anthropic.types.message import Message
 
@@ -12,16 +19,21 @@ from verifiers.clients.client import (
     Client,
 )
 from verifiers.types import (
+    AssistantMessage,
+    ChatMessage,
     ChatMessages,
     ChatResponse,
     ClientConfig,
     FinishReason,
     ResponseMessage,
     SamplingArgs,
+    SystemMessage,
     TextMessages,
     TextResponse,
     Tool,
     ToolCall,
+    ToolMessage,
+    UserMessage,
 )
 from verifiers.utils.client_utils import setup_anthropic_client
 
@@ -73,22 +85,126 @@ class AntClient(
     def to_native_chat_prompt(
         self, messages: ChatMessages
     ) -> tuple[list[MessageParam], dict]:
-        def extract_system_messages(messages: ChatMessages) -> tuple[list, list]:
-            system_messages: list = []
-            non_system_messages: list = []
+        """Converts vf.ChatMessages to Anthropic chat messages."""
+
+        def _parse_tool_args(tc_args: str | dict | object) -> dict:
+            """Parse tool arguments from string or dict."""
+            if isinstance(tc_args, str):
+                try:
+                    return json.loads(tc_args)
+                except json.JSONDecodeError:
+                    return {}
+            elif isinstance(tc_args, dict):
+                return tc_args
+            return {}
+
+        def from_legacy_chat_message(message: dict) -> MessageParam | None:
+            """Convert dict-based message to Anthropic format. Returns None for system."""
+            if message["role"] == "system":
+                return None  # handled separately
+
+            elif message["role"] == "user":
+                return MessageParam(role="user", content=message["content"])
+
+            elif message["role"] == "assistant":
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                    if message.get("content"):
+                        content_blocks.append(
+                            TextBlockParam(type="text", text=message["content"])
+                        )
+                    for tool_call in tool_calls:
+                        content_blocks.append(
+                            ToolUseBlockParam(
+                                type="tool_use",
+                                id=tool_call["id"],
+                                name=tool_call["name"],
+                                input=json.loads(tool_call["arguments"]),  # TODO: safe
+                            )
+                        )
+                    return MessageParam(role="assistant", content=content_blocks)
+                return MessageParam(role="assistant", content=message["content"])
+            elif message["role"] == "tool":
+                return MessageParam(
+                    role="user",
+                    content=[
+                        ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=message["tool_call_id"],
+                            content=message["content"],
+                        )
+                    ],
+                )
+
+            else:
+                raise ValueError(f"Invalid chat message: {message}")
+
+        def from_chat_message(message: ChatMessage) -> MessageParam | None:
+            """Convert Pydantic message to Anthropic format. Returns None for system."""
+            if isinstance(message, SystemMessage):
+                return None
+            elif isinstance(message, UserMessage):
+                return MessageParam(role="user", content=message.content)
+            elif isinstance(message, AssistantMessage):
+                if message.tool_calls:
+                    content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                    if message.content:
+                        content_blocks.append(
+                            TextBlockParam(type="text", text=message.content)
+                        )
+                    for tc in message.tool_calls:
+                        content_blocks.append(
+                            ToolUseBlockParam(
+                                type="tool_use",
+                                id=tc.id,
+                                name=tc.name,
+                                input=_parse_tool_args(tc.arguments),
+                            )
+                        )
+                    return MessageParam(role="assistant", content=content_blocks)
+                return MessageParam(role="assistant", content=message.content or "")
+            elif isinstance(message, ToolMessage):
+                return MessageParam(
+                    role="user",
+                    content=[
+                        ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=message.tool_call_id,
+                            content=message.content,
+                        )
+                    ],
+                )
+            else:
+                raise ValueError(f"Invalid chat message: {message}")
+
+        def extract_system_content(messages: ChatMessages) -> str:
+            """Extract and concatenate system message contents."""
+            system_contents = []
             for msg in messages:
-                if msg.get("role") == "system":
-                    system_messages.append(msg)
-                else:
-                    non_system_messages.append(msg)
+                if isinstance(msg, SystemMessage):
+                    system_contents.append(msg.content)
+                elif isinstance(msg, dict) and msg.get("role") == "system":
+                    system_contents.append(msg["content"])
+            return "\n\n".join(system_contents)
 
-            return system_messages, non_system_messages
+        system = extract_system_content(messages)
 
-        system_messages, non_system_messages = extract_system_messages(messages)
-        system = "\n\n".join([msg["content"] for msg in system_messages])
-        prompt = []
-        for msg in non_system_messages:
-            prompt.append(MessageParam(role=msg["role"], content=msg["content"]))
+        try:
+            prompt = [
+                converted
+                for msg in messages
+                if (converted := from_chat_message(msg)) is not None
+            ]
+        except Exception:
+            self.logger.warning(
+                "Found invalid chat message type, falling back to legacy dict parsing"
+            )
+            prompt = [
+                converted
+                for msg in messages
+                if (converted := from_legacy_chat_message(dict(msg))) is not None
+            ]
 
         return prompt, {"system": system}
 

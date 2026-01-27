@@ -90,9 +90,7 @@ class ToolMessage(CustomBaseModel):
     content: str
 
 
-ChatMessage: TypeAlias = (
-    SystemMessage | UserMessage | AssistantMessage | ToolMessage | dict
-)  # dict for legacy support
+ChatMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ChatMessages = list[ChatMessage]
 
 Message = TextMessage | ChatMessage
