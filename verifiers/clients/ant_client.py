@@ -3,6 +3,7 @@ import os
 import time
 
 from anthropic import AsyncAnthropic
+from anthropic.types import MessageParam
 from anthropic.types.completion import Completion
 from anthropic.types.message import Message
 from openai.types import Completion as OAICompletion
@@ -19,10 +20,18 @@ from openai.types.completion_choice import CompletionChoice as OAICompletionChoi
 
 from verifiers.clients.client import (
     Client,
-    NormalizedMessageResponse,
-    NormalizedTextResponse,
 )
-from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
+from verifiers.types import (
+    ChatMessage,
+    ChatMessages,
+    ChatResponse,
+    ClientConfig,
+    SamplingArgs,
+    TextMessage,
+    TextMessages,
+    TextResponse,
+    Tool,
+)
 from verifiers.utils.client_utils import setup_http_client
 
 
@@ -40,7 +49,7 @@ def extract_system_messages(messages: list) -> tuple[list, list]:
     return system_messages, non_system_messages
 
 
-class AntClient(Client[AsyncAnthropic, Completion, Message]):
+class AntClient(Client[AsyncAnthropic, Completion, Message, str, MessageParam]):
     """Wrapper for AsyncAnthropic client."""
 
     def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
@@ -50,6 +59,9 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
             max_retries=config.max_retries,
             http_client=setup_http_client(config),
         )
+
+    def from_text_message(self, message: TextMessage) -> str:
+        return message
 
     async def get_text_response(
         self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
@@ -66,9 +78,7 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
     async def raise_from_text_response(self, response: Completion) -> None:
         pass
 
-    async def normalize_text_response(
-        self, response: Completion
-    ) -> NormalizedTextResponse:
+    def to_text_response(self, response: Completion) -> TextResponse:
         return OAICompletion(
             id=response.id,
             choices=[
@@ -82,6 +92,9 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
             model=response.model,
             object="text_completion",
         )
+
+    def from_chat_message(self, message: ChatMessage) -> MessageParam:
+        pass
 
     async def get_message_response(
         self,
@@ -118,9 +131,7 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
     async def raise_from_message_response(self, response: Message) -> None:
         pass
 
-    async def normalize_message_response(
-        self, response: Message
-    ) -> NormalizedMessageResponse:
+    async def to_chat_response(self, response: Message) -> ChatResponse:
         content = ""
         tool_calls = []
         for content_block in response.content:
@@ -159,12 +170,12 @@ class AntClient(Client[AsyncAnthropic, Completion, Message]):
             object="chat.completion",
         )
 
-    async def get_message_with_tokens(
+    async def get_chat_response_with_tokens(
         self,
         prompt: ChatMessages,
         prompt_ids: list[int],
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> NormalizedMessageResponse:
+    ) -> ChatResponse:
         raise NotImplementedError("TITO is not yet implemented for Anthropic client.")

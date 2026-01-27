@@ -23,6 +23,7 @@ from typing import (
 
 from datasets import Dataset
 from openai import OpenAI
+from requests import Response
 
 import verifiers as vf
 from verifiers.clients.client import Client
@@ -30,6 +31,7 @@ from verifiers.clients.oai_client import OAIClient
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
+    AssistantMessage,
     ChatMessage,
     ClientConfig,
     DatasetBuilder,
@@ -37,14 +39,16 @@ from verifiers.types import (
     LogCallback,
     Messages,
     MessageType,
-    ModelResponse,
     ProgressCallback,
     RolloutInput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
+    SystemMessage,
     Tool,
+    ToolMessage,
+    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
@@ -268,7 +272,7 @@ class Environment(ABC):
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
                     )
-                    if prompt and prompt[0].get("role") == "system":
+                    if prompt and prompt[0].role == "system":
                         return prompt
                     sys_msg = cast(
                         ChatMessage, {"role": "system", "content": system_prompt}
@@ -394,7 +398,7 @@ class Environment(ABC):
         oai_tools: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
-    ) -> ModelResponse:
+    ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
 
@@ -496,6 +500,20 @@ class Environment(ABC):
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+
+        def make_message(prompt: dict):
+            if prompt["role"] == "system":
+                return SystemMessage.model_validate(prompt)
+            elif prompt["role"] == "user":
+                return UserMessage.model_validate(prompt)
+            elif prompt["role"] == "assistant":
+                return AssistantMessage.model_validate(prompt)
+            elif prompt["role"] == "tool":
+                return ToolMessage.model_validate(prompt)
+            else:
+                raise ValueError(f"Unknown role: {prompt['role']}")
+
+        state["prompt"] = [make_message(prompt) for prompt in input["prompt"]]
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args

@@ -6,7 +6,7 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import (
     Messages,
-    ModelResponse,
+    Response,
     RolloutInput,
     SamplingArgs,
     State,
@@ -101,7 +101,7 @@ class MultiTurnEnv(vf.Environment):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
         completion_messages = await parse_response_messages(response, self.message_type)
         response_is_truncated = await parse_is_truncated(response, self.message_type)

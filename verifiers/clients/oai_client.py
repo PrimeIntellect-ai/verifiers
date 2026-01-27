@@ -3,20 +3,46 @@ import os
 
 from openai import AsyncOpenAI, BadRequestError
 from openai.types import Completion
-from openai.types.chat import ChatCompletion
-
-from verifiers.clients.client import (
-    Client,
-    NormalizedMessageResponse,
-    NormalizedTextResponse,
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+from openai.types.chat.chat_completion_assistant_message_param import (
+    ChatCompletionAssistantMessageParam,
 )
+from openai.types.chat.chat_completion_message_function_tool_call_param import (
+    ChatCompletionMessageFunctionToolCallParam,
+    Function,
+)
+from openai.types.chat.chat_completion_system_message_param import (
+    ChatCompletionSystemMessageParam,
+)
+from openai.types.chat.chat_completion_tool_message_param import (
+    ChatCompletionToolMessageParam,
+)
+from openai.types.chat.chat_completion_user_message_param import (
+    ChatCompletionUserMessageParam,
+)
+
+from verifiers.clients.client import Client
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
     ModelError,
     OverlongPromptError,
 )
-from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
+from verifiers.types import (
+    AssistantMessage,
+    ChatMessage,
+    ChatMessages,
+    ChatResponse,
+    ClientConfig,
+    SamplingArgs,
+    SystemMessage,
+    TextMessage,
+    TextMessages,
+    TextResponse,
+    Tool,
+    ToolMessage,
+    UserMessage,
+)
 from verifiers.utils.client_utils import setup_http_client
 
 
@@ -48,7 +74,9 @@ def handle_overlong_prompt(func):
     return wrapper
 
 
-class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
+class OAIClient(
+    Client[AsyncOpenAI, Completion, ChatCompletion, str, ChatCompletionMessageParam]
+):
     """Wrapper for AsyncOpenAI client."""
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
@@ -58,6 +86,9 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
             max_retries=config.max_retries,
             http_client=setup_http_client(config),
         )
+
+    def from_text_message(self, message: TextMessage) -> str:
+        return message
 
     @handle_overlong_prompt
     async def get_text_response(
@@ -85,15 +116,47 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
         if not response.choices[0].text:
             raise EmptyModelResponseError("Model returned no content")
 
-    async def normalize_text_response(
-        self, response: Completion
-    ) -> NormalizedTextResponse:
+    def to_text_message(self, response: Completion) -> TextResponse:
         return response
 
+    def from_chat_message(self, message: ChatMessage) -> ChatCompletionMessageParam:
+        """Converts a vf.ChatMessage to an OpenAI ChatMessage."""
+        if isinstance(message, SystemMessage):
+            return ChatCompletionSystemMessageParam(
+                role="system", content=message.content
+            )
+        elif isinstance(message, UserMessage):
+            return ChatCompletionUserMessageParam(role="user", content=message.content)
+        elif isinstance(message, AssistantMessage):
+            if message.tool_calls is not None:
+                oai_tool_calls = [
+                    ChatCompletionMessageFunctionToolCallParam(
+                        type="function",
+                        id=tool_call.id,
+                        function=Function(
+                            name=tool_call.name,
+                            arguments=tool_call.arguments,
+                        ),
+                    )
+                    for tool_call in message.tool_calls
+                ]
+                return ChatCompletionAssistantMessageParam(
+                    role="assistant", content=message.content, tool_calls=oai_tool_calls
+                )
+            return ChatCompletionAssistantMessageParam(
+                role="assistant", content=message.content
+            )
+        elif isinstance(message, ToolMessage):
+            return ChatCompletionToolMessageParam(
+                role="tool", tool_call_id=message.tool_call_id, content=message.content
+            )
+        else:
+            raise ValueError(f"Invalid chat message: {message}")
+
     @handle_overlong_prompt
-    async def get_message_response(
+    async def get_chat_response(
         self,
-        prompt: ChatMessages,
+        prompt: list[ChatCompletionMessageParam],
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
@@ -118,7 +181,7 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
             )
         return response
 
-    async def raise_from_message_response(self, response: ChatCompletion) -> None:
+    async def raise_from_chat_response(self, response: ChatCompletion) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
         if response.choices is None:
@@ -135,9 +198,8 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
                 "Model returned no content and did not call any tools"
             )
 
-    async def normalize_message_response(
-        self, response: ChatCompletion
-    ) -> NormalizedMessageResponse:
+    def to_chat_message(self, response: ChatCompletion) -> ChatResponse:
+        """Converts a OpenAI ChatCompletion to a vf.ChatResponse."""
         return response
 
     @handle_overlong_prompt
@@ -148,7 +210,7 @@ class OAIClient(Client[AsyncOpenAI, Completion, ChatCompletion]):
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> NormalizedMessageResponse:
+    ) -> ChatResponse:
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
             model=model,

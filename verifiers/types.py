@@ -7,6 +7,7 @@ from typing import (
     Awaitable,
     Callable,
     Literal,
+    TypeAlias,
 )
 
 from datasets import Dataset
@@ -24,7 +25,6 @@ else:
     from typing import TypedDict
 
 from openai.types.chat.chat_completion import ChatCompletion
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
 # openai types
 from openai.types.chat.chat_completion_message_tool_call import (
@@ -47,14 +47,46 @@ MessageType = Literal["chat", "completion"]
 
 TextMessage = str
 TextMessages = str
-ChatMessage = ChatCompletionMessageParam
+
+
+class SystemMessage(BaseModel):
+    role: Literal["system"] = "system"
+    content: str
+
+
+class UserMessage(BaseModel):
+    role: Literal["user"] = "user"
+    content: str
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: str
+
+
+class AssistantMessage(BaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str | None = None
+    reasoning_content: str | None = None
+    tool_calls: list[ToolCall] | None = None
+
+
+class ToolMessage(BaseModel):
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    content: str
+
+
+ChatMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ChatMessages = list[ChatMessage]
+
 Message = TextMessage | ChatMessage
-Messages = str | list[ChatMessage]
+Messages = TextMessages | ChatMessages
 
 TextResponse = Completion
 ChatResponse = ChatCompletion
-ModelResponse = TextResponse | ChatResponse | None
+Response = TextResponse | ChatResponse | None
 
 Tool = ChatCompletionToolParam
 
@@ -79,7 +111,7 @@ class TrajectoryStepTokens(TypedDict):
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
-    response: ModelResponse
+    response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None

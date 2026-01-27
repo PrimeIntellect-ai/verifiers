@@ -1,18 +1,25 @@
-from typing import cast
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+)
 
 from verifiers.types import (
+    AssistantMessage,
     ChatCompletion,
     ChatMessage,
+    ChatResponse,
     Completion,
     Messages,
     MessageType,
-    ModelResponse,
+    Response,
+    TextMessage,
+    TextResponse,
+    ToolCall,
     TrajectoryStepTokens,
 )
 
 
 async def parse_response_tokens(
-    response: ModelResponse, message_type: MessageType, max_seq_len: int | None = None
+    response: Response, message_type: MessageType, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
@@ -97,39 +104,58 @@ async def parse_response_tokens(
     )
 
 
+def parse_text_response(response: TextResponse) -> TextMessage:
+    text_message = response.choices[0].text
+    return text_message
+
+
+def parse_chat_response(response: ChatResponse) -> ChatMessage:
+    if response.choices and response.choices[0].message:
+        content = response.choices[0].message.content
+    else:
+        content = None
+    # TODO: parse reasoning content
+    if (
+        response.choices
+        and response.choices[0].message
+        and response.choices[0].message.tool_calls
+    ):
+        oai_tool_calls = response.choices[0].message.tool_calls
+        tool_calls = []
+        for oai_tool_call in oai_tool_calls:
+            if isinstance(
+                oai_tool_call, ChatCompletionMessageFunctionToolCall
+            ):  # only support function tool calls
+                tool_calls.append(
+                    ToolCall(
+                        id=oai_tool_call.id,
+                        name=oai_tool_call.function.name,
+                        arguments=oai_tool_call.function.arguments,
+                    )
+                )
+    else:
+        tool_calls = None
+    chat_message = AssistantMessage(
+        role="assistant",
+        content=content,
+        reasoning_content=None,  # TODO
+        tool_calls=tool_calls,
+    )
+    return chat_message
+
+
 async def parse_response_messages(
-    response: ModelResponse, message_type: MessageType
+    response: Response, message_type: MessageType
 ) -> Messages:
-    response_text = ""
     if message_type == "chat":
-        assert isinstance(response, ChatCompletion)
-        if response.choices and response.choices[0].message:
-            response_text = response.choices[0].message.content or ""
-        response_message: dict[str, object] = {
-            "role": "assistant",
-            "content": response_text,
-        }
-        if (
-            response.choices
-            and response.choices[0].message
-            and response.choices[0].message.tool_calls
-        ):
-            tool_calls = response.choices[0].message.tool_calls
-            response_message["tool_calls"] = [
-                tool_call.model_dump() for tool_call in tool_calls
-            ]
-        completion_messages = list[ChatMessage]([cast(ChatMessage, response_message)])
+        assert isinstance(response, ChatResponse)
+        return [parse_chat_response(response)]
     else:
         assert isinstance(response, Completion)
-        if response.choices and response.choices[0]:
-            response_text = response.choices[0].text or ""
-        completion_messages = str(response_text)
-    return completion_messages
+        return parse_text_response(response)
 
 
-async def parse_is_truncated(
-    response: ModelResponse, message_type: MessageType
-) -> bool:
+async def parse_is_truncated(response: Response, message_type: MessageType) -> bool:
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         assert len(response.choices) == 1, "Response should always have one choice"

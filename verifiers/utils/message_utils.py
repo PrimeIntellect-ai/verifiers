@@ -50,6 +50,7 @@ def message_to_printable(message: ChatMessage) -> ChatMessage:
     Removes image_url objects from message content.
     """
     new_message: dict[str, object] = {}
+    message = message.model_dump()
     new_message["role"] = message["role"]
     new_message["content"] = []
     if "tool_calls" in message:

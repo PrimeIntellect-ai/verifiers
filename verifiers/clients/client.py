@@ -2,20 +2,28 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
 
-from openai.types import Completion
-from openai.types.chat import ChatCompletion
-
-from verifiers.types import ChatMessages, ClientConfig, SamplingArgs, TextMessages, Tool
+from verifiers.types import (
+    ChatMessage,
+    ChatMessages,
+    ChatResponse,
+    ClientConfig,
+    SamplingArgs,
+    TextMessage,
+    TextMessages,
+    TextResponse,
+    Tool,
+)
 
 ClientT = TypeVar("ClientT")
+TextMessageT = TypeVar("TextMessageT")
+ChatMessageT = TypeVar("ChatMessageT")
 TextResponseT = TypeVar("TextResponseT")
-MessageResponseT = TypeVar("MessageResponseT")
-
-NormalizedTextResponse = Completion
-NormalizedMessageResponse = ChatCompletion
+ChatResponseT = TypeVar("ChatResponseT")
 
 
-class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
+class Client(
+    ABC, Generic[ClientT, TextResponseT, ChatResponseT, TextMessageT, ChatMessageT]
+):
     def __init__(self, config: ClientConfig):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.config = config
@@ -29,44 +37,48 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
     def setup_client(self, config: ClientConfig) -> ClientT: ...
 
     @abstractmethod
+    def from_text_message(self, message: TextMessage) -> TextMessageT: ...
+
+    @abstractmethod
+    def to_text_message(self, response: TextResponseT) -> TextResponse: ...
+
+    @abstractmethod
     async def get_text_response(
-        self, prompt: TextMessages, model: str, sampling_args: SamplingArgs
+        self, prompt: TextMessageT, model: str, sampling_args: SamplingArgs
     ) -> TextResponseT: ...
 
     @abstractmethod
     async def raise_from_text_response(self, response: TextResponseT) -> None: ...
 
     @abstractmethod
-    async def normalize_text_response(
-        self, response: TextResponseT
-    ) -> NormalizedTextResponse: ...
+    def from_chat_message(self, message: ChatMessage) -> ChatMessageT: ...
 
     @abstractmethod
-    async def get_message_response(
+    def to_chat_message(self, response: ChatResponseT) -> ChatResponse: ...
+
+    @abstractmethod
+    async def get_chat_response(
         self,
-        prompt: ChatMessages,
+        prompt: list[ChatMessageT],
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> MessageResponseT: ...
+    ) -> ChatResponseT: ...
 
     @abstractmethod
-    async def raise_from_message_response(self, response: MessageResponseT) -> None: ...
-
-    @abstractmethod
-    async def normalize_message_response(
-        self, response: MessageResponseT
-    ) -> NormalizedMessageResponse: ...
+    async def raise_from_chat_response(self, response: ChatResponseT) -> None: ...
 
     async def get_text(
         self,
         prompt: TextMessages,
         model: str,
         sampling_args: SamplingArgs,
-    ) -> NormalizedTextResponse:
-        response = await self.get_text_response(prompt, model, sampling_args)
+    ) -> TextResponse:
+        normalized_prompt = self.from_text_message(prompt)
+        response = await self.get_text_response(normalized_prompt, model, sampling_args)
         await self.raise_from_text_response(response)
-        return await self.normalize_text_response(response)
+        normalized_response = self.to_text_message(response)
+        return normalized_response
 
     async def get_message(
         self,
@@ -74,10 +86,14 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> NormalizedMessageResponse:
-        response = await self.get_message_response(prompt, model, sampling_args, tools)
-        await self.raise_from_message_response(response)
-        return await self.normalize_message_response(response)
+    ) -> ChatResponse:
+        normalized_prompt = [self.from_chat_message(p) for p in prompt]
+        response = await self.get_chat_response(
+            normalized_prompt, model, sampling_args, tools
+        )
+        await self.raise_from_chat_response(response)
+        normalized_response = self.to_chat_message(response)
+        return normalized_response
 
     @abstractmethod
     async def get_message_with_tokens(
@@ -87,4 +103,4 @@ class Client(ABC, Generic[ClientT, TextResponseT, MessageResponseT]):
         model: str,
         sampling_args: SamplingArgs,
         tools: list[Tool] | None,
-    ) -> NormalizedMessageResponse: ...
+    ) -> ChatResponseT: ...
