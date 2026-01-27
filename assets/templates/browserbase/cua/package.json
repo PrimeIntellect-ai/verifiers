@@ -4,7 +4,7 @@
   "description": "CUA Primitives API Server - Browser automation primitives as REST endpoints",
   "type": "module",
   "scripts": {
-    "start": "./start.sh",
+    "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
     "build:binary": "bash scripts/build-binary.sh",
     "build:binary:docker": "docker build --platform linux/amd64 -f Dockerfile.build -t cua-builder . && docker run --rm --platform linux/amd64 -v $(pwd)/dist:/output cua-builder"

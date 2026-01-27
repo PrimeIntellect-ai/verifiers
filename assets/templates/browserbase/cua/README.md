@@ -26,11 +26,14 @@ env = BrowserEnv(
 For local development or debugging, you can run the server manually:
 
 ```bash
-# Start the server
-./start.sh
+# Start the server (with hot reload)
+pnpm dev
 
-# Or with custom port
-./start.sh --port 8080
+# Or start without hot reload
+pnpm start
+
+# Custom port via environment variable
+CUA_SERVER_PORT=8080 pnpm dev
 ```
 
 Then configure BrowserEnv to use the manual server:
@@ -264,7 +267,6 @@ cua-server/
 ├── stateCapture.ts    # Screenshot & state helpers
 ├── types.ts           # TypeScript types
 ├── setup.sh           # Sandbox initialization script (used by CUASandboxMode)
-├── start.sh           # Manual startup script (for local development)
 ├── package.json       # Dependencies
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file

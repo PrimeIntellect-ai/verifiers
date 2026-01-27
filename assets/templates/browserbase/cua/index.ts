@@ -4,9 +4,10 @@
  * Exposes browser automation primitives as REST endpoints for external agents.
  *
  * Usage (standalone):
- *   ./start.sh                    # Start with defaults
- *   ./start.sh --port 8080        # Custom port
- *   ./start.sh --host 127.0.0.1   # Custom host
+ *   pnpm dev                              # Start with hot reload
+ *   pnpm start                            # Start without hot reload
+ *   CUA_SERVER_PORT=8080 pnpm dev         # Custom port
+ *   CUA_SERVER_HOST=127.0.0.1 pnpm dev    # Custom host
  *
  * Environment variables:
  *   CUA_SERVER_PORT - Server port (default: 3000)
