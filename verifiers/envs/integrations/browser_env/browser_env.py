@@ -1,5 +1,6 @@
 """Unified Browser Environment with DOM and CUA modes."""
 
+import logging
 import os
 from typing import Any, Literal
 import verifiers as vf
@@ -8,6 +9,8 @@ from verifiers.utils.async_utils import maybe_await
 from .modes.base import BrowserMode
 from .modes.dom_mode import DOMMode
 from .modes.cua_mode import CUAMode
+
+logger = logging.getLogger(__name__)
 
 ModeType = Literal["dom", "cua"]
 
@@ -208,6 +211,14 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         # Register mode-specific tools
         self._mode_impl.register_tools(self)
+
+        # Log configuration
+        if mode == "dom":
+            logger.info(
+                f"BrowserEnv initialized in DOM mode with stagehand_model='{stagehand_model}'"
+            )
+        else:
+            logger.info("BrowserEnv initialized in CUA mode")
 
     def _validate_environment_variables(
         self,
