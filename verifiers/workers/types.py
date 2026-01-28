@@ -4,10 +4,9 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from verifiers.types import (
     ClientConfig,
-    GenerateOutputs,
     RolloutInput,
+    RolloutOutput,
     SamplingArgs,
-    State,
 )
 
 
@@ -40,14 +39,16 @@ class RunRolloutRequest(BaseRequest):
 
 
 class RunRolloutResponse(BaseResponse):
-    state: State | None = None
+    output: RolloutOutput | None = None
 
-    @field_validator("state", mode="before")
+    @field_validator("output", mode="before")
     @classmethod
-    def convert_state(cls, v: dict | None) -> State | None:
+    def convert_output(cls, v: dict | RolloutOutput | None) -> RolloutOutput | None:
         if v is None:
             return None
-        return State(**v)
+        if isinstance(v, RolloutOutput):
+            return v
+        return RolloutOutput(**v)
 
 
 class RunGroupRequest(BaseRequest):
@@ -61,43 +62,16 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    states: list[State] | None = None
+    outputs: list[RolloutOutput] | None = None
 
-    @field_validator("states", mode="before")
+    @field_validator("outputs", mode="before")
     @classmethod
-    def convert_states(cls, v: list[dict] | None) -> list[State] | None:
+    def convert_outputs(
+        cls, v: list[dict | RolloutOutput] | None
+    ) -> list[RolloutOutput] | None:
         if v is None:
             return []
-        return [State(**s) for s in v]
-
-
-class EvaluateRequest(BaseRequest):
-    request_type: Literal["evaluate"] = "evaluate"  # type: ignore[override]
-
-    client_config: ClientConfig
-    model: str
-    sampling_args: SamplingArgs
-    num_examples: int = -1
-    rollouts_per_example: int = 1
-    max_concurrent: int = -1
-    results_path: str | None = None
-    state_columns: list[str] | None = None
-    save_results: bool = False
-    save_every: int = -1
-    independent_scoring: bool = False
-
-
-class EvaluateResponse(BaseResponse):
-    results: GenerateOutputs | None = None
-
-    @field_validator("results", mode="before")
-    @classmethod
-    def convert_results_state(cls, v: dict | None) -> dict | None:
-        if v is None:
-            return None
-        if isinstance(v, dict) and "state" in v:
-            v["state"] = [State(**s) for s in v["state"]]
-        return v
+        return [o if isinstance(o, RolloutOutput) else RolloutOutput(**o) for o in v]
 
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)

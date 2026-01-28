@@ -12,6 +12,7 @@ import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from multiprocessing import Process
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -27,6 +28,10 @@ from typing import (
 
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
+from verifiers.utils.worker_utils import get_free_port
+from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+from verifiers.workers.server.zmq_env_server import ZMQEnvServer
+
 if TYPE_CHECKING:
     from datasets import Dataset
 from openai.types.chat import ChatCompletion
@@ -39,6 +44,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    ClientConfig,
     DatasetBuilder,
     GenerateOutputs,
     LogCallback,
@@ -47,6 +53,7 @@ from verifiers.types import (
     ModelResponse,
     ProgressCallback,
     RolloutInput,
+    RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
@@ -66,6 +73,8 @@ from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
+from verifiers.workers.client.env_client import EnvClient
+from verifiers.workers.server.env_server import EnvServer
 
 if TYPE_CHECKING:
     pass
@@ -122,6 +131,9 @@ class Environment(ABC):
                 'Please use message_type="chat" instead, or pre-format your dataset '
                 'to contain a "prompt" column.'
             )
+
+        self.env_client: EnvClient | None = None
+        self.env_server: EnvServer | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -745,14 +757,23 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager | None = None,
         score: bool = False,
-    ) -> State:
-        """Generate and, optionally, score a rollout."""
+    ) -> State | RolloutOutput:
+        """Generate and, optionally, score a rollout.
+
+        Returns State when running locally, RolloutOutput when using remote env server.
+        """
+        if isinstance(client, ClientConfig):
+            assert self.env_client is not None
+            return await self.env_client.run_rollout(
+                input, client, model, gen_sampling_args, score
+            )
+        assert isinstance(client, AsyncOpenAI)
         async with gen_sem:
             state = await self.rollout(
                 input,
@@ -772,15 +793,24 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         gen_sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager,
         score_sem: AsyncContextManager,
         score: bool = True,
         **kwargs,
-    ) -> list[State]:
-        """Generate and, optionally, score one group."""
+    ) -> list[State] | list[RolloutOutput]:
+        """Generate and, optionally, score one group.
+
+        Returns list[State] when running locally, list[RolloutOutput] when using remote env server.
+        """
+        if isinstance(client, ClientConfig):
+            assert self.env_client is not None
+            return await self.env_client.run_group(
+                group_inputs, client, model, gen_sampling_args, score
+            )
+        assert isinstance(client, AsyncOpenAI)
         rollout_tasks = [
             self.run_rollout(
                 input,
@@ -844,8 +874,8 @@ class Environment(ABC):
             score_limit = max_concurrent
 
         # set up semaphores
-        gen_sem = await maybe_semaphore(gen_limit)
-        score_sem = await maybe_semaphore(score_limit)
+        gen_sem = maybe_semaphore(gen_limit)
+        score_sem = maybe_semaphore(score_limit)
 
         # set up sampling args
         gen_sampling_args = deepcopy(self.sampling_args)
@@ -1151,6 +1181,25 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    def start_server(self, address: str | None = None) -> None:
+        self.server_address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        self.env_server_process = Process(
+            target=ZMQEnvServer.run_server,
+            args=(self.env_id, self.env_args),
+            kwargs=dict(address=self.server_address),
+        )
+        self.env_server_process.start()
+        self.env_client = ZMQEnvClient(address=self.server_address)
+
+    def stop_server(self) -> None:
+        if self.env_server_process is not None:
+            self.env_server_process.terminate()
+            self.env_server_process.join(timeout=5)
+            if self.env_server_process.is_alive():
+                self.env_server_process.terminate()
+            self.env_server_process = None
+            self.env_server = None
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

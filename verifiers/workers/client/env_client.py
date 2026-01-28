@@ -1,12 +1,10 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 from verifiers.types import (
     ClientConfig,
-    GenerateOutputs,
     RolloutInput,
+    RolloutOutput,
     SamplingArgs,
-    State,
 )
 
 
@@ -25,8 +23,8 @@ class EnvClient(ABC):
         model: str,
         sampling_args: SamplingArgs,
         score: bool = True,
-    ) -> State:
-        """Mirrors Environment.run_rollout"""
+    ) -> RolloutOutput:
+        """Run a rollout on the remote environment server and return serializable output."""
         ...
 
     @abstractmethod
@@ -37,24 +35,6 @@ class EnvClient(ABC):
         model: str,
         sampling_args: SamplingArgs,
         score: bool = True,
-    ) -> list[State]:
-        """Mirrors Environment.run_group"""
-        ...
-
-    @abstractmethod
-    async def evaluate(
-        self,
-        client_config: ClientConfig,
-        model: str,
-        sampling_args: SamplingArgs,
-        num_examples: int,
-        rollouts_per_example: int,
-        max_concurrent: int,
-        results_path: Path | None,
-        state_columns: list[str] | None,
-        save_results: bool,
-        save_every: int,
-        independent_scoring: bool = False,
-    ) -> GenerateOutputs:
-        """Mirrors Environment.evaluate"""
+    ) -> list[RolloutOutput]:
+        """Run a group of rollouts on the remote environment server and return serializable outputs."""
         ...

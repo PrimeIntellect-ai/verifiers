@@ -25,12 +25,8 @@ def load_prime_config() -> dict:
     return {}
 
 
-def setup_client(
-    config: ClientConfig,
-) -> AsyncOpenAI:
-    """
-    A helper function to setup an AsyncOpenAI client.
-    """
+def setup_client(config: ClientConfig) -> AsyncOpenAI:
+    """A helper function to setup an AsyncOpenAI client."""
     # Setup timeouts and limits
     http_timeout = httpx.Timeout(config.timeout, connect=5.0)
     limits = httpx.Limits(

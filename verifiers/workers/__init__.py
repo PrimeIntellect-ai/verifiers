@@ -3,8 +3,6 @@ from verifiers.workers.server import ZMQEnvServer
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponse,
-    EvaluateRequest,
-    EvaluateResponse,
     HealthRequest,
     HealthResponse,
     RunGroupRequest,
@@ -23,8 +21,6 @@ __all__ = [
     "RunRolloutResponse",
     "RunGroupRequest",
     "RunGroupResponse",
-    "EvaluateRequest",
-    "EvaluateResponse",
     # clients/servers
     "ZMQEnvClient",
     "ZMQEnvServer",

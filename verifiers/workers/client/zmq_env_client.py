@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import uuid
-from pathlib import Path
 from typing import cast
 
 import msgpack
@@ -9,12 +8,11 @@ import zmq
 import zmq.asyncio
 
 import verifiers as vf
+from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.client.env_client import EnvClient
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponseT,
-    EvaluateRequest,
-    EvaluateResponse,
     HealthRequest,
     HealthResponse,
     RunGroupRequest,
@@ -22,7 +20,6 @@ from verifiers.workers.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
-from verifiers.workers.utils import msgpack_encoder
 
 
 class ZMQEnvClient(EnvClient):
@@ -63,7 +60,7 @@ class ZMQEnvClient(EnvClient):
         model: str,
         sampling_args: vf.SamplingArgs,
         score: bool = True,
-    ) -> vf.State:
+    ) -> vf.RolloutOutput:
         request = RunRolloutRequest(
             input=input,
             client_config=client_config,
@@ -74,8 +71,8 @@ class ZMQEnvClient(EnvClient):
         response = await self._send_request(
             request, RunRolloutResponse, timeout=36000.0
         )
-        assert response.state is not None
-        return response.state
+        assert response.output is not None
+        return response.output
 
     async def run_group(
         self,
@@ -84,7 +81,7 @@ class ZMQEnvClient(EnvClient):
         model: str,
         sampling_args: vf.SamplingArgs,
         score: bool = True,
-    ) -> list[vf.State]:
+    ) -> list[vf.RolloutOutput]:
         request = RunGroupRequest(
             group_inputs=group_inputs,
             client_config=client_config,
@@ -93,39 +90,8 @@ class ZMQEnvClient(EnvClient):
             score=score,
         )
         response = await self._send_request(request, RunGroupResponse, timeout=36000.0)
-        assert response.states is not None
-        return response.states
-
-    async def evaluate(
-        self,
-        client_config: vf.ClientConfig,
-        model: str,
-        sampling_args: vf.SamplingArgs,
-        num_examples: int,
-        rollouts_per_example: int,
-        max_concurrent: int,
-        results_path: Path | None,
-        state_columns: list[str] | None,
-        save_results: bool,
-        save_every: int,
-        independent_scoring: bool = False,
-    ) -> vf.GenerateOutputs:
-        request = EvaluateRequest(
-            client_config=client_config,
-            model=model,
-            sampling_args=sampling_args,
-            num_examples=num_examples,
-            rollouts_per_example=rollouts_per_example,
-            max_concurrent=max_concurrent,
-            results_path=str(results_path) if results_path else None,
-            state_columns=state_columns,
-            save_results=save_results,
-            save_every=save_every,
-            independent_scoring=independent_scoring,
-        )
-        response = await self._send_request(request, EvaluateResponse, timeout=36000.0)
-        assert response.results is not None
-        return response.results
+        assert response.outputs is not None
+        return response.outputs
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
@@ -259,18 +225,16 @@ async def main():
     is_healthy = await client.health()
     assert is_healthy, "ZMQEnvServer is not healthy"
     print("Checked that ZMQEnvServer is running and healthy.")
-    results = await client.evaluate(
-        client_config=vf.ClientConfig(),
+    results = await client.run_rollout(
+        input=vf.RolloutInput(
+            example_id=0,
+            prompt=[{"role": "user", "content": "What is 2+2?"}],
+            answer="4",
+            task="test",
+        ),
         model="openai/gpt-4.1-mini",
-        sampling_args=vf.SamplingArgs(),
-        num_examples=5,
-        rollouts_per_example=3,
-        max_concurrent=-1,
-        results_path=None,
-        state_columns=[],
-        save_results=False,
-        save_every=-1,
-        independent_scoring=True,
+        client_config=vf.ClientConfig(),
+        sampling_args={},
     )
     print(results)
 

@@ -3,12 +3,16 @@ import logging
 import signal
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from openai import AsyncOpenAI
 
 import verifiers as vf
+from verifiers.types import ClientConfig, State
+from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.client_utils import setup_client
+from verifiers.utils.save_utils import state_to_output
 from verifiers.workers.types import (
-    EvaluateRequest,
-    EvaluateResponse,
     HealthRequest,
     HealthResponse,
     RunGroupRequest,
@@ -49,11 +53,14 @@ class EnvServer(ABC):
         self.env_id = env_id
         self.env_args = env_args
         self.extra_env_kwargs = extra_env_kwargs
+        self.clients: dict[str, AsyncOpenAI] = {}
 
         # load environment
         self.env = vf.load_environment(env_id, **self.env_args)
         if self.extra_env_kwargs:
             self.env.set_kwargs(**self.extra_env_kwargs)
+
+        self.no_limit = maybe_semaphore(None)
 
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):
@@ -94,40 +101,45 @@ class EnvServer(ABC):
     async def _handle_run_rollout(
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
-        state = await self.env.run_rollout(
-            request.input,
-            request.client_config,
-            request.model,
-            request.sampling_args,
-            request.score,
+        client = await self._resolve_client(request.client_config)
+        # Server always runs locally with AsyncOpenAI, so we always get State back
+        state = cast(
+            State,
+            await self.env.run_rollout(
+                request.input,
+                client,
+                request.model,
+                request.sampling_args,
+                self.no_limit,
+                self.no_limit,
+                request.score,
+            ),
         )
-        return RunRolloutResponse(state=state)
+        output = state_to_output(state)
+        return RunRolloutResponse(output=output)
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
-        states = await self.env.run_group(
-            request.group_inputs,
-            request.client_config,
-            request.model,
-            request.sampling_args,
-            request.score,
+        client = await self._resolve_client(request.client_config)
+        # Server always runs locally with AsyncOpenAI, so we always get list[State] back
+        states = cast(
+            list[State],
+            await self.env.run_group(
+                request.group_inputs,
+                client,
+                request.model,
+                request.sampling_args,
+                self.no_limit,
+                self.no_limit,
+                request.score,
+            ),
         )
-        return RunGroupResponse(states=states)
+        outputs = [state_to_output(state) for state in states]
+        return RunGroupResponse(outputs=outputs)
 
-    async def _handle_evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
-        from pathlib import Path
-
-        results_path = Path(request.results_path) if request.results_path else None
-        results = await self.env.evaluate(
-            request.client_config,
-            request.model,
-            request.sampling_args,
-            request.num_examples,
-            request.rollouts_per_example,
-            request.max_concurrent,
-            results_path,
-            request.state_columns,
-            request.save_results,
-            request.save_every,
-            request.independent_scoring,
-        )
-        return EvaluateResponse(results=results)
+    async def _resolve_client(self, client_config: ClientConfig) -> AsyncOpenAI:
+        client_key = client_config.model_dump_json()
+        if client_key in self.clients:
+            return self.clients[client_key]
+        client = setup_client(client_config)
+        self.clients[client_key] = client
+        return client

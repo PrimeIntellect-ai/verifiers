@@ -7,19 +7,18 @@ import zmq
 import zmq.asyncio
 from openai import AsyncOpenAI
 
+from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
 from verifiers.workers.types import (
     BaseResponse,
-    EvaluateRequest,
     HealthRequest,
     RunGroupRequest,
     RunRolloutRequest,
 )
-from verifiers.workers.utils import msgpack_encoder
 
 
 class ZMQEnvServer(EnvServer):
-    """Server that exposes an environment via ZMQ."""
+    """Server that a subset of env methods via ZMQ."""
 
     def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)
@@ -109,9 +108,6 @@ class ZMQEnvServer(EnvServer):
             elif request_type == "run_group":
                 request = RunGroupRequest.model_validate(raw)
                 response = await self._handle_run_group(request)
-            elif request_type == "evaluate":
-                request = EvaluateRequest.model_validate(raw)
-                response = await self._handle_evaluate(request)
             else:
                 self.logger.warning(f"Got unknown request type: {request_type}")
                 response = BaseResponse(
@@ -150,7 +146,7 @@ async def main():
 
     parser = argparse.ArgumentParser(description="ZMQ Environment Server")
     parser.add_argument(
-        "env_id",
+        "--env_id",
         type=str,
         default="gsm8k",
         help="Environment module name(s) (comma-separated) or path to TOML config.",
