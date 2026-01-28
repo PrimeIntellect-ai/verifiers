@@ -2996,7 +2996,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return "\n".join(lines)
 
     async def _call_sub_tool(
-        self, tool_name: str, tool_args: dict, tool_call_id: str, *, state: State
+        self, tool_name: str, tool_args: dict, tool_call_id: str
     ) -> dict:
         """Execute a sub-agent tool call. Returns tool message dict."""
         try:
@@ -3172,7 +3172,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id, state=state
+                    tool_name, tool_args, tool_call.id
                 )
                 current_messages.append(cast(ChatMessage, tool_result))
 
