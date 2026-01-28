@@ -13,6 +13,7 @@ from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
+from verifiers.envs.experimental.sandbox_mixin import ThreadedAsyncSandboxClient
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,41 @@ class HarborEnv(vf.CliAgentEnv):
         task_info: dict[str, Any] = state.get("info") or {}
         return task_info.get("docker_image") or self.docker_image
 
+    async def get_timeout_seconds(self, state: vf.State) -> float:
+        """Get timeout: user override > task.toml > default. Use -1 for per-task config."""
+        if self.timeout_seconds > 0:
+            return self.timeout_seconds  # User override
+        config = (state.get("info") or {}).get("config", {})
+        timeout = config.get("agent", {}).get("timeout_sec")
+        return float(timeout) if timeout else 3600.0  # task.toml or default
+
+    async def get_sandbox_request(
+        self, state: vf.State, env_vars: dict[str, str], docker_image: str
+    ):
+        """Build request: user override > task.toml > CreateSandboxRequest default. Use -1 for per-task config."""
+        request = await super().get_sandbox_request(state, env_vars, docker_image)
+        config = (state.get("info") or {}).get("config", {})
+        env_config = config.get("environment", {})
+
+        updates = {}
+        # Only apply task.toml values if user didn't explicitly override (-1 = use per-task)
+        if self.cpu_cores < 0 and (cpus := env_config.get("cpus")):
+            updates["cpu_cores"] = int(cpus)
+        if self.memory_gb < 0 and (mem := env_config.get("memory")):
+            updates["memory_gb"] = (
+                int(str(mem).rstrip("gG"))
+                if str(mem).upper().endswith("G")
+                else int(mem)
+            )
+        if self.disk_size_gb < 0 and (storage := env_config.get("storage")):
+            updates["disk_size_gb"] = (
+                int(str(storage).rstrip("gG"))
+                if str(storage).upper().endswith("G")
+                else int(storage)
+            )
+
+        return request.model_copy(update=updates) if updates else request
+
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Build env vars with Harbor-specific additions."""
         env_vars = await super().build_env_vars(state)
@@ -106,7 +142,9 @@ class HarborEnv(vf.CliAgentEnv):
         return env_vars
 
     async def post_sandbox_setup(
-        self, state: vf.State, sandbox_client: AsyncSandboxClient
+        self,
+        state: vf.State,
+        sandbox_client: AsyncSandboxClient | ThreadedAsyncSandboxClient,
     ) -> None:
         """Upload Harbor task assets after sandbox creation."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
@@ -124,7 +162,10 @@ class HarborEnv(vf.CliAgentEnv):
         state["harbor_task_dir"] = str(task_dir)
 
     async def prepare_harbor_task(
-        self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
+        self,
+        sandbox_client: AsyncSandboxClient | ThreadedAsyncSandboxClient,
+        sandbox_id: str,
+        task_dir: Path,
     ) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
         instruction_path = task_dir / "instruction.md"
