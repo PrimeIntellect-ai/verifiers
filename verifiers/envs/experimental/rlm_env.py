@@ -405,6 +405,7 @@ _ENSURE_FIFO_BLOCK = [
     "    ensure_fifo(fifo_path)",
 ]
 
+
 def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     dict_open = "{" if sandboxed else "{{"
     dict_close = "}" if sandboxed else "}}"
