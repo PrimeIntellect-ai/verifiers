@@ -990,7 +990,17 @@ class Environment(ABC):
         all_states: list[State] = []
         try:
             for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
+                try:
+                    result = await coro
+                except Exception:
+                    # cancel all outstanding tasks
+                    for task in tasks.keys():
+                        if not task.done():
+                            task.cancel()
+                    # drain cancellations
+                    await asyncio.gather(*tasks.keys(), return_exceptions=True)
+                    raise
+
                 # normalize: independent_scoring returns State, group returns list[State]
                 states = [result] if independent_scoring else result
                 all_states.extend(states)
