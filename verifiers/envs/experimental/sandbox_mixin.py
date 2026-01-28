@@ -10,7 +10,15 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import tenacity as tc
-from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest, SandboxClient
+from prime_sandboxes import (
+    AsyncSandboxClient,
+    CommandTimeoutError,
+    CreateSandboxRequest,
+    DownloadTimeoutError,
+    SandboxClient,
+    SandboxNotRunningError,
+    UploadTimeoutError,
+)
 from prime_sandboxes.core import APIClient
 
 import verifiers as vf
@@ -164,6 +172,17 @@ class ThreadedAsyncSandboxClient:
                     result = loop.run_until_complete(method(*args, **kwargs))
                     logger.debug(f"[SANDBOX_THREAD_END] {call_id} success=True")
                     return result
+                except (
+                    SandboxNotRunningError,
+                    CommandTimeoutError,
+                    UploadTimeoutError,
+                    DownloadTimeoutError,
+                ) as e:
+                    logger.debug(
+                        f"[SANDBOX_THREAD_END] {call_id} success=False "
+                        f"error={type(e).__name__}: {e}"
+                    )
+                    raise vf.SandboxError(f"{type(e).__name__}: {e}") from e
                 except Exception as e:
                     logger.debug(
                         f"[SANDBOX_THREAD_END] {call_id} success=False "
