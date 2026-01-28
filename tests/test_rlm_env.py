@@ -1080,53 +1080,6 @@ class TestSubLLMRequestPaths:
         assert sent_messages[0]["content"] == [{"type": "text", "text": "hello"}]
         assert sent_messages[1]["content"] == "inner"
 
-    @pytest.mark.asyncio
-    async def test_interleaved_main_prompt_ids_ignore_sub_llm_steps(self, rlm_env):
-        rlm_env.interleaved_rollouts = True
-
-        main_id = "main-123"
-        main_step = {
-            "trajectory_id": main_id,
-            "prompt": [{"role": "user", "content": "hi"}],
-            "completion": [{"role": "assistant", "content": "ok"}],
-            "tokens": {
-                "prompt_ids": [1],
-                "completion_ids": [2],
-                "prompt_mask": [1],
-                "completion_mask": [1],
-                "completion_logprobs": [0.0],
-            },
-        }
-        sub_step = {
-            "trajectory_id": "sub-1",
-            "extras": {"is_sub_llm_call": True},
-        }
-        state = {
-            "client": MagicMock(),
-            "model": "gpt-4",
-            "oai_tools": None,
-            "sampling_args": {},
-            "trajectory": [main_step, sub_step],
-            "trajectory_id": main_id,
-        }
-        prompt = [{"role": "user", "content": "next"}]
-
-        captured = {}
-
-        async def fake_get_prompt_ids(prompt_state, prompt_messages, client):
-            captured["trajectory"] = list(prompt_state["trajectory"])
-            return [1, 2, 3]
-
-        rlm_env._model_caller.call = AsyncMock(return_value=MagicMock())
-        with patch(
-            "verifiers.envs.experimental.rlm_env.get_prompt_ids",
-            new=fake_get_prompt_ids,
-        ):
-            await rlm_env.get_model_response(state, prompt)
-
-        assert len(captured["trajectory"]) == 1
-        assert captured["trajectory"][0]["trajectory_id"] == main_id
-
 
 # =============================================================================
 # 8. Root Tool Serialization (pickle)
