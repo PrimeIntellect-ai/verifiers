@@ -930,7 +930,7 @@ class TestCallSubTool:
     @pytest.mark.asyncio
     async def test_executes_tool_successfully(self, rlm_env_with_sub_tools):
         result = await rlm_env_with_sub_tools._call_sub_tool(
-            "sample_tool", {"x": 2, "y": 3}, "call_123"
+            "sample_tool", {"x": 2, "y": 3}, "call_123", state={}
         )
 
         assert result["role"] == "tool"
@@ -940,7 +940,7 @@ class TestCallSubTool:
     @pytest.mark.asyncio
     async def test_handles_tool_error(self, rlm_env_with_sub_tools):
         result = await rlm_env_with_sub_tools._call_sub_tool(
-            "sample_tool", {"x": "not_an_int", "y": 3}, "call_456"
+            "sample_tool", {"x": "not_an_int", "y": 3}, "call_456", state={}
         )
 
         assert result["role"] == "tool"

@@ -2765,6 +2765,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return api_timeout, worker_timeout
 
+    def _record_stop_error(self, state: State, exc: Exception) -> None:
+        state["error"] = str(exc)
+        state["_rlm_stop_error"] = exc
+
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
 
@@ -2996,7 +3000,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return "\n".join(lines)
 
     async def _call_sub_tool(
-        self, tool_name: str, tool_args: dict, tool_call_id: str
+        self, tool_name: str, tool_args: dict, tool_call_id: str, *, state: State
     ) -> dict:
         """Execute a sub-agent tool call. Returns tool message dict."""
         try:
@@ -3008,6 +3012,9 @@ class RLMEnv(vf.StatefulToolEnv):
                 "tool_call_id": tool_call_id,
             }
         except Exception as e:
+            if self._should_stop_for_error(e):
+                self._record_stop_error(state, e)
+                raise
             return {
                 "role": "tool",
                 "content": f"Error: {e}",
@@ -3170,7 +3177,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id
+                    tool_name, tool_args, tool_call.id, state=state
                 )
                 current_messages.append(cast(ChatMessage, tool_result))
 
@@ -3277,6 +3284,8 @@ class RLMEnv(vf.StatefulToolEnv):
                         elapsed
                     )
                 except Exception as exc:
+                    if self._should_stop_for_error(exc):
+                        raise
                     elapsed = perf_counter() - start_time
                     response_dict = {
                         "choices": [
@@ -3550,6 +3559,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 result_value = await maybe_await(tool_func, *args, **kwargs)
                 print_lines = None
         except Exception as e:
+            if self._should_stop_for_error(e):
+                self._record_stop_error(state_ref, e)
             return web.json_response({"error": str(e)}, status=500)
         finally:
             self._root_tool_context_var.reset(token)
@@ -3603,6 +3614,8 @@ class RLMEnv(vf.StatefulToolEnv):
             )
             return web.json_response(response_dict)
         except Exception as e:
+            if self._should_stop_for_error(e):
+                self._record_stop_error(state_ref, e)
             return web.json_response({"error": str(e)}, status=500)
 
     async def _teardown_interception_server(self):
@@ -4000,6 +4013,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
+        stop_exc = state.pop("_rlm_stop_error", None)
+        if stop_exc is not None:
+            raise stop_exc
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
