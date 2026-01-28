@@ -84,6 +84,7 @@ class CUAMode:
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
         proxies: bool = False,
+        advanced_stealth: bool = False,
         # Sandbox mode config
         server_port: int = 3000,
         upload_path: str = "/app/cua-server",
@@ -123,6 +124,9 @@ class CUAMode:
             "browserbaseProjectId": resolved_project_id,
             "viewport": {"width": viewport_width, "height": viewport_height},
             "proxies": proxies,
+            "browserSettings": {"advancedStealth": advanced_stealth}
+            if advanced_stealth
+            else None,
         }
         self.session_config = {
             k: v for k, v in self.session_config.items() if v is not None

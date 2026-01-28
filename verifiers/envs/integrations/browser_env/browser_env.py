@@ -94,6 +94,7 @@ class BrowserEnv(vf.StatefulToolEnv):
         save_screenshots: bool = True,
         keep_recent_screenshots: int | None = 2,
         proxies: bool = False,
+        advanced_stealth: bool = False,
         # CUA sandbox mode specific
         server_port: int = 3000,
         server_ready_timeout: int = 120,
@@ -129,6 +130,7 @@ class BrowserEnv(vf.StatefulToolEnv):
             save_screenshots: Save screenshots to disk (default: True)
             keep_recent_screenshots: Number of recent screenshots to keep in context (default: 2)
             proxies: Enable Browserbase proxies (default: False)
+            advanced_stealth: Enable Browserbase Advanced Stealth mode for anti-bot detection (default: False)
             server_port: Port for CUA server in sandbox mode (default: 3000)
             server_ready_timeout: Timeout waiting for sandbox server (default: 120)
             server_ready_poll_interval: Poll interval for sandbox server health (default: 2.0)
@@ -172,6 +174,7 @@ class BrowserEnv(vf.StatefulToolEnv):
                 stagehand_model=stagehand_model,
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
                 proxies=proxies,
+                advanced_stealth=advanced_stealth,
             )
         elif mode == "cua":
             # Unified CUAMode with execution_mode parameter
@@ -187,6 +190,7 @@ class BrowserEnv(vf.StatefulToolEnv):
                 save_screenshots=save_screenshots,
                 keep_recent_screenshots=keep_recent_screenshots,
                 proxies=proxies,
+                advanced_stealth=advanced_stealth,
                 server_ready_timeout=server_ready_timeout,
                 server_ready_poll_interval=server_ready_poll_interval,
                 docker_image=docker_image,

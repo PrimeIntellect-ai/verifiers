@@ -27,6 +27,7 @@ class DOMMode:
         stagehand_model: str = "openai/gpt-4o-mini",
         proxy_model_to_stagehand: bool = False,
         proxies: bool = False,
+        advanced_stealth: bool = False,
     ):
         self.api_key = browserbase_api_key or os.getenv("BROWSERBASE_API_KEY")
         self.project_id = project_id or os.getenv("BROWSERBASE_PROJECT_ID")
@@ -34,6 +35,7 @@ class DOMMode:
         self.stagehand_model = stagehand_model
         self.proxy_model_to_stagehand = proxy_model_to_stagehand
         self.proxies = proxies
+        self.advanced_stealth = advanced_stealth
         self.stagehand_client: AsyncStagehand | None = None
         self.logger = None  # Will be set when register_tools is called
         self._client_lock = asyncio.Lock()
@@ -79,8 +81,15 @@ class DOMMode:
                     model_api_key=api_key,
                 )
 
-        # Build browserbase session params with proxies if enabled
-        browserbase_params = {"proxies": self.proxies} if self.proxies else None
+        # Build browserbase session params
+        browserbase_params = {}
+        if self.proxies:
+            browserbase_params["proxies"] = self.proxies
+        if self.advanced_stealth:
+            browserbase_params["browserSettings"] = {
+                "advancedStealth": self.advanced_stealth
+            }
+        browserbase_params = browserbase_params or None
 
         session = await self.stagehand_client.sessions.create(
             model_name=self.stagehand_model,
