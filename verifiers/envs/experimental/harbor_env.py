@@ -30,11 +30,13 @@ class HarborEnv(vf.CliAgentEnv):
         tasks: list[str] | None = None,
         agent_workdir: str = "/app",
         docker_image: str = "python:3.11-slim",
+        verifier_timeout_seconds: float = -1,  # -1 = use task.toml [verifier].timeout_sec
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
+        self.verifier_timeout_seconds = verifier_timeout_seconds
 
         kwargs["docker_image"] = docker_image
 
@@ -105,6 +107,14 @@ class HarborEnv(vf.CliAgentEnv):
         config = (state.get("info") or {}).get("config", {})
         timeout = config.get("agent", {}).get("timeout_sec")
         return float(timeout) if timeout else 3600.0  # task.toml or default
+
+    async def get_verifier_timeout_seconds(self, state: vf.State) -> float:
+        """Get verifier timeout: user override > task.toml > default. Use -1 for per-task config."""
+        if self.verifier_timeout_seconds > 0:
+            return self.verifier_timeout_seconds  # User override
+        config = (state.get("info") or {}).get("config", {})
+        timeout = config.get("verifier", {}).get("timeout_sec")
+        return float(timeout) if timeout else 300.0  # task.toml or default
 
     async def get_sandbox_request(
         self, state: vf.State, env_vars: dict[str, str], docker_image: str
@@ -294,8 +304,12 @@ class HarborEnv(vf.CliAgentEnv):
             )
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
+            verifier_timeout = await self.get_verifier_timeout_seconds(state)
             await retry_short(sandbox_client.execute_command)(
-                sandbox_id, "bash test.sh", working_dir="/tests"
+                sandbox_id,
+                "bash test.sh",
+                working_dir="/tests",
+                timeout=int(verifier_timeout),
             )
 
             reward_result = await retry_short(sandbox_client.execute_command)(
