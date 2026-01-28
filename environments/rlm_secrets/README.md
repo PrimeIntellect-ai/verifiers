@@ -72,13 +72,15 @@ Both reward functions have equal weight (0.5 each):
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `num_train_examples` | 100 | Training puzzles |
-| `num_eval_examples` | 20 | Evaluation puzzles |
 | `num_files` | 4 | Files per puzzle |
 | `max_turns` | 50 | Max REPL iterations |
 | `sub_tool_max_turns` | 3 | Max tool turns for sub-LLMs |
 | `max_sub_llm_parallelism` | 5 | Concurrent sub-LLM calls |
 | `code_execution_timeout` | 120 | Bash execution timeout (seconds) |
 | `**kwargs` | - | Passed on `RLMEnv.__init__` |
+
+Note: The eval dataset is not built separately. For evaluation, re-instantiate the
+environment with a different `seed` to generate a new synthetic split.
 
 ## Why This Environment?
 

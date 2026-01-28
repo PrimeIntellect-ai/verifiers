@@ -318,6 +318,7 @@ def build_dataset(
         Dataset with prompt, answer, and info columns
     """
     rows = []
+    task_name = "rlm-secrets"
 
     for i in range(num_examples):
         puzzle = generate_puzzle(num_files=num_files)
@@ -359,9 +360,11 @@ def build_dataset(
 
         rows.append(
             {
+                "example_id": i,
                 "prompt": prompt,
                 "answer": str(puzzle["correct_position"]),
                 "info": {"puzzle": puzzle},
+                "task": task_name,
             }
         )
 
@@ -443,7 +446,6 @@ async def correct_filesystem_state(state: State) -> float:
 
 def load_environment(
     num_train_examples: int = 100,
-    num_eval_examples: int = 20,
     num_files: int = 4,
     max_turns: int = 50,
     seed: int | None = None,
@@ -458,7 +460,6 @@ def load_environment(
 
     Args:
         num_train_examples: Number of training puzzle instances
-        num_eval_examples: Number of evaluation puzzle instances
         num_files: Number of files per puzzle (default: 4)
         max_turns: Maximum REPL iterations (default: 50)
         seed: Random seed for dataset generation
@@ -477,11 +478,6 @@ def load_environment(
         num_files=num_files,
     )
 
-    eval_dataset = build_dataset(
-        num_examples=num_eval_examples,
-        num_files=num_files,
-    )
-
     rubric = vf.Rubric(
         funcs=[correct_answer, correct_filesystem_state],
         weights=[0.5, 0.5],
@@ -489,7 +485,6 @@ def load_environment(
 
     return RLMSecretsEnv(
         dataset=train_dataset,
-        eval_dataset=eval_dataset,
         num_files=num_files,
         repl_language=repl_language,
         rubric=rubric,

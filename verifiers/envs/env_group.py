@@ -1,14 +1,15 @@
+from __future__ import annotations
+
 import time
 from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
 
-from datasets import Dataset, concatenate_datasets
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
-    pass
+    from datasets import Dataset
 
 
 class EnvGroupRubric(vf.Rubric):
@@ -142,6 +143,8 @@ class EnvGroup(vf.Environment):
                       If not provided, uses "env_0", "env_1", etc.
             **kwargs: Additional arguments passed to parent Environment
         """
+        from datasets import concatenate_datasets
+
         if not envs:
             raise ValueError("EnvGroup requires at least one environment")
 

@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import importlib.util
 import logging
 import time
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Mapping
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
@@ -19,6 +21,9 @@ except ImportError:
 import numpy as np
 
 import verifiers as vf
+
+if TYPE_CHECKING:
+    pass
 from verifiers.types import (
     Endpoints,
     EvalConfig,

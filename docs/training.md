@@ -20,8 +20,9 @@ This section covers how to use Verifiers environments for RL training with our H
     - [Performance Trade-offs](#performance-trade-offs)
     - [Common Issues](#common-issues)
 - [Other Trainers](#other-trainers)
-    - [SkyRL](#skyrl)
     - [Tinker](#tinker)
+    - [SkyRL](#skyrl)
+    - [rLLM](#rllm)
     - [Integrating with Other Trainers](#integrating-with-other-trainers)
 
 ## Hosted Training
@@ -285,16 +286,22 @@ The best way to improve training is to ensure appropriate task difficulty for yo
 
 ## Other Trainers
 
-`verifiers` is intended to be largely trainer-agnostic. It is supported by [SkyRL](https://github.com/novasky-ai/skyrl) and [Tinker](https://github.com/thinking-machines-lab/tinker), and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
-
-### SkyRL
-
-[Verifiers + SkyRL](https://github.com/NovaSky-AI/SkyRL/tree/main/skyrl-train/integrations/verifiers)
+`verifiers` is intended to be largely trainer-agnostic and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
 
 ### Tinker
 
-[Verifiers + Tinker](https://github.com/thinking-machines-lab/tinker-cookbook/tree/main/tinker_cookbook/recipes/verifiers_rl)
+[Tinker](https://thinkingmachines.ai/tinker/) supports Verifiers environments via the `tinker-cookbook` recipes.
 
-### Integrating with Other Trainers
+- [Verifiers + Tinker Recipe](https://github.com/thinking-machines-lab/tinker-cookbook/tree/main/tinker_cookbook/recipes/verifiers_rl)
 
-TODO: Add instructions for integrating with other trainers.
+### SkyRL
+
+[SkyRL](https://github.com/NovaSky-AI/SkyRL) supports Verifiers environments via its `skyrl-train` integration.
+
+- [Verifiers + SkyRL Integration](https://github.com/NovaSky-AI/SkyRL/tree/main/skyrl-train/integrations/verifiers)
+
+### rLLM
+
+[rLLM](https://github.com/rllm-project/rllm) supports Verifiers environments with both [verl](https://github.com/volcengine/verl) (local GPU) and [Tinker](https://thinkingmachines.ai/tinker/) (remote GPU) backends.
+
+- [Verifiers + rLLM Documentation](https://rllm-project.readthedocs.io/en/latest/examples/verifiers/)
