@@ -12,6 +12,7 @@ import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from multiprocessing import Process
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -27,6 +28,10 @@ from typing import (
 
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
+from verifiers.utils.worker_utils import get_free_port
+from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+from verifiers.workers.server.zmq_env_server import ZMQEnvServer
+
 if TYPE_CHECKING:
     from datasets import Dataset
 from openai.types.chat import ChatCompletion
@@ -39,6 +44,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    ClientConfig,
     DatasetBuilder,
     GenerateOutputs,
     LogCallback,
@@ -47,12 +53,13 @@ from verifiers.types import (
     ModelResponse,
     ProgressCallback,
     RolloutInput,
+    RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
 )
-from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
+from verifiers.utils.async_utils import NullAsyncContext, maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
@@ -61,11 +68,13 @@ from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     make_dataset,
     save_generate_outputs,
+    state_to_output,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
+from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
     pass
@@ -90,6 +99,7 @@ class Environment(ABC):
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
+        extra_env_kwargs: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
@@ -110,6 +120,7 @@ class Environment(ABC):
 
         self.env_id = env_id or ""
         self.env_args = env_args or {}
+        self.extra_env_kwargs = extra_env_kwargs or {}
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
@@ -122,6 +133,9 @@ class Environment(ABC):
                 'Please use message_type="chat" instead, or pre-format your dataset '
                 'to contain a "prompt" column.'
             )
+
+        self.env_client: EnvClient | None = None
+        self.env_server_process: Process | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -741,68 +755,99 @@ class Environment(ABC):
                 return True
         return False
 
-    @final
-    async def run_rollout(
+    async def rollout_with_sem(
         self,
         input: RolloutInput,
         client: AsyncOpenAI,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager | None = None,
-        score: bool = False,
+        sampling_args: SamplingArgs,
+        sem: AsyncContextManager,
     ) -> State:
+        async with sem:
+            return await self.rollout(input, client, model, sampling_args)
+
+    @final
+    async def run_rollout(
+        self,
+        input: RolloutInput,
+        client: AsyncOpenAI | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager = NullAsyncContext(),
+        score_sem: AsyncContextManager = NullAsyncContext(),
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
-        async with gen_sem:
-            state = await self.rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
+
+        if self.env_client is not None:  # in server mode
+            assert isinstance(client, ClientConfig)
+            return await self.env_client.run_rollout(
+                input, client, model, sampling_args
             )
-        if score:
-            assert score_sem is not None
+
+        async def run_rollout() -> State:
+            state = await self.rollout_with_sem(
+                input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+            )
+
             if self.score_rollouts:
                 await self.rubric.score_rollout(state, score_sem=score_sem)
             else:
                 await self.rubric.dummy_score_rollout(state)
-        return state
+
+            return state
+
+        state = await maybe_retry(run_rollout, max_retries=max_retries)()
+        output = state_to_output(state, state_columns or [])
+        return output
 
     @final
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager,
-        score: bool = True,
+        sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager = NullAsyncContext(),
+        score_sem: AsyncContextManager = NullAsyncContext(),
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
         **kwargs,
-    ) -> list[State]:
+    ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
-        rollout_tasks = [
-            self.run_rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-                gen_sem,
+
+        if self.env_client is not None:  # in server mode
+            assert isinstance(client, ClientConfig)
+            return await self.env_client.run_group(
+                group_inputs, client, model, sampling_args
             )
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
-        if score:
+
+        async def run_group() -> list[State]:
+            rollout_tasks = [
+                self.rollout_with_sem(
+                    input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+                )
+                for input in group_inputs
+            ]
+            group_states = await asyncio.gather(*rollout_tasks)
+
             if self.score_rollouts:
                 await self.rubric.score_group(group_states, score_sem=score_sem)
             else:
                 await self.rubric.dummy_score_group(group_states)
-        return list(group_states)
+            return group_states
+
+        group_states = await maybe_retry(run_group, max_retries=max_retries)()
+        outputs = [
+            state_to_output(state, state_columns or []) for state in group_states
+        ]
+        return outputs
 
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -844,13 +889,13 @@ class Environment(ABC):
             score_limit = max_concurrent
 
         # set up semaphores
-        gen_sem = await maybe_semaphore(gen_limit)
-        score_sem = await maybe_semaphore(score_limit)
+        gen_sem = maybe_semaphore(gen_limit)
+        score_sem = maybe_semaphore(score_limit)
 
         # set up sampling args
-        gen_sampling_args = deepcopy(self.sampling_args)
+        sampling_args = deepcopy(self.sampling_args)
         if sampling_args is not None:
-            gen_sampling_args.update(sampling_args)
+            sampling_args.update(sampling_args)
 
         # Initialize builder for incremental serialization
         builder = GenerateOutputsBuilder(
@@ -859,7 +904,7 @@ class Environment(ABC):
             model=model,
             client=client,
             state_columns=state_columns,
-            sampling_args=gen_sampling_args,
+            sampling_args=sampling_args,
             results_path=results_path,
         )
 
@@ -868,14 +913,15 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    maybe_retry(self.run_rollout, max_retries=max_retries)(
+                    self.run_rollout(
                         input_item,
                         client,
                         model,
-                        gen_sampling_args,
+                        sampling_args,
                         gen_sem,
                         score_sem,
-                        score=True,
+                        max_retries=max_retries,
+                        state_columns=state_columns,
                     )
                 )
                 tasks[task] = i
@@ -892,13 +938,15 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    maybe_retry(self.run_group, max_retries=max_retries)(
+                    self.run_group(
                         group,
                         client,
                         model,
-                        gen_sampling_args,
+                        sampling_args,
                         gen_sem,
                         score_sem,
+                        max_retries=max_retries,
+                        state_columns=state_columns,
                     )
                 )
                 tasks[task] = i
@@ -979,7 +1027,7 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client: AsyncOpenAI | OpenAI | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1025,7 +1073,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1076,7 +1124,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client: OpenAI | AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1151,6 +1199,36 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    async def start_server(
+        self,
+        address: str | None = None,
+        log_level: str | None = None,
+        log_file: str | None = None,
+    ) -> None:
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        self.env_server_process = Process(
+            target=ZMQEnvServer.run_server,
+            args=(
+                self.env_id,
+                self.env_args,
+                self.extra_env_kwargs,
+                log_level,
+                log_file,
+            ),
+            kwargs=dict(address=address),
+        )
+        self.env_server_process.start()
+        self.env_client = ZMQEnvClient(address=address)
+
+    async def stop_server(self) -> None:
+        if self.env_server_process is not None:
+            self.env_server_process.terminate()
+            self.env_server_process.join(timeout=5)
+            if self.env_server_process.is_alive():
+                self.env_server_process.terminate()
+            self.env_server_process = None
+            self.env_client = None
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""
