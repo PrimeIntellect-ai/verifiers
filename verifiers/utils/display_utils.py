@@ -16,7 +16,6 @@ import sys
 from collections import deque
 from typing import Any
 
-from datasets import disable_progress_bar, enable_progress_bar
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
@@ -126,6 +125,8 @@ class BaseDisplay:
     def start(self) -> None:
         """Start the live display."""
         # Suppress datasets progress bars (e.g. from .map())
+        from datasets import disable_progress_bar
+
         disable_progress_bar()
 
         # Suppress console output from existing handlers but capture logs for display
@@ -171,6 +172,8 @@ class BaseDisplay:
             self._live = None
 
         # Restore datasets progress bar
+        from datasets import enable_progress_bar
+
         enable_progress_bar()
 
         # Remove our log handler and restore original handler levels

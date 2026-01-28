@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import importlib.util
 import json
@@ -6,7 +8,7 @@ import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -14,10 +16,11 @@ except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
 
 import numpy as np
-from datasets import Dataset, disable_progress_bar, enable_progress_bar
-from datasets.utils import logging as ds_logging
 
 import verifiers as vf
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 from verifiers.types import (
     Endpoints,
     EvalConfig,
@@ -536,6 +539,8 @@ def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
 
 
 def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
+    from datasets import Dataset
+
     clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
     clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
     clean_completions = [messages_to_printable(c) for c in results["completion"]]
@@ -578,6 +583,9 @@ def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
 
 @contextmanager
 def quiet_datasets():
+    from datasets import disable_progress_bar, enable_progress_bar
+    from datasets.utils import logging as ds_logging
+
     prev_level = ds_logging.get_verbosity()
     ds_logging.set_verbosity(ds_logging.WARNING)
     disable_progress_bar()

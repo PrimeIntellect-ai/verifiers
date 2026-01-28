@@ -1,11 +1,14 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
-import random
-from typing import Any, Callable, cast
+from __future__ import annotations
 
-from datasets import Dataset, concatenate_datasets, load_dataset
+import random
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from verifiers.types import ChatMessage
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 
 ### PROMPTS ###
 
@@ -259,6 +262,8 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
 def load_example_dataset(
     name: str = "gsm8k", split: str | None = None, n: int | None = None, seed: int = 0
 ) -> Dataset:
+    from datasets import Dataset, concatenate_datasets, load_dataset
+
     if name == "aime2024":
         if split is None:
             split = "train"
