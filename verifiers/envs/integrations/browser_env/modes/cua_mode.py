@@ -6,7 +6,6 @@ import copy
 import json
 import logging
 import os
-import subprocess
 import tarfile
 import tempfile
 import threading
@@ -409,42 +408,41 @@ class CUAMode:
                 "Building CUA server binary via Docker (first-time setup)..."
             )
 
-        result = subprocess.run(
-            [
-                "docker",
-                "build",
-                "--no-cache",
-                "--platform",
-                "linux/amd64",
-                "-f",
-                "Dockerfile.build",
-                "-t",
-                "cua-builder",
-                ".",
-            ],
+        # Use async subprocess to avoid blocking the event loop
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "build",
+            "--no-cache",
+            "--platform",
+            "linux/amd64",
+            "-f",
+            "Dockerfile.build",
+            "-t",
+            "cua-builder",
+            ".",
             cwd=self._template_path,
-            capture_output=True,
-            text=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Docker build failed: {result.stderr}")
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Docker build failed: {stderr.decode()}")
 
-        result = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--platform",
-                "linux/amd64",
-                "-v",
-                f"{self._template_path}/dist:/output",
-                "cua-builder",
-            ],
-            capture_output=True,
-            text=True,
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "run",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            "-v",
+            f"{self._template_path}/dist:/output",
+            "cua-builder",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Docker run failed: {result.stderr}")
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Docker run failed: {stderr.decode()}")
 
         if not binary_path.exists():
             raise RuntimeError("Binary build completed but binary not found")
@@ -570,9 +568,7 @@ class CUAMode:
                     f'curl -s -w "\\n%{{http_code}}" {health_url}',
                     timeout=10,
                 )
-                lines = stdout.rsplit("\n", 1)
-                body = lines[0] if len(lines) > 1 else stdout
-                http_code = lines[-1].strip() if len(lines) > 1 else "unknown"
+                body, http_code = self._parse_curl_response(stdout)
 
                 if "ok" in body.lower() and http_code == "200":
                     if self.logger:
@@ -592,6 +588,18 @@ class CUAMode:
 
     # ==================== Sandbox Curl Methods ====================
 
+    @staticmethod
+    def _parse_curl_response(stdout: str) -> tuple[str, str]:
+        """Parse curl output with HTTP code appended via -w flag.
+
+        Returns:
+            tuple: (body, http_code) where http_code is "unknown" if parsing fails
+        """
+        lines = stdout.rsplit("\n", 1)
+        body = lines[0] if len(lines) > 1 else stdout
+        http_code = lines[-1].strip() if len(lines) > 1 else "unknown"
+        return body, http_code
+
     async def _create_session_curl(self, sandbox_id: str) -> dict:
         """Create a browser session via curl inside the sandbox."""
         payload = json.dumps(self.session_config)
@@ -605,9 +613,7 @@ class CUAMode:
             timeout=60,
         )
 
-        lines = stdout.rsplit("\n", 1)
-        body = lines[0] if len(lines) > 1 else stdout
-        http_code = lines[-1].strip() if len(lines) > 1 else "unknown"
+        body, http_code = self._parse_curl_response(stdout)
 
         try:
             return json.loads(body)
@@ -651,9 +657,7 @@ class CUAMode:
             timeout=60,
         )
 
-        lines = stdout.rsplit("\n", 1)
-        body = lines[0] if len(lines) > 1 else stdout
-        http_code = lines[-1].strip() if len(lines) > 1 else "unknown"
+        body, http_code = self._parse_curl_response(stdout)
 
         try:
             return json.loads(body)
@@ -946,25 +950,38 @@ class CUAMode:
             if len(self.active_sandboxes) == 0:
                 return
 
-            if self.logger:
-                self.logger.info(
-                    f"Deleting {len(self.active_sandboxes)} remaining sandboxes"
-                )
-
-            sync_client = SandboxClient(APIClient())
             sandbox_ids = list(self.active_sandboxes)
 
-            for sandbox_id in sandbox_ids:
-                try:
-                    sync_client.delete(sandbox_id)
-                    self.active_sandboxes.discard(sandbox_id)
-                    if self.logger:
-                        self.logger.debug(f"Deleted sandbox {sandbox_id}")
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(
-                            f"Failed to delete sandbox {sandbox_id}: {e}"
-                        )
+            if self.logger:
+                self.logger.info(f"Deleting {len(sandbox_ids)} remaining sandboxes")
+
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    return
+            except RuntimeError:
+                return
+
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def _delete_sandbox_with_semaphore(sandbox_id: str):
+                async with semaphore:
+                    try:
+                        await self._delete_sandbox(sandbox_id)
+                        if self.logger:
+                            self.logger.debug(f"Deleted sandbox {sandbox_id}")
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(
+                                f"Failed to delete sandbox {sandbox_id}: {e}"
+                            )
+
+            try:
+                await asyncio.gather(
+                    *[_delete_sandbox_with_semaphore(sid) for sid in sandbox_ids]
+                )
+            except RuntimeError:
+                pass
 
     # ==================== Browser Tool Methods ====================
 

@@ -156,7 +156,6 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         super().__init__(**kwargs)
         self.mode = mode
-        self._use_sandbox = use_sandbox and mode == "cua"
 
         # Validate required environment variables before proceeding
         self._validate_environment_variables(

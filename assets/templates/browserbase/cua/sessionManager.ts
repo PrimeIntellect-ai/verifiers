@@ -1,6 +1,6 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import type { Page } from "@browserbasehq/stagehand";
-import { BrowserSession, SessionCreateRequest, Viewport } from "./types";
+import { BrowserSession, SessionCreateRequest } from "./types";
 
 /**
  * Generates a unique session ID
