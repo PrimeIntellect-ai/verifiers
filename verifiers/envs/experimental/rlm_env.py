@@ -405,31 +405,19 @@ _ENSURE_FIFO_BLOCK = [
     "    ensure_fifo(fifo_path)",
 ]
 
-_LOCAL_FS_CONTEXT_BLOCK = [
-    "fs_root = None",
-    "fs_metadata = {{}}",
-    "if Path(CONTEXT_FILE).exists():",
-    '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
-    "        context = json.load(f)",
-    '        fs_root = context.get("fs_root")',
-    '        fs_metadata = context.get("fs_metadata") or {{}}',
-]
-
-_SANDBOX_FS_CONTEXT_BLOCK = [
-    "fs_root = None",
-    "fs_metadata = {}",
-    "if Path(CONTEXT_FILE).exists():",
-    '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
-    "        context = json.load(f)",
-    '        fs_root = context.get("fs_root")',
-    '        fs_metadata = context.get("fs_metadata") or {}',
-]
-
-
 def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     dict_open = "{" if sandboxed else "{{"
     dict_close = "}" if sandboxed else "}}"
     answer_default = f'{dict_open}"ready": False, "content": ""{dict_close}'
+    fs_context_block = [
+        "fs_root = None",
+        f"fs_metadata = {dict_open}{dict_close}",
+        "if Path(CONTEXT_FILE).exists():",
+        '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
+        "        context = json.load(f)",
+        '        fs_root = context.get("fs_root")',
+        f'        fs_metadata = context.get("fs_metadata") or {dict_open}{dict_close}',
+    ]
     lines: list[str] = [
         "",
         "import ast",
@@ -467,9 +455,7 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     lines.append("")
     if not sandboxed:
         lines.append("# Load filesystem context from file (written by setup_state)")
-        lines.extend(_LOCAL_FS_CONTEXT_BLOCK)
-    else:
-        lines.extend(_SANDBOX_FS_CONTEXT_BLOCK)
+    lines.extend(fs_context_block)
     lines.append("")
     lines.extend(["if fs_root:", "    os.chdir(fs_root)"])
     lines.append("")
