@@ -776,6 +776,7 @@ class Environment(ABC):
         gen_sem: AsyncContextManager = NullAsyncContext(),
         score_sem: AsyncContextManager = NullAsyncContext(),
         max_retries: int = 0,
+        state_columns: list[str] | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -798,7 +799,7 @@ class Environment(ABC):
             return state
 
         state = await maybe_retry(run_rollout, max_retries=max_retries)()
-        output = state_to_output(state)
+        output = state_to_output(state, state_columns or [])
         return output
 
     @final
@@ -811,6 +812,7 @@ class Environment(ABC):
         gen_sem: AsyncContextManager = NullAsyncContext(),
         score_sem: AsyncContextManager = NullAsyncContext(),
         max_retries: int = 0,
+        state_columns: list[str] | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -837,7 +839,9 @@ class Environment(ABC):
             return group_states
 
         group_states = await maybe_retry(run_group, max_retries=max_retries)()
-        outputs = [state_to_output(state) for state in group_states]
+        outputs = [
+            state_to_output(state, state_columns or []) for state in group_states
+        ]
         return outputs
 
     async def generate(
@@ -917,6 +921,7 @@ class Environment(ABC):
                         gen_sem,
                         score_sem,
                         max_retries=max_retries,
+                        state_columns=state_columns,
                     )
                 )
                 tasks[task] = i
@@ -941,6 +946,7 @@ class Environment(ABC):
                         gen_sem,
                         score_sem,
                         max_retries=max_retries,
+                        state_columns=state_columns,
                     )
                 )
                 tasks[task] = i
@@ -1021,7 +1027,7 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client: AsyncOpenAI | OpenAI | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1118,7 +1124,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client: OpenAI | AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
