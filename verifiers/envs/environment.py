@@ -764,12 +764,7 @@ class Environment(ABC):
         sem: AsyncContextManager,
     ) -> State:
         async with sem:
-            return await self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
-            )
+            return await self.rollout(input, client, model, sampling_args)
 
     @final
     async def run_rollout(
@@ -780,6 +775,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager = NullAsyncContext(),
         score_sem: AsyncContextManager = NullAsyncContext(),
+        max_retries: int = 0,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -789,18 +785,20 @@ class Environment(ABC):
                 input, client, model, sampling_args
             )
 
-        assert isinstance(client, AsyncOpenAI)
-        state = await self.rollout_with_sem(
-            input, client, model, sampling_args, gen_sem
-        )
+        async def run_rollout() -> State:
+            state = await self.rollout_with_sem(
+                input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+            )
 
-        if self.score_rollouts:
-            await self.rubric.score_rollout(state, score_sem=score_sem)
-        else:
-            await self.rubric.dummy_score_rollout(state)
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_rollout(state)
 
+            return state
+
+        state = await maybe_retry(run_rollout, max_retries=max_retries)()
         output = state_to_output(state)
-
         return output
 
     @final
@@ -812,6 +810,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         gen_sem: AsyncContextManager = NullAsyncContext(),
         score_sem: AsyncContextManager = NullAsyncContext(),
+        max_retries: int = 0,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -822,18 +821,22 @@ class Environment(ABC):
                 group_inputs, client, model, sampling_args
             )
 
-        assert isinstance(client, AsyncOpenAI)
-        rollout_tasks = [
-            self.rollout_with_sem(input, client, model, sampling_args, gen_sem)
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
+        async def run_group() -> list[State]:
+            rollout_tasks = [
+                self.rollout_with_sem(
+                    input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+                )
+                for input in group_inputs
+            ]
+            group_states = await asyncio.gather(*rollout_tasks)
 
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states, score_sem=score_sem)
-        else:
-            await self.rubric.dummy_score_group(group_states)
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states, score_sem=score_sem)
+            else:
+                await self.rubric.dummy_score_group(group_states)
+            return group_states
 
+        group_states = await maybe_retry(run_group, max_retries=max_retries)()
         outputs = [state_to_output(state) for state in group_states]
         return outputs
 
@@ -906,13 +909,14 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    maybe_retry(self.run_rollout, max_retries=max_retries)(
+                    self.run_rollout(
                         input_item,
                         client,
                         model,
                         sampling_args,
                         gen_sem,
                         score_sem,
+                        max_retries=max_retries,
                     )
                 )
                 tasks[task] = i
@@ -929,13 +933,14 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    maybe_retry(self.run_group, max_retries=max_retries)(
+                    self.run_group(
                         group,
                         client,
                         model,
                         sampling_args,
                         gen_sem,
                         score_sem,
+                        max_retries=max_retries,
                     )
                 )
                 tasks[task] = i
