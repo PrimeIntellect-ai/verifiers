@@ -30,13 +30,12 @@ classifiers = [
 dependencies = [
     "datasets>=3.0.0",
     "jinja2>=3.1.6",
-    "numpy",
     "math-verify>=0.8.0",
     "mcp>=1.14.1",
+    "msgpack>=1.1.2",
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
-    "prime-tunnel",
     "prime-sandboxes>=0.2.9",
     "pydantic>=2.11.9",
     "requests",
@@ -46,11 +45,7 @@ dependencies = [
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
     "wget>=3.2",
-    "gepa",
 ]
-
-[tool.uv.sources]
-prime-tunnel = { git = "https://github.com/PrimeIntellect-ai/prime.git", branch = "feature/tunnel", subdirectory = "packages/prime-tunnel" }
 
 [dependency-groups]
 dev = [
@@ -97,7 +92,6 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
-vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
