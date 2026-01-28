@@ -32,7 +32,6 @@ from verifiers.types import (
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
-from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -277,13 +276,10 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [
-        messages_to_printable(o["prompt"]) if o["prompt"] else []
-        for o in results["outputs"]
-    ]
+    # prompt/completion are already in printable format from state_to_output
+    printable_prompts = [o["prompt"] if o["prompt"] else [] for o in results["outputs"]]
     printable_completions = [
-        messages_to_printable(o["completion"]) if o["completion"] else []
-        for o in results["outputs"]
+        o["completion"] if o["completion"] else [] for o in results["outputs"]
     ]
     rewards = [o["reward"] for o in results["outputs"]]
     errors = [o.get("error") for o in results["outputs"]]

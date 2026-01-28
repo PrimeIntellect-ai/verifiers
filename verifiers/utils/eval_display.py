@@ -22,7 +22,6 @@ from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
-from verifiers.utils.message_utils import messages_to_printable
 
 
 @dataclass
@@ -567,11 +566,11 @@ class EvalDisplay(BaseDisplay):
         """Create detailed content for a single environment's summary."""
         items: list[Panel] = []
 
-        # Example 0 prompt/completion
+        # Example 0 prompt/completion (already in printable format from state_to_output)
         outputs = results["outputs"]
         if outputs and outputs[0]["prompt"] and outputs[0]["completion"]:
-            prompt = messages_to_printable(outputs[0]["prompt"])
-            completion = messages_to_printable(outputs[0]["completion"])
+            prompt = outputs[0]["prompt"]
+            completion = outputs[0]["completion"]
             reward_0 = outputs[0]["reward"] if outputs[0]["reward"] else 0.0
             error_0 = outputs[0].get("error") if outputs[0] else None
 

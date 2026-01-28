@@ -14,7 +14,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
-from verifiers.utils.message_utils import message_to_printable, messages_to_printable
+from verifiers.utils.message_utils import message_to_printable
 from verifiers.utils.save_utils import make_serializable
 
 if TYPE_CHECKING:
@@ -96,6 +96,7 @@ class VerifiersGEPAAdapter:
                 sampling_args=self.sampling_args,
                 max_concurrent=self.max_concurrent,
                 use_tqdm=self.use_tqdm,
+                state_columns=self.state_columns,
             )
         )
 
@@ -136,10 +137,11 @@ class VerifiersGEPAAdapter:
 
         records = []
         # outputs, trajectories, and scores should be the same length
+        # Note: prompt/completion are already in printable format from state_to_output
         for output, trajectory, score in zip(outputs, trajectories, scores):
             record: dict[str, Any] = {
                 "query": _extract_user_query(output["prompt"]),
-                "completion": messages_to_printable(output["completion"]),
+                "completion": output["completion"],
                 "expected_answer": output.get("answer", ""),
                 "reward": score,
             }
