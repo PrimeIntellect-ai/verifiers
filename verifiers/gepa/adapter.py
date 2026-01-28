@@ -145,7 +145,7 @@ class VerifiersGEPAAdapter:
             }
 
             if trajectory.get("error"):
-                record["error"] = repr(trajectory["error"])
+                record["error"] = trajectory["error"]
 
             if trajectory.get("stop_condition"):
                 record["stop_condition"] = trajectory["stop_condition"]
