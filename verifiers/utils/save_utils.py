@@ -11,8 +11,10 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
+    ChatCompletionToolParam,
     GenerateMetadata,
     GenerateOutputs,
+    RolloutOutput,
     SamplingArgs,
     State,
 )
@@ -111,49 +113,161 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     return dataset_name
 
 
-def sanitize_states(states: list[State], state_columns: list[str] = []) -> list[dict]:
-    """Sanitizes a list of rollouts before saving to disk."""
+def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutput:
+    """Convert a State to a serializable RolloutOutput."""
+    output: RolloutOutput = {
+        "example_id": state.get("example_id", 0),
+        "prompt": state.get("prompt"),
+        "completion": state.get("completion"),
+        "answer": state.get("answer", ""),
+        "task": state.get("task", "default"),
+        "info": state.get("info", {}),
+        "reward": state.get("reward", 0.0),
+        "error": state.get("error", None),
+        # Include timing as dict for compatibility with print functions
+        "timing": state.get("timing", {}),
+        # Include these for print_info compatibility
+        "is_completed": state.get("is_completed", False),
+        "is_truncated": state.get("is_truncated", False),
+        "stop_condition": state.get("stop_condition", None),
+        # Include metrics as dict for print_rewards compatibility
+        "metrics": state.get("metrics", {}),
+    }
+    # sanitize messages (handle None for error cases)
+    prompt = state.get("prompt")
+    if prompt is not None:
+        output["prompt"] = sanitize_tool_calls(messages_to_printable(prompt))
+    completion = state.get("completion")
+    if completion is not None:
+        output["completion"] = sanitize_tool_calls(messages_to_printable(completion))
+    # use repr for error
+    if state.get("error") is not None:
+        output["error"] = repr(state.get("error"))
+    # only include optional fields if non-empty
+    if "answer" in output and not output["answer"]:
+        output.pop("answer")
+    if "info" in output and not output["info"]:
+        output.pop("info")
+    # flatten metrics to top-level keys (backwards compatibility)
+    state_metrics = state.get("metrics", {})
+    for k, v in state_metrics.items():
+        output[k] = v
+    # add state columns
+    for col in state_columns:
+        output[col] = state.get(col)
 
-    def sanitize_state(state: State) -> dict:
-        sanitized_state = {
-            "example_id": state.get("example_id", 0),
-            "prompt": state.get("prompt"),
-            "completion": state.get("completion"),
-            "answer": state.get("answer", ""),
-            "task": state.get("task", "default"),
-            "info": state.get("info", {}),
-            "reward": state.get("reward", 0.0),
-            "error": state.get("error", None),
-            "total_ms": state.get("timing", {}).get("total_ms", 0.0),
-            "generation_ms": state.get("timing", {}).get("generation_ms", 0.0),
-            "scoring_ms": state.get("timing", {}).get("scoring_ms", 0.0),
-        }
-        # sanitize messages
-        sanitized_state["prompt"] = sanitize_tool_calls(
-            messages_to_printable(state["prompt"])
+    return output
+
+
+def states_to_outputs(
+    states: list[State], state_columns: list[str] = []
+) -> list[RolloutOutput]:
+    """Convert a list of States to serializable RolloutOutputs."""
+    return [state_to_output(state, state_columns) for state in states]
+
+
+class GenerateOutputsBuilder:
+    """Incrementally builds GenerateOutputs, serializing states exactly once.
+
+    This builder accumulates outputs as rollouts complete, avoiding redundant
+    serialization for intermediate saves. Each state is serialized once via
+    add_states(), and the accumulated outputs can be retrieved at any time
+    via build().
+    """
+
+    def __init__(
+        self,
+        env_id: str,
+        env_args: dict,
+        model: str,
+        client: AsyncOpenAI,
+        state_columns: list[str] | None,
+        sampling_args: SamplingArgs,
+        results_path: Path | None,
+    ):
+        self.env_id = env_id
+        self.env_args = env_args
+        self.model = model
+        self.client = client
+        self.state_columns = state_columns or []
+        self.sampling_args = sampling_args
+        self.results_path = results_path or get_results_path(env_id, model)
+        self.start_time = time.time()
+
+        # Accumulated outputs
+        self.outputs: list[RolloutOutput] = []
+        # Track tools from states for metadata
+        self._tools_list: list[list[ChatCompletionToolParam] | None] = []
+
+    def add_states(self, new_states: list[State]) -> list[RolloutOutput]:
+        """Convert new states to outputs and accumulate. Returns the new outputs."""
+        new_outputs = states_to_outputs(new_states, self.state_columns)
+        self.outputs.extend(new_outputs)
+        # Track tools for metadata computation
+        for state in new_states:
+            self._tools_list.append(state.get("oai_tools"))
+        return new_outputs
+
+    def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
+        """Build GenerateOutputs from accumulated outputs."""
+        outputs = self.outputs
+        if sort_by_example_id:
+            outputs = sorted(outputs, key=lambda o: o.get("example_id", 0))
+        metadata = self._compute_metadata(outputs)
+        return GenerateOutputs(outputs=outputs, metadata=metadata)
+
+    def _compute_metadata(self, outputs: list[RolloutOutput]) -> GenerateMetadata:
+        """Compute metadata from accumulated outputs."""
+        base_url = str(self.client.base_url) if hasattr(self.client, "base_url") else ""
+
+        # Compute reward stats from outputs
+        rewards = [o.get("reward", 0.0) for o in outputs]
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+
+        # Compute metrics stats from outputs
+        metrics: dict[str, list[float]] = defaultdict(list)
+        for output in outputs:
+            output_metrics = output.get("metrics", {})
+            if output_metrics:
+                for metric_name, metric_value in output_metrics.items():
+                    if isinstance(metric_value, (int, float)):
+                        metrics[metric_name].append(metric_value)
+        avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
+
+        # Compute example counts
+        example_ids = [o.get("example_id", 0) for o in outputs]
+        num_examples = len(set(example_ids)) if example_ids else 0
+        rollouts_per_example = len(outputs) // num_examples if num_examples > 0 else 1
+
+        # Determine tools (use first non-None if all same)
+        def tools_key(tools: list | None) -> str:
+            if not tools:
+                return ""
+            return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
+
+        unique_tools = set(tools_key(t) for t in self._tools_list)
+        tools = (
+            next((t for t in self._tools_list if t), None)
+            if len(unique_tools) == 1
+            else None
         )
-        sanitized_state["completion"] = sanitize_tool_calls(
-            messages_to_printable(state["completion"])
+
+        return GenerateMetadata(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=self.model,
+            base_url=base_url,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=self.sampling_args,
+            date=datetime.now().isoformat(),
+            time_ms=(time.time() - self.start_time) * 1000.0,
+            avg_reward=avg_reward,
+            avg_metrics=avg_metrics,
+            state_columns=self.state_columns,
+            path_to_save=self.results_path,
+            tools=tools,
         )
-        # use repr for error
-        if state.get("error") is not None:
-            sanitized_state["error"] = repr(state.get("error"))
-        # only include optional fields if non-empty
-        if "answer" in sanitized_state and not sanitized_state["answer"]:
-            sanitized_state.pop("answer")
-        if "info" in sanitized_state and not sanitized_state["info"]:
-            sanitized_state.pop("info")
-        # flatten metrics
-        state_metrics = state.get("metrics", {})
-        for k, v in state_metrics.items():
-            sanitized_state[k] = v
-        # add state columns
-        for col in state_columns:
-            sanitized_state[col] = state.get(col)
-
-        return sanitized_state
-
-    return [sanitize_state(state) for state in states]
 
 
 def sanitize_metadata(metadata: GenerateMetadata) -> dict:
@@ -193,27 +307,26 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
     save_results(results, path / "results.jsonl")
 
 
-def make_dataset(outputs: GenerateOutputs) -> Dataset:
-    state_columns = outputs["metadata"]["state_columns"]
-    sanitized_states = sanitize_states(outputs["states"], state_columns)
-    return Dataset.from_list(sanitized_states)
+def make_dataset(results: GenerateOutputs) -> Dataset:
+    """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
+    return Dataset.from_list(results["outputs"])
 
 
 def save_generate_outputs(
-    outputs: GenerateOutputs,
+    results: GenerateOutputs,
     push_to_hf_hub: bool = False,
     hf_hub_dataset_name: str | None = None,
 ):
-    path_to_save = outputs["metadata"]["path_to_save"]
-    state_columns = outputs["metadata"]["state_columns"]
-    sanitized_states = sanitize_states(outputs["states"], state_columns)
-    sanitized_metadata = sanitize_metadata(outputs["metadata"])
-    save_to_disk(sanitized_states, sanitized_metadata, path_to_save)
+    """Save GenerateOutputs to disk. Outputs are already serialized."""
+    path_to_save = results["metadata"]["path_to_save"]
+    sanitized_metadata = sanitize_metadata(results["metadata"])
+    # Outputs are already serialized RolloutOutputs
+    save_to_disk(results["outputs"], sanitized_metadata, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(outputs)
+        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
         try:
-            dataset = make_dataset(outputs)
+            dataset = make_dataset(results)
             dataset.push_to_hub(dataset_name)
             logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
         except Exception as e:

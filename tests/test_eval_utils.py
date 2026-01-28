@@ -5,6 +5,7 @@ Covers:
 """
 
 from verifiers.types import GenerateOutputs
+from verifiers.utils.save_utils import states_to_outputs
 
 
 def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_input):
@@ -39,9 +40,10 @@ def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_
         make_state(**input, reward=reward, metrics={"test_metric": metric_value})
         for input, reward, metric_value in zip(inputs, rewards, metric_values)
     ]
+    rollout_outputs = states_to_outputs(states)
 
-    outputs = GenerateOutputs(states=states, metadata=metadata)
-    print_results(outputs)
+    results = GenerateOutputs(outputs=rollout_outputs, metadata=metadata)
+    print_results(results)
     captured = capsys.readouterr()
 
     # Verify rollout groupings are correct
@@ -72,8 +74,9 @@ def test_print_results_single_rollout(capsys, make_metadata, make_state, make_in
         make_state(**make_input(example_id=example_id), reward=reward)
         for example_id, reward in zip(example_ids, rewards)
     ]
+    rollout_outputs = states_to_outputs(states)
 
-    results = GenerateOutputs(states=states, metadata=metadata)
+    results = GenerateOutputs(outputs=rollout_outputs, metadata=metadata)
 
     print_results(results)
     captured = capsys.readouterr()
@@ -97,11 +100,12 @@ def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_in
     states = [
         make_state(**input, reward=reward) for input, reward in zip(inputs, rewards)
     ]
+    rollout_outputs = states_to_outputs(states)
     metadata = make_metadata(
         num_examples=num_examples, rollouts_per_example=rollouts_per_example
     )
 
-    results = GenerateOutputs(states=states, metadata=metadata)
+    results = GenerateOutputs(outputs=rollout_outputs, metadata=metadata)
 
     print_results(results)
     captured = capsys.readouterr()

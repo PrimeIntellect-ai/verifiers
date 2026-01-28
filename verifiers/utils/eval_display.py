@@ -569,12 +569,12 @@ class EvalDisplay(BaseDisplay):
         items: list[Panel] = []
 
         # Example 0 prompt/completion
-        states = results["states"]
-        if states and states[0]["prompt"] and states[0]["completion"]:
-            prompt = messages_to_printable(states[0]["prompt"])
-            completion = messages_to_printable(states[0]["completion"])
-            reward_0 = states[0]["reward"] if states[0]["reward"] else 0.0
-            error_0 = states[0].get("error") if states[0] else None
+        outputs = results["outputs"]
+        if outputs and outputs[0]["prompt"] and outputs[0]["completion"]:
+            prompt = messages_to_printable(outputs[0]["prompt"])
+            completion = messages_to_printable(outputs[0]["completion"])
+            reward_0 = outputs[0]["reward"] if outputs[0]["reward"] else 0.0
+            error_0 = outputs[0].get("error") if outputs[0] else None
 
             # Prompt panel
             items.append(
@@ -602,7 +602,7 @@ class EvalDisplay(BaseDisplay):
             )
 
         # Reward distribution
-        rewards = [s["reward"] for s in states]
+        rewards = [o["reward"] for o in outputs]
         if rewards:
             # All rollouts histogram
             all_rollouts_content = Group(

@@ -95,6 +95,36 @@ class RolloutTiming(TypedDict, total=False):
     total_ms: float
 
 
+class BaseRolloutOutput(TypedDict):
+    """Required fields for serialized rollout output."""
+
+    example_id: int
+    task: str
+    prompt: Messages | None
+    completion: Messages | None
+    reward: float
+    timing: RolloutTiming
+    is_completed: bool
+    is_truncated: bool
+    metrics: dict[str, float]
+
+
+class RolloutOutput(BaseRolloutOutput, total=False):
+    """Serialized output from a rollout (mirrors RolloutInput).
+
+    Required fields: example_id, task, prompt, completion, reward, timing,
+                     is_completed, is_truncated, metrics
+    Optional fields: answer, info, error, stop_condition
+
+    Note: Additional fields may be present from state_columns.
+    """
+
+    answer: str
+    info: Info
+    error: str | None
+    stop_condition: str | None
+
+
 class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
@@ -144,7 +174,9 @@ JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "obje
 
 # callbacks
 StartCallback = Callable[[int], None]  # total rollouts
-ProgressCallback = Callable[[list[State], list[State]], None]  # all_states, new_states
+ProgressCallback = Callable[
+    [list[RolloutOutput], list[RolloutOutput]], None
+]  # all_outputs, new_outputs
 LogCallback = Callable[[str], None]  # log messages
 
 
@@ -168,9 +200,9 @@ class GenerateMetadata(TypedDict):
 
 
 class GenerateOutputs(TypedDict):
-    """TypedDict for generation outputs."""
+    """TypedDict for generation outputs (results)."""
 
-    states: list[State]
+    outputs: list[RolloutOutput]
     metadata: GenerateMetadata
 
 

@@ -249,7 +249,7 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 1
         assert "completion" in states[0]
         assert "reward" in states[0]
@@ -280,26 +280,25 @@ class TestEnvironmentBase:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 1
         assert "completion" in states[0]
         assert "reward" in states[0]
         assert states[0]["reward"] == 1.0
 
-    def test_make_dataset(self, make_metadata, make_state):
+    def test_make_dataset(self, make_metadata, make_output):
         """Test creating a dataset from evaluation results."""
 
-        outputs = GenerateOutputs(states=[make_state()], metadata=make_metadata())
-        dataset = build_dataset(outputs)
+        results = GenerateOutputs(outputs=[make_output()], metadata=make_metadata())
+        dataset = build_dataset(results)
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
         assert "completion" in dataset.column_names
-        assert "answer" in dataset.column_names
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
-        assert "foo" in dataset.column_names  # custom field from make_state fixture
+        assert "foo" in dataset.column_names  # custom field from make_output fixture
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_openai_client):
@@ -484,7 +483,7 @@ class TestMaybeRetry:
         outputs = await env.generate(
             inputs, client=mock_openai_client, model="test-model", max_retries=3
         )
-        states = outputs["states"]
+        states = outputs["outputs"]
 
         assert states[0].get("error") is None
         assert env.call_counts[0] == 3
@@ -508,10 +507,12 @@ class TestMaybeRetry:
             inputs, client=mock_openai_client, model="test-model", max_retries=3
         )
 
-        states = outputs["states"]
+        rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 1  # No retries for non-retryable error
-        assert states[0].get("error") is not None
-        assert isinstance(states[0]["error"], vf.ToolError)
+        assert rollout_outputs[0].get("error") is not None
+        assert (
+            "ToolError" in rollout_outputs[0]["error"]
+        )  # Error is serialized as repr string
 
     @pytest.mark.asyncio
     async def test_error_in_state_after_max_retries_exhausted(
@@ -528,10 +529,12 @@ class TestMaybeRetry:
             inputs, client=mock_openai_client, model="test-model", max_retries=2
         )
 
-        states = outputs["states"]
+        rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 3  # 1 initial + 2 retries
-        assert states[0].get("error") is not None
-        assert isinstance(states[0]["error"], vf.InfraError)
+        assert rollout_outputs[0].get("error") is not None
+        assert (
+            "InfraError" in rollout_outputs[0]["error"]
+        )  # Error is serialized as repr string
 
 
 class TestEmptyModelResponseErrors:

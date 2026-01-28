@@ -7,7 +7,13 @@ from gepa.core.adapter import EvaluationBatch
 from openai import AsyncOpenAI, OpenAI
 
 from verifiers.envs.environment import Environment
-from verifiers.types import ClientConfig, Messages, RolloutInput, SamplingArgs, State
+from verifiers.types import (
+    ClientConfig,
+    Messages,
+    RolloutInput,
+    RolloutOutput,
+    SamplingArgs,
+)
 from verifiers.utils.message_utils import message_to_printable, messages_to_printable
 from verifiers.utils.save_utils import make_serializable
 
@@ -76,7 +82,7 @@ class VerifiersGEPAAdapter:
         batch: list[RolloutInput],
         candidate: dict[str, str],
         capture_traces: bool = False,
-    ) -> EvaluationBatch[State, State]:
+    ) -> EvaluationBatch[RolloutOutput, RolloutOutput]:
         """
         Run verifiers evaluation with the candidate system prompt.
         """
@@ -93,9 +99,9 @@ class VerifiersGEPAAdapter:
             )
         )
 
-        states = results["states"]
-        example_ids = [s["example_id"] for s in states]
-        rewards = [s["reward"] for s in states]
+        outputs = results["outputs"]
+        example_ids = [o["example_id"] for o in outputs]
+        rewards = [o["reward"] for o in outputs]
 
         # Update display if configured
         if self.display is not None:
@@ -112,41 +118,41 @@ class VerifiersGEPAAdapter:
             )
 
         return EvaluationBatch(
-            outputs=states,
+            outputs=outputs,
             scores=rewards,
-            trajectories=states if capture_traces else None,
+            trajectories=outputs if capture_traces else None,
         )
 
     def make_reflective_dataset(
         self,
         candidate: dict[str, str],  # noqa: ARG002 - required by GEPA adapter protocol
-        eval_batch: EvaluationBatch[State, dict[str, Any]],
+        eval_batch: EvaluationBatch[RolloutOutput, dict[str, Any]],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         """Build reflective dataset for GEPA teacher LLM."""
-        outputs: list[dict[str, Any]] = eval_batch.outputs
-        states: list[State] = eval_batch.trajectories or []
+        outputs: list[RolloutOutput] = eval_batch.outputs
+        trajectories: list[RolloutOutput] = eval_batch.trajectories or []
         scores = eval_batch.scores
 
         records = []
-        # outputs, states, and scores should be the same length
-        for output, state, score in zip(outputs, states, scores):
+        # outputs, trajectories, and scores should be the same length
+        for output, trajectory, score in zip(outputs, trajectories, scores):
             record: dict[str, Any] = {
                 "query": _extract_user_query(output["prompt"]),
                 "completion": messages_to_printable(output["completion"]),
-                "expected_answer": output["answer"],
+                "expected_answer": output.get("answer", ""),
                 "reward": score,
             }
 
-            if state.get("error"):
-                record["error"] = repr(state["error"])
+            if trajectory.get("error"):
+                record["error"] = repr(trajectory["error"])
 
-            if state.get("stop_condition"):
-                record["stop_condition"] = state["stop_condition"]
+            if trajectory.get("stop_condition"):
+                record["stop_condition"] = trajectory["stop_condition"]
 
             for col in self.state_columns:
-                if col in state:
-                    record[col] = make_serializable(state[col])
+                if col in trajectory:
+                    record[col] = make_serializable(trajectory[col])
 
             records.append(record)
 

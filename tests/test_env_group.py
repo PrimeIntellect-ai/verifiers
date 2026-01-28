@@ -406,7 +406,7 @@ class TestEnvGroup:
             inputs, client=mock_openai_client, model="test-model"
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 2
         for state in states:
             assert "completion" in state

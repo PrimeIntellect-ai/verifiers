@@ -25,8 +25,8 @@ from verifiers.types import (
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
+    RolloutOutput,
     StartCallback,
-    State,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
@@ -189,20 +189,20 @@ def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
 
 def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
     """Get only the rollouts for a given task."""
-    states = [s for s in results["states"] if s["task"] == task]
+    outputs = [o for o in results["outputs"] if o["task"] == task]
     return GenerateOutputs(
-        states=states,
+        outputs=outputs,
         metadata=results["metadata"],  # duplicate metadata
     )
 
 
-def print_rewards(outputs: GenerateOutputs):
-    rewards = [s["reward"] for s in outputs["states"]]
+def print_rewards(results: GenerateOutputs):
+    rewards = [o["reward"] for o in results["outputs"]]
     print("Rewards:")
     print(
         f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
     )
-    r = outputs["metadata"]["rollouts_per_example"]
+    r = results["metadata"]["rollouts_per_example"]
     n = len(rewards) // r
     # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
@@ -210,7 +210,7 @@ def print_rewards(outputs: GenerateOutputs):
         out = f"r{i + 1}: {trials}"
         print(out)
 
-    metrics = [s["metrics"] for s in outputs["states"]]
+    metrics = [o["metrics"] for o in results["outputs"]]
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
         v = metrics_col[k]
@@ -221,18 +221,18 @@ def print_rewards(outputs: GenerateOutputs):
             print(out)
 
 
-def print_info(outputs: GenerateOutputs):
-    is_truncated = [s["is_truncated"] for s in outputs["states"]]
+def print_info(results: GenerateOutputs):
+    is_truncated = [o["is_truncated"] for o in results["outputs"]]
     print("Info:")
     print(
         f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    stop_conditions = [s["stop_condition"] for s in outputs["states"]]
+    stop_conditions = [o["stop_condition"] for o in results["outputs"]]
     counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [s.get("error") for s in outputs["states"]]
+    errors = [o.get("error") for o in results["outputs"]]
     has_errors = [e is not None for e in errors]
     if any(has_errors):
         print(
@@ -245,9 +245,9 @@ def print_info(outputs: GenerateOutputs):
             print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
 
 
-def print_timing(outputs: GenerateOutputs):
+def print_timing(results: GenerateOutputs):
     print("Timing:")
-    timing = [s["timing"] for s in outputs["states"]]
+    timing = [o["timing"] for o in results["outputs"]]
     timing_col = to_col_order(cast(list[dict], timing))
     generation_ms_arr = np.array(timing_col["generation_ms"])
     scoring_ms_arr = np.array(timing_col["scoring_ms"])
@@ -267,22 +267,22 @@ def print_timing(outputs: GenerateOutputs):
     )
 
 
-def print_results(outputs: GenerateOutputs, num_samples: int = 1):
-    assert outputs["metadata"] is not None
+def print_results(results: GenerateOutputs, num_samples: int = 1):
+    assert results["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {outputs['metadata']['env_id']}")
-    print(f"Model: {outputs['metadata']['model']}")
-    print(f"Provider: {outputs['metadata']['base_url']}")
-    print(f"Examples: {outputs['metadata']['num_examples']}")
-    print(f"Rollouts per example: {outputs['metadata']['rollouts_per_example']}")
+    print(f"Environment: {results['metadata']['env_id']}")
+    print(f"Model: {results['metadata']['model']}")
+    print(f"Provider: {results['metadata']['base_url']}")
+    print(f"Examples: {results['metadata']['num_examples']}")
+    print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(s["prompt"]) for s in outputs["states"]]
+    printable_prompts = [messages_to_printable(o["prompt"]) for o in results["outputs"]]
     printable_completions = [
-        messages_to_printable(s["completion"]) for s in outputs["states"]
+        messages_to_printable(o["completion"]) for o in results["outputs"]
     ]
-    rewards = [s["reward"] for s in outputs["states"]]
-    errors = [s.get("error") for s in outputs["states"]]
+    rewards = [o["reward"] for o in results["outputs"]]
+    errors = [o.get("error") for o in results["outputs"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
@@ -292,18 +292,18 @@ def print_results(outputs: GenerateOutputs, num_samples: int = 1):
         num_samples=num_samples,
     )
     print("--- All ---")
-    print_rewards(outputs)
-    print_info(outputs)
-    print_timing(outputs)
+    print_rewards(results)
+    print_info(results)
+    print_timing(results)
 
-    tasks = set([s["task"] for s in outputs["states"]])
+    tasks = set([o["task"] for o in results["outputs"]])
     if len(tasks) > 1:
         for task in tasks:
-            task_outputs = get_task_outputs(outputs, task)
+            task_results = get_task_outputs(results, task)
             print(f"\n--- {task} ---")
-            print_rewards(task_outputs)
-            print_info(task_outputs)
-            print_timing(task_outputs)
+            print_rewards(task_results)
+            print_info(task_results)
+            print_timing(task_results)
 
 
 @contextmanager
@@ -432,20 +432,22 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             num_examples = total // env_config.rollouts_per_example
             display.update_env_state(env_idx, total=total, num_examples=num_examples)
 
-        def on_progress(all_states: list[State], new_states: list[State]) -> None:
+        def on_progress(
+            all_outputs: list[RolloutOutput], new_outputs: list[RolloutOutput]
+        ) -> None:
             nonlocal error_accum, reward_accum, metrics_accum
 
             # Progress is always rollout-based
-            completed = len(all_states)
+            completed = len(all_outputs)
 
-            for s in new_states:
-                if s.get("error") is not None:
+            for o in new_outputs:
+                if o.get("error") is not None:
                     error_accum += 1
-                reward = s.get("reward")
+                reward = o.get("reward")
                 if reward is not None:
                     reward_accum += reward
-                state_metrics = s.get("metrics") or {}
-                for name, value in state_metrics.items():
+                output_metrics = o.get("metrics") or {}
+                for name, value in output_metrics.items():
                     if value is not None:
                         metrics_accum[name] += value
 

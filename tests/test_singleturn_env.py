@@ -260,7 +260,7 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 2
         for state in states:
             assert "completion" in state
@@ -287,7 +287,7 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 2
         for state in states:
             assert "completion" in state
@@ -304,7 +304,7 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 1
         assert "completion" in states[0]
         assert "reward" in states[0]
@@ -327,7 +327,7 @@ class TestSingleTurnEnv:
             model="test-model",
         )
 
-        states = outputs["states"]
+        states = outputs["outputs"]
         assert len(states) == 1
         assert "completion" in states[0]
         assert "reward" in states[0]

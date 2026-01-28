@@ -54,9 +54,9 @@ from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
 from verifiers.utils.save_utils import (
+    GenerateOutputsBuilder,
     make_dataset,
     save_generate_outputs,
-    states_to_generate_metadata,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
@@ -795,30 +795,6 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
         return list(group_states)
 
-    def _build_generate_outputs(
-        self,
-        states: list[State],
-        model: str,
-        client: AsyncOpenAI,
-        state_columns: list[str] | None,
-        results_path: Path | None,
-        sampling_args: SamplingArgs,
-        start_time: float,
-    ) -> GenerateOutputs:
-        """Prepare GenerateOutputs from a list of completed states."""
-        metadata = states_to_generate_metadata(
-            self.env_id,
-            self.env_args,
-            model,
-            client,
-            states,
-            state_columns,
-            sampling_args,
-            start_time,
-            results_path,
-        )
-        return GenerateOutputs(states=states, metadata=metadata)
-
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
@@ -870,7 +846,16 @@ class Environment(ABC):
         if sampling_args is not None:
             gen_sampling_args.update(sampling_args)
 
-        start_time = time.time()
+        # Initialize builder for incremental serialization
+        builder = GenerateOutputsBuilder(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            client=client,
+            state_columns=state_columns,
+            sampling_args=gen_sampling_args,
+            results_path=results_path,
+        )
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
@@ -924,18 +909,19 @@ class Environment(ABC):
         # process tasks as they complete
         reward_sum, reward_count = 0, 0
         groups_or_rollouts_completed = 0
-        all_states: list[State] = []
         try:
             for coro in asyncio.as_completed(tasks.keys()):
                 result = await coro
                 # normalize: independent_scoring returns State, group returns list[State]
                 states = [result] if independent_scoring else result
-                all_states.extend(states)
+
+                # Serialize states to outputs immediately (serialization happens once here)
+                new_outputs = builder.add_states(states)
                 groups_or_rollouts_completed += 1
 
-                # track reward for rolling average
-                for s in states:
-                    r = s.get("reward")
+                # track reward for rolling average (from outputs)
+                for o in new_outputs:
+                    r = o.get("reward")
                     if r is not None:
                         reward_sum += r
                         reward_count += 1
@@ -946,51 +932,33 @@ class Environment(ABC):
                     if reward_count > 0:
                         pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
                 elif on_progress is not None:
-                    on_progress(all_states, states)
+                    on_progress(builder.outputs, new_outputs)
 
-                # save intermediate results
+                # save intermediate results (outputs already serialized, no redundant work)
                 if (
                     save_results
                     and save_every > 0
                     and groups_or_rollouts_completed % save_every == 0
                 ):
-                    intermediate_outputs = self._build_generate_outputs(
-                        all_states,
-                        model,
-                        client,
-                        state_columns,
-                        results_path,
-                        gen_sampling_args,
-                        start_time,
-                    )
+                    intermediate_results = builder.build()
                     self.logger.debug(
-                        f"Saving intermediate results to {intermediate_outputs['metadata']['path_to_save']}"
+                        f"Saving intermediate results to {intermediate_results['metadata']['path_to_save']}"
                     )
-                    save_generate_outputs(intermediate_outputs)
+                    save_generate_outputs(intermediate_results)
         finally:
             if pbar is not None:
                 pbar.close()
 
-        # sort by example_id to ensure deterministic ordering regardless of completion order
-        all_states.sort(key=lambda s: s.get("example_id", 0))
-
-        outputs = self._build_generate_outputs(
-            all_states,
-            model,
-            client,
-            state_columns,
-            results_path,
-            gen_sampling_args,
-            start_time,
-        )
+        # Build final results (sorted by example_id for deterministic ordering)
+        results = builder.build(sort_by_example_id=True)
 
         # save if requested
         if save_results:
-            save_generate_outputs(outputs, push_to_hf_hub, hf_hub_dataset_name)
+            save_generate_outputs(results, push_to_hf_hub, hf_hub_dataset_name)
             if on_log is not None:
-                on_log(f"Saved final outputs to {outputs['metadata']['path_to_save']}")
+                on_log(f"Saved final outputs to {results['metadata']['path_to_save']}")
 
-        return outputs
+        return results
 
     def generate_sync(
         self,
