@@ -53,6 +53,8 @@ else:
 from aiohttp import web
 from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
+from prime_sandboxes import SandboxClient
+from prime_sandboxes.core import APIClient
 import verifiers as vf
 from verifiers.types import (
     ChatMessage,
@@ -1955,7 +1957,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         SandboxExecutorMixin.__init__(self)
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
-        self._retained_sandboxes: set[str] = set()
+        self._active_sandboxes: set[str] = set()
         self._init_sandbox_executor(
             sandbox_client_max_workers=env.sandbox_client_max_workers,
             sandbox_client_max_connections=env.sandbox_client_max_connections,
@@ -1975,6 +1977,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             request = self._build_sandbox_request(state)
             sandbox = await self._create_sandbox(request)
             session.sandbox_id = sandbox.id
+            self._active_sandboxes.add(sandbox.id)
             state["sandbox_id"] = sandbox.id
             await self._wait_for_sandbox_ready(sandbox.id)
 
@@ -2102,6 +2105,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                         )
                 try:
                     await self._delete_sandbox(session.sandbox_id)
+                    self._active_sandboxes.discard(session.sandbox_id)
                 except Exception as e:
                     logger.warning(
                         f"Failed to delete sandbox {session.sandbox_id}: {e}"
@@ -2111,6 +2115,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         try:
             if session.sandbox_id:
                 await self._delete_sandbox(session.sandbox_id)
+                self._active_sandboxes.discard(session.sandbox_id)
         except Exception as e:
             logger.warning(f"Failed to delete sandbox {session.sandbox_id}: {e}")
 
@@ -2124,18 +2129,23 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 try:
                     await self._stop_worker(session)
                 finally:
-                    if (
-                        session.sandbox_id
-                        and session.sandbox_id not in self._retained_sandboxes
-                    ):
-                        try:
-                            await self._delete_sandbox(
-                                session.sandbox_id, use_retry=False
-                            )
-                        except Exception:
-                            pass
+                    if session.sandbox_id:
+                        self._active_sandboxes.add(session.sandbox_id)
                     if session.local_rollout_dir not in self._retained_dirs:
                         shutil.rmtree(session.local_rollout_dir, True)
+        if self._active_sandboxes:
+            sandbox_ids = list(self._active_sandboxes)
+            batch_size = 100
+            sync_client = SandboxClient(APIClient())
+            for i in range(0, len(sandbox_ids), batch_size):
+                batch = sandbox_ids[i : i + batch_size]
+                try:
+                    sync_client.bulk_delete(sandbox_ids=batch)
+                    for sandbox_id in batch:
+                        self._active_sandboxes.discard(sandbox_id)
+                    logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
+                except Exception as e:
+                    logger.warning(f"Bulk delete failed for batch: {e}")
         self._teardown_sandbox_client()
 
     def _get_or_create_session(self, state: State) -> SandboxRLMReplSession:
