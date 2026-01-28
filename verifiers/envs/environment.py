@@ -59,7 +59,7 @@ from verifiers.types import (
     StartCallback,
     State,
 )
-from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
+from verifiers.utils.async_utils import NullAsyncContext, maybe_retry, maybe_semaphore
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
@@ -68,6 +68,7 @@ from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     make_dataset,
     save_generate_outputs,
+    state_to_output,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
@@ -753,41 +754,53 @@ class Environment(ABC):
                 return True
         return False
 
+    async def rollout_with_sem(
+        self,
+        input: RolloutInput,
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs,
+        sem: AsyncContextManager,
+    ) -> State:
+        async with sem:
+            return await self.rollout(
+                input,
+                client,
+                model,
+                sampling_args,
+            )
+
     @final
     async def run_rollout(
         self,
         input: RolloutInput,
         client: AsyncOpenAI | ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager | None = None,
-        score: bool = False,
-    ) -> State | RolloutOutput:
-        """Generate and, optionally, score a rollout.
+        sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager = NullAsyncContext(),
+        score_sem: AsyncContextManager = NullAsyncContext(),
+    ) -> RolloutOutput:
+        """Generate and, optionally, score a rollout."""
 
-        Returns State when running locally, RolloutOutput when using remote env server.
-        """
         if isinstance(client, ClientConfig):
             assert self.env_client is not None
             return await self.env_client.run_rollout(
-                input, client, model, gen_sampling_args, score
+                input, client, model, sampling_args
             )
+
         assert isinstance(client, AsyncOpenAI)
-        async with gen_sem:
-            state = await self.rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-            )
-        if score:
-            assert score_sem is not None
-            if self.score_rollouts:
-                await self.rubric.score_rollout(state, score_sem=score_sem)
-            else:
-                await self.rubric.dummy_score_rollout(state)
-        return state
+        state = await self.rollout_with_sem(
+            input, client, model, sampling_args, gen_sem
+        )
+
+        if self.score_rollouts:
+            await self.rubric.score_rollout(state, score_sem=score_sem)
+        else:
+            await self.rubric.dummy_score_rollout(state)
+
+        output = state_to_output(state)
+
+        return output
 
     @final
     async def run_group(
@@ -795,12 +808,11 @@ class Environment(ABC):
         group_inputs: list[RolloutInput],
         client: AsyncOpenAI | ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager,
-        score: bool = True,
+        sampling_args: SamplingArgs,
+        gen_sem: AsyncContextManager = NullAsyncContext(),
+        score_sem: AsyncContextManager = NullAsyncContext(),
         **kwargs,
-    ) -> list[State] | list[RolloutOutput]:
+    ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group.
 
         Returns list[State] when running locally, list[RolloutOutput] when using remote env server.
@@ -808,26 +820,23 @@ class Environment(ABC):
         if isinstance(client, ClientConfig):
             assert self.env_client is not None
             return await self.env_client.run_group(
-                group_inputs, client, model, gen_sampling_args, score
+                group_inputs, client, model, sampling_args
             )
         assert isinstance(client, AsyncOpenAI)
+
         rollout_tasks = [
-            self.run_rollout(
-                input,
-                client,
-                model,
-                gen_sampling_args,
-                gen_sem,
-            )
+            self.rollout_with_sem(input, client, model, sampling_args, gen_sem)
             for input in group_inputs
         ]
         group_states = await asyncio.gather(*rollout_tasks)
-        if score:
-            if self.score_rollouts:
-                await self.rubric.score_group(group_states, score_sem=score_sem)
-            else:
-                await self.rubric.dummy_score_group(group_states)
-        return list(group_states)
+
+        if self.score_rollouts:
+            await self.rubric.score_group(group_states, score_sem=score_sem)
+        else:
+            await self.rubric.dummy_score_group(group_states)
+
+        outputs = [state_to_output(state) for state in group_states]
+        return outputs
 
     async def generate(
         self,

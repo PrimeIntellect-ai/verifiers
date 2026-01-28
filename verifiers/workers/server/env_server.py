@@ -3,15 +3,14 @@ import logging
 import signal
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import ClientConfig, State
+from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import maybe_semaphore
 from verifiers.utils.client_utils import setup_client
-from verifiers.utils.save_utils import state_to_output
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -103,37 +102,23 @@ class EnvServer(ABC):
     ) -> RunRolloutResponse:
         client = await self._resolve_client(request.client_config)
         # Server always runs locally with AsyncOpenAI, so we always get State back
-        state = cast(
-            State,
-            await self.env.run_rollout(
-                request.input,
-                client,
-                request.model,
-                request.sampling_args,
-                self.no_limit,
-                self.no_limit,
-                request.score,
-            ),
+        output = await self.env.run_rollout(
+            request.input,
+            client,
+            request.model,
+            request.sampling_args,
         )
-        output = state_to_output(state)
         return RunRolloutResponse(output=output)
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
         client = await self._resolve_client(request.client_config)
         # Server always runs locally with AsyncOpenAI, so we always get list[State] back
-        states = cast(
-            list[State],
-            await self.env.run_group(
-                request.group_inputs,
-                client,
-                request.model,
-                request.sampling_args,
-                self.no_limit,
-                self.no_limit,
-                request.score,
-            ),
+        outputs = await self.env.run_group(
+            request.group_inputs,
+            client,
+            request.model,
+            request.sampling_args,
         )
-        outputs = [state_to_output(state) for state in states]
         return RunGroupResponse(outputs=outputs)
 
     async def _resolve_client(self, client_config: ClientConfig) -> AsyncOpenAI:

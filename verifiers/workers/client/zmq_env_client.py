@@ -59,14 +59,12 @@ class ZMQEnvClient(EnvClient):
         client_config: vf.ClientConfig,
         model: str,
         sampling_args: vf.SamplingArgs,
-        score: bool = True,
     ) -> vf.RolloutOutput:
         request = RunRolloutRequest(
             input=input,
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
-            score=score,
         )
         response = await self._send_request(
             request, RunRolloutResponse, timeout=36000.0
@@ -80,14 +78,12 @@ class ZMQEnvClient(EnvClient):
         client_config: vf.ClientConfig,
         model: str,
         sampling_args: vf.SamplingArgs,
-        score: bool = True,
     ) -> list[vf.RolloutOutput]:
         request = RunGroupRequest(
             group_inputs=group_inputs,
             client_config=client_config,
             model=model,
             sampling_args=sampling_args,
-            score=score,
         )
         response = await self._send_request(request, RunGroupResponse, timeout=36000.0)
         assert response.outputs is not None

@@ -22,7 +22,6 @@ class EnvClient(ABC):
         client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
-        score: bool = True,
     ) -> RolloutOutput:
         """Run a rollout on the remote environment server and return serializable output."""
         ...
@@ -34,7 +33,6 @@ class EnvClient(ABC):
         client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
-        score: bool = True,
     ) -> list[RolloutOutput]:
         """Run a group of rollouts on the remote environment server and return serializable outputs."""
         ...

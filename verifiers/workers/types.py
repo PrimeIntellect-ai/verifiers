@@ -1,6 +1,6 @@
-from typing import Literal, TypeVar
+from typing import Annotated, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from verifiers.types import (
     ClientConfig,
@@ -9,12 +9,17 @@ from verifiers.types import (
     SamplingArgs,
 )
 
+CoercedRolloutOutput = Annotated[
+    RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
+]
+
 
 class BaseRequest(BaseModel):
     request_type: str
 
 
 class BaseResponse(BaseModel):
+    # needed for RolloutInput and RolloutOutput to work
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool = True
@@ -35,20 +40,10 @@ class RunRolloutRequest(BaseRequest):
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
-    score: bool = True
 
 
 class RunRolloutResponse(BaseResponse):
-    output: RolloutOutput | None = None
-
-    @field_validator("output", mode="before")
-    @classmethod
-    def convert_output(cls, v: dict | RolloutOutput | None) -> RolloutOutput | None:
-        if v is None:
-            return None
-        if isinstance(v, RolloutOutput):
-            return v
-        return RolloutOutput(**v)
+    output: CoercedRolloutOutput
 
 
 class RunGroupRequest(BaseRequest):
@@ -58,20 +53,10 @@ class RunGroupRequest(BaseRequest):
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
-    score: bool = True
 
 
 class RunGroupResponse(BaseResponse):
-    outputs: list[RolloutOutput] | None = None
-
-    @field_validator("outputs", mode="before")
-    @classmethod
-    def convert_outputs(
-        cls, v: list[dict | RolloutOutput] | None
-    ) -> list[RolloutOutput] | None:
-        if v is None:
-            return []
-        return [o if isinstance(o, RolloutOutput) else RolloutOutput(**o) for o in v]
+    outputs: list[CoercedRolloutOutput]
 
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
