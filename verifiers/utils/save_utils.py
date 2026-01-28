@@ -180,13 +180,12 @@ class GenerateOutputsBuilder:
         # Track tools from states for metadata
         self._tools_list: list[list[ChatCompletionToolParam] | None] = []
 
-    def add_states(self, new_states: list[State]) -> list[RolloutOutput]:
+    def add_states(self, new_outputs: list[RolloutOutput]) -> list[RolloutOutput]:
         """Convert new states to outputs and accumulate. Returns the new outputs."""
-        new_outputs = states_to_outputs(new_states, self.state_columns)
         self.outputs.extend(new_outputs)
         # Track tools for metadata computation
-        for state in new_states:
-            self._tools_list.append(state.get("oai_tools"))
+        for output in new_outputs:
+            self._tools_list.append(output.get("oai_tools"))
         return new_outputs
 
     def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:

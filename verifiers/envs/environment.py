@@ -886,9 +886,9 @@ class Environment(ABC):
         score_sem = maybe_semaphore(score_limit)
 
         # set up sampling args
-        gen_sampling_args = deepcopy(self.sampling_args)
+        sampling_args = deepcopy(self.sampling_args)
         if sampling_args is not None:
-            gen_sampling_args.update(sampling_args)
+            sampling_args.update(sampling_args)
 
         # Initialize builder for incremental serialization
         builder = GenerateOutputsBuilder(
@@ -897,7 +897,7 @@ class Environment(ABC):
             model=model,
             client=client,
             state_columns=state_columns,
-            sampling_args=gen_sampling_args,
+            sampling_args=sampling_args,
             results_path=results_path,
         )
 
@@ -910,10 +910,9 @@ class Environment(ABC):
                         input_item,
                         client,
                         model,
-                        gen_sampling_args,
+                        sampling_args,
                         gen_sem,
                         score_sem,
-                        score=True,
                     )
                 )
                 tasks[task] = i
@@ -934,7 +933,7 @@ class Environment(ABC):
                         group,
                         client,
                         model,
-                        gen_sampling_args,
+                        sampling_args,
                         gen_sem,
                         score_sem,
                     )
