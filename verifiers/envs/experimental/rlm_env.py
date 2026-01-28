@@ -375,20 +375,11 @@ class SubLLMResult(TypedDict):
     max_turns_reached: bool
 
 
-# Worker script that runs locally - handles code execution only
-# The REPL loop is managed by the framework, not this script
-_LOCAL_SUB_LLM_CONFIG_BLOCK = (
+# Worker script handles code execution; REPL loop is managed by the framework.
+_SUB_LLM_CONFIG_BLOCK = (
     textwrap.dedent(
         """
-    # Sub-LLM configuration from environment
-    INTERCEPTION_URL = os.environ.get("RLM_INTERCEPTION_URL", "")
-    SUB_MODEL = os.environ.get("RLM_SUB_MODEL", "")
-    MAX_SUB_LLM_PARALLELISM = int(os.environ.get("RLM_MAX_SUB_LLM_PARALLELISM", "5"))
     SUB_LLM_TIMEOUT = int(os.environ.get("RLM_SUB_LLM_TIMEOUT", "300"))
-    SUB_LLM_STAGGER_MS = int(os.environ.get("RLM_SUB_LLM_STAGGER_MS", "0"))
-    SUB_LLM_STAGGER_JITTER_MS = int(
-        os.environ.get("RLM_SUB_LLM_STAGGER_JITTER_MS", "0")
-    )
     """
     )
     .strip("\n")
@@ -431,8 +422,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
         "import sys",
     ]
 
-    if not sandboxed:
-        lines.append("import time")
     lines.extend(
         ["import traceback", "from pathlib import Path", "import requests", ""]
     )
@@ -448,20 +437,15 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
         ]
     )
 
-    if not sandboxed:
-        lines.extend(_LOCAL_SUB_LLM_CONFIG_BLOCK)
-        lines.append("")
+    lines.extend(_SUB_LLM_CONFIG_BLOCK)
+    lines.append("")
 
     lines.extend(_ENSURE_FIFO_BLOCK)
     lines.append("")
-    if not sandboxed:
-        lines.append("# Load filesystem context from file (written by setup_state)")
     lines.extend(fs_context_block)
     lines.append("")
     lines.extend(["if fs_root:", "    os.chdir(fs_root)"])
     lines.append("")
-    if not sandboxed:
-        lines.append("# Initialize answer structure")
     lines.append(f"answer = {answer_default}")
     lines.extend(
         [
@@ -495,7 +479,7 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
             "        json=payload,",
-            f"        timeout={'300' if sandboxed else 'SUB_LLM_TIMEOUT'},",
+            "        timeout=SUB_LLM_TIMEOUT,",
             "    )",
             "    resp.raise_for_status()",
             "    data = resp.json()",
@@ -518,8 +502,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
 
     lines.append("extra_data = fs_root")
     lines.append("")
-    if not sandboxed:
-        lines.append("# Persistent execution namespace")
     lines.append(f"namespace: dict[str, object] = {dict_open}")
     lines.extend(
         [
@@ -537,8 +519,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             "",
         ]
     )
-    if not sandboxed:
-        lines.append("# Signal ready")
     lines.append('Path(READY_FLAG).write_text("ready", encoding="utf-8")')
     lines.extend(
         [
@@ -557,12 +537,7 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             '    code = request.get("code", "")',
         ]
     )
-    if not sandboxed:
-        lines.append(
-            '    seq = request.get("seq", 0)  # Sequence number for request/response matching'
-        )
-    else:
-        lines.append('    seq = request.get("seq", 0)')
+    lines.append('    seq = request.get("seq", 0)')
     lines.extend(
         [
             "    execution_count += 1",
@@ -575,12 +550,7 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             '        "execution_count": execution_count,',
         ]
     )
-    if not sandboxed:
-        lines.append(
-            '        "seq": seq,  # Echo back sequence number for framework to verify'
-        )
-    else:
-        lines.append('        "seq": seq,')
+    lines.append('        "seq": seq,')
     lines.extend(
         [
             f'        "answer": namespace.get("answer", {answer_default}),',
@@ -617,8 +587,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             "",
         ]
     )
-    if not sandboxed:
-        lines.append("    # Save answer to file for persistence")
     lines.extend(
         [
             '    with open(ANSWER_FILE, "w", encoding="utf-8") as f:',
