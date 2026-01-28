@@ -95,9 +95,20 @@ class RolloutTiming(TypedDict, total=False):
     total_ms: float
 
 
-class BaseRolloutOutput(TypedDict):
-    """Required fields for serialized rollout output."""
+class RolloutOutput(dict):
+    """Serialized output from a rollout (mirrors RolloutInput).
 
+    A dict subclass that allows typed access to known fields while supporting
+    arbitrary additional fields from state_columns. All values must be
+    JSON-serializable.
+
+    Required fields: example_id, task, prompt, completion, reward, timing,
+                     is_completed, is_truncated, metrics
+    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools
+    Additional fields: arbitrary serializable state_columns
+    """
+
+    # Required fields
     example_id: int
     task: str
     prompt: Messages | None
@@ -107,22 +118,13 @@ class BaseRolloutOutput(TypedDict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
-
-
-class RolloutOutput(BaseRolloutOutput, total=False):
-    """Serialized output from a rollout (mirrors RolloutInput).
-
-    Required fields: example_id, task, prompt, completion, reward, timing,
-                     is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition
-
-    Note: Additional fields may be present from state_columns.
-    """
-
+    # Optional fields
     answer: str
     info: Info
     error: str | None
     stop_condition: str | None
+    trajectory: list["TrajectoryStep"]
+    oai_tools: list["ChatCompletionToolParam"]
 
 
 class State(dict):

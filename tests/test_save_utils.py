@@ -135,10 +135,9 @@ class TestSavingResults:
                 answer="",
                 info={},
                 reward=1.0,
-                client=OpenAI(api_key="EMPTY"),
             ),
         ]
-        outputs = states_to_outputs(states, state_columns=["client"])
+        outputs = states_to_outputs(states, state_columns=["foo"])
         result = json.loads(json.dumps(outputs, default=make_serializable))
         assert isinstance(result, list)
         assert len(result) == 1
@@ -149,7 +148,19 @@ class TestSavingResults:
         ]
         assert result[0].get("answer") is None  # empty answer not included
         assert result[0].get("info") is None  # empty info not included
-        assert (
-            result[0].get("client") is not None
-        )  # client included because of state_columns
+        assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
+
+    def test_non_serializable_state_column_raises(self, make_state):
+        """Non-serializable state_columns should raise ValueError."""
+        import pytest
+
+        states = [
+            make_state(
+                prompt=[{"role": "user", "content": "test"}],
+                completion=[{"role": "assistant", "content": "test"}],
+                client=OpenAI(api_key="EMPTY"),
+            ),
+        ]
+        with pytest.raises(ValueError, match="not JSON-serializable"):
+            states_to_outputs(states, state_columns=["client"])

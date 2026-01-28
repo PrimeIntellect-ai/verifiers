@@ -126,12 +126,12 @@ class VerifiersGEPAAdapter:
     def make_reflective_dataset(
         self,
         candidate: dict[str, str],  # noqa: ARG002 - required by GEPA adapter protocol
-        eval_batch: EvaluationBatch[RolloutOutput, dict[str, Any]],
+        eval_batch: EvaluationBatch[RolloutOutput, RolloutOutput],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         """Build reflective dataset for GEPA teacher LLM."""
-        outputs: list[RolloutOutput] = eval_batch.outputs
-        trajectories: list[RolloutOutput] = eval_batch.trajectories or []
+        outputs = eval_batch.outputs
+        trajectories = eval_batch.trajectories or []
         scores = eval_batch.scores
 
         records = []

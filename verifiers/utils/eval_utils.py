@@ -5,7 +5,8 @@ import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from collections.abc import Mapping
+from typing import cast
 
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
@@ -30,7 +31,6 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.client_utils import setup_client
-from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.message_utils import messages_to_printable
 from verifiers.utils.path_utils import get_eval_results_path
@@ -180,8 +180,8 @@ def load_toml_config(path: Path) -> list[dict]:
     return merged_eval_list
 
 
-def to_col_order(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[float]]:
-    """Convert a list of dictionaries to a dictionary of lists, ordered by the keys of the first dictionary."""
+def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
+    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
     if not list_of_dicts:
         return {}
     return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
@@ -238,17 +238,17 @@ def print_info(results: GenerateOutputs):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
-        errors = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in errors]
-        counter = Counter(error_chains)
-        for error_chain, count in counter.items():
-            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
+        error_strs = [e for e in errors if e is not None]
+        # Errors are serialized as strings, count unique error types
+        counter = Counter(error_strs)
+        for error_str, count in counter.items():
+            print(f" - {error_str}: {count / counter.total():.3f}")
 
 
 def print_timing(results: GenerateOutputs):
     print("Timing:")
     timing = [o["timing"] for o in results["outputs"]]
-    timing_col = to_col_order(cast(list[dict], timing))
+    timing_col = to_col_order(timing)
     generation_ms_arr = np.array(timing_col["generation_ms"])
     scoring_ms_arr = np.array(timing_col["scoring_ms"])
     total_ms_arr = np.array(timing_col["total_ms"])
@@ -277,9 +277,13 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(o["prompt"]) for o in results["outputs"]]
+    printable_prompts = [
+        messages_to_printable(o["prompt"]) if o["prompt"] else []
+        for o in results["outputs"]
+    ]
     printable_completions = [
-        messages_to_printable(o["completion"]) for o in results["outputs"]
+        messages_to_printable(o["completion"]) if o["completion"] else []
+        for o in results["outputs"]
     ]
     rewards = [o["reward"] for o in results["outputs"]]
     errors = [o.get("error") for o in results["outputs"]]

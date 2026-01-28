@@ -4,7 +4,6 @@ import time
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 from datasets import Dataset
 from openai import AsyncOpenAI
@@ -24,7 +23,29 @@ from verifiers.utils.path_utils import get_results_path
 logger = logging.getLogger(__name__)
 
 
-def make_serializable(value: Any) -> Any:
+def is_json_serializable(value: object) -> bool:
+    """Check if a value is JSON-serializable without conversion.
+
+    Returns True for JSON primitives, lists/dicts of primitives,
+    Pydantic models, datetime/date, Path, and exceptions.
+    """
+    if value is None:
+        return True
+    if isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(is_json_serializable(item) for item in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(k, str) and is_json_serializable(v) for k, v in value.items()
+        )
+    # Types that make_serializable can handle
+    if isinstance(value, (BaseModel, datetime, date, Path, BaseException)):
+        return True
+    return False
+
+
+def make_serializable(value: object) -> str | int | float | bool | list | dict | None:
     """Convert value to JSON-serializable types for non-standard types.
 
     Example:
@@ -114,25 +135,34 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
 
 
 def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutput:
-    """Convert a State to a serializable RolloutOutput."""
-    output: RolloutOutput = {
-        "example_id": state.get("example_id", 0),
-        "prompt": state.get("prompt"),
-        "completion": state.get("completion"),
-        "answer": state.get("answer", ""),
-        "task": state.get("task", "default"),
-        "info": state.get("info", {}),
-        "reward": state.get("reward", 0.0),
-        "error": state.get("error", None),
-        # Include timing as dict for compatibility with print functions
-        "timing": state.get("timing", {}),
-        # Include these for print_info compatibility
-        "is_completed": state.get("is_completed", False),
-        "is_truncated": state.get("is_truncated", False),
-        "stop_condition": state.get("stop_condition", None),
-        # Include metrics as dict for print_rewards compatibility
-        "metrics": state.get("metrics", {}),
-    }
+    """Convert a State to a serializable RolloutOutput.
+
+    Args:
+        state: The State object to convert.
+        state_columns: Additional State fields to include. Values must be
+            JSON-serializable or an error will be raised.
+
+    Returns:
+        A RolloutOutput dict with all standard fields plus state_columns.
+
+    Raises:
+        ValueError: If a state_columns value is not JSON-serializable.
+    """
+    output = RolloutOutput(
+        example_id=state.get("example_id", 0),
+        prompt=state.get("prompt"),
+        completion=state.get("completion"),
+        answer=state.get("answer", ""),
+        task=state.get("task", "default"),
+        info=state.get("info", {}),
+        reward=state.get("reward", 0.0),
+        error=state.get("error", None),
+        timing=state.get("timing", {}),
+        is_completed=state.get("is_completed", False),
+        is_truncated=state.get("is_truncated", False),
+        stop_condition=state.get("stop_condition", None),
+        metrics=state.get("metrics", {}),
+    )
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
@@ -152,9 +182,15 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
     state_metrics = state.get("metrics", {})
     for k, v in state_metrics.items():
         output[k] = v
-    # add state columns
+    # add state columns (must be serializable)
     for col in state_columns:
-        output[col] = state.get(col)
+        value = state.get(col)
+        if not is_json_serializable(value):
+            raise ValueError(
+                f"state_columns value for '{col}' is not JSON-serializable: "
+                f"{type(value).__name__}. Only JSON-serializable types are allowed."
+            )
+        output[col] = value
 
     return output
 
@@ -280,16 +316,16 @@ def sanitize_metadata(metadata: GenerateMetadata) -> dict:
     return metadata_dict
 
 
-def save_to_disk(results: list[dict], metadata: dict, path: Path):
-    """Saves (sanitized) rollouts and metadata to disk."""
+def save_to_disk(outputs: list[RolloutOutput], metadata: dict, path: Path):
+    """Saves rollout outputs and metadata to disk."""
     path.mkdir(parents=True, exist_ok=True)
 
-    def save_results(results: list[dict], results_path: Path):
+    def save_outputs(outputs: list[RolloutOutput], results_path: Path):
         with open(results_path, "w") as f:
-            for idx, result in enumerate(results):
-                example_id = result.get("example_id") or "unknown"
+            for idx, output in enumerate(outputs):
+                example_id = output.get("example_id") or "unknown"
                 try:
-                    json.dump(result, f, default=make_serializable)
+                    json.dump(output, f, default=make_serializable)
                     f.write("\n")
                 except Exception as e:
                     logger.error(
@@ -304,12 +340,13 @@ def save_to_disk(results: list[dict], metadata: dict, path: Path):
                 logger.error(f"Failed to save metadata: {e}")
 
     save_metadata(metadata, path / "metadata.json")
-    save_results(results, path / "results.jsonl")
+    save_outputs(outputs, path / "results.jsonl")
 
 
 def make_dataset(results: GenerateOutputs) -> Dataset:
     """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
-    return Dataset.from_list(results["outputs"])
+    # RolloutOutput is a dict subclass, so this is type-safe at runtime
+    return Dataset.from_list(list(results["outputs"]))
 
 
 def save_generate_outputs(
@@ -320,7 +357,6 @@ def save_generate_outputs(
     """Save GenerateOutputs to disk. Outputs are already serialized."""
     path_to_save = results["metadata"]["path_to_save"]
     sanitized_metadata = sanitize_metadata(results["metadata"])
-    # Outputs are already serialized RolloutOutputs
     save_to_disk(results["outputs"], sanitized_metadata, path_to_save)
     logger.info(f"Results saved to {path_to_save}")
     if push_to_hf_hub:
