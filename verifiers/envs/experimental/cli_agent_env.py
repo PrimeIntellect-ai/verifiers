@@ -48,6 +48,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     rollout step.
     """
 
+    # Timeout for HTTP handlers waiting on response futures.
+    # Prevents orphaned handlers from blocking forever if rollout dies.
+    HTTP_FUTURE_TIMEOUT_SECS = 600.0  # 10 minutes
+
     def __init__(
         self,
         run_command: str,
@@ -786,11 +790,21 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 logger.debug(
                     f"[LLM_FLOW] [{rollout_id}] HTTP_AWAIT_FUTURE_START request_id={request_id}"
                 )
-                response = await response_future
+                response = await asyncio.wait_for(
+                    response_future, timeout=self.HTTP_FUTURE_TIMEOUT_SECS
+                )
                 wait_duration = time.time() - queue_time
                 logger.debug(
                     f"[LLM_FLOW] [{rollout_id}] HTTP_AWAIT_FUTURE_END request_id={request_id} "
                     f"duration={wait_duration:.1f}s"
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[LLM_FLOW] [{rollout_id}] HTTP_FUTURE_TIMEOUT request_id={request_id} "
+                    f"timeout={self.HTTP_FUTURE_TIMEOUT_SECS}s - rollout loop likely dead"
+                )
+                return web.json_response(  # type: ignore
+                    {"error": "Request timeout - rollout may have failed"}, status=504
                 )
             except asyncio.CancelledError:
                 logger.debug(
@@ -875,13 +889,20 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             logger.debug(
                 f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_AWAIT_FUTURE request_id={request_id}"
             )
-            await response_future
+            await asyncio.wait_for(
+                response_future, timeout=self.HTTP_FUTURE_TIMEOUT_SECS
+            )
             total_time = time.time() - stream_start_time
             logger.debug(
                 f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_END request_id={request_id} "
                 f"chunks_forwarded={chunks_forwarded} total_time={total_time:.1f}s"
             )
 
+        except asyncio.TimeoutError:
+            logger.error(
+                f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_FUTURE_TIMEOUT request_id={request_id} "
+                f"timeout={self.HTTP_FUTURE_TIMEOUT_SECS}s - rollout loop likely dead"
+            )
         except asyncio.CancelledError:
             logger.debug(
                 f"[LLM_FLOW] [{rollout_id}] HTTP_STREAM_CANCELLED request_id={request_id} "
