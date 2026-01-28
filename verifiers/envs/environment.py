@@ -782,8 +782,8 @@ class Environment(ABC):
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
-        if isinstance(client, ClientConfig):
-            assert self.env_client is not None
+        if self.env_client is not None:  # in server mode
+            assert isinstance(client, ClientConfig)
             return await self.env_client.run_rollout(
                 input, client, model, sampling_args
             )
@@ -813,17 +813,15 @@ class Environment(ABC):
         score_sem: AsyncContextManager = NullAsyncContext(),
         **kwargs,
     ) -> list[RolloutOutput]:
-        """Generate and, optionally, score one group.
+        """Generate and, optionally, score one group."""
 
-        Returns list[State] when running locally, list[RolloutOutput] when using remote env server.
-        """
-        if isinstance(client, ClientConfig):
-            assert self.env_client is not None
+        if self.env_client is not None:  # in server mode
+            assert isinstance(client, ClientConfig)
             return await self.env_client.run_group(
                 group_inputs, client, model, sampling_args
             )
-        assert isinstance(client, AsyncOpenAI)
 
+        assert isinstance(client, AsyncOpenAI)
         rollout_tasks = [
             self.rollout_with_sem(input, client, model, sampling_args, gen_sem)
             for input in group_inputs
@@ -841,7 +839,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -1064,7 +1062,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1191,7 +1189,7 @@ class Environment(ABC):
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
 
-    def start_server(self, address: str | None = None) -> None:
+    async def start_server(self, address: str | None = None) -> None:
         self.server_address = address or f"tcp://127.0.0.1:{get_free_port()}"
         self.env_server_process = Process(
             target=ZMQEnvServer.run_server,
@@ -1201,7 +1199,7 @@ class Environment(ABC):
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(address=self.server_address)
 
-    def stop_server(self) -> None:
+    async def stop_server(self) -> None:
         if self.env_server_process is not None:
             self.env_server_process.terminate()
             self.env_server_process.join(timeout=5)

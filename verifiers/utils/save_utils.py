@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from verifiers.types import (
     ChatCompletionToolParam,
+    ClientConfig,
     GenerateMetadata,
     GenerateOutputs,
     RolloutOutput,
@@ -160,7 +161,7 @@ class GenerateOutputsBuilder:
         env_id: str,
         env_args: dict,
         model: str,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
@@ -198,8 +199,12 @@ class GenerateOutputsBuilder:
 
     def _compute_metadata(self, outputs: list[RolloutOutput]) -> GenerateMetadata:
         """Compute metadata from accumulated outputs."""
-        base_url = str(self.client.base_url) if hasattr(self.client, "base_url") else ""
-
+        if isinstance(self.client, ClientConfig):
+            base_url = self.client.api_base_url
+        else:
+            base_url = (
+                str(self.client.base_url) if hasattr(self.client, "base_url") else ""
+            )
         # Compute reward stats from outputs
         rewards = [o.get("reward", 0.0) for o in outputs]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0

@@ -35,7 +35,6 @@ from verifiers.types import (
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -330,7 +329,6 @@ async def run_evaluation(
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(config.client_config)
     logger.debug(
         f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
     )
@@ -343,36 +341,42 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # run evaluation
-    results_path = get_eval_results_path(config)
-    logger.debug(f"Starting evaluation with model: {config.model}")
-    logger.debug(
-        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-    )
-    # disable tqdm when callbacks are provided (TUI handles progress display)
-    use_tqdm = config.use_tqdm and on_progress is None
-    outputs = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        push_to_hf_hub=config.save_to_hf_hub,
-        hf_hub_dataset_name=config.hf_hub_dataset_name,
-        use_tqdm=use_tqdm,
-        independent_scoring=config.independent_scoring,
-        max_retries=config.max_retries,
-        on_start=on_start,
-        on_progress=on_progress,
-        on_log=on_log,
-    )
+    # start env server as sidecar process
+    try:
+        await vf_env.start_server()
+
+        # run evaluation
+        results_path = get_eval_results_path(config)
+        logger.debug(f"Starting evaluation with model: {config.model}")
+        logger.debug(
+            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+        )
+        # disable tqdm when callbacks are provided (TUI handles progress display)
+        use_tqdm = config.use_tqdm and on_progress is None
+        outputs = await vf_env.evaluate(
+            client=config.client_config,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=config.max_concurrent,
+            max_concurrent_generation=config.max_concurrent_generation,
+            max_concurrent_scoring=config.max_concurrent_scoring,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            save_every=config.save_every,
+            push_to_hf_hub=config.save_to_hf_hub,
+            hf_hub_dataset_name=config.hf_hub_dataset_name,
+            use_tqdm=use_tqdm,
+            independent_scoring=config.independent_scoring,
+            max_retries=config.max_retries,
+            on_start=on_start,
+            on_progress=on_progress,
+            on_log=on_log,
+        )
+    finally:
+        await vf_env.stop_server()
 
     return outputs
 
