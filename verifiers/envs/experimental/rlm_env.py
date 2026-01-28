@@ -23,7 +23,6 @@ Key features:
 import asyncio
 import base64
 import contextvars
-import inspect
 import json
 import logging
 import os
@@ -74,7 +73,6 @@ from verifiers.utils.response_utils import (
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
-import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from prime_sandboxes import CommandTimeoutError
 
@@ -397,56 +395,6 @@ _LOCAL_SUB_LLM_CONFIG_BLOCK = (
     .splitlines()
 )
 
-_LOCAL_GUARDRAILS_BLOCK = (
-    textwrap.dedent(
-        """
-    # Guardrails for user code execution (best-effort, not an OS sandbox)
-    def _parse_disallowed(raw: str) -> list[str]:
-        if not raw:
-            return []
-        raw = raw.replace(",", " ")
-        return [item.strip() for item in raw.split() if item.strip()]
-
-    DISALLOWED_MODULES = set(
-        _parse_disallowed(os.environ.get("RLM_DISALLOWED_MODULES", ""))
-    )
-    DISALLOWED_BUILTINS = set(
-        _parse_disallowed(os.environ.get("RLM_DISALLOWED_BUILTINS", ""))
-    )
-
-    def _build_restricted_builtins() -> dict:
-        builtins_obj = __builtins__
-        if not isinstance(builtins_obj, dict):
-            builtins_obj = builtins_obj.__dict__
-        restricted = dict(builtins_obj)
-
-        if DISALLOWED_MODULES:
-            original_import = restricted.get("__import__")
-
-            def _restricted_import(
-                name, globals=None, locals=None, fromlist=(), level=0
-            ):
-                for blocked in DISALLOWED_MODULES:
-                    if name == blocked or name.startswith(blocked + "."):
-                        raise ImportError(
-                            f"Import of '{{name}}' is blocked by RLM policy"
-                        )
-                if original_import is None:
-                    raise ImportError("Import mechanism unavailable")
-                return original_import(name, globals, locals, fromlist, level)
-
-            restricted["__import__"] = _restricted_import
-
-        for builtin_name in DISALLOWED_BUILTINS:
-            restricted.pop(builtin_name, None)
-
-        return restricted
-    """
-    )
-    .strip("\n")
-    .splitlines()
-)
-
 _ENSURE_FIFO_BLOCK = [
     "def ensure_fifo(path: str) -> None:",
     "    if os.path.exists(path):",
@@ -460,28 +408,11 @@ _ENSURE_FIFO_BLOCK = [
 _LOCAL_FS_CONTEXT_BLOCK = [
     "fs_root = None",
     "fs_metadata = {{}}",
-    "allowed_paths = []",
-    "def _get_stdlib_paths() -> list:",
-    "    paths = []",
-    "    try:",
-    "        config_paths = sysconfig.get_paths()",
-    "    except Exception:",
-    "        return paths",
-    '    for key in ("stdlib", "platstdlib"):',
-    "        value = config_paths.get(key)",
-    "        if value:",
-    "            paths.append(value)",
-    "    return paths",
-    "",
     "if Path(CONTEXT_FILE).exists():",
     '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
     "        context = json.load(f)",
     '        fs_root = context.get("fs_root")',
     '        fs_metadata = context.get("fs_metadata") or {{}}',
-    '        allowed_paths = context.get("allowed_paths") or []',
-    "        for stdlib_path in _get_stdlib_paths():",
-    "            if stdlib_path not in allowed_paths:",
-    "                allowed_paths.append(stdlib_path)",
 ]
 
 _SANDBOX_FS_CONTEXT_BLOCK = [
@@ -492,16 +423,6 @@ _SANDBOX_FS_CONTEXT_BLOCK = [
     "        context = json.load(f)",
     '        fs_root = context.get("fs_root")',
     '        fs_metadata = context.get("fs_metadata") or {}',
-]
-
-_LOCAL_JAIL_BLOCK = [
-    "    jail = FilesystemJail(",
-    "        fs_root,",
-    "        allowed_paths=allowed_paths,",
-    "        disallowed_modules=DISALLOWED_MODULES,",
-    "        disallowed_builtins=DISALLOWED_BUILTINS,",
-    "    )",
-    "    jail.install()",
 ]
 
 
@@ -522,14 +443,10 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     ]
 
     if not sandboxed:
-        lines.extend(["import sysconfig", "import time"])
+        lines.append("import time")
     lines.extend(
         ["import traceback", "from pathlib import Path", "import requests", ""]
     )
-
-    if not sandboxed:
-        lines.append("{filesystem_jail_code}")
-        lines.append("")
 
     lines.extend(
         [
@@ -545,8 +462,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     if not sandboxed:
         lines.extend(_LOCAL_SUB_LLM_CONFIG_BLOCK)
         lines.append("")
-        lines.extend(_LOCAL_GUARDRAILS_BLOCK)
-        lines.append("")
 
     lines.extend(_ENSURE_FIFO_BLOCK)
     lines.append("")
@@ -557,8 +472,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
         lines.extend(_SANDBOX_FS_CONTEXT_BLOCK)
     lines.append("")
     lines.extend(["if fs_root:", "    os.chdir(fs_root)"])
-    if not sandboxed:
-        lines.extend(_LOCAL_JAIL_BLOCK)
     lines.append("")
     if not sandboxed:
         lines.append("# Initialize answer structure")
@@ -616,8 +529,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
         ]
     )
 
-    if not sandboxed:
-        lines.append("restricted_builtins = _build_restricted_builtins()")
     lines.append("extra_data = fs_root")
     lines.append("")
     if not sandboxed:
@@ -628,8 +539,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
             '    "__name__": "__main__",',
         ]
     )
-    if not sandboxed:
-        lines.append('    "__builtins__": restricted_builtins,')
     lines.extend(
         [
             '    "extra_data": extra_data,',
@@ -1500,9 +1409,7 @@ def _render_worker_script(
             "{root_tool_helper_script}", repr(_RLM_BASH_TOOL_HELPER_SCRIPT)
         )
         return script
-    filesystem_jail_code = textwrap.dedent(inspect.getsource(rlm_jail_module))
     return _RLM_WORKER_SCRIPT_TEMPLATE.format(
-        filesystem_jail_code=filesystem_jail_code,
         command_fifo=paths.command_fifo,
         response_fifo=paths.response_fifo,
         ready_flag=paths.ready_flag,
@@ -1854,17 +1761,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
         self, session: LocalRLMReplSession, state: State
     ) -> None:
         Path(session.control_dir).mkdir(parents=True, exist_ok=True)
-        allowed_paths = [
-            session.paths.command_fifo,
-            session.paths.response_fifo,
-            session.paths.ready_flag,
-            session.paths.context_file,
-            session.paths.answer_file,
-        ]
         context = {
             "fs_root": state.get("rlm_fs_root"),
             "fs_metadata": state.get("rlm_fs_metadata") or {},
-            "allowed_paths": allowed_paths,
         }
         Path(session.paths.context_file).write_text(
             json.dumps(context), encoding="utf-8"
@@ -1882,9 +1781,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
         Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
 
         env_vars = os.environ.copy()
-        env_vars.update(
-            self.env._build_worker_env_vars(state, include_restrictions=True)
-        )
+        env_vars.update(self.env._build_worker_env_vars(state))
 
         if self.env.repl_language == "python":
             venv_path = session.venv_path
@@ -2218,13 +2115,6 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         context = {
             "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
             "fs_metadata": state.get("rlm_fs_metadata") or {},
-            "allowed_paths": [
-                session.paths.command_fifo,
-                session.paths.response_fifo,
-                session.paths.ready_flag,
-                session.paths.context_file,
-                session.paths.answer_file,
-            ],
         }
         context_path = Path(session.local_control_dir) / "rlm_context.json"
         answer_path = Path(session.local_control_dir) / "rlm_answer.json"
@@ -2257,7 +2147,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         sandbox_id = session.sandbox_id
         if not sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
-        env_vars = self.env._build_worker_env_vars(state, include_restrictions=False)
+        env_vars = self.env._build_worker_env_vars(state)
 
         exports = " ".join(
             f"{key}={shlex.quote(str(value))}"
@@ -2541,8 +2431,6 @@ class RLMEnv(vf.StatefulToolEnv):
                    tunnel startup is skipped.
         pip_install_packages: Space-separated packages to install in addition to requests
                    (default: "")
-        disallowed_modules: Space-separated module names that user code may not import.
-        disallowed_builtins: Space-separated builtin names removed from user code execution.
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
                    When True, sub-LLM turns are added to the trajectory as TrajectoryStep
                    objects with tokens, enabling training on sub-LLM calls. Interleaved
@@ -2598,8 +2486,6 @@ class RLMEnv(vf.StatefulToolEnv):
         interception_port: int = 8766,
         interception_url: str | None = None,
         pip_install_packages: str = "",
-        disallowed_modules: str = "",
-        disallowed_builtins: str = "",
         include_sub_llm_in_trajectory: bool = False,
         context_warning_threshold: float = 0.80,
         max_startup_wait_seconds: int = 120,
@@ -2656,8 +2542,6 @@ class RLMEnv(vf.StatefulToolEnv):
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
-        self.disallowed_modules = disallowed_modules
-        self.disallowed_builtins = disallowed_builtins
         self.retain_filesystem_after_rollout = retain_filesystem_after_rollout
         self.filesystem_copy_max_bytes = filesystem_copy_max_bytes
         self._interception_bind_host = self.interception_host
@@ -2805,9 +2689,7 @@ class RLMEnv(vf.StatefulToolEnv):
         estimated_seconds = 30 * package_count
         return max(self.max_startup_wait_seconds, estimated_seconds)
 
-    def _build_worker_env_vars(
-        self, state: State, *, include_restrictions: bool
-    ) -> dict[str, str]:
+    def _build_worker_env_vars(self, state: State) -> dict[str, str]:
         env_vars = {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
@@ -2819,9 +2701,6 @@ class RLMEnv(vf.StatefulToolEnv):
             "RLM_SUB_LLM_STAGGER_JITTER_MS": str(self.sub_llm_stagger_jitter_ms),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
-        if include_restrictions:
-            env_vars["RLM_DISALLOWED_MODULES"] = self.disallowed_modules
-            env_vars["RLM_DISALLOWED_BUILTINS"] = self.disallowed_builtins
         return env_vars
 
     def _generate_packages_documentation(self) -> str:
