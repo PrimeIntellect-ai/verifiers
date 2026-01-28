@@ -628,7 +628,7 @@ async def early_cleanup(self, state: State) -> None:
     ...
 ```
 
-Mark a method as a rollout cleanup handler.
+Mark a method as a rollout cleanup handler. Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully to ensure cleanup completes even when resources are in unexpected states.
 
 ### @vf.teardown
 

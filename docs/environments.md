@@ -629,11 +629,13 @@ class MyGameEnv(vf.MultiTurnEnv):
     @vf.cleanup
     async def save_game_log(self, state: vf.State):
         await log_game_result(state["game_id"], state["score"])
-    
+
     @vf.teardown
     async def close_connections(self):
         await self.db_connection.close()
 ```
+
+> **Important:** Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully. This ensures correct behavior when rollouts are cancelled or interrupted, and that cleanup completes even when resources are in unexpected states.
 
 ### Signaling Early Termination
 
