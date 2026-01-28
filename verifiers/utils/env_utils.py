@@ -6,7 +6,9 @@ from typing import Callable
 from verifiers.envs.environment import Environment
 
 
-def load_environment(env_id: str, **env_args) -> Environment:
+def load_environment(
+    env_id: str, extra_env_kwargs: dict = {}, **env_args
+) -> Environment:
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
@@ -69,6 +71,10 @@ def load_environment(env_id: str, **env_args) -> Environment:
         env_instance: Environment = env_load_func(**env_args)
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
+        env_instance.extra_env_kwargs = extra_env_kwargs
+        if extra_env_kwargs:
+            logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
+            env_instance.set_kwargs(**extra_env_kwargs)
 
         logger.info(f"Successfully loaded environment '{env_id}'")
 

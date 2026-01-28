@@ -75,7 +75,6 @@ from verifiers.utils.token_utils import (
     prepare_sampling_args_for_token_prompts,
 )
 from verifiers.workers.client.env_client import EnvClient
-from verifiers.workers.server.env_server import EnvServer
 
 if TYPE_CHECKING:
     pass
@@ -100,6 +99,7 @@ class Environment(ABC):
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
+        extra_env_kwargs: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
@@ -120,6 +120,7 @@ class Environment(ABC):
 
         self.env_id = env_id or ""
         self.env_args = env_args or {}
+        self.extra_env_kwargs = extra_env_kwargs or {}
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
@@ -134,7 +135,7 @@ class Environment(ABC):
             )
 
         self.env_client: EnvClient | None = None
-        self.env_server: EnvServer | None = None
+        self.env_server_process: Process | None = None
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -1189,15 +1190,26 @@ class Environment(ABC):
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
 
-    async def start_server(self, address: str | None = None) -> None:
-        self.server_address = address or f"tcp://127.0.0.1:{get_free_port()}"
+    async def start_server(
+        self,
+        address: str | None = None,
+        log_level: str | None = None,
+        log_file: str | None = None,
+    ) -> None:
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
         self.env_server_process = Process(
             target=ZMQEnvServer.run_server,
-            args=(self.env_id, self.env_args),
-            kwargs=dict(address=self.server_address),
+            args=(
+                self.env_id,
+                self.env_args,
+                self.extra_env_kwargs,
+                log_level,
+                log_file,
+            ),
+            kwargs=dict(address=address),
         )
         self.env_server_process.start()
-        self.env_client = ZMQEnvClient(address=self.server_address)
+        self.env_client = ZMQEnvClient(address=address)
 
     async def stop_server(self) -> None:
         if self.env_server_process is not None:
@@ -1206,7 +1218,7 @@ class Environment(ABC):
             if self.env_server_process.is_alive():
                 self.env_server_process.terminate()
             self.env_server_process = None
-            self.env_server = None
+            self.env_client = None
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

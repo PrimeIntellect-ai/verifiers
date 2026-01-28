@@ -328,18 +328,12 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
-    logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
-    )
-
     # load environment
-    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
-
-    # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+    vf_env = vf.load_environment(
+        env_id=config.env_id,
+        **config.env_args,
+        extra_env_kwargs=config.extra_env_kwargs,
+    )
 
     # start env server as sidecar process
     try:
