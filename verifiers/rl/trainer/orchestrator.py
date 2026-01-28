@@ -225,6 +225,7 @@ class Orchestrator:
             model=self.model_name,
             sampling_args=self.sampling_args,
             max_concurrent=self.max_concurrent,
+            state_columns=["trajectory"],  # Include trajectory for RL training
         )
         self.is_generating = False
         wall_clock_s = time.time() - start_time
@@ -241,9 +242,9 @@ class Orchestrator:
         metrics: dict[str, list[float]] = {}
         advantages: list[float] = []
 
-        states = env_results["states"]
-        for state in states:
-            trajectory = state["trajectory"]
+        outputs = env_results["outputs"]
+        for output in outputs:
+            trajectory = output["trajectory"]
             for step in trajectory:
                 tokens = step["tokens"]
                 if tokens is None:
@@ -254,10 +255,10 @@ class Orchestrator:
                 completion_mask.append(tokens["completion_mask"])
                 completion_logprobs.append(tokens["completion_logprobs"])
                 advantages.append(step["advantage"])
-            prompts.append(state["prompt"])
-            completions.append(state["completion"])
-            rewards.append(state["reward"])
-            for k, v in state["metrics"].items():
+            prompts.append(output["prompt"])
+            completions.append(output["completion"])
+            rewards.append(output["reward"])
+            for k, v in output["metrics"].items():
                 if k not in metrics:
                     metrics[k] = []
                 metrics[k].append(v)
@@ -303,8 +304,8 @@ class Orchestrator:
         generation_ms: list[float] = []
         scoring_ms: list[float] = []
         total_ms: list[float] = []
-        for state in states:
-            timing = state.get("timing", {})
+        for output in outputs:
+            timing = output.get("timing", {})
             if "generation_ms" in timing:
                 generation_ms.append(float(timing["generation_ms"]))
             if "scoring_ms" in timing:
@@ -320,7 +321,7 @@ class Orchestrator:
             metrics_dict["timing/total_ms"] = float(np.mean(total_ms))
 
         metrics_dict["wall_clock/generate_s"] = float(wall_clock_s)
-        errors = [state.get("error") for state in states]
+        errors = [output.get("error") for output in outputs]
 
         # build per-process microbatches
         N = len(advantages)

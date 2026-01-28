@@ -9,6 +9,7 @@ import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
+from verifiers.utils.save_utils import states_to_outputs
 
 
 @pytest.fixture
@@ -74,6 +75,7 @@ def run_cli(make_metadata, make_state, make_input):
             r = config.rollouts_per_example
             inputs = [_make_input(example_id=i // r) for i in range(n * r)]
             states = [_make_state(**inputs[i]) for i in range(n * r)]
+            rollout_outputs = states_to_outputs(states)
             metadata = _make_metadata(
                 env_id=config.env_id,
                 model=config.model,
@@ -81,7 +83,7 @@ def run_cli(make_metadata, make_state, make_input):
                 num_examples=n,
                 rollouts_per_example=r,
             )
-            return GenerateOutputs(states=states, metadata=metadata)
+            return GenerateOutputs(outputs=rollout_outputs, metadata=metadata)
 
         monkeypatch.setattr(
             verifiers.utils.eval_utils, "run_evaluation", fake_run_evaluation

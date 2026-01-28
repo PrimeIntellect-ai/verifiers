@@ -76,7 +76,7 @@ def quiet_verifiers():
 def print_prompt_completions_sample(
     prompts: list[Messages],
     completions: list[Messages],
-    errors: list[Error | None],
+    errors: list[str | Error | None],
     rewards: list[float],
     step: int,
     num_samples: int = 1,
@@ -132,10 +132,12 @@ def print_prompt_completions_sample(
 
         return out
 
-    def _format_error(error: BaseException) -> Text:
+    def _format_error(error: str | BaseException) -> Text:
         out = Text()
-        out.append(f"error: {ErrorChain(error)}", style="bold red")
-
+        if isinstance(error, str):
+            out.append(f"error: {error}", style="bold red")
+        else:
+            out.append(f"error: {ErrorChain(error)}", style="bold red")
         return out
 
     console = Console()

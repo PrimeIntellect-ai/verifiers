@@ -2,7 +2,7 @@
 
 Covers:
 - make_serializable: JSON serialization for non-standard types
-- sanitize_states: state sanitization before saving
+- states_to_outputs: state to output conversion before saving
 - sanitize_metadata: metadata sanitization before saving
 - save_to_disk: disk saving with proper serialization
 """
@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from verifiers.utils.save_utils import (
     make_serializable,
-    sanitize_states,
+    states_to_outputs,
 )
 
 
@@ -127,7 +127,7 @@ class TestSavingMetadata:
 
 
 class TestSavingResults:
-    def test_serialize_states(self, make_state):
+    def test_states_to_outputs(self, make_state):
         states = [
             make_state(
                 prompt=[{"role": "user", "content": "What is 2+2?"}],
@@ -135,11 +135,10 @@ class TestSavingResults:
                 answer="",
                 info={},
                 reward=1.0,
-                client=OpenAI(api_key="EMPTY"),
             ),
         ]
-        sanitized_states = sanitize_states(states, state_columns=["client"])
-        result = json.loads(json.dumps(sanitized_states, default=make_serializable))
+        outputs = states_to_outputs(states, state_columns=["foo"])
+        result = json.loads(json.dumps(outputs, default=make_serializable))
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["example_id"] == 0
@@ -149,7 +148,19 @@ class TestSavingResults:
         ]
         assert result[0].get("answer") is None  # empty answer not included
         assert result[0].get("info") is None  # empty info not included
-        assert (
-            result[0].get("client") is not None
-        )  # client included because of state_columns
+        assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
+
+    def test_non_serializable_state_column_raises(self, make_state):
+        """Non-serializable state_columns should raise ValueError."""
+        import pytest
+
+        states = [
+            make_state(
+                prompt=[{"role": "user", "content": "test"}],
+                completion=[{"role": "assistant", "content": "test"}],
+                client=OpenAI(api_key="EMPTY"),
+            ),
+        ]
+        with pytest.raises(ValueError, match="not JSON-serializable"):
+            states_to_outputs(states, state_columns=["client"])

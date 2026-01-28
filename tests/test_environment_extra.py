@@ -159,7 +159,7 @@ def test_run_rollouts_with_max_concurrent(
             max_concurrent=2,
         )
     )
-    states = outputs["states"]
+    states = outputs["outputs"]
     assert len(states) == 3
 
 
@@ -178,7 +178,7 @@ def test_evaluate_fallback_and_repeat(mock_openai_client, make_dummy_env, make_i
         )
     )
     # Expect n * r rollouts in outputs
-    states = outputs["states"]
+    states = outputs["outputs"]
     assert len(states) == 2 * 2
 
 
@@ -190,7 +190,7 @@ async def test_generate_inside_running_loop(
     inputs = [make_input(example_id=0)]
     # Call the async API directly inside a running event loop to avoid nested sync wrapper issues
     outputs = await env.generate(inputs, client=mock_openai_client, model="test-model")
-    states = outputs["states"]
+    states = outputs["outputs"]
     assert len(states) == 1
     assert states[0].get("completion") is not None
 
@@ -218,7 +218,7 @@ def test_sanitize_tool_calls_outputs_strings():
     assert isinstance(sanitized[0]["tool_calls"][0], str)
 
 
-def test_make_dataset_basic_without_tools(make_metadata, make_state):
-    outputs = GenerateOutputs(states=[make_state()], metadata=make_metadata())
-    ds = build_dataset(outputs)
+def test_make_dataset_basic_without_tools(make_metadata, make_output):
+    results = GenerateOutputs(outputs=[make_output()], metadata=make_metadata())
+    ds = build_dataset(results)
     assert len(ds) == 1 and "foo" in ds.column_names

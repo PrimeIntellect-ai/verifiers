@@ -22,8 +22,6 @@ from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
-from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import messages_to_printable
 
 
 @dataclass
@@ -568,13 +566,13 @@ class EvalDisplay(BaseDisplay):
         """Create detailed content for a single environment's summary."""
         items: list[Panel] = []
 
-        # Example 0 prompt/completion
-        states = results["states"]
-        if states and states[0]["prompt"] and states[0]["completion"]:
-            prompt = messages_to_printable(states[0]["prompt"])
-            completion = messages_to_printable(states[0]["completion"])
-            reward_0 = states[0]["reward"] if states[0]["reward"] else 0.0
-            error_0 = states[0].get("error") if states[0] else None
+        # Example 0 prompt/completion (already in printable format from state_to_output)
+        outputs = results["outputs"]
+        if outputs and outputs[0]["prompt"] and outputs[0]["completion"]:
+            prompt = outputs[0]["prompt"]
+            completion = outputs[0]["completion"]
+            reward_0 = outputs[0]["reward"] if outputs[0]["reward"] else 0.0
+            error_0 = outputs[0].get("error") if outputs[0] else None
 
             # Prompt panel
             items.append(
@@ -589,7 +587,7 @@ class EvalDisplay(BaseDisplay):
             completion_text = _format_messages(completion)
             if error_0 is not None:
                 completion_text.append("\n\nerror: ", style="bold red")
-                completion_text.append(str(ErrorChain(error_0)), style="bold red")
+                completion_text.append(error_0, style="bold red")
             completion_text.append("\n\nreward: ", style="bold cyan")
             completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 
@@ -602,7 +600,7 @@ class EvalDisplay(BaseDisplay):
             )
 
         # Reward distribution
-        rewards = [s["reward"] for s in states]
+        rewards = [o["reward"] for o in outputs]
         if rewards:
             # All rollouts histogram
             all_rollouts_content = Group(

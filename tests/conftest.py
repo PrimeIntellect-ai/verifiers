@@ -27,10 +27,12 @@ from verifiers.types import (
     GenerateMetadata,
     Info,
     RolloutInput,
+    RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     TrajectoryStep,
 )
+from verifiers.utils.save_utils import state_to_output
 
 
 @pytest.fixture
@@ -490,6 +492,25 @@ def make_state() -> Callable[..., State]:
         )
 
     return _make_state
+
+
+@pytest.fixture
+def make_output(make_state) -> Callable[..., RolloutOutput]:
+    """Fixture to make RolloutOutput objects for testing.
+
+    This creates a State first, then converts it to a RolloutOutput using
+    state_to_output(). This ensures the output matches the serialized format
+    used in GenerateOutputs.
+    """
+
+    def _make_output(
+        state_columns: list[str] = ["foo"],
+        **kwargs,
+    ) -> RolloutOutput:
+        state = make_state(**kwargs)
+        return state_to_output(state, state_columns)
+
+    return _make_output
 
 
 @pytest.fixture
