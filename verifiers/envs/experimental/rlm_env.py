@@ -3009,7 +3009,6 @@ class RLMEnv(vf.StatefulToolEnv):
             }
         except Exception as e:
             if self._should_stop_for_error(e):
-                state["_rlm_stop_error"] = e
                 raise
             return {
                 "role": "tool",
