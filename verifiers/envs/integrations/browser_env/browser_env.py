@@ -170,6 +170,7 @@ class BrowserEnv(vf.StatefulToolEnv):
                 model_api_key=model_api_key,
                 stagehand_model=stagehand_model,
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
+                proxies=proxies,
             )
         elif mode == "cua":
             # Unified CUAMode with execution_mode parameter

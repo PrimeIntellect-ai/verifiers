@@ -25,12 +25,14 @@ class DOMMode:
         model_api_key: str | None = None,
         stagehand_model: str = "openai/gpt-4o-mini",
         proxy_model_to_stagehand: bool = False,
+        proxies: bool = False,
     ):
         self.api_key = browserbase_api_key or os.getenv("BROWSERBASE_API_KEY")
         self.project_id = project_id or os.getenv("BROWSERBASE_PROJECT_ID")
         self.model_api_key = model_api_key or os.getenv("MODEL_API_KEY")
         self.stagehand_model = stagehand_model
         self.proxy_model_to_stagehand = proxy_model_to_stagehand
+        self.proxies = proxies
         self.stagehand_client: AsyncStagehand | None = None
         self.logger = None  # Will be set when register_tools is called
         self._client_lock = asyncio.Lock()
@@ -76,8 +78,12 @@ class DOMMode:
                     model_api_key=api_key,
                 )
 
+        # Build browserbase session params with proxies if enabled
+        browserbase_params = {"proxies": self.proxies} if self.proxies else None
+
         session = await self.stagehand_client.sessions.create(
             model_name=self.stagehand_model,
+            browserbase_session_create_params=browserbase_params,
         )
         return session
 
