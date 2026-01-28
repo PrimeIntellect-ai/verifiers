@@ -250,7 +250,7 @@ def load_environment(
     If a response contains incoherent text, respond with "no" even if the correct answer is also present.
     """
     judge_client = AsyncOpenAI(
-        base_url=judge_base_url, api_key=os.getenv(judge_api_key_var)
+        base_url=judge_base_url, api_key=os.environ[judge_api_key_var]
     )
     judge_rubric = JudgeRubric(
         judge_client=judge_client,

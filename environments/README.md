@@ -11,11 +11,7 @@ This folder contains installable example environments that showcase common usage
 
 ### SingleTurnEnv (prompt → single response)
 - **gsm8k**: Classic QA with exact-match reward; toggles `ThinkParser` vs `Parser` and format reward.
-- **math**: Hendrycks MATH dataset with `MathRubric` reward (using HuggingFace's `math-verify` scorer).
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
-- **gpqa**: Multiple-choice; demonstrates optional judge-based secondary scoring via `RubricGroup`.
-- **simpleqa**: Judge-graded A/B/C classification using `JudgeRubric` rewards.
-- **summarize_text**: Multiple rewards (length/format + similarity) combined in one `Rubric`.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 
@@ -23,6 +19,7 @@ This folder contains installable example environments that showcase common usage
 - **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, uses `XMLParser` and task-specific scoring.
 
 ### MultiTurnEnv (custom interaction protocols)
+- **alphabet_sort**: Multi-turn task requiring the model to maintain and update an alphabetically sorted list of names across turns; uses `XMLParser` with per-turn sequence similarity rewards.
 - **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
@@ -32,14 +29,24 @@ This folder contains installable example environments that showcase common usage
   - **tool_test**: Validates parallel tool calls and checks exact tool usage via `ToolRubric` + custom reward.
   - **wiki_search**: Multi-tool retrieval (search/view/read) with `ToolEnv`; final judgment combined via `RubricGroup` with a `JudgeRubric`.
 
-- **XML tool calling (roll-your-own on MultiTurnEnv)**
-  - **xml_tool_env**: Parses `<tool>{...}</tool>` commands with `XMLParser`, executes Python functions, and returns `<result>...</result>` via `env_response`.
-  - **xlam_function_calling**: Single-turn XML tool-call verification (no execution) that checks called tools match the ground truth list.
-  - **smolagents_math_tools**: Integrates Smolagents `Tool` objects and a custom parser for tool/answer XML; demonstrates external tool frameworks.
-
 ### Sandboxes
 - **PythonEnv (ipython-style REPL)**
   - **math_python**: Solve math problems using Python in a sandbox environment.
+
+### GymEnv (external gym environments)
+- **gem_wordle**: Multi-turn Wordle game powered by the GEM framework; models must guess a 5-letter word using `\boxed{}` format.
+
+### Experimental environments
+- **MCPEnv (MCP server integration)**
+  - **mcp_search_env**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
+
+- **RLMEnv (Recursive Language Model)**
+  - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
+
+- **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
+  - **dummy_harbor_env**: Minimal Harbor environment for testing the CLI agent interception framework.
+  - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
+  - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
 
 ### Composition
 - **EnvGroup**
@@ -47,30 +54,30 @@ This folder contains installable example environments that showcase common usage
 
 - **RubricGroup**
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
-  - **gpqa**: Adds a `JudgeRubric` alongside base rubric for auxiliary scoring.
   - **wiki_search**: Merges judge scoring with the tool-use rubric.
 
 ### Judge-based evaluation (LLM-as-judge)
-- **simpleqa**: Judge rubric maps graded letters to reward.
 - **continuation_quality**: Judge rubric extracts `<grade>` and maps A–F to a continuous score.
 - **toxicity_explanation**: Judge rubric returns 0–10 normalized score for both classification correctness and explanation quality.
-- **self_reward**: pattern for `SingleTurnEnv` with only a `JudgeRubric` over a dataset that supplies `question`/`answer`; intended for online RL where model acts as its own judge.
+- **self_reward**: Pattern for `SingleTurnEnv` with only a `JudgeRubric` over a dataset that supplies `question`/`answer`; intended for online RL where model acts as its own judge.
 
 ### Parsers and formatting
 - **ThinkParser**: Used in `gsm8k`, `wiki_search` to separate reasoning from final answers.
-- **XMLParser**: Used in `reverse_text`, `wordle`, `summarize_text`, `reasoning_gym_env`, `xml_tool_env`, `xlam_function_calling` to enforce structured outputs and enable format rewards.
-- **Custom parsers**: `smolagents_math_tools` defines a bespoke parser to interoperate with external tool schemas.
+- **XMLParser**: Used in `reverse_text`, `wordle`, `alphabet_sort`, `reasoning_gym_env` to enforce structured outputs and enable format rewards.
 
 ### Multimodal inputs
 - **mmmu**: Demonstrates passing images via chat `content` items with `{type: "image_url", image_url: {url: ...}}` and standard answer parsing.
 
 ## What to look at for each pattern
 - **Minimal SingleTurnEnv**: `reverse_text`, `gsm8k`
-- **JudgeRubric end-to-end**: `simpleqa`, `continuation_quality`, `toxicity_explanation`, `self_reward`
+- **JudgeRubric end-to-end**: `continuation_quality`, `toxicity_explanation`, `self_reward`
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
-- **Custom MultiTurnEnv**: `doublecheck`, `sentence_repeater`, `wordle`
-- **XML tools without native function-calling**: `xml_tool_env`, `xlam_function_calling`
-- **Environment and rubric composition**: `math_group`, `math_python`, `gpqa`, `wiki_search`
+- **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
+- **GymEnv integration**: `gem_wordle`
+- **CLI agent sandboxes**: `dummy_harbor_env`, `opencode_harbor`, `terminus_harbor`
+- **MCP integration**: `mcp_search_env`
+- **RLM (recursive LLM)**: `rlm_secrets`
+- **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`
 

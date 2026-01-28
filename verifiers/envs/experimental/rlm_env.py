@@ -51,7 +51,7 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
+from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
@@ -71,10 +71,6 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.token_utils import (
-    prepare_sampling_args_for_token_prompts,
-    tokenize_vllm,
-)
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
 import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
 from verifiers.envs.sandbox_env import CreateSandboxRequest
@@ -1558,6 +1554,7 @@ answer["ready"] = True
 1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+   Pass a list of strings only (no message dicts).
 """
 
 
@@ -1597,6 +1594,7 @@ export RLM_READY=1
 1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
+   Pass a list of strings only (no message dicts).
 4. **Tool usage in Bash**:
    - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
    - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
@@ -2536,9 +2534,10 @@ class RLMEnv(vf.StatefulToolEnv):
         disallowed_modules: Space-separated module names that user code may not import.
         disallowed_builtins: Space-separated builtin names removed from user code execution.
         include_sub_llm_in_trajectory: Whether to include sub-LLM calls as trajectory steps.
-                   When True (default), sub-LLM turns are prepended to the trajectory as
-                   TrajectoryStep objects with tokens, enabling training on sub-LLM calls.
-                   When False, sub-LLM calls happen but are not stored.
+                   When True, sub-LLM turns are added to the trajectory as TrajectoryStep
+                   objects with tokens, enabling training on sub-LLM calls. Interleaved
+                   rollouts are not supported in this mode. When False (default), sub-LLM
+                   calls happen but are not stored.
         context_warning_threshold: Fraction of max_seq_len at which to warn the model
                    to finish (default: 0.80). Only active if max_seq_len is set.
         max_startup_wait_seconds: Maximum seconds to wait for worker startup (default: 120)
@@ -2591,7 +2590,7 @@ class RLMEnv(vf.StatefulToolEnv):
         pip_install_packages: str = "",
         disallowed_modules: str = "",
         disallowed_builtins: str = "",
-        include_sub_llm_in_trajectory: bool = True,
+        include_sub_llm_in_trajectory: bool = False,
         context_warning_threshold: float = 0.80,
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
@@ -2773,8 +2772,7 @@ class RLMEnv(vf.StatefulToolEnv):
             """
             Call the sub-LLM on multiple prompts in parallel.
 
-            - Input: a list of prompt strings (recommended). Message dicts or lists
-              of message dicts are also accepted.
+            - Input: a list of prompt strings.
             - Output: a list of responses in the same order as the input prompts.
             - Use this inside the REPL to get help on sub-tasks.
             """
@@ -2911,7 +2909,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 '"kwargs": {...}}\'` or provide the JSON via stdin.'
             )
             lines.append(
-                "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
+                "For `llm_batch`, use positional string prompts or "
+                '`--json \'{"prompts": ["..."]}\'`.'
             )
         lines.append("")
 
@@ -2996,33 +2995,6 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
-    @staticmethod
-    def _normalize_sampling_args(sampling_args: dict[str, Any]) -> dict[str, Any]:
-        """Normalize sampling args to match main model behavior."""
-        if "max_tokens" in sampling_args:
-            if sampling_args["max_tokens"] is None:
-                sampling_args.pop("max_tokens")
-            else:
-                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-        if (
-            "max_completion_tokens" in sampling_args
-            and sampling_args["max_completion_tokens"] is None
-        ):
-            sampling_args.pop("max_completion_tokens")
-        return {k: v for k, v in sampling_args.items() if v is not None}
-
-    def _prepare_sub_llm_sampling_args(
-        self, state: State, *, interleaved: bool
-    ) -> dict[str, Any]:
-        sampling_args = dict(state.get("sampling_args") or {})
-        extra_body = sampling_args.get("extra_body")
-        if isinstance(extra_body, dict):
-            sampling_args["extra_body"] = dict(extra_body)
-        sampling_args = self._normalize_sampling_args(sampling_args)
-        if interleaved:
-            return prepare_sampling_args_for_token_prompts(sampling_args)
-        return sampling_args
-
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
     ) -> dict:
@@ -3036,40 +3008,13 @@ class RLMEnv(vf.StatefulToolEnv):
                 "tool_call_id": tool_call_id,
             }
         except Exception as e:
+            if self._should_stop_for_error(e):
+                raise
             return {
                 "role": "tool",
                 "content": f"Error: {e}",
                 "tool_call_id": tool_call_id,
             }
-
-    def _normalize_message_content(
-        self, messages: ChatMessages | list[dict[str, Any]]
-    ) -> ChatMessages:
-        """Normalize message content fields to formats the API accepts.
-
-        The API expects content to be: string, array of objects, or None.
-        Handles several malformed cases:
-        1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
-        2. Content is a content part object (has 'type' key) - wrap in array
-        """
-        normalized: ChatMessages = []
-        for msg in messages:
-            msg_copy: dict[str, Any] = cast(dict[str, Any], msg).copy()
-            content = msg_copy.get("content")
-
-            if content is not None and isinstance(content, dict):
-                # Check if content is a nested message dict (has 'role' and 'content' keys)
-                # This happens when model passes message dicts to llm_batch instead of strings
-                if "role" in content and "content" in content:
-                    msg_copy["content"] = content["content"]
-                elif "type" in content:
-                    # Content part object (e.g. {"type": "text", "text": "..."}) - wrap in array
-                    msg_copy["content"] = [content]
-                else:
-                    # Unknown dict structure - try wrapping in array as fallback
-                    msg_copy["content"] = [content]
-            normalized.append(cast(ChatMessage, msg_copy))
-        return normalized
 
     async def _call_sub_llm_api(
         self,
@@ -3080,50 +3025,30 @@ class RLMEnv(vf.StatefulToolEnv):
         tools: list | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
-        normalized_messages = self._normalize_message_content(messages)
-        sampling_args = self._prepare_sub_llm_sampling_args(
-            state, interleaved=self.interleaved_rollouts
-        )
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": normalized_messages,
-            "tools": tools,
-        }
+        sampling_args = dict(state.get("sampling_args") or {})
+        extra_body = sampling_args.get("extra_body")
+        if isinstance(extra_body, dict):
+            sampling_args["extra_body"] = dict(extra_body)
 
         try:
-            if self.interleaved_rollouts:
-                extra_body = sampling_args.pop("extra_body", {})
-                prompt_ids = await tokenize_vllm(
-                    client=client,
-                    messages=normalized_messages,
-                    tools=tools,
-                    model=model,
-                )
-                payload = {
-                    "model": model,
-                    "messages": normalized_messages,
-                    "tools": tools,
-                    "tokens": prompt_ids,
-                    **sampling_args,
-                    **extra_body,
-                }
-                return await asyncio.wait_for(
-                    client.post(
-                        "/chat/completions/tokens",
-                        body=payload,
-                        cast_to=ChatCompletion,
-                    ),
-                    timeout=self.sub_llm_api_timeout,
-                )
-            payload = {
-                "model": model,
-                "messages": normalized_messages,
-                "tools": tools,
-                **sampling_args,
-            }
+            # Use a minimal state with an empty trajectory so get_model_response
+            # never tries to compute interleaved prompt_ids from the main rollout.
+            # Sub-LLM prompts are independent tool calls, not continuations of the
+            # root conversation; using the real state would treat them as such.
+            # We also mirror sampling_args/oai_tools onto the fake state because
+            # get_model_response falls back to state values when args are falsy
+            # (e.g., {} or None), which would otherwise raise KeyError.
+            prompt_state = State()
+            prompt_state["trajectory"] = []
+            prompt_state["sampling_args"] = sampling_args
+            prompt_state["oai_tools"] = tools or []
             return await asyncio.wait_for(
-                client.chat.completions.create(
-                    **payload,
+                self.get_model_response(
+                    prompt_state,
+                    messages,
+                    client=client,
+                    model=model,
+                    message_type="chat",
                 ),
                 timeout=self.sub_llm_api_timeout,
             )
@@ -3195,7 +3120,11 @@ class RLMEnv(vf.StatefulToolEnv):
             prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
 
             response = await self._call_sub_llm_api(
-                state, client, model, current_messages, tools
+                state,
+                client,
+                model,
+                current_messages,
+                tools,
             )
             if response is None:
                 return self._make_timeout_result(
@@ -3261,7 +3190,12 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
         prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
-        response = await self._call_sub_llm_api(state, client, model, current_messages)
+        response = await self._call_sub_llm_api(
+            state,
+            client,
+            model,
+            current_messages,
+        )
         if response is None:
             return self._make_timeout_result(
                 turns,
@@ -3312,26 +3246,8 @@ class RLMEnv(vf.StatefulToolEnv):
         def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
             if isinstance(prompt, str):
                 return [cast(ChatMessage, {"role": "user", "content": prompt})]
-            if isinstance(prompt, dict):
-                if "role" in prompt and "content" in prompt:
-                    return [cast(ChatMessage, prompt)]
-                raise ValueError(
-                    "llm_batch prompt at index "
-                    + str(index)
-                    + " must be a string or message dict with 'role' and 'content'."
-                )
-            if isinstance(prompt, (list, tuple)):
-                if all(isinstance(item, dict) for item in prompt):
-                    return [cast(ChatMessage, item) for item in prompt]
-                raise ValueError(
-                    "llm_batch prompt at index "
-                    + str(index)
-                    + " must be a list of message dicts."
-                )
             raise ValueError(
-                "llm_batch prompt at index "
-                + str(index)
-                + " must be a string, message dict, or list of message dicts."
+                "llm_batch prompt at index " + str(index) + " must be a string."
             )
 
         async def _call_one(index: int, prompt: Any) -> None:
@@ -3363,6 +3279,8 @@ class RLMEnv(vf.StatefulToolEnv):
                         elapsed
                     )
                 except Exception as exc:
+                    if self._should_stop_for_error(exc):
+                        raise
                     elapsed = perf_counter() - start_time
                     response_dict = {
                         "choices": [
@@ -3636,6 +3554,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 result_value = await maybe_await(tool_func, *args, **kwargs)
                 print_lines = None
         except Exception as e:
+            if self._should_stop_for_error(e):
+                state_ref["_rlm_stop_error"] = e
             return web.json_response({"error": str(e)}, status=500)
         finally:
             self._root_tool_context_var.reset(token)
@@ -3689,6 +3609,8 @@ class RLMEnv(vf.StatefulToolEnv):
             )
             return web.json_response(response_dict)
         except Exception as e:
+            if self._should_stop_for_error(e):
+                state_ref["_rlm_stop_error"] = e
             return web.json_response({"error": str(e)}, status=500)
 
     async def _teardown_interception_server(self):
@@ -3736,6 +3658,14 @@ class RLMEnv(vf.StatefulToolEnv):
     # =========================================================================
     # State Management
     # =========================================================================
+
+    def set_interleaved_rollouts(self, interleaved_rollouts: bool) -> None:
+        if interleaved_rollouts and self.include_sub_llm_in_trajectory:
+            raise ValueError(
+                "RLMEnv does not support interleaved rollouts when "
+                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
+            )
+        super().set_interleaved_rollouts(interleaved_rollouts)
 
     def update_tool_args(
         self,
@@ -3797,6 +3727,12 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.execution_backend == "sandbox":
             state["rlm_fs_root_remote"] = f"/tmp/rlm_{rollout_id}/rlm_fs"
             state["rlm_control_dir_remote"] = f"/tmp/rlm_{rollout_id}/rlm_control"
+
+        if self.include_sub_llm_in_trajectory and self.interleaved_rollouts:
+            raise ValueError(
+                "RLMEnv does not support interleaved rollouts when "
+                "include_sub_llm_in_trajectory=True. Use branched rollouts instead."
+            )
 
         # 1. Setup interception and register rollout
         state = await self._setup_interception_and_register(state, rollout_id)
@@ -4072,6 +4008,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
+        stop_exc = state.pop("_rlm_stop_error", None)
+        if stop_exc is not None:
+            raise stop_exc
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
@@ -4157,10 +4096,6 @@ class RLMEnv(vf.StatefulToolEnv):
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
         await super().add_trajectory_step(state, trajectory_step)
-
-    # =========================================================================
-    # MultiTurnEnv Interface
-    # =========================================================================
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""

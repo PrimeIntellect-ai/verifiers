@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import atexit
 import functools
@@ -23,8 +25,10 @@ from typing import (
     final,
 )
 
-from datasets import Dataset
 from openai import AsyncOpenAI, BadRequestError, OpenAI
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.completion_choice import CompletionChoice
@@ -820,6 +824,8 @@ class Environment(ABC):
         """
         Generate rollouts for a set of inputs.
         """
+        from datasets import Dataset
+
         if isinstance(inputs, Dataset):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
@@ -911,7 +917,17 @@ class Environment(ABC):
         groups_or_rollouts_completed = 0
         try:
             for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
+                try:
+                    result = await coro
+                except Exception:
+                    # cancel all outstanding tasks
+                    for task in tasks.keys():
+                        if not task.done():
+                            task.cancel()
+                    # drain cancellations
+                    await asyncio.gather(*tasks.keys(), return_exceptions=True)
+                    raise
+
                 # normalize: independent_scoring returns State, group returns list[State]
                 states = [result] if independent_scoring else result
 

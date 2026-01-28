@@ -1,15 +1,20 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
     Literal,
+    TypeAlias,
 )
 
-from datasets import Dataset
-
 from verifiers.errors import Error
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -50,7 +55,7 @@ SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
 RewardFunc = IndividualRewardFunc | GroupRewardFunc
-DatasetBuilder = Callable[[], Dataset]
+DatasetBuilder: TypeAlias = "Callable[[], Dataset]"
 
 
 class TrajectoryStepTokens(TypedDict):

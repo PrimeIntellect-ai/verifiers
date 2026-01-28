@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from abc import abstractmethod
 from typing import final
@@ -135,22 +136,26 @@ class MultiTurnEnv(vf.Environment):
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
         try:
-            state = await self.setup_state(state)
-        except vf.Error as e:
-            state["error"] = e
-        # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
-        while not await self.is_completed(state):
             try:
-                prompt_messages = await self.get_prompt_messages(state)
-                if state.get("final_env_response") is not None:
-                    continue
-                response = await self.get_model_response(state, prompt_messages)
-                await self.add_model_response(state, prompt_messages, response)
+                state = await self.setup_state(state)
             except vf.Error as e:
-                if isinstance(e, vf.OverlongPromptError):
-                    state["prompt_too_long"] = True
-                    state["is_truncated"] = True
-                else:
-                    state["error"] = e
-        await self.render_completion(state)
-        return state
+                state["error"] = e
+            # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
+            while not await self.is_completed(state):
+                try:
+                    prompt_messages = await self.get_prompt_messages(state)
+                    if state.get("final_env_response") is not None:
+                        continue
+                    response = await self.get_model_response(state, prompt_messages)
+                    await self.add_model_response(state, prompt_messages, response)
+                except vf.Error as e:
+                    if isinstance(e, vf.OverlongPromptError):
+                        state["prompt_too_long"] = True
+                        state["is_truncated"] = True
+                    else:
+                        state["error"] = e
+            await self.render_completion(state)
+            return state
+        except asyncio.CancelledError:
+            await self._cleanup(state)
+            raise

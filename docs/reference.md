@@ -629,7 +629,7 @@ async def early_cleanup(self, state: State) -> None:
     ...
 ```
 
-Mark a method as a rollout cleanup handler.
+Mark a method as a rollout cleanup handler. Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully to ensure cleanup completes even when resources are in unexpected states.
 
 ### @vf.teardown
 
@@ -677,6 +677,28 @@ vf.load_environment(env_id: str, **kwargs) -> Environment
 ```
 
 Load an environment by ID (e.g., `"primeintellect/gsm8k"`).
+
+### Configuration Utilities
+
+```python
+vf.ensure_keys(keys: list[str]) -> None
+```
+
+Validate that required environment variables are set. Raises `MissingKeyError` (a `ValueError` subclass) with a clear message listing all missing keys and instructions for setting them.
+
+```python
+class MissingKeyError(ValueError):
+    keys: list[str]  # list of missing key names
+```
+
+Example:
+
+```python
+def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
+    vf.ensure_keys([api_key_var])
+    # now safe to use os.environ[api_key_var]
+    ...
+```
 
 ### Logging Utilities
 

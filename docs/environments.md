@@ -629,11 +629,13 @@ class MyGameEnv(vf.MultiTurnEnv):
     @vf.cleanup
     async def save_game_log(self, state: vf.State):
         await log_game_result(state["game_id"], state["score"])
-    
+
     @vf.teardown
     async def close_connections(self):
         await self.db_connection.close()
 ```
+
+> **Important:** Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully. This ensures correct behavior when rollouts are cancelled or interrupted, and that cleanup completes even when resources are in unexpected states.
 
 ### Signaling Early Termination
 
@@ -727,6 +729,27 @@ dependencies = [
     "nltk>=3.9.2",
 ]
 ```
+
+### Required API Keys
+
+Environments that require external API keys (e.g., for judge models or external services) should validate them early in `load_environment()` using `vf.ensure_keys()`:
+
+```python
+import verifiers as vf
+
+def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
+    vf.ensure_keys([api_key_var])
+    # now safe to use os.environ[api_key_var]
+    ...
+```
+
+This raises `MissingKeyError` with a clear message listing all missing keys and instructions for setting them:
+
+- **Environments Hub CI**: Add secrets on the environment's Settings page
+- **Hosted Training**: Set `env_file` in your config (e.g., `env_file = ["secrets.env"]`)
+- **Local**: Export in your shell (e.g., `export OPENAI_API_KEY=...`)
+
+Document required variables in your README under a "Required Environment Variables" section.
 
 ### Installation
 

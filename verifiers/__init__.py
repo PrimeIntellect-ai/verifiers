@@ -33,6 +33,7 @@ from .utils.data_utils import (
     extract_hash_answer,
     load_example_dataset,
 )
+from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.env_utils import load_environment
 from .utils.logging_utils import (
     log_level,
@@ -87,6 +88,8 @@ __all__ = [
     "cleanup",
     "stop",
     "teardown",
+    "ensure_keys",
+    "MissingKeyError",
 ]
 
 _LAZY_IMPORTS = {
