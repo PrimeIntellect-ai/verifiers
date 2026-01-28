@@ -5,6 +5,7 @@ from typing import Any, Literal
 import verifiers as vf
 from verifiers.utils.async_utils import maybe_await
 
+from .modes.base import BrowserMode
 from .modes.dom_mode import DOMMode
 from .modes.cua_mode import CUAMode
 
@@ -164,7 +165,7 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         # Initialize the appropriate mode strategy
         if mode == "dom":
-            self._mode_impl = DOMMode(
+            self._mode_impl: BrowserMode = DOMMode(
                 browserbase_api_key=browserbase_api_key,
                 project_id=browserbase_project_id,
                 model_api_key=model_api_key,

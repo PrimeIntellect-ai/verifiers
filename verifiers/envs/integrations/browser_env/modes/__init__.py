@@ -2,6 +2,7 @@
 
 import warnings
 
+from .base import BrowserMode
 from .dom_mode import DOMMode
 from .cua_mode import CUAMode, SANDBOX_AVAILABLE
 
@@ -21,4 +22,4 @@ def CUASandboxMode(*args, **kwargs):
     return CUAMode(*args, execution_mode="sandbox", **kwargs)
 
 
-__all__ = ["DOMMode", "CUAMode", "CUASandboxMode", "SANDBOX_AVAILABLE"]
+__all__ = ["BrowserMode", "DOMMode", "CUAMode", "CUASandboxMode", "SANDBOX_AVAILABLE"]

@@ -142,29 +142,6 @@ export class BrowserSessionManager {
   }
 
   /**
-   * Get the viewport for a session
-   */
-  async getViewport(sessionId: string): Promise<Viewport | undefined> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      return undefined;
-    }
-
-    const page = await session.stagehand.context.awaitActivePage();
-    try {
-      const { w, h } = await page
-        .mainFrame()
-        .evaluate<{
-          w: number;
-          h: number;
-        }>("({ w: window.innerWidth, h: window.innerHeight })");
-      return { width: w, height: h };
-    } catch {
-      return { width: 1024, height: 768 }; // Default fallback
-    }
-  }
-
-  /**
    * Destroy all sessions (cleanup on server shutdown)
    */
   async destroyAllSessions(): Promise<void> {
