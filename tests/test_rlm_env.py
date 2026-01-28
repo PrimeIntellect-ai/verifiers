@@ -1055,34 +1055,34 @@ class TestSubLLMRequestPaths:
         assert "max_tokens" not in kwargs
         mock_client.post.assert_not_called()
 
+
+# =============================================================================
+# 8. llm_batch Prompt Validation
+# =============================================================================
+
+
+class TestLLMBatchPromptValidation:
     @pytest.mark.asyncio
-    async def test_sub_llm_normalizes_messages(self, rlm_env):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.tool_calls = None
-        mock_message.content = "ok"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+    async def test_llm_batch_rejects_non_string_prompts(self, rlm_env):
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": {"trajectory": []},
+        }
 
-        rlm_env.interleaved_rollouts = False
-        messages = [
-            {"role": "user", "content": {"type": "text", "text": "hello"}},
-            {"role": "user", "content": {"role": "user", "content": "inner"}},
-        ]
-        state = {}
+        contents, _ = await rlm_env._root_llm_batch(
+            context, [{"role": "user", "content": "hi"}]
+        )
+        assert "must be a string" in contents[0]
 
-        await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
-
-        args, kwargs = mock_client.chat.completions.create.call_args
-        assert args == ()
-        sent_messages = kwargs["messages"]
-        assert sent_messages[0]["content"] == [{"type": "text", "text": "hello"}]
-        assert sent_messages[1]["content"] == "inner"
+        contents, _ = await rlm_env._root_llm_batch(
+            context, [[{"role": "user", "content": "hi"}]]
+        )
+        assert "must be a string" in contents[0]
 
 
 # =============================================================================
-# 8. Root Tool Serialization (pickle)
+# 9. Root Tool Serialization (pickle)
 # =============================================================================
 
 
@@ -1129,7 +1129,7 @@ class TestRootToolSerialization:
 
 
 # =============================================================================
-# 9. Context Limit Configuration
+# 10. Context Limit Configuration
 # =============================================================================
 
 
@@ -1144,7 +1144,7 @@ class TestContextLimitConfiguration:
 
 
 # =============================================================================
-# 10. Sub-LLM Metrics with Tools
+# 11. Sub-LLM Metrics with Tools
 # =============================================================================
 
 
@@ -1214,7 +1214,7 @@ class TestSubLLMMetricsWithTools:
 
 
 # =============================================================================
-# 11. Sub-LLM Trajectory Steps
+# 12. Sub-LLM Trajectory Steps
 # =============================================================================
 
 
@@ -1301,7 +1301,7 @@ class TestSubLLMTrajectorySteps:
 
 
 # =============================================================================
-# 12. Tunnel Utils (kept for coverage)
+# 13. Tunnel Utils (kept for coverage)
 # =============================================================================
 
 

@@ -58,9 +58,7 @@ from verifiers.types import (
     ChatMessage,
     ChatMessages,
     Messages,
-    MessageType,
     ModelResponse,
-    SamplingArgs,
     State,
     TrajectoryStep,
 )
@@ -143,56 +141,6 @@ def _merge_tool_lists(
         reserved_names=set(),
     )
     return deduped_all, deduped_map
-
-
-def _normalize_sampling_args_for_model_call(
-    sampling_args: SamplingArgs, message_type: MessageType
-) -> SamplingArgs:
-    sampling_args = dict(sampling_args)
-    extra_body = sampling_args.get("extra_body")
-    if isinstance(extra_body, dict):
-        sampling_args["extra_body"] = dict(extra_body)
-    if "max_tokens" in sampling_args:
-        if sampling_args["max_tokens"] is None:
-            sampling_args.pop("max_tokens")
-        elif message_type == "chat":
-            sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-    if (
-        "max_completion_tokens" in sampling_args
-        and sampling_args["max_completion_tokens"] is None
-    ):
-        sampling_args.pop("max_completion_tokens")
-    return {k: v for k, v in sampling_args.items() if v is not None}
-
-
-def _normalize_message_content(
-    messages: ChatMessages | list[dict[str, Any]],
-) -> ChatMessages:
-    """Normalize message content fields to formats the API accepts.
-
-    The API expects content to be: string, array of objects, or None.
-    Handles several malformed cases:
-    1. Content is a nested message dict (has 'role' and 'content' keys) - extract inner content
-    2. Content is a content part object (has 'type' key) - wrap in array
-    """
-    normalized: ChatMessages = []
-    for msg in messages:
-        msg_copy: dict[str, Any] = cast(dict[str, Any], msg).copy()
-        content = msg_copy.get("content")
-
-        if content is not None and isinstance(content, dict):
-            # Check if content is a nested message dict (has 'role' and 'content' keys)
-            # This happens when model passes message dicts to llm_batch instead of strings
-            if "role" in content and "content" in content:
-                msg_copy["content"] = content["content"]
-            elif "type" in content:
-                # Content part object (e.g. {"type": "text", "text": "..."}) - wrap in array
-                msg_copy["content"] = [content]
-            else:
-                # Unknown dict structure - try wrapping in array as fallback
-                msg_copy["content"] = [content]
-        normalized.append(cast(ChatMessage, msg_copy))
-    return normalized
 
 
 class RLMCodeExecutionTimeout(Exception):
@@ -1606,6 +1554,7 @@ answer["ready"] = True
 1. **NEVER set `answer["ready"] = True` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
+   Pass a list of strings only (no message dicts).
 """
 
 
@@ -1645,6 +1594,7 @@ export RLM_READY=1
 1. **NEVER set `RLM_READY=1` until you have seen execution output** - you need feedback first
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch` for semantic tasks** - summarization, understanding text, classification, etc.
+   Pass a list of strings only (no message dicts).
 4. **Tool usage in Bash**:
    - Call tools as shell commands with positional args (each arg is JSON-decoded if possible).
    - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
@@ -2822,8 +2772,7 @@ class RLMEnv(vf.StatefulToolEnv):
             """
             Call the sub-LLM on multiple prompts in parallel.
 
-            - Input: a list of prompt strings (recommended). Message dicts or lists
-              of message dicts are also accepted.
+            - Input: a list of prompt strings.
             - Output: a list of responses in the same order as the input prompts.
             - Use this inside the REPL to get help on sub-tasks.
             """
@@ -2960,7 +2909,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 '"kwargs": {...}}\'` or provide the JSON via stdin.'
             )
             lines.append(
-                "For `llm_batch`, use positional prompts or `--json '{\"prompts\": [...]}'`."
+                "For `llm_batch`, use positional string prompts or "
+                '`--json \'{"prompts": ["..."]}\'`.'
             )
         lines.append("")
 
@@ -3045,14 +2995,6 @@ class RLMEnv(vf.StatefulToolEnv):
         lines.append("Never access files or directories outside the working directory.")
         return "\n".join(lines)
 
-    def _prepare_sub_llm_sampling_args(self, state: State) -> dict[str, Any]:
-        sampling_args = dict(state.get("sampling_args") or {})
-        extra_body = sampling_args.get("extra_body")
-        if isinstance(extra_body, dict):
-            sampling_args["extra_body"] = dict(extra_body)
-        sampling_args = _normalize_sampling_args_for_model_call(sampling_args, "chat")
-        return sampling_args
-
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
     ) -> dict:
@@ -3081,8 +3023,10 @@ class RLMEnv(vf.StatefulToolEnv):
         tools: list | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
-        normalized_messages = _normalize_message_content(messages)
-        sampling_args = self._prepare_sub_llm_sampling_args(state)
+        sampling_args = dict(state.get("sampling_args") or {})
+        extra_body = sampling_args.get("extra_body")
+        if isinstance(extra_body, dict):
+            sampling_args["extra_body"] = dict(extra_body)
 
         try:
             # Use a minimal state with an empty trajectory so get_model_response
@@ -3099,11 +3043,9 @@ class RLMEnv(vf.StatefulToolEnv):
             return await asyncio.wait_for(
                 self.get_model_response(
                     prompt_state,
-                    normalized_messages,
+                    messages,
                     client=client,
                     model=model,
-                    oai_tools=tools,
-                    sampling_args=sampling_args,
                     message_type="chat",
                 ),
                 timeout=self.sub_llm_api_timeout,
@@ -3173,14 +3115,13 @@ class RLMEnv(vf.StatefulToolEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            normalized_messages = _normalize_message_content(current_messages)
-            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in normalized_messages]
+            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
 
             response = await self._call_sub_llm_api(
                 state,
                 client,
                 model,
-                normalized_messages,
+                current_messages,
                 tools,
             )
             if response is None:
@@ -3246,13 +3187,12 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         )
 
-        normalized_messages = _normalize_message_content(current_messages)
-        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in normalized_messages]
+        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
         response = await self._call_sub_llm_api(
             state,
             client,
             model,
-            normalized_messages,
+            current_messages,
         )
         if response is None:
             return self._make_timeout_result(
@@ -3304,26 +3244,8 @@ class RLMEnv(vf.StatefulToolEnv):
         def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
             if isinstance(prompt, str):
                 return [cast(ChatMessage, {"role": "user", "content": prompt})]
-            if isinstance(prompt, dict):
-                if "role" in prompt and "content" in prompt:
-                    return [cast(ChatMessage, prompt)]
-                raise ValueError(
-                    "llm_batch prompt at index "
-                    + str(index)
-                    + " must be a string or message dict with 'role' and 'content'."
-                )
-            if isinstance(prompt, (list, tuple)):
-                if all(isinstance(item, dict) for item in prompt):
-                    return [cast(ChatMessage, item) for item in prompt]
-                raise ValueError(
-                    "llm_batch prompt at index "
-                    + str(index)
-                    + " must be a list of message dicts."
-                )
             raise ValueError(
-                "llm_batch prompt at index "
-                + str(index)
-                + " must be a string, message dict, or list of message dicts."
+                "llm_batch prompt at index " + str(index) + " must be a string."
             )
 
         async def _call_one(index: int, prompt: Any) -> None:
