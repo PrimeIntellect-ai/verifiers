@@ -51,7 +51,6 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
