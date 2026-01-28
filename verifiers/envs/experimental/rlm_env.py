@@ -21,7 +21,6 @@ Key features:
 """
 
 import asyncio
-import functools
 import base64
 import contextvars
 import inspect
@@ -52,14 +51,11 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai import AsyncOpenAI, BadRequestError
-from openai.types.chat import ChatCompletion, ChatCompletionFunctionToolParam
-from openai.types.chat.chat_completion import Choice
-from openai.types.completion_choice import CompletionChoice
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
-    ChatCompletionToolParam,
     ChatMessage,
     ChatMessages,
     Messages,
@@ -72,16 +68,12 @@ from verifiers.types import (
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
-from verifiers.utils.message_utils import strip_nones_from_content
 from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.token_utils import (
-    prepare_sampling_args_for_token_prompts,
-)
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
 import verifiers.utils.rlm_filesystem_jail as rlm_jail_module
 from verifiers.envs.sandbox_env import CreateSandboxRequest
@@ -202,186 +194,6 @@ def _normalize_message_content(
                 msg_copy["content"] = [content]
         normalized.append(cast(ChatMessage, msg_copy))
     return normalized
-
-
-def _validate_model_response(
-    response: ModelResponse, message_type: MessageType
-) -> None:
-    if response is None:
-        raise vf.EmptyModelResponseError("Model returned no response")
-    if response.choices is None:
-        raise vf.EmptyModelResponseError("Model returned no response choices")
-    if not len(response.choices) == 1:
-        raise vf.InvalidModelResponseError(
-            f"Model returned {len(response.choices)} choices, expected 1"
-        )
-    if isinstance(response.choices[0], Choice):
-        if not (
-            response.choices[0].message.content
-            or response.choices[0].message.tool_calls
-        ):
-            raise vf.EmptyModelResponseError(
-                "Model returned no content and did not call any tools"
-            )
-    elif isinstance(response.choices[0], CompletionChoice):
-        if not response.choices[0].text:
-            raise vf.EmptyModelResponseError("Model returned no content")
-
-
-async def _call_rlm_model_api(
-    *,
-    client: AsyncOpenAI,
-    model: str,
-    prompt: Messages,
-    oai_tools: list[ChatCompletionToolParam] | None,
-    sampling_args: SamplingArgs,
-    message_type: MessageType,
-    prompt_ids: list[int] | None = None,
-) -> ModelResponse:
-    """RLM-local model caller to avoid core Environment changes.
-
-    We replicate Environment.get_model_response’s request/validation logic here to:
-    1) keep sub-LLM call behavior aligned with main-model expectations, and
-    2) avoid introducing RLM concepts into core verifiers.
-
-    This duplication is intentional until a broader refactor is agreed upon.
-    """
-
-    def handle_overlong_prompt(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                if isinstance(e, BadRequestError):
-                    error_text = e.response.text.lower()
-                    context_length_phrases = [
-                        "this model's maximum context length is",
-                        "is longer than the model's context length",
-                        "exceeds the model's context length",
-                        "exceed the configured limit",
-                        "exceeds the configured limit",
-                        "exceeded model",
-                    ]
-                    if any(phrase in error_text for phrase in context_length_phrases):
-                        raise vf.OverlongPromptError from e
-                raise vf.ModelError from e
-
-        return wrapper
-
-    @handle_overlong_prompt
-    async def call_with_messages(
-        *,
-        client: AsyncOpenAI,
-        model: str,
-        prompt: Messages,
-        oai_tools: list[ChatCompletionToolParam] | None,
-        sampling_args: SamplingArgs,
-        message_type: MessageType,
-    ) -> ModelResponse:
-        if message_type == "chat":
-            assert isinstance(prompt, list)
-            prompt = _normalize_message_content(cast(ChatMessages, prompt))
-            prompt = strip_nones_from_content(prompt)
-
-            has_audio = False
-            try:
-                for msg in prompt:
-                    content = msg.get("content")
-                    if isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and str(
-                                part.get("type", "")
-                            ).startswith("input_audio"):
-                                has_audio = True
-                                break
-                    if has_audio:
-                        break
-            except Exception:
-                has_audio = False
-            if has_audio and "modalities" not in sampling_args:
-                sampling_args = {
-                    **sampling_args,
-                    "modalities": ["text"],
-                }
-
-            if oai_tools:
-                return await client.chat.completions.create(
-                    model=model,
-                    messages=prompt,
-                    tools=oai_tools,
-                    **sampling_args,
-                )
-            return await client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                **sampling_args,
-            )
-
-        if oai_tools:
-            raise ValueError("oai_tools are not supported for completion tasks.")
-        assert isinstance(prompt, str)
-        return await client.completions.create(
-            model=model, prompt=prompt, **sampling_args
-        )
-
-    @handle_overlong_prompt
-    async def call_with_tokens(
-        *,
-        client: AsyncOpenAI,
-        model: str,
-        prompt: Messages,
-        prompt_ids: list[int],
-        oai_tools: list[ChatCompletionToolParam] | None,
-        sampling_args: SamplingArgs,
-        message_type: MessageType,
-    ) -> ModelResponse:
-        assert message_type == "chat", (
-            "token prompts are only supported for chat tasks."
-        )
-        assert isinstance(prompt, list)
-        prompt = _normalize_message_content(cast(ChatMessages, prompt))
-        prompt = strip_nones_from_content(prompt)
-
-        extra_body = sampling_args.pop("extra_body", {})
-        body = dict(
-            model=model,
-            messages=prompt,
-            tools=oai_tools,
-            tokens=prompt_ids,
-            **sampling_args,
-            **extra_body,
-        )
-
-        return await client.post(
-            "/chat/completions/tokens",
-            body=body,
-            cast_to=ChatCompletion,
-        )
-
-    sampling_args = dict(sampling_args)
-    if prompt_ids is not None:
-        response = await call_with_tokens(
-            client=client,
-            model=model,
-            prompt=prompt,
-            prompt_ids=prompt_ids,
-            oai_tools=oai_tools,
-            sampling_args=sampling_args,
-            message_type=message_type,
-        )
-    else:
-        response = await call_with_messages(
-            client=client,
-            model=model,
-            prompt=prompt,
-            oai_tools=oai_tools,
-            sampling_args=sampling_args,
-            message_type=message_type,
-        )
-
-    _validate_model_response(response, message_type)
-    return response
 
 
 class RLMCodeExecutionTimeout(Exception):
@@ -3240,8 +3052,6 @@ class RLMEnv(vf.StatefulToolEnv):
         if isinstance(extra_body, dict):
             sampling_args["extra_body"] = dict(extra_body)
         sampling_args = _normalize_sampling_args_for_model_call(sampling_args, "chat")
-        if self.include_sub_llm_in_trajectory:
-            sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
         return sampling_args
 
     async def _call_sub_tool(
@@ -3276,11 +3086,23 @@ class RLMEnv(vf.StatefulToolEnv):
         sampling_args = self._prepare_sub_llm_sampling_args(state)
 
         try:
+            # Use a minimal state with an empty trajectory so get_model_response
+            # never tries to compute interleaved prompt_ids from the main rollout.
+            # Sub-LLM prompts are independent tool calls, not continuations of the
+            # root conversation; using the real state would treat them as such.
+            # We also mirror sampling_args/oai_tools onto the fake state because
+            # get_model_response falls back to state values when args are falsy
+            # (e.g., {} or None), which would otherwise raise KeyError.
+            prompt_state = State()
+            prompt_state["trajectory"] = []
+            prompt_state["sampling_args"] = sampling_args
+            prompt_state["oai_tools"] = tools or []
             return await asyncio.wait_for(
-                _call_rlm_model_api(
+                self.get_model_response(
+                    prompt_state,
+                    normalized_messages,
                     client=client,
                     model=model,
-                    prompt=normalized_messages,
                     oai_tools=tools,
                     sampling_args=sampling_args,
                     message_type="chat",
