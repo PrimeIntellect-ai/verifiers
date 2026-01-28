@@ -119,7 +119,7 @@ class RolloutInput(TypedDict):
 ### RolloutOutput
 
 ```python
-class RolloutOutput(TypedDict):
+class RolloutOutput(dict):
     # Required fields
     example_id: int
     task: str
@@ -135,9 +135,11 @@ class RolloutOutput(TypedDict):
     info: Info
     error: str | None
     stop_condition: str | None
+    trajectory: list[TrajectoryStep]
+    oai_tools: list[ChatCompletionToolParam]
 ```
 
-Serialized output from a rollout. This is the JSON-serializable representation of a `State` object, used in `GenerateOutputs` and for saving results to disk. Additional fields from `state_columns` may also be present.
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
 
 ### TrajectoryStep
 
