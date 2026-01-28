@@ -22,7 +22,6 @@ from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
-from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable
 
 
@@ -589,7 +588,7 @@ class EvalDisplay(BaseDisplay):
             completion_text = _format_messages(completion)
             if error_0 is not None:
                 completion_text.append("\n\nerror: ", style="bold red")
-                completion_text.append(str(ErrorChain(error_0)), style="bold red")
+                completion_text.append(error_0, style="bold red")
             completion_text.append("\n\nreward: ", style="bold cyan")
             completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 
