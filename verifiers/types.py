@@ -11,7 +11,7 @@ from typing import (
     TypeAlias,
 )
 
-from .errors import Error
+from verifiers.errors import Error
 
 if TYPE_CHECKING:
     from datasets import Dataset
