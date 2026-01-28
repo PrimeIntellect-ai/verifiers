@@ -2765,10 +2765,6 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return api_timeout, worker_timeout
 
-    def _record_stop_error(self, state: State, exc: Exception) -> None:
-        state["error"] = str(exc)
-        state["_rlm_stop_error"] = exc
-
     def _build_fixed_root_tools(self) -> list[Callable]:
         """Return the fixed root REPL tools (non-overridable)."""
 
@@ -3013,7 +3009,7 @@ class RLMEnv(vf.StatefulToolEnv):
             }
         except Exception as e:
             if self._should_stop_for_error(e):
-                self._record_stop_error(state, e)
+                state["_rlm_stop_error"] = e
                 raise
             return {
                 "role": "tool",
@@ -3560,7 +3556,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 print_lines = None
         except Exception as e:
             if self._should_stop_for_error(e):
-                self._record_stop_error(state_ref, e)
+                state_ref["_rlm_stop_error"] = e
             return web.json_response({"error": str(e)}, status=500)
         finally:
             self._root_tool_context_var.reset(token)
@@ -3615,7 +3611,7 @@ class RLMEnv(vf.StatefulToolEnv):
             return web.json_response(response_dict)
         except Exception as e:
             if self._should_stop_for_error(e):
-                self._record_stop_error(state_ref, e)
+                state_ref["_rlm_stop_error"] = e
             return web.json_response({"error": str(e)}, status=500)
 
     async def _teardown_interception_server(self):
