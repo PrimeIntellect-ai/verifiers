@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import tenacity as tc
+
 try:
     import tomllib  # type: ignore[unresolved-import]
 except ImportError:
@@ -255,16 +257,48 @@ class HarborEnv(vf.CliAgentEnv):
             return 0.0
 
         sandbox_client = AsyncSandboxClient()
+
+        def _is_retryable(exc: Exception) -> bool:
+            msg = str(exc).lower()
+            return (
+                "sandbox_not_ready" in msg
+                or "sandbox is not ready" in msg
+                or "sandbox is no longer running" in msg
+            )
+
+        # Use tenacity for transient sandbox readiness issues (seen as HTTP 409s).
+        retry_upload = tc.AsyncRetrying(
+            stop=tc.stop_after_attempt(6),
+            wait=tc.wait_exponential_jitter(
+                initial=1.0, exp_base=2, max=20.0, jitter=0.2
+            ),
+            retry=tc.retry_if_exception(_is_retryable),
+            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        ).wraps
+
+        retry_short = tc.AsyncRetrying(
+            stop=tc.stop_after_attempt(3),
+            wait=tc.wait_exponential_jitter(
+                initial=1.0, exp_base=2, max=10.0, jitter=0.2
+            ),
+            retry=tc.retry_if_exception(_is_retryable),
+            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        ).wraps
+
         try:
-            # Upload test assets now that agent has completed
-            await self.upload_test_assets(sandbox_client, sandbox_id, task_dir)
+            # Upload test assets now that agent has completed (retry if sandbox not ready)
+            await retry_upload(self.upload_test_assets)(
+                sandbox_client, sandbox_id, task_dir
+            )
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
-            await sandbox_client.execute_command(
+            await retry_short(sandbox_client.execute_command)(
                 sandbox_id, "bash test.sh", working_dir="/tests"
             )
 
-            reward_result = await sandbox_client.execute_command(
+            reward_result = await retry_short(sandbox_client.execute_command)(
                 sandbox_id,
                 "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
                 "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
