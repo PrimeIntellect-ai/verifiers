@@ -109,7 +109,7 @@ vf-init new-environment
 
 # Install + test
 prime env install new-environment
-prime eval run new-environment -n 5 -m gpt-4.1-mini
+prime eval run new-environment -n 5 -m openai/gpt-4.1-mini
 ```
 
 ### Requirements
