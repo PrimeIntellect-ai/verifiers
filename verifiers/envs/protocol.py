@@ -139,12 +139,23 @@ class Protocol:
             state["extras"]["parent_episode_id"] = "spawned"
 
         # Score rollouts if requested
+        # Use score_group() instead of score_rollout() to properly handle:
+        # - MultiAgentRubric per-actor reward functions
+        # - GRPO advantage computation per-actor group
         if score:
             score_sem = await maybe_semaphore(-1)
+            # Group states by environment for proper score_group() semantics
+            states_by_env: dict[str, list[State]] = {}
             for inp, state in zip(inputs, all_states):
                 env_name = inp.get("task")
+                if env_name not in states_by_env:
+                    states_by_env[env_name] = []
+                states_by_env[env_name].append(state)
+
+            # Score each group with its environment's rubric
+            for env_name, env_states in states_by_env.items():
                 env = self.get_env(env_name)
                 if env.rubric:
-                    await env.rubric.score_rollout(state, score_sem=score_sem)
+                    await env.rubric.score_group(env_states, score_sem=score_sem)
 
         return list(all_states)
