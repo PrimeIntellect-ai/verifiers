@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, TypeVar
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict, SkipValidation
 
 from verifiers.types import (
     ClientConfig,
@@ -15,11 +15,14 @@ CoercedRolloutOutput = Annotated[
 
 
 class BaseRequest(BaseModel):
+    # needed for RolloutInput to work
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     request_type: str
 
 
 class BaseResponse(BaseModel):
-    # needed for RolloutInput and RolloutOutput to work
+    # needed for RolloutOutput to work
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool = True
@@ -36,7 +39,9 @@ class HealthResponse(BaseResponse): ...
 class RunRolloutRequest(BaseRequest):
     request_type: Literal["run_rollout"] = "run_rollout"  # type: ignore[override]
 
-    input: RolloutInput
+    # skip validation because multi-modal content type + tool calls validate weirdly
+    # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
+    input: SkipValidation[RolloutInput]
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
@@ -51,7 +56,9 @@ class RunRolloutResponse(BaseResponse):
 class RunGroupRequest(BaseRequest):
     request_type: Literal["run_group"] = "run_group"  # type: ignore[override]
 
-    group_inputs: list[RolloutInput]
+    # skip validation because multi-modal content type + tool calls validate weirdly
+    # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
+    group_inputs: SkipValidation[list[RolloutInput]]
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
