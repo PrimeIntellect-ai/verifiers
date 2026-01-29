@@ -156,7 +156,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         state["sandbox_id"] = sandbox.id
         self.active_sandboxes.add(sandbox.id)
         logger.debug(f"Created sandbox {sandbox.id}")
-        await sandbox_client.wait_for_creation(sandbox.id)
+        await sandbox_client.wait_for_creation(sandbox.id, max_attempts=120)
 
         await self.post_sandbox_setup(state, sandbox_client)
 
