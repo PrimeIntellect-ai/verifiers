@@ -3,12 +3,12 @@
 import logging
 import os
 from typing import Any, Literal
+
 import verifiers as vf
-from verifiers.utils.async_utils import maybe_await
 
 from .modes.base import BrowserMode
-from .modes.dom_mode import DOMMode
 from .modes.cua_mode import CUAMode
+from .modes.dom_mode import DOMMode
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +49,10 @@ class BrowserEnv(vf.StatefulToolEnv):
         self,
         mode: ModeType = "dom",
         # Shared config
-        browserbase_api_key: str | None = None,
-        browserbase_project_id: str | None = None,
+        project_id: str | None = None,
+        browserbase_api_key_var: str = "BROWSERBASE_API_KEY",
         # DOM mode specific
-        model_api_key: str | None = None,
+        model_api_key_var: str = "MODEL_API_KEY",
         stagehand_model: str = "openai/gpt-4o-mini",
         proxy_model_to_stagehand: bool = False,
         # CUA mode specific
@@ -87,9 +87,9 @@ class BrowserEnv(vf.StatefulToolEnv):
 
         Args:
             mode: Operating mode - "dom" for natural language or "cua" for vision-based
-            browserbase_api_key: Browserbase API key (or set BROWSERBASE_API_KEY env var)
-            browserbase_project_id: Browserbase project ID (or set BROWSERBASE_PROJECT_ID env var)
-            model_api_key: Model API key for DOM mode (or set MODEL_API_KEY env var)
+            project_id: Browserbase project ID
+            browserbase_api_key_var: Env var name for Browserbase API key (default: BROWSERBASE_API_KEY)
+            model_api_key_var: Env var name for model API key (default: MODEL_API_KEY)
             stagehand_model: Model for Stagehand in DOM mode (default: openai/gpt-4o-mini)
             proxy_model_to_stagehand: Whether to proxy model calls through Stagehand
             use_sandbox: For CUA mode, auto-deploy server to sandbox (default: True)
@@ -117,22 +117,12 @@ class BrowserEnv(vf.StatefulToolEnv):
         """
         super().__init__(**kwargs)
         self.mode = mode
-
-        # Validate required environment variables before proceeding
-        self._validate_environment_variables(
-            mode=mode,
-            env=env,
-            use_sandbox=use_sandbox,
-            browserbase_api_key=browserbase_api_key,
-            browserbase_project_id=browserbase_project_id,
-            model_api_key=model_api_key,
-        )
-
-        # Initialize the appropriate mode strategy
+        browserbase_api_key = os.getenv(browserbase_api_key_var)
+        model_api_key = os.getenv(model_api_key_var)
         if mode == "dom":
             self._mode_impl: BrowserMode = DOMMode(
                 browserbase_api_key=browserbase_api_key,
-                project_id=browserbase_project_id,
+                project_id=project_id,
                 model_api_key=model_api_key,
                 stagehand_model=stagehand_model,
                 proxy_model_to_stagehand=proxy_model_to_stagehand,
@@ -140,14 +130,13 @@ class BrowserEnv(vf.StatefulToolEnv):
                 advanced_stealth=advanced_stealth,
             )
         elif mode == "cua":
-            # Unified CUAMode with execution_mode parameter
             self._mode_impl = CUAMode(
                 execution_mode="sandbox" if use_sandbox else "local",
                 server_url=server_url,
                 server_port=server_port,
                 env=env,
                 browserbase_api_key=browserbase_api_key,
-                browserbase_project_id=browserbase_project_id,
+                browserbase_project_id=project_id,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
                 save_screenshots=save_screenshots,
@@ -169,64 +158,13 @@ class BrowserEnv(vf.StatefulToolEnv):
         else:
             raise ValueError(f"Unknown mode: {mode}. Must be 'dom' or 'cua'")
 
-        # Register mode-specific tools
         self._mode_impl.register_tools(self)
-
-        # Log configuration
         if mode == "dom":
             logger.info(
                 f"BrowserEnv initialized in DOM mode with stagehand_model='{stagehand_model}'"
             )
         else:
             logger.info("BrowserEnv initialized in CUA mode")
-
-    def _validate_environment_variables(
-        self,
-        mode: str,
-        env: str,
-        use_sandbox: bool,
-        browserbase_api_key: str | None,
-        browserbase_project_id: str | None,
-        model_api_key: str | None,
-    ) -> None:
-        """
-        Validate that required environment variables are set before initialization.
-
-        Raises:
-            ValueError: If required environment variables are missing.
-        """
-        missing_vars = []
-
-        # Check Browserbase credentials for DOM mode or CUA+BROWSERBASE
-        if mode == "dom" or (mode == "cua" and env == "BROWSERBASE"):
-            resolved_api_key = browserbase_api_key or os.getenv("BROWSERBASE_API_KEY")
-            resolved_project_id = browserbase_project_id or os.getenv(
-                "BROWSERBASE_PROJECT_ID"
-            )
-
-            if not resolved_api_key:
-                missing_vars.append("BROWSERBASE_API_KEY")
-            if not resolved_project_id:
-                missing_vars.append("BROWSERBASE_PROJECT_ID")
-
-        # Check MODEL_API_KEY for DOM mode (used by Stagehand)
-        if mode == "dom":
-            resolved_model_key = model_api_key or os.getenv("MODEL_API_KEY")
-            if not resolved_model_key:
-                missing_vars.append("MODEL_API_KEY")
-
-        if missing_vars:
-            mode_desc = f"mode='{mode}'"
-            if mode == "cua":
-                mode_desc += f", env='{env}'"
-                if use_sandbox:
-                    mode_desc += ", use_sandbox=True"
-
-            raise ValueError(
-                f"Missing required environment variables for BrowserEnv ({mode_desc}):\n"
-                f"  {', '.join(missing_vars)}\n\n"
-                f"Please set these variables in your environment or .env file."
-            )
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Delegate session creation to the mode strategy."""
@@ -263,83 +201,3 @@ class BrowserEnv(vf.StatefulToolEnv):
         """Clean up resources on environment teardown."""
         if hasattr(self, "_mode_impl") and self._mode_impl is not None:
             await self._mode_impl.teardown()
-
-    # ==================== CUA Mode Specific Overrides ====================
-
-    async def call_tool(
-        self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> vf.Message | list[vf.Message]:
-        """
-        Call a tool, preserving multipart content for CUA mode images.
-
-        In CUA mode, tools return list[dict] with text and image_url content.
-        This override ensures the multipart structure is preserved.
-        """
-        if self.mode == "dom":
-            # DOM mode uses default string handling
-            return await super().call_tool(tool_name, tool_args, tool_call_id, **kwargs)
-
-        # CUA mode: preserve multipart content
-        try:
-            tool_func = self.tool_map[tool_name]
-            tool_args_with_id = {**tool_args, "tool_call_id": tool_call_id}
-            result = await maybe_await(tool_func, **tool_args_with_id)
-
-            if isinstance(result, list):
-                # Extract text parts for tool response
-                text_parts = [
-                    str(item.get("text", ""))
-                    for item in result
-                    if isinstance(item, dict) and item.get("type") == "text"
-                ]
-                text_content = "\n".join([t for t in text_parts if t]) or "[no text]"
-                tool_messages: list[vf.Message] = [
-                    {
-                        "role": "tool",
-                        "content": text_content,
-                        "tool_call_id": tool_call_id,
-                    },
-                    {
-                        "role": "user",
-                        "content": result,
-                    },
-                ]
-            else:
-                tool_messages = [
-                    {
-                        "role": "tool",
-                        "content": str(result),
-                        "tool_call_id": tool_call_id,
-                    }
-                ]
-
-            return tool_messages
-
-        except Exception as e:
-            return {
-                "role": "tool",
-                "content": self.error_formatter(e),
-                "tool_call_id": tool_call_id,
-            }
-
-    async def env_response(
-        self, messages: vf.Messages, state: vf.State, **kwargs
-    ) -> vf.Messages:
-        """
-        Handle environment response for tool calls.
-
-        Note: Screenshot filtering is handled in get_prompt_messages() to ensure
-        filtering applies to the actual prompt sent to the model.
-        """
-        tool_messages = await super().env_response(messages, state, **kwargs)
-        if not isinstance(tool_messages, list):
-            return tool_messages
-
-        # Flatten nested message lists
-        flattened: list[vf.Message] = []
-        for msg in tool_messages:
-            if isinstance(msg, list):
-                flattened.extend(msg)
-            else:
-                flattened.append(msg)
-        return flattened

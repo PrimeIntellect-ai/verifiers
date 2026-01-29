@@ -7,7 +7,7 @@ from .dom_mode import DOMMode
 from .cua_mode import CUAMode, SANDBOX_AVAILABLE
 
 
-def CUASandboxMode(*args, **kwargs):
+def CUASandboxMode(**kwargs):
     """
     Deprecated: Use CUAMode(execution_mode='sandbox') instead.
 
@@ -19,7 +19,8 @@ def CUASandboxMode(*args, **kwargs):
         DeprecationWarning,
         stacklevel=2,
     )
-    return CUAMode(*args, execution_mode="sandbox", **kwargs)
+    kwargs.pop("execution_mode", None)
+    return CUAMode(execution_mode="sandbox", **kwargs)
 
 
 __all__ = ["BrowserMode", "DOMMode", "CUAMode", "CUASandboxMode", "SANDBOX_AVAILABLE"]

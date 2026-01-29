@@ -36,3 +36,7 @@ class BrowserMode(Protocol):
     async def teardown(self) -> None:
         """Clean up resources on environment teardown."""
         ...
+
+    def filter_screenshots_in_messages(self, messages: list) -> list:
+        """Filter screenshots in messages. Optional - defaults to returning messages unchanged."""
+        ...

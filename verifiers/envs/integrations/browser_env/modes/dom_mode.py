@@ -91,7 +91,7 @@ class DOMMode:
             }
         browserbase_params = browserbase_params or None
 
-        session = await self.stagehand_client.sessions.create(
+        session = await self.stagehand_client.sessions.create(  # type: ignore[attr-defined]
             model_name=self.stagehand_model,
             browserbase_session_create_params=browserbase_params,
         )
@@ -166,6 +166,10 @@ class DOMMode:
             except Exception:
                 pass
             self.stagehand_client = None
+
+    def filter_screenshots_in_messages(self, messages: list) -> list:
+        """DOM mode doesn't use screenshots, return messages unchanged."""
+        return messages
 
     # ==================== Tool Methods ====================
 

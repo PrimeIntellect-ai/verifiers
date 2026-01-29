@@ -133,9 +133,10 @@ class ToolEnv(vf.MultiTurnEnv):
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
+        content = result if isinstance(result, list) else str(result)
         return cast(
             vf.Message,
-            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
         )
 
     async def env_response(

@@ -19,96 +19,7 @@ pytest.importorskip("stagehand", reason="verifiers[browser] extra not installed"
 
 
 class TestBrowserEnvValidation:
-    """Tests for environment variable validation in BrowserEnv."""
-
-    def test_dom_mode_missing_browserbase_api_key_raises(self):
-        """Test that DOM mode raises when BROWSERBASE_API_KEY is missing."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ValueError, match="BROWSERBASE_API_KEY"):
-                BrowserEnv(
-                    mode="dom",
-                    dataset=Dataset.from_dict(
-                        {"question": ["test"], "answer": ["test"]}
-                    ),
-                )
-
-    def test_dom_mode_missing_browserbase_project_id_raises(self):
-        """Test that DOM mode raises when BROWSERBASE_PROJECT_ID is missing."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        with patch.dict(os.environ, {"BROWSERBASE_API_KEY": "test-key"}, clear=True):
-            with pytest.raises(ValueError, match="BROWSERBASE_PROJECT_ID"):
-                BrowserEnv(
-                    mode="dom",
-                    dataset=Dataset.from_dict(
-                        {"question": ["test"], "answer": ["test"]}
-                    ),
-                )
-
-    def test_dom_mode_missing_model_api_key_raises(self):
-        """Test that DOM mode raises when MODEL_API_KEY is missing."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        with patch.dict(
-            os.environ,
-            {"BROWSERBASE_API_KEY": "test-key", "BROWSERBASE_PROJECT_ID": "test-proj"},
-            clear=True,
-        ):
-            with pytest.raises(ValueError, match="MODEL_API_KEY"):
-                BrowserEnv(
-                    mode="dom",
-                    dataset=Dataset.from_dict(
-                        {"question": ["test"], "answer": ["test"]}
-                    ),
-                )
-
-    def test_cua_local_mode_no_browserbase_required(self):
-        """Test that CUA LOCAL mode doesn't require Browserbase credentials."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        # CUA LOCAL mode should not raise for missing Browserbase keys
-        # but will fail at server health check - we just test validation passes
-        with patch.dict(os.environ, {}, clear=True):
-            # Mock the server health check to avoid network call
-            with patch(
-                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
-            ):
-                # This should NOT raise ValueError about missing env vars
-                # use_sandbox=False to use local CUA mode
-                try:
-                    env = BrowserEnv(
-                        mode="cua",
-                        env="LOCAL",
-                        use_sandbox=False,
-                        dataset=Dataset.from_dict(
-                            {"question": ["test"], "answer": ["test"]}
-                        ),
-                    )
-                    assert env.mode == "cua"
-                except ValueError as e:
-                    # Should not be about missing env vars for LOCAL mode
-                    assert "BROWSERBASE" not in str(e)
-
-    def test_cua_browserbase_mode_requires_credentials(self):
-        """Test that CUA BROWSERBASE mode requires Browserbase credentials."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        with patch.dict(os.environ, {}, clear=True):
-            with patch(
-                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
-            ):
-                # Both sandbox and local mode require credentials for BROWSERBASE
-                with pytest.raises(ValueError, match="BROWSERBASE_API_KEY"):
-                    BrowserEnv(
-                        mode="cua",
-                        env="BROWSERBASE",
-                        use_sandbox=False,
-                        dataset=Dataset.from_dict(
-                            {"question": ["test"], "answer": ["test"]}
-                        ),
-                    )
+    """Tests for BrowserEnv validation."""
 
     def test_invalid_mode_raises(self):
         """Test that an invalid mode raises ValueError."""
@@ -116,16 +27,13 @@ class TestBrowserEnvValidation:
 
         with patch.dict(
             os.environ,
-            {
-                "BROWSERBASE_API_KEY": "test",
-                "BROWSERBASE_PROJECT_ID": "test",
-                "MODEL_API_KEY": "test",
-            },
+            {"BROWSERBASE_API_KEY": "test", "MODEL_API_KEY": "test"},
             clear=True,
         ):
             with pytest.raises(ValueError, match="Unknown mode"):
                 BrowserEnv(
                     mode="invalid",
+                    project_id="test",
                     dataset=Dataset.from_dict(
                         {"question": ["test"], "answer": ["test"]}
                     ),
@@ -156,11 +64,12 @@ class TestCUAModeInit:
 
         with patch.dict(
             os.environ,
-            {"BROWSERBASE_API_KEY": "test", "BROWSERBASE_PROJECT_ID": "test"},
+            {"BROWSERBASE_API_KEY": "test"},
             clear=True,
         ):
             env = BrowserEnv(
                 mode="cua",
+                project_id="test",
                 use_sandbox=True,
                 env="BROWSERBASE",
                 dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),

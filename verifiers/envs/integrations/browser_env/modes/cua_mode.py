@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 import aiohttp
 import tenacity as tc
+from tenacity import AsyncRetrying
 import verifiers as vf
 
 
@@ -30,10 +31,10 @@ try:
     SANDBOX_AVAILABLE = True
 except ImportError:
     SANDBOX_AVAILABLE = False
-    AsyncSandboxClient = None
-    CreateSandboxRequest = None
-    SandboxClient = None
-    APIClient = None
+    AsyncSandboxClient = None  # type: ignore[misc, assignment]
+    CreateSandboxRequest = None  # type: ignore[misc, assignment]
+    SandboxClient = None  # type: ignore[misc, assignment]
+    APIClient = None  # type: ignore[misc, assignment]
 
 
 class CUAMode:
@@ -148,7 +149,7 @@ class CUAMode:
         self.backoff_factor = backoff_factor
         self.max_backoff_seconds = max_backoff_seconds
         self.jitter = jitter
-        self.with_retry = None  # Will be set in register_tools
+        self.retrying: AsyncRetrying | None = None
 
         # Local mode specific
         self.server_url = server_url.rstrip("/")
@@ -218,7 +219,7 @@ class CUAMode:
         self.logger = env.logger
 
         # Set up retry now that we have logger
-        self.with_retry = tc.AsyncRetrying(
+        self.retrying = tc.AsyncRetrying(
             stop=tc.stop_after_attempt(self.max_retries),
             wait=tc.wait_exponential_jitter(
                 initial=self.base_delay,
@@ -228,7 +229,7 @@ class CUAMode:
             ),
             before_sleep=tc.before_sleep_log(self.logger, logging.ERROR),
             reraise=True,
-        ).wraps
+        )
 
         # Hide internal args from tool schema
         _skip = ["session_id", "sandbox_id", "tool_call_id"]
@@ -360,7 +361,7 @@ class CUAMode:
     async def _create_sandbox(self) -> str:
         """Create a new sandbox and return its ID."""
         client = await self._get_sandbox_client()
-        sandbox = await client.create(self._sandbox_request.model_copy())
+        sandbox = await client.create(self._sandbox_request.model_copy())  # type: ignore[union-attr]
         self.active_sandboxes.add(sandbox.id)
         if self.logger:
             self.logger.debug(f"Created sandbox {sandbox.id}")
@@ -799,7 +800,9 @@ class CUAMode:
         """Create a browser session (and sandbox if in sandbox mode)."""
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
-            result = await self.with_retry(self._create_session_http)()
+            async for attempt in self.retrying:  # type: ignore[union-attr]
+                with attempt:
+                    result = await self._create_session_http()
             session_id = result.get("sessionId")
             if not session_id:
                 raise RuntimeError("Failed to get session ID from server response")
@@ -815,7 +818,9 @@ class CUAMode:
                 if self.logger:
                     self.logger.debug(f"Using prebuilt image: {self.prebuilt_image}")
 
-                sandbox_id = await self.with_retry(self._create_sandbox)()
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        sandbox_id = await self._create_sandbox()
                 await self._wait_for_sandbox_ready(sandbox_id)
                 state["cua_sandbox_id"] = sandbox_id
                 await self._wait_for_server(sandbox_id)
@@ -823,16 +828,18 @@ class CUAMode:
                 if self.use_binary:
                     await self._ensure_binary_exists()
 
-                sandbox_id = await self.with_retry(self._create_sandbox)()
+                async for attempt in self.retrying:  # type: ignore[union-attr]
+                    with attempt:
+                        sandbox_id = await self._create_sandbox()
                 await self._wait_for_sandbox_ready(sandbox_id)
                 state["cua_sandbox_id"] = sandbox_id
                 await self._upload_server_files(sandbox_id)
                 await self._start_server(sandbox_id)
                 await self._wait_for_server(sandbox_id)
 
-            result = await self.with_retry(
-                lambda: self._create_session_curl(sandbox_id)
-            )()
+            async for attempt in self.retrying:  # type: ignore[union-attr]
+                with attempt:
+                    result = await self._create_session_curl(sandbox_id)
             session_id = result.get("sessionId")
             if not session_id:
                 raise RuntimeError(
@@ -871,7 +878,9 @@ class CUAMode:
             # Local mode: destroy session via HTTP
             if session_id:
                 try:
-                    await self.with_retry(self._destroy_session_http)(session_id)
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            await self._destroy_session_http(session_id)
                     with self._sessions_lock:
                         self.active_sessions.discard(session_id)
                 except Exception as e:
@@ -885,9 +894,9 @@ class CUAMode:
 
             if session_id and sandbox_id:
                 try:
-                    await self.with_retry(
-                        lambda: self._destroy_session_curl(session_id, sandbox_id)
-                    )()
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            await self._destroy_session_curl(session_id, sandbox_id)
                     with self._sessions_lock:
                         self.active_sessions.discard(session_id)
                 except Exception as e:
@@ -898,7 +907,9 @@ class CUAMode:
 
             if sandbox_id:
                 try:
-                    await self.with_retry(lambda: self._delete_sandbox(sandbox_id))()
+                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                        with attempt:
+                            await self._delete_sandbox(sandbox_id)
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(
@@ -925,9 +936,9 @@ class CUAMode:
                 async def _delete_with_semaphore(session_id: str):
                     async with semaphore:
                         try:
-                            await self.with_retry(self._destroy_session_http)(
-                                session_id
-                            )
+                            async for attempt in self.retrying:  # type: ignore[union-attr]
+                                with attempt:
+                                    await self._destroy_session_http(session_id)
                             with self._sessions_lock:
                                 self.active_sessions.discard(session_id)
                         except Exception:

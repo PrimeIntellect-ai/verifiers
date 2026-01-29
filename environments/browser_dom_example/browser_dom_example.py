@@ -96,13 +96,13 @@ async def judge_answer(
 
 
 def load_environment(
+    project_id: str,
     max_turns: int = 10,
     judge_model: str = "gpt-4o-mini",
     system_prompt: str = DOM_SYSTEM_PROMPT,
-    browserbase_api_key: str | None = None,
-    browserbase_project_id: str | None = None,
+    browserbase_api_key_var: str = "BROWSERBASE_API_KEY",
     stagehand_model: str = "openai/gpt-4o-mini",
-    model_api_key: str | None = None,
+    model_api_key_var: str = "MODEL_API_KEY",
     proxy_model_to_stagehand: bool = False,
     **kwargs,
 ) -> vf.Environment:
@@ -118,10 +118,10 @@ def load_environment(
     Args:
         max_turns: Maximum conversation turns (default: 10)
         judge_model: Model for judging task completion
-        browserbase_api_key: Browserbase API key (or set BROWSERBASE_API_KEY env var)
-        browserbase_project_id: Browserbase project ID (or set BROWSERBASE_PROJECT_ID env var)
+        project_id: Browserbase project ID (required)
+        browserbase_api_key_var: Env var name for Browserbase API key
         stagehand_model: Model for Stagehand operations (default: openai/gpt-4o-mini)
-        model_api_key: API key for model calls (or set MODEL_API_KEY env var)
+        model_api_key_var: Env var name for model API key
         proxy_model_to_stagehand: Route Stagehand LLM calls through evaluation model
         **kwargs: Additional arguments passed to BrowserEnv
 
@@ -131,6 +131,22 @@ def load_environment(
     Example:
         >>> env = load_environment()
     """
+    import os
+
+    # Check required env vars upfront
+    missing = []
+    if not os.getenv(browserbase_api_key_var):
+        missing.append(browserbase_api_key_var)
+    if not os.getenv(model_api_key_var):
+        missing.append(model_api_key_var)
+
+    if missing:
+        raise ValueError(
+            f"Missing required environment variables for browser-dom-example:\n"
+            f"  {', '.join(missing)}\n\n"
+            f"Set these in your environment or .env file before running."
+        )
+
     # Create inline dataset
     dataset = create_example_dataset()
 
@@ -148,10 +164,10 @@ def load_environment(
         rubric=rubric,
         max_turns=max_turns,
         system_prompt=system_prompt,
-        browserbase_api_key=browserbase_api_key,
-        browserbase_project_id=browserbase_project_id,
+        project_id=project_id,
+        browserbase_api_key_var=browserbase_api_key_var,
         stagehand_model=stagehand_model,
-        model_api_key=model_api_key,
+        model_api_key_var=model_api_key_var,
         proxy_model_to_stagehand=proxy_model_to_stagehand,
         **kwargs,
     )
