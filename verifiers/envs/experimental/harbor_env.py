@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import tarfile
 import tempfile
 from pathlib import Path
@@ -31,12 +32,14 @@ class HarborEnv(vf.CliAgentEnv):
         agent_workdir: str = "/app",
         docker_image: str = "python:3.11-slim",
         verifier_timeout_seconds: float = -1,  # -1 = use task.toml [verifier].timeout_sec
+        capture_episode_artifacts: bool = False,
         **kwargs,
     ):
         self.dataset_path = Path(dataset_path)
         self.task_names = tasks
         self.agent_workdir = agent_workdir
         self.verifier_timeout_seconds = verifier_timeout_seconds
+        self.capture_episode_artifacts = capture_episode_artifacts
 
         kwargs["docker_image"] = docker_image
 
@@ -46,6 +49,86 @@ class HarborEnv(vf.CliAgentEnv):
         super().__init__(
             run_command=run_command, dataset=dataset, rubric=rubric, **kwargs
         )
+
+    async def _list_episode_dirs(self, sandbox_id: str) -> list[str]:
+        """List Terminus episode directories under /logs/agent."""
+        try:
+            result = await self.sandbox_client.execute_command(
+                sandbox_id,
+                "ls -1 /logs/agent 2>/dev/null | grep '^episode-' || true",
+                working_dir=None,
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list /logs/agent for {sandbox_id}: {e}")
+            return []
+
+        stdout = getattr(result, "stdout", "") or ""
+        episodes = [line.strip() for line in stdout.splitlines() if line.strip()]
+
+        def _sort_key(name: str):
+            try:
+                return int(name.split("-", 1)[1])
+            except Exception:
+                return name
+
+        return sorted(episodes, key=_sort_key)
+
+    async def _download_text_file(
+        self, sandbox_id: str, remote_path: str, timeout: int = 60
+    ) -> str | None:
+        """Download a sandbox file and return its text content (or None if missing)."""
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            local_path = Path(tmp_file.name)
+
+        try:
+            await self.sandbox_client.download_file(
+                sandbox_id, remote_path, str(local_path), timeout=timeout
+            )
+        except Exception as e:
+            logger.debug(f"Skipping {remote_path} for {sandbox_id}: {e}")
+            local_path.unlink(missing_ok=True)
+            return None
+
+        try:
+            return local_path.read_text(encoding="utf-8", errors="replace")
+        finally:
+            local_path.unlink(missing_ok=True)
+
+    async def capture_terminus_artifacts(self, state: vf.State) -> None:
+        """Capture Terminus per-episode artifacts from /logs/agent into state."""
+        if not self.capture_episode_artifacts:
+            return
+
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            return
+
+        episodes = await self._list_episode_dirs(sandbox_id)
+        prompts: dict[str, str | None] = {}
+        responses: dict[str, str | None] = {}
+        debugs: dict[str, str | None] = {}
+
+        for episode in episodes:
+            base = f"/logs/agent/{episode}"
+            prompts[episode] = await self._download_text_file(
+                sandbox_id, f"{base}/prompt.txt"
+            )
+            responses[episode] = await self._download_text_file(
+                sandbox_id, f"{base}/response.txt"
+            )
+            debugs[episode] = await self._download_text_file(
+                sandbox_id, f"{base}/debug.json"
+            )
+
+        trajectory = await self._download_text_file(
+            sandbox_id, "/logs/agent/trajectory.json"
+        )
+
+        state["terminus_episode_prompts"] = prompts
+        state["terminus_episode_responses"] = responses
+        state["terminus_episode_debug"] = debugs
+        state["terminus_trajectory_json"] = trajectory
 
     def load_harbor_dataset(self) -> Dataset:
         """Load Harbor tasks from dataset directory into a Dataset with prompts."""
@@ -116,6 +199,15 @@ class HarborEnv(vf.CliAgentEnv):
         timeout = config.get("verifier", {}).get("timeout_sec")
         return float(timeout) if timeout else 300.0  # task.toml or default
 
+    async def get_sandbox_timeout_minutes(self, state: vf.State) -> int:
+        """Get sandbox lifetime: user override > per-task agent+verifier (no buffer)."""
+        if self.timeout_minutes > 0:
+            return self.timeout_minutes  # User override
+        agent_timeout = await self.get_timeout_seconds(state)
+        verifier_timeout = await self.get_verifier_timeout_seconds(state)
+        total_seconds = agent_timeout + verifier_timeout
+        return max(1, math.ceil(total_seconds / 60.0))
+
     async def get_sandbox_request(
         self, state: vf.State, env_vars: dict[str, str], docker_image: str
     ):
@@ -140,6 +232,9 @@ class HarborEnv(vf.CliAgentEnv):
                 if str(storage).upper().endswith("G")
                 else int(storage)
             )
+
+        if self.timeout_minutes < 0:
+            updates["timeout_minutes"] = await self.get_sandbox_timeout_minutes(state)
 
         return request.model_copy(update=updates) if updates else request
 
@@ -241,6 +336,7 @@ class HarborEnv(vf.CliAgentEnv):
     async def post_rollout(self, state: vf.State):
         """Run Harbor tests to compute reward before sandbox destruction."""
         await super().post_rollout(state)
+        await self.capture_terminus_artifacts(state)
         state["reward"] = await self.compute_reward(state)
 
     async def harbor_reward(self, state: vf.State, **kwargs) -> float:
