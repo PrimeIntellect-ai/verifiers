@@ -6,6 +6,7 @@ This environment demonstrates:
 - Asymmetric actors (one trainable, one frozen)
 - Multiple stop conditions (win or max questions)
 - Fresh prompts per actor with different context
+- Different models per actor (small guesser vs large thinker)
 
 Game flow:
 1. Guesser receives category hint and asks first question
@@ -19,7 +20,24 @@ from datasets import Dataset
 
 from verifiers import Actor, MultiAgentEnv, MultiAgentRubric, Protocol
 from verifiers.types import Messages, State
+from verifiers.utils.client_utils import get_actor_client
 import verifiers as vf
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+# Change these to use different models for each actor.
+# Set to None to use the default model from the eval command.
+#
+# Small models: "olmo3-7b-i", "trinity-mini", "haiku", "gemini-3-flash"
+# Large models: "sonnet", "opus", "qwen3-235b-i", "gemini-3-pro"
+# =============================================================================
+
+THINKER_ENDPOINT = "qwen3-235b-i"  # Large model answers questions
+GUESSER_ENDPOINT = "olmo3-7b-i"   # Small model asks questions
+
+thinker_client, thinker_model = get_actor_client(THINKER_ENDPOINT)
+guesser_client, guesser_model = get_actor_client(GUESSER_ENDPOINT)
 
 
 # =============================================================================
@@ -42,6 +60,8 @@ Format your response as exactly one of:
 - No, try again""",
     max_tokens=20,
     is_trainable=False,
+    model=thinker_model,
+    client=thinker_client,
 )
 
 GUESSER = Actor(
@@ -58,6 +78,8 @@ Good strategy: Start broad (Is it alive? Is it man-made?) then narrow down.
 Format: Just ask your question directly.""",
     max_tokens=50,
     is_trainable=True,
+    model=guesser_model,
+    client=guesser_client,
 )
 
 

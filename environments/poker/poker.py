@@ -6,6 +6,7 @@ This environment demonstrates:
 - Complex state management (chips, pot, betting rounds)
 - Multi-phase gameplay (preflop, flop, turn, river, showdown)
 - JSON-structured action parsing
+- Different models per player (small vs large)
 
 Game flow:
 1. Post blinds (dealer=small blind, other=big blind)
@@ -30,7 +31,24 @@ from datasets import Dataset
 
 from verifiers import Actor, MultiAgentEnv, MultiAgentRubric, Protocol
 from verifiers.types import Messages, State
+from verifiers.utils.client_utils import get_actor_client
 import verifiers as vf
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+# Change these to use different models for each player.
+# Set to None to use the default model from the eval command.
+#
+# Small models: "olmo3-7b-i", "trinity-mini", "haiku", "gemini-3-flash"
+# Large models: "sonnet", "opus", "qwen3-235b-i", "gemini-3-pro"
+# =============================================================================
+
+PLAYER1_ENDPOINT = "olmo3-7b-i"   # Small model
+PLAYER2_ENDPOINT = "qwen3-235b-i" # Large model
+
+player1_client, player1_model = get_actor_client(PLAYER1_ENDPOINT)
+player2_client, player2_model = get_actor_client(PLAYER2_ENDPOINT)
 
 
 # =============================================================================
@@ -220,6 +238,8 @@ PLAYER1 = Actor(
     system_prompt=PLAYER_SYSTEM_PROMPT,
     max_tokens=50,
     is_trainable=True,
+    model=player1_model,
+    client=player1_client,
 )
 
 PLAYER2 = Actor(
@@ -227,6 +247,8 @@ PLAYER2 = Actor(
     system_prompt=PLAYER_SYSTEM_PROMPT,
     max_tokens=50,
     is_trainable=True,
+    model=player2_model,
+    client=player2_client,
 )
 
 

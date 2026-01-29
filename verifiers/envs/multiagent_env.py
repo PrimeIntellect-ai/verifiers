@@ -308,11 +308,20 @@ class MultiAgentEnv(MultiTurnEnv):
                     # 1. Build prompt for this actor
                     prompt_messages = await self.build_actor_prompt(actor_id, state)
 
-                    # 2. Get model response with actor's sampling args
+                    # 2. Get model response with actor's sampling args and optional model/client override
                     actor = self.get_actor(actor_id)
                     merged_args = actor.merge_sampling_args(sampling_args or {})
+
+                    # Log which model is being used for this actor
+                    used_model = actor.model or state.get("model", "default")
+                    self.logger.info(f"[{actor_id}] using model: {used_model}")
+
                     response = await self.get_model_response(
-                        state, prompt_messages, sampling_args=merged_args
+                        state,
+                        prompt_messages,
+                        client=actor.client,  # None = use default from state
+                        model=actor.model,    # None = use default from state
+                        sampling_args=merged_args,
                     )
 
                     # 3. Store in trajectory

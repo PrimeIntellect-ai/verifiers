@@ -3,7 +3,10 @@ Actor: A trainable entity with distinct identity (system prompt) in multi-agent 
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 
 @dataclass
@@ -17,6 +20,8 @@ class Actor:
         max_tokens: Max response length for this actor
         is_trainable: Whether to compute GRPO advantages (False for frozen actors)
         sampling_args: Per-actor model settings (temperature, etc.)
+        model: Model name override (e.g., "gpt-4o"). None = use default from trainer.
+        client: AsyncOpenAI client override (for different API endpoints). None = use default.
     """
 
     id: str
@@ -24,6 +29,8 @@ class Actor:
     max_tokens: int = 4096
     is_trainable: bool = True
     sampling_args: dict[str, Any] = field(default_factory=dict)
+    model: str | None = None
+    client: "AsyncOpenAI | None" = None
 
     def __hash__(self) -> int:
         return hash(self.id)
