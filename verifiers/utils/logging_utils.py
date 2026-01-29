@@ -92,6 +92,11 @@ def print_prompt_completions_sample(
 
     def _normalize_tool_call(tc):
         """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
+        if isinstance(tc, str):
+            try:
+                tc = json.loads(tc)
+            except Exception:
+                return {"name": "", "args": tc}
         src = (
             _attr_or_key(tc, "function") or tc
         )  # prefer nested function object if present
