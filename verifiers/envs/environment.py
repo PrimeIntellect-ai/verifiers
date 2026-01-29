@@ -771,7 +771,10 @@ class Environment(ABC):
         """Generate and, optionally, score a rollout."""
 
         if self.env_client is not None:  # in server mode
-            assert isinstance(client, ClientConfig)
+            if not isinstance(client, ClientConfig):
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
             return await self.env_client.run_rollout(
                 input, client, model, sampling_args
             )
@@ -806,7 +809,10 @@ class Environment(ABC):
         """Generate and, optionally, score one group."""
 
         if self.env_client is not None:  # in server mode
-            assert isinstance(client, ClientConfig)
+            if not isinstance(client, ClientConfig):
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
             return await self.env_client.run_group(
                 group_inputs, client, model, sampling_args
             )
