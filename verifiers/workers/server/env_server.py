@@ -56,12 +56,13 @@ class EnvServer(ABC):
         self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
-        self.env = vf.load_environment(env_id, **self.env_args)
-        if self.extra_env_kwargs:
-            self.logger.debug(
-                f"Setting extra environment kwargs: {self.extra_env_kwargs}"
-            )
-            self.env.set_kwargs(**self.extra_env_kwargs)
+        with vf.quiet_verifiers():
+            self.env = vf.load_environment(env_id, **self.env_args)
+            if self.extra_env_kwargs:
+                self.logger.debug(
+                    f"Setting extra environment kwargs: {self.extra_env_kwargs}"
+                )
+                self.env.set_kwargs(**self.extra_env_kwargs)
 
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):
