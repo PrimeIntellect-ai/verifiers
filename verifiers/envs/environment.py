@@ -976,11 +976,11 @@ class Environment(ABC):
                     await asyncio.gather(*tasks.keys(), return_exceptions=True)
                     raise
 
-                # normalize: independent_scoring returns State, group returns list[State]
-                states = [result] if independent_scoring else result
+                # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
+                outputs = [result] if independent_scoring else result
 
                 # Serialize states to outputs immediately (serialization happens once here)
-                new_outputs = builder.add_states(states)
+                new_outputs = builder.add_outputs(outputs)
                 groups_or_rollouts_completed += 1
 
                 # track reward for rolling average (from outputs)

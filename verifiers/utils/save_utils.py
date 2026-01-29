@@ -180,8 +180,8 @@ class GenerateOutputsBuilder:
         # Track tools from states for metadata
         self._tools_list: list[list[ChatCompletionToolParam] | None] = []
 
-    def add_states(self, new_outputs: list[RolloutOutput]) -> list[RolloutOutput]:
-        """Convert new states to outputs and accumulate. Returns the new outputs."""
+    def add_outputs(self, new_outputs: list[RolloutOutput]) -> list[RolloutOutput]:
+        """Convert new outputs to outputs and accumulate. Returns the new outputs."""
         self.outputs.extend(new_outputs)
         # Track tools for metadata computation
         for output in new_outputs:
