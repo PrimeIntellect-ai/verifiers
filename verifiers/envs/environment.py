@@ -873,9 +873,11 @@ class Environment(ABC):
         sem = await maybe_semaphore(max_concurrent)
 
         # set up sampling args
-        sampling_args = deepcopy(self.sampling_args)
+        default_sampling_args = deepcopy(self.sampling_args)
         if sampling_args is not None:
-            sampling_args.update(sampling_args)
+            sampling_args.update(default_sampling_args)
+        else:
+            sampling_args = default_sampling_args
 
         # Initialize builder for incremental serialization
         builder = GenerateOutputsBuilder(
