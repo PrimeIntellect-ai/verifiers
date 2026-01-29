@@ -355,8 +355,6 @@ async def run_evaluation(
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
             max_concurrent=config.max_concurrent,
-            max_concurrent_generation=config.max_concurrent_generation,
-            max_concurrent_scoring=config.max_concurrent_scoring,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,

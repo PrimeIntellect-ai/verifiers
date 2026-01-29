@@ -1,4 +1,4 @@
-from typing import Any, AsyncContextManager
+from typing import Any
 
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -52,7 +52,7 @@ class RubricGroup(Rubric):
         self.logger.warning("Adding class object to the first rubric in the group.")
         self.rubrics[0].add_class_object(name, obj)
 
-    async def score_rollout(self, state: State, score_sem: AsyncContextManager):
+    async def score_rollout(self, state: State):
         """
         Evaluate all reward functions in-place for a single rollout.
         """
@@ -63,7 +63,7 @@ class RubricGroup(Rubric):
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
         for rubric in self.rubrics:
-            await rubric.score_rollout(state, score_sem=score_sem)
+            await rubric.score_rollout(state)
             rubric_reward = state.get("reward", 0.0)
             rubric_metrics = (
                 state.get("metrics", {}).copy() if state.get("metrics") else {}
@@ -77,7 +77,7 @@ class RubricGroup(Rubric):
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
 
-    async def score_group(self, states: list[State], score_sem: AsyncContextManager):
+    async def score_group(self, states: list[State]):
         """
         Evaluate all reward functions in-place for a group of rollouts.
         """
@@ -89,7 +89,7 @@ class RubricGroup(Rubric):
             for state in states
         ]
         for rubric in self.rubrics:
-            await rubric.score_group(states, score_sem=score_sem)
+            await rubric.score_group(states)
             for i, state in enumerate(states):
                 rubric_reward = state.get("reward", 0.0)
                 rubric_metrics = (

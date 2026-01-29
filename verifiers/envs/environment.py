@@ -16,7 +16,6 @@ from multiprocessing import Process
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    AsyncContextManager,
     Awaitable,
     Callable,
     List,
@@ -60,7 +59,6 @@ from verifiers.types import (
     State,
 )
 from verifiers.utils.async_utils import (
-    NullAsyncContext,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -767,8 +765,6 @@ class Environment(ABC):
         client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager = NullAsyncContext(),
-        score_sem: AsyncContextManager = NullAsyncContext(),
         max_retries: int = 0,
         state_columns: list[str] | None = None,
     ) -> RolloutOutput:
@@ -781,13 +777,12 @@ class Environment(ABC):
             )
 
         async def run_rollout_attempt() -> State:
-            state = await with_sem(
-                gen_sem,
-                self.rollout(input, cast(AsyncOpenAI, client), model, sampling_args),
+            state = await self.rollout(
+                input, cast(AsyncOpenAI, client), model, sampling_args
             )
 
             if self.score_rollouts:
-                await self.rubric.score_rollout(state, score_sem=score_sem)
+                await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
 
@@ -804,8 +799,6 @@ class Environment(ABC):
         client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager = NullAsyncContext(),
-        score_sem: AsyncContextManager = NullAsyncContext(),
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         **kwargs,
@@ -820,18 +813,13 @@ class Environment(ABC):
 
         async def run_group_attempt() -> list[State]:
             rollout_tasks = [
-                with_sem(
-                    gen_sem,
-                    self.rollout(
-                        input, cast(AsyncOpenAI, client), model, sampling_args
-                    ),
-                )
+                self.rollout(input, cast(AsyncOpenAI, client), model, sampling_args)
                 for input in group_inputs
             ]
             group_states = await asyncio.gather(*rollout_tasks)
 
             if self.score_rollouts:
-                await self.rubric.score_group(group_states, score_sem=score_sem)
+                await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
             return group_states
@@ -849,8 +837,6 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
@@ -878,17 +864,8 @@ class Environment(ABC):
         if on_start is not None:
             on_start(len(inputs_list))
 
-        # resolve concurrency knobs
-        gen_limit = max_concurrent_generation
-        score_limit = max_concurrent_scoring
-        if gen_limit is None:
-            gen_limit = max_concurrent
-        if score_limit is None:
-            score_limit = max_concurrent
-
         # set up semaphores
-        gen_sem = await maybe_semaphore(gen_limit)
-        score_sem = await maybe_semaphore(score_limit)
+        sem = await maybe_semaphore(max_concurrent)
 
         # set up sampling args
         sampling_args = deepcopy(self.sampling_args)
@@ -911,16 +888,17 @@ class Environment(ABC):
         if independent_scoring:
             for i, input_item in enumerate(inputs_list):
                 task = asyncio.create_task(
-                    self.run_rollout(
-                        input_item,
-                        client,
-                        model,
-                        sampling_args,
-                        gen_sem,
-                        score_sem,
-                        max_retries=max_retries,
-                        state_columns=state_columns,
-                    )
+                    with_sem(
+                        sem,
+                        self.run_rollout(
+                            input_item,
+                            client,
+                            model,
+                            sampling_args,
+                            max_retries=max_retries,
+                            state_columns=state_columns,
+                        ),
+                    ),
                 )
                 tasks[task] = i
             pbar_total = len(inputs_list)
@@ -936,16 +914,17 @@ class Environment(ABC):
 
             for i, group in enumerate(group_list):
                 task = asyncio.create_task(
-                    self.run_group(
-                        group,
-                        client,
-                        model,
-                        sampling_args,
-                        gen_sem,
-                        score_sem,
-                        max_retries=max_retries,
-                        state_columns=state_columns,
-                    )
+                    with_sem(
+                        sem,
+                        self.run_group(
+                            group,
+                            client,
+                            model,
+                            sampling_args,
+                            max_retries=max_retries,
+                            state_columns=state_columns,
+                        ),
+                    ),
                 )
                 tasks[task] = i
             pbar_total = len(group_list)
@@ -1077,8 +1056,6 @@ class Environment(ABC):
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
@@ -1103,8 +1080,6 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
@@ -1128,8 +1103,6 @@ class Environment(ABC):
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
@@ -1149,8 +1122,6 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,

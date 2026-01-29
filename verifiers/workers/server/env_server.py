@@ -104,7 +104,6 @@ class EnvServer(ABC):
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
         client = await self._resolve_client(request.client_config)
-        # Server always runs locally with AsyncOpenAI, so we always get State back
         output = await self.env.run_rollout(
             request.input,
             client,
@@ -115,7 +114,6 @@ class EnvServer(ABC):
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
         client = await self._resolve_client(request.client_config)
-        # Server always runs locally with AsyncOpenAI, so we always get list[State] back
         outputs = await self.env.run_group(
             request.group_inputs,
             client,
