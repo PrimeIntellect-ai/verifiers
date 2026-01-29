@@ -32,6 +32,7 @@ class ZMQEnvServer(EnvServer):
         self.socket.bind(self.address)
 
         self.clients: dict[str, AsyncOpenAI] = {}
+        self.pending_tasks: set[asyncio.Task] = set()
 
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.debug(f"{self.__class__.__name__} started on {self.address}")
@@ -61,10 +62,12 @@ class ZMQEnvServer(EnvServer):
 
                     client_id, request_id, payload_bytes = frames
 
-                    # Process in background with concurrency limit
-                    asyncio.create_task(
+                    # Process in background, tracking the task for cleanup
+                    task = asyncio.create_task(
                         self._process_request(client_id, request_id, payload_bytes)
                     )
+                    self.pending_tasks.add(task)
+                    task.add_done_callback(self.pending_tasks.discard)
 
                 except asyncio.TimeoutError:
                     continue
@@ -77,6 +80,14 @@ class ZMQEnvServer(EnvServer):
                 stop_task.cancel()
 
     async def close(self):
+        # cancel and await all pending tasks
+        if self.pending_tasks:
+            self.logger.debug(f"Cancelling {len(self.pending_tasks)} pending tasks")
+            for task in self.pending_tasks:
+                task.cancel()
+            await asyncio.gather(*self.pending_tasks, return_exceptions=True)
+            self.pending_tasks.clear()
+
         self.socket.close()
         self.ctx.term()
         self.logger.debug("Environment server shut down")
@@ -113,6 +124,10 @@ class ZMQEnvServer(EnvServer):
                 response = BaseResponse(
                     success=False, error=f"Unknown request type: {request_type}"
                 )
+
+        except asyncio.CancelledError:
+            self.logger.debug(f"Request {request_id} cancelled during shutdown")
+            return
 
         except Exception as e:
             self.logger.error(f"Error processing request: {e}", exc_info=True)
