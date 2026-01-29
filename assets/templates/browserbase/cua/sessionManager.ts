@@ -52,14 +52,17 @@ export class BrowserSessionManager {
             },
           }
         : undefined,
-      localBrowserLaunchOptions: {
-        viewport: options?.viewport
-          ? {
-              width: options.viewport.width,
-              height: options.viewport.height,
-            }
-          : { width: 1024, height: 768 },
-      },
+      // Only provide localBrowserLaunchOptions for LOCAL mode to avoid Chrome validation in BROWSERBASE mode
+      localBrowserLaunchOptions: envType === "LOCAL"
+        ? {
+            viewport: options?.viewport
+              ? {
+                  width: options.viewport.width,
+                  height: options.viewport.height,
+                }
+              : { width: 1024, height: 768 },
+          }
+        : undefined,
     });
 
     await stagehand.init();
