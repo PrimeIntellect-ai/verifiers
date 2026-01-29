@@ -600,7 +600,7 @@ Build a custom environment for your specific task:
 prime env init my-custom-env
 ```
 
-See the [Environments documentation](environments.md) for a complete guide.
+See the [Environments documentation](docs/environments.md) for a complete guide.
 
 ### Explore Hosted Training
 
@@ -610,14 +610,14 @@ Use Prime Intellect's Hosted Training platform to train without managing infrast
 2. Submit a training job through the [Prime Intellect dashboard](https://app.primeintellect.ai/dashboard/training)
 3. Monitor progress and download checkpoints
 
-See the [Hosted Training documentation](training.md#hosted-training) for details.
+See the [Hosted Training documentation](docs/training.md#hosted-training) for details.
 
 ## Further Reading
 
-- [Training Reference](training.md): Complete reference for all training options
-- [Environments Guide](environments.md): Learn how to create custom environments
-- [Evaluation Guide](evaluation.md): Evaluate your trained models
-- [API Reference](reference.md): Detailed API documentation
+- [Training Reference](docs/training.md): Complete reference for all training options
+- [Environments Guide](docs/environments.md): Learn how to create custom environments
+- [Evaluation Guide](docs/evaluation.md): Evaluate your trained models
+- [API Reference](docs/reference.md): Detailed API documentation
 - [prime-rl Documentation](https://docs.primeintellect.ai/prime-rl): Production training framework
 
 ## Summary
