@@ -378,7 +378,6 @@ async def run_evaluation(
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
-            resume_path=config.resume_path,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             use_tqdm=use_tqdm,

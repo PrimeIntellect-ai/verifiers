@@ -21,7 +21,7 @@ from verifiers.types import (
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
-from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.path_utils import get_results_path, is_valid_eval_results_path
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +232,19 @@ class GenerateOutputsBuilder:
         env_args: dict,
         model: str,
         client: AsyncOpenAI | ClientConfig,
+        num_examples: int,
+        rollouts_per_example: int,
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
     ):
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.env_id = env_id
         self.env_args = env_args
         self.model = model
         self.client = client
+        self.num_examples = num_examples
+        self.rollouts_per_example = rollouts_per_example
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
@@ -254,6 +259,14 @@ class GenerateOutputsBuilder:
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
         self.tools_list: list[list[ChatCompletionToolParam] | None] = []
+
+    def maybe_load(self) -> None:
+        """Load outputs from disk if results_path is set."""
+        if is_valid_eval_results_path(self.results_path):
+            self.outputs = load_outputs(self.results_path)
+            self.logger.info(
+                f"Loaded {len(self.outputs)} outputs from {self.results_path}"
+            )
 
     def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
         """Accumulate new outputs."""
@@ -288,13 +301,6 @@ class GenerateOutputsBuilder:
             next((t for t in self.tools_list if t), None)
             if len(unique_tools) == 1
             else None
-        )
-
-        # Compute example counts
-        example_ids = [o.get("example_id", 0) for o in self.outputs]
-        self.num_examples = len(set(example_ids)) if example_ids else 0
-        self.rollouts_per_example = (
-            len(self.outputs) // self.num_examples if self.num_examples > 0 else 1
         )
 
         return GenerateMetadata(

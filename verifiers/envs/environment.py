@@ -29,6 +29,7 @@ from typing import (
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
 from verifiers.utils.eval_utils import filter_inputs
+from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
@@ -845,7 +846,6 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         results_path: Path | None = None,
-        resume_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
         push_to_hf_hub: bool = False,
@@ -881,26 +881,32 @@ class Environment(ABC):
         sampling_args = default_sampling_args
 
         # initialize generate outputs builder
+        total_rollouts = len(inputs_list)
+        num_examples = len(set([i["example_id"] for i in inputs_list]))
+        rollouts_per_example = total_rollouts // num_examples
+        total_groups = num_examples
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
             model=model,
             client=client,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
         )
 
-        if resume_path is not None:
-            outputs = load_outputs(resume_path)
+        if results_path is not None and is_valid_eval_results_path(results_path):
+            outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
-            metadata = builder.build_metadata()
-            inputs_list = filter_inputs(
-                inputs_list, outputs, metadata["rollouts_per_example"]
-            )
+            inputs_list = filter_inputs(inputs_list, outputs, rollouts_per_example)
             self.logger.info(
-                f"Resuming from {resume_path}. Got {len(outputs)} outputs, filtering {len(inputs_list)} inputs to {len(inputs_list)} inputs"
+                f"Resuming evaluaton from {results_path}. Found {len(outputs)} completed rollout(s), {len(inputs_list)} remaining rollout(s)"
             )
+        else:
+            if save_results:
+                self.logger.info(f"Saving results to {results_path}")
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
@@ -920,8 +926,8 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = len(inputs_list)
-            pbar_desc = f"Processing {len(inputs_list)} rollouts"
+            pbar_total = total_rollouts
+            pbar_desc = f"Processing {total_rollouts} rollouts"
         else:
             input_groups: dict[int, list[RolloutInput]] = {}
             for input_item in inputs_list:
@@ -946,8 +952,10 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = len(group_list)
-            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
+            pbar_total = total_groups
+            pbar_desc = (
+                f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
+            )
 
         # set up progress bar (only when use_tqdm=True and no external progress callback)
         pbar = None
@@ -956,15 +964,10 @@ class Environment(ABC):
 
             pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
-        metadata = builder.build_metadata()
         if independent_scoring:
             groups_or_rollouts_completed = len(builder.outputs)
         else:
-            groups_or_rollouts_completed = (
-                len(builder.outputs) // metadata["rollouts_per_example"]
-            )
-        reward_count = len(builder.outputs)
-        reward_sum = reward_count * metadata["avg_reward"]
+            groups_or_rollouts_completed = len(builder.outputs) // rollouts_per_example
         if pbar is not None:
             pbar.update(groups_or_rollouts_completed)
 
@@ -976,19 +979,12 @@ class Environment(ABC):
                 new_outputs = [result] if independent_scoring else result
                 builder.add_outputs(new_outputs)
                 groups_or_rollouts_completed += 1
-
-                # track reward for rolling average (from outputs)
-                for o in new_outputs:
-                    r = o.get("reward")
-                    if r is not None:
-                        reward_sum += r
-                        reward_count += 1
+                metadata = builder.build_metadata()
 
                 # update progress bar or call callback
                 if pbar is not None:
                     pbar.update(1)
-                    if reward_count > 0:
-                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
+                    pbar.set_postfix(reward=f"{metadata['avg_reward']:.3f}")
                 elif on_progress is not None:
                     on_progress(builder.outputs, new_outputs)
 
@@ -1078,7 +1074,6 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        resume_path: Path | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         use_tqdm: bool = True,
@@ -1102,7 +1097,6 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            resume_path=resume_path,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             use_tqdm=use_tqdm,

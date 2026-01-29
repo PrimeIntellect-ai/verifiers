@@ -221,6 +221,7 @@ def main():
     )
     parser.add_argument(
         "--independent-scoring",
+        "-R",
         default=False,
         action="store_true",
         help="Score each rollout individually instead of scoring by group",
