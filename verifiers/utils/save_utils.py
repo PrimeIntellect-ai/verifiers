@@ -12,12 +12,14 @@ from pydantic import BaseModel
 from verifiers.types import (
     ChatCompletionToolParam,
     ClientConfig,
+    ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
     RolloutOutput,
     SamplingArgs,
     State,
 )
+from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_results_path
 
@@ -117,7 +119,14 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         output["completion"] = sanitize_tool_calls(messages_to_printable(completion))
     # use repr for error
     if state.get("error") is not None:
-        output["error"] = repr(state.get("error"))
+        error_chain = ErrorChain(state.get("error"))
+        output["error"] = ErrorInfo(
+            error=type(state.get("error")).__name__,
+            error_chain_repr=repr(error_chain),
+            error_chain_str=str(error_chain),
+        )
+        output["error_chain"] = repr(error_chain)
+        output["long_error_chain"] = str(error_chain)
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")

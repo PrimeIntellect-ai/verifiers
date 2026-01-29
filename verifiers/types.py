@@ -100,6 +100,12 @@ class RolloutTiming(TypedDict, total=False):
     total_ms: float
 
 
+class ErrorInfo(TypedDict):
+    error: str
+    error_chain_repr: str
+    error_chain_str: str
+
+
 class RolloutOutput(dict):
     """Serialized output from a rollout (mirrors RolloutInput).
 
@@ -126,7 +132,7 @@ class RolloutOutput(dict):
     # Optional fields
     answer: str
     info: Info
-    error: str | None
+    error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     oai_tools: list["ChatCompletionToolParam"]

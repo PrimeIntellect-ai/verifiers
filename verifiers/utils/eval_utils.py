@@ -241,9 +241,9 @@ def print_info(results: GenerateOutputs):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
-        error_strs = [e for e in errors if e is not None]
+        error_chains = [e["error_chain_str"] for e in errors if e is not None]
         # Errors are serialized as strings, count unique error types
-        counter = Counter(error_strs)
+        counter = Counter(error_chains)
         for error_str, count in counter.items():
             print(f" - {error_str}: {count / counter.total():.3f}")
 

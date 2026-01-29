@@ -9,9 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.errors import Error
-from verifiers.types import Messages
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.types import ErrorInfo, Messages
 
 LOGGER_NAME = "verifiers"
 
@@ -93,7 +91,7 @@ def quiet_verifiers():
 def print_prompt_completions_sample(
     prompts: list[Messages],
     completions: list[Messages],
-    errors: list[str | Error | None],
+    errors: list[ErrorInfo | None],
     rewards: list[float],
     step: int,
     num_samples: int = 1,
@@ -149,12 +147,9 @@ def print_prompt_completions_sample(
 
         return out
 
-    def _format_error(error: str | BaseException) -> Text:
+    def _format_error(error: ErrorInfo) -> Text:
         out = Text()
-        if isinstance(error, str):
-            out.append(f"error: {error}", style="bold red")
-        else:
-            out.append(f"error: {ErrorChain(error)}", style="bold red")
+        out.append(f"error: {error['error_chain_repr']}", style="bold red")
         return out
 
     console = Console()
