@@ -44,19 +44,25 @@ def setup_logging(
 
     # remove any existing handlers to avoid duplicates
     logger.handlers.clear()
-    logger.setLevel(level.upper())
+
+    # set logger level to the minimum of console and file levels
+    # so messages can reach the more permissive handler
+    console_level = getattr(logging, level.upper())
+    file_level = (
+        getattr(logging, log_file_level.upper()) if log_file_level else console_level
+    )
+    logger.setLevel(min(console_level, file_level))
 
     # add console handler (stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(level.upper())
+    console_handler.setLevel(console_level)
     logger.addHandler(console_handler)
 
     # add file handler if log_file is specified
     if log_file is not None:
         file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setFormatter(formatter)
-        file_level = log_file_level.upper() if log_file_level else level.upper()
         file_handler.setLevel(file_level)
         logger.addHandler(file_handler)
 
