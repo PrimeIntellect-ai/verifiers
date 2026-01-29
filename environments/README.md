@@ -44,7 +44,6 @@ This folder contains installable example environments that showcase common usage
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
 
 - **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
-  - **dummy_harbor_env**: Minimal Harbor environment for testing the CLI agent interception framework.
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
 
@@ -74,7 +73,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
-- **CLI agent sandboxes**: `dummy_harbor_env`, `opencode_harbor`, `terminus_harbor`
+- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
 - **MCP integration**: `mcp_search_env`
 - **RLM (recursive LLM)**: `rlm_secrets`
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
