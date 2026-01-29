@@ -51,11 +51,11 @@ class HarborEnv(vf.CliAgentEnv):
         )
 
     async def _list_episode_dirs(self, sandbox_id: str) -> list[str]:
-        """List Terminus episode directories under /logs/agent."""
+        """List Terminus episode directories under /logs."""
         try:
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                "ls -1 /logs/agent 2>/dev/null | grep '^episode-' || true",
+                "ls -1 /logs 2>/dev/null | grep '^episode-' || true",
                 working_dir=None,
                 timeout=30,
             )
@@ -110,7 +110,7 @@ class HarborEnv(vf.CliAgentEnv):
         debugs: dict[str, str | None] = {}
 
         for episode in episodes:
-            base = f"/logs/agent/{episode}"
+            base = f"/logs/{episode}"
             prompts[episode] = await self._download_text_file(
                 sandbox_id, f"{base}/prompt.txt"
             )
@@ -121,9 +121,7 @@ class HarborEnv(vf.CliAgentEnv):
                 sandbox_id, f"{base}/debug.json"
             )
 
-        trajectory = await self._download_text_file(
-            sandbox_id, "/logs/agent/trajectory.json"
-        )
+        trajectory = await self._download_text_file(sandbox_id, "/logs/trajectory.json")
 
         state["terminus_episode_prompts"] = prompts
         state["terminus_episode_responses"] = responses
