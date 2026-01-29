@@ -614,9 +614,6 @@ class EvalDisplay(BaseDisplay):
                         continue
                     seen_actors.add(aid)
 
-                    if len(seen_actors) > 4:  # Limit to 4 actors max
-                        break
-
                     completion = messages_to_printable(results["completion"][idx])
                     reward_i = results["reward"][idx]
                     error_i = results["state"][idx].get("error")

@@ -217,12 +217,42 @@ def compare_hands(
 # Actors
 # =============================================================================
 
-PLAYER_SYSTEM_PROMPT = """You are playing Heads-Up No-Limit Texas Hold'em Poker.
+AGGRESSIVE_PROMPT = """You are an AGGRESSIVE poker player in Heads-Up No-Limit Texas Hold'em.
 
 Rules:
 - You and your opponent each have 2 hole cards (hidden from each other)
 - 5 community cards are dealt face-up over multiple rounds
 - Best 5-card hand from your 7 cards wins
+
+YOUR STRATEGY - Play aggressively:
+- RAISE frequently, especially preflop with any decent hand
+- BLUFF often - bet and raise even with mediocre hands to pressure opponent
+- NEVER fold preflop unless you have absolute garbage (like 2-7 offsuit)
+- When in doubt, RAISE rather than call or check
+- Put maximum pressure on your opponent
+
+On your turn, output ONLY a JSON object with your action:
+- Fold: {"action": "fold"}
+- Check (if no bet to call): {"action": "check"}
+- Call (match current bet): {"action": "call"}
+- Raise to amount: {"action": "raise", "amount": 100}
+- All-in: {"action": "allin"}
+
+Output ONLY the JSON, nothing else."""
+
+CONSERVATIVE_PROMPT = """You are a SMART poker player in Heads-Up No-Limit Texas Hold'em.
+
+Rules:
+- You and your opponent each have 2 hole cards (hidden from each other)
+- 5 community cards are dealt face-up over multiple rounds
+- Best 5-card hand from your 7 cards wins
+
+YOUR STRATEGY - Play solid poker:
+- CALL or RAISE with good hands (pairs, high cards like A/K/Q, suited connectors)
+- CHECK when you can to see free cards
+- Only FOLD when facing a big bet with a truly weak hand
+- If you have a strong hand (pair or better), RAISE to build the pot
+- Go to SHOWDOWN when possible to see who wins
 
 On your turn, output ONLY a JSON object with your action:
 - Fold: {"action": "fold"}
@@ -235,7 +265,7 @@ Output ONLY the JSON, nothing else."""
 
 PLAYER1 = Actor(
     id="player1",
-    system_prompt=PLAYER_SYSTEM_PROMPT,
+    system_prompt=CONSERVATIVE_PROMPT,  # Small model plays smart
     max_tokens=50,
     is_trainable=True,
     model=player1_model,
@@ -244,7 +274,7 @@ PLAYER1 = Actor(
 
 PLAYER2 = Actor(
     id="player2",
-    system_prompt=PLAYER_SYSTEM_PROMPT,
+    system_prompt=AGGRESSIVE_PROMPT,  # Big model plays aggressive
     max_tokens=50,
     is_trainable=True,
     model=player2_model,
@@ -420,8 +450,9 @@ To call: {to_call}
 
 Your action?"""
 
+        actor = self.get_actor(actor_id)
         return [
-            {"role": "system", "content": PLAYER_SYSTEM_PROMPT},
+            {"role": "system", "content": actor.system_prompt},
             {"role": "user", "content": situation},
         ]
 
