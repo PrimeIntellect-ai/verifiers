@@ -57,7 +57,7 @@ class EnvServer(ABC):
 
         # load environment
         with vf.quiet_verifiers():
-            self.env = vf.load_environment(env_id, **self.env_args)
+            self.env = vf.load_environment(self.env_id, **self.env_args)
             if self.extra_env_kwargs:
                 self.logger.debug(
                     f"Setting extra environment kwargs: {self.extra_env_kwargs}"
