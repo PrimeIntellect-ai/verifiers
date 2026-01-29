@@ -1,4 +1,3 @@
-import json
 import logging
 import sys
 from contextlib import contextmanager
@@ -11,7 +10,7 @@ from rich.text import Text
 from verifiers.errors import Error
 from verifiers.types import Messages
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import normalize_tool_call
+from verifiers.utils.message_utils import format_messages
 
 LOGGER_NAME = "verifiers"
 
@@ -81,33 +80,6 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
-    def _format_messages(messages) -> Text:
-        if isinstance(messages, str):
-            return Text(messages)
-
-        out = Text()
-        for idx, msg in enumerate(messages):
-            if idx:
-                out.append("\n\n")
-
-            assert isinstance(msg, dict)
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            style = "bright_cyan" if role == "assistant" else "bright_magenta"
-
-            out.append(f"{role}: ", style="bold")
-            out.append(content, style=style)
-
-            for tc in msg.get("tool_calls") or []:  # treat None as empty list
-                payload = normalize_tool_call(tc)
-                out.append(
-                    "\n\n[tool call]\n"
-                    + json.dumps(payload, indent=2, ensure_ascii=False),
-                    style=style,
-                )
-
-        return out
-
     def _format_error(error: str | BaseException) -> Text:
         out = Text()
         if isinstance(error, str):
@@ -134,8 +106,8 @@ def print_prompt_completions_sample(
         error = errors[i]
         reward = reward_values[i]
 
-        formatted_prompt = _format_messages(prompt)
-        formatted_completion = _format_messages(completion)
+        formatted_prompt = format_messages(prompt)
+        formatted_completion = format_messages(completion)
         if error is not None:
             formatted_completion += Text("\n\n") + _format_error(error)
 
