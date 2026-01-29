@@ -777,11 +777,11 @@ class Environment(ABC):
             return await self.env_client.run_rollout(
                 input, client, model, sampling_args, max_retries, state_columns
             )
-        else:
-            assert isinstance(client, AsyncOpenAI)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(input, client, model, sampling_args)
+            state = await self.rollout(
+                input, cast(AsyncOpenAI, client), model, sampling_args
+            )
 
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
@@ -812,8 +812,6 @@ class Environment(ABC):
             return await self.env_client.run_group(
                 group_inputs, client, model, sampling_args, max_retries, state_columns
             )
-        else:
-            assert isinstance(client, AsyncOpenAI)
 
         async def run_group_attempt() -> list[State]:
             rollout_tasks = [
