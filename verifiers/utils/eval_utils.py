@@ -329,11 +329,10 @@ async def run_evaluation(
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
     # load environment
-    vf_env = vf.load_environment(
-        env_id=config.env_id,
-        **config.env_args,
-        extra_env_kwargs=config.extra_env_kwargs,
-    )
+    vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+    if config.extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
+        vf_env.set_kwargs(**config.extra_env_kwargs)
 
     # start env server as sidecar process
     try:

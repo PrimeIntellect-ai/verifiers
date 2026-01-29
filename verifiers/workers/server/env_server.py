@@ -57,6 +57,9 @@ class EnvServer(ABC):
         # load environment
         self.env = vf.load_environment(env_id, **self.env_args)
         if self.extra_env_kwargs:
+            self.logger.info(
+                f"Setting extra environment kwargs: {self.extra_env_kwargs}"
+            )
             self.env.set_kwargs(**self.extra_env_kwargs)
 
         self.no_limit = maybe_semaphore(None)
