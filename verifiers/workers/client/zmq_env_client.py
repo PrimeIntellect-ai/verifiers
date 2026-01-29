@@ -204,36 +204,3 @@ class ZMQEnvClient(EnvClient):
             raise RuntimeError(f"Server error: {response.error}")
 
         return response
-
-
-async def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="ZMQ Environment Client")
-    parser.add_argument(
-        "--address", type=str, default="tcp://127.0.0.1:5000", help="ZMQ bind address"
-    )
-    args = parser.parse_args()
-
-    # initialize client
-    client = ZMQEnvClient(address=args.address)
-
-    is_healthy = await client.health()
-    assert is_healthy, "ZMQEnvServer is not healthy"
-    print("Checked that ZMQEnvServer is running and healthy.")
-    results = await client.run_rollout(
-        input=vf.RolloutInput(
-            example_id=0,
-            prompt=[{"role": "user", "content": "What is 2+2?"}],
-            answer="4",
-            task="test",
-        ),
-        model="openai/gpt-4.1-mini",
-        client_config=vf.ClientConfig(),
-        sampling_args={},
-    )
-    print(results)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

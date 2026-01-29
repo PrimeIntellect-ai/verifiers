@@ -1,5 +1,4 @@
 import asyncio
-import json
 from typing import cast
 
 import msgpack
@@ -18,7 +17,7 @@ from verifiers.workers.types import (
 
 
 class ZMQEnvServer(EnvServer):
-    """Server that a subset of env methods via ZMQ."""
+    """Implements an EnvServer via ZMQ sockets."""
 
     def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)
@@ -98,7 +97,6 @@ class ZMQEnvServer(EnvServer):
         request_id_bytes: bytes,
         payload_bytes: bytes,
     ):
-        # Default request_id from ZMQ frame, may be overwritten by Pydantic model
         request_id = request_id_bytes.decode()
         response: BaseResponse
 
@@ -154,52 +152,3 @@ class ZMQEnvServer(EnvServer):
         self.logger.debug(
             f"Sent {response.__class__.__name__} (request_id={request_id}, {len(response_bytes)} bytes)"
         )
-
-
-async def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="ZMQ Environment Server")
-    parser.add_argument(
-        "--env_id",
-        type=str,
-        default="gsm8k",
-        help="Environment module name(s) (comma-separated) or path to TOML config.",
-    )
-    parser.add_argument(
-        "--env-args",
-        "-a",
-        type=json.loads,
-        default={},
-        help='Environment module arguments as JSON object (e.g., \'{"key": "value", "num": 42}\')',
-    )
-    parser.add_argument(
-        "--address",
-        default="tcp://127.0.0.1:5000",
-        help="ZMQ bind address",
-    )
-    parser.add_argument(
-        "--verbose",
-        "-v",
-        default=False,
-        action="store_true",
-        help="Logging level",
-    )
-    args = parser.parse_args()
-
-    # initialize server
-    server = ZMQEnvServer(
-        env_id=args.env_id,
-        env_args=args.env_args,
-        address=args.address,
-        log_level="DEBUG" if args.verbose else "INFO",
-    )
-
-    try:
-        await server.run()
-    finally:
-        await server.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
