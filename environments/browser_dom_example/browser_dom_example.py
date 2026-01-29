@@ -15,6 +15,19 @@ import verifiers as vf
 from verifiers.envs.integrations.browser_env import BrowserEnv
 from datasets import Dataset
 
+DOM_SYSTEM_PROMPT = """You are a browser automation agent using Stagehand's AI-driven tools.
+
+Available tools:
+- navigate(url): Navigate to a URL
+- observe(instruction): Find possible actions matching the instruction
+- act(instruction): Execute an action described in natural language
+- extract(instruction, schema_json): Extract structured data from the page
+
+Use natural language to describe what you want to do. Stagehand will intelligently
+find elements and execute actions without needing CSS selectors or coordinates.
+
+Complete the given task efficiently."""
+
 
 def create_example_dataset() -> Dataset:
     """
@@ -85,6 +98,7 @@ async def judge_answer(
 def load_environment(
     max_turns: int = 10,
     judge_model: str = "gpt-4o-mini",
+    system_prompt: str = DOM_SYSTEM_PROMPT,
     browserbase_api_key: str | None = None,
     browserbase_project_id: str | None = None,
     stagehand_model: str = "openai/gpt-4o-mini",
@@ -127,12 +141,13 @@ def load_environment(
     )
     rubric.add_reward_func(judge_answer, weight=1.0)
 
-    # Create BrowserEnv with DOM mode (uses default system prompt)
+    # Create BrowserEnv with DOM mode
     return BrowserEnv(
         mode="dom",
         dataset=dataset,
         rubric=rubric,
         max_turns=max_turns,
+        system_prompt=system_prompt,
         browserbase_api_key=browserbase_api_key,
         browserbase_project_id=browserbase_project_id,
         stagehand_model=stagehand_model,

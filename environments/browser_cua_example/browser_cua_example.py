@@ -28,6 +28,25 @@ import verifiers as vf
 from verifiers.envs.integrations.browser_env import BrowserEnv
 from datasets import Dataset
 
+CUA_SYSTEM_PROMPT = """You are a browser automation agent. You can control a web browser using the provided tools.
+
+Available tools:
+- click(x, y, button): Click at coordinates
+- double_click(x, y): Double-click at coordinates
+- type_text(text): Type text into focused element
+- keypress(keys): Press keyboard keys
+- scroll(x, y, scroll_x, scroll_y): Scroll at position
+- goto(url): Navigate to URL
+- back(): Go back in history
+- forward(): Go forward in history
+- wait(time_ms): Wait for specified milliseconds
+- screenshot(): Capture current page state
+
+After each action, you will receive a screenshot showing the current page state.
+Analyze the screenshot to determine your next action.
+
+Complete the given task efficiently using the minimum number of actions necessary."""
+
 
 def create_example_dataset() -> Dataset:
     """
@@ -99,6 +118,7 @@ async def judge_answer(
 def load_environment(
     max_turns: int = 15,
     judge_model: str = "gpt-4o-mini",
+    system_prompt: str = CUA_SYSTEM_PROMPT,
     # CUA mode configuration
     use_sandbox: bool = True,
     server_url: str = "http://localhost:3000",
@@ -197,6 +217,7 @@ def load_environment(
         dataset=dataset,
         rubric=rubric,
         max_turns=max_turns,
+        system_prompt=system_prompt,
         # CUA mode configuration
         use_sandbox=use_sandbox,
         server_url=server_url,
