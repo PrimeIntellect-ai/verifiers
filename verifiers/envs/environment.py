@@ -71,7 +71,10 @@ from verifiers.utils.message_utils import (
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     make_dataset,
-    save_generate_outputs,
+    push_results_to_hf_hub,
+    save_metadata,
+    save_new_outputs,
+    save_outputs,
     state_to_output,
 )
 from verifiers.utils.token_utils import (
@@ -673,12 +676,15 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
+        # Extract rollout_idx before creating RolloutInput (it's not part of RolloutInput)
+        rollout_idx = state_input.pop("rollout_idx", 0)
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
+        state["rollout_idx"] = rollout_idx
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
             state["oai_tools"] = state["info"]["oai_tools"]
@@ -845,7 +851,6 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         use_tqdm: bool = True,
@@ -879,7 +884,7 @@ class Environment(ABC):
         else:
             sampling_args = default_sampling_args
 
-        # Initialize builder for incremental serialization
+        # initialize generate outputs builder
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
@@ -947,15 +952,14 @@ class Environment(ABC):
         # process tasks as they complete
         reward_sum, reward_count = 0, 0
         groups_or_rollouts_completed = 0
+        outputs: list[RolloutOutput] = []
         try:
             for coro in asyncio.as_completed(tasks.keys()):
                 result = await coro
 
                 # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
-                outputs = [result] if independent_scoring else result
-
-                # Serialize states to outputs immediately (serialization happens once here)
-                new_outputs = builder.add_outputs(outputs)
+                new_outputs = [result] if independent_scoring else result
+                builder.add_outputs(new_outputs)
                 groups_or_rollouts_completed += 1
 
                 # track reward for rolling average (from outputs)
@@ -971,19 +975,15 @@ class Environment(ABC):
                     if reward_count > 0:
                         pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
                 elif on_progress is not None:
-                    on_progress(builder.outputs, new_outputs)
+                    on_progress(outputs, new_outputs)
 
-                # save intermediate results (outputs already serialized, no redundant work)
-                if (
-                    save_results
-                    and save_every > 0
-                    and groups_or_rollouts_completed % save_every == 0
-                ):
-                    intermediate_results = builder.build()
+                if save_results:
+                    # incrementally save outputs
+                    save_new_outputs(new_outputs, builder.results_path)
+                    save_metadata(builder.build_metadata(), builder.results_path)
                     self.logger.debug(
-                        f"Saving intermediate results to {intermediate_results['metadata']['path_to_save']}"
+                        f"Saved {len(new_outputs)} new outputs to {builder.results_path}"
                     )
-                    save_generate_outputs(intermediate_results)
         finally:
             # cancel all outstanding tasks and await their completion
             pending = [task for task in tasks.keys() if not task.done()]
@@ -999,7 +999,10 @@ class Environment(ABC):
 
         # save if requested
         if save_results:
-            save_generate_outputs(results, push_to_hf_hub, hf_hub_dataset_name)
+            save_outputs(results["outputs"], builder.results_path)
+            save_metadata(results["metadata"], builder.results_path)
+            if push_to_hf_hub:
+                push_results_to_hf_hub(results, hf_hub_dataset_name)
             if on_log is not None:
                 on_log(f"Saved final outputs to {results['metadata']['path_to_save']}")
 
@@ -1063,7 +1066,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
+        resume_path: Path | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         use_tqdm: bool = True,
@@ -1087,7 +1090,6 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             use_tqdm=use_tqdm,
@@ -1110,7 +1112,7 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
+        resume_path: Path | None = None,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -1129,7 +1131,7 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
+            resume_path=resume_path,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,

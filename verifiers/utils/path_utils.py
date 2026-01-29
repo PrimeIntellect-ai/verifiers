@@ -1,7 +1,10 @@
+import logging
 import uuid
 from pathlib import Path
 
 from verifiers.types import EvalConfig
+
+logger = logging.getLogger(__name__)
 
 
 def get_results_path(
@@ -26,6 +29,16 @@ def get_eval_results_path(config: EvalConfig) -> Path:
         base_path = Path("./outputs")
         results_path = get_results_path(config.env_id, config.model, base_path)
     return results_path
+
+
+def is_valid_eval_results_path(path: Path) -> bool:
+    """Checks if a path is a valid evaluation results path."""
+    return (
+        path.exists()
+        and path.is_dir()
+        and Path(path / "results.jsonl").exists()
+        and Path(path / "metadata.json").exists()
+    )
 
 
 def get_gepa_results_path(

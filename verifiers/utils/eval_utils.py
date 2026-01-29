@@ -339,7 +339,7 @@ async def run_evaluation(
         await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
 
         # run evaluation
-        results_path = get_eval_results_path(config)
+        results_path = config.resume_path or get_eval_results_path(config)
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
@@ -356,7 +356,7 @@ async def run_evaluation(
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
-            save_every=config.save_every,
+            resume_path=config.resume_path,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             use_tqdm=use_tqdm,
