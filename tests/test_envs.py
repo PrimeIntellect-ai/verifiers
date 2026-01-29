@@ -15,12 +15,21 @@ SKIPPED_ENVS = [
     #                 ~~~~~~~~~~^^^^^^^^^^^^^^
     # KeyError: 'example_id'
     "continuation_quality",
+    # Different project structure (uses src/ layout, no pyproject.toml at root)
+    "mcp_env",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, MODEL_API_KEY
+    "browser_dom_example",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
+    "browser_cua_example",
 ]
 
 
 def get_environments() -> list[Path]:
     """Get all subdirectories of `environments/`, or only changed environments if CHANGED_ENVS is set."""
     all_envs = list(x for x in Path("environments").iterdir() if x.is_dir())
+
+    # Filter out skipped environments
+    all_envs = [env for env in all_envs if env.name not in SKIPPED_ENVS]
 
     # Filter environments if CHANGED_ENVS is set (for PRs)
     changed_envs = os.getenv("CHANGED_ENVS")

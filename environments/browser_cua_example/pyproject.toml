@@ -1,0 +1,20 @@
+[project]
+name = "browser-cua-example"
+version = "0.1.1"
+description = "Example environment demonstrating CUA (Computer Use Agent) mode browser automation"
+tags = ["browser", "browserbase", "cua", "vision", "example"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["browser_cua_example.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

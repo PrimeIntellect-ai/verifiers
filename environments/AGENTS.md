@@ -791,8 +791,48 @@ Supported third-party environment integrations include:
 
 - **`TextArenaEnv`** — wraps [TextArena](https://github.com/LeonGuertler/TextArena) text-based game environments
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
+- **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena).
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv).
+
+### BrowserEnv
+
+`BrowserEnv` provides browser automation with two modes:
+
+- **DOM mode** (`mode="dom"`): Natural language browser control via Stagehand SDK. Uses semantic operations like `act("click the login button")`, `observe("find form fields")`, and `extract("get the table data")`.
+
+- **CUA mode** (`mode="cua"`): Vision-based browser control using coordinate-based primitives. Uses low-level operations like `click(x, y)`, `type_text("hello")`, `scroll(0, 0, 0, 500)`, and `goto("https://example.com")`.
+
+**CUA mode with automatic sandbox deployment** (default, recommended):
+
+```python
+env = BrowserEnv(
+    mode="cua",
+    dataset=dataset,
+    rubric=rubric,
+)
+```
+
+When `use_sandbox=True` (the default), the CUA server is automatically deployed to a sandbox container. No manual server setup is required. The sandbox handles:
+- Server file upload and initialization
+- Server lifecycle management
+- Browser session isolation
+- Automatic cleanup on rollout completion
+
+**CUA mode with manual server** (for local development):
+
+```python
+# First start the server manually:
+# cd assets/templates/browserbase/cua && ./start.sh
+
+env = BrowserEnv(
+    mode="cua",
+    use_sandbox=False,
+    server_url="http://localhost:3000",
+    dataset=dataset,
+    rubric=rubric,
+)
+```
 
 Newer and more experimental environment classes include:
 

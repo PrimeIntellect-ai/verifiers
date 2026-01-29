@@ -76,6 +76,11 @@ ta = [
     "textarena",
     "nltk",
 ]
+browser = [
+    "stagehand>=3.0.0",
+    "aiohttp>=3.9.0",
+    "python-dotenv>=1.0.0",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",

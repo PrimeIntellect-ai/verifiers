@@ -787,8 +787,9 @@ Supported third-party environment integrations include:
 
 - **`TextArenaEnv`** — wraps [TextArena](https://github.com/LeonGuertler/TextArena) text-based game environments
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
+- **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena).
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv).
 
 Newer and more experimental environment classes include:
 
