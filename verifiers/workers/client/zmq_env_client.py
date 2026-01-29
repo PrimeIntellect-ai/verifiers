@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import uuid
 from typing import cast
 
@@ -7,7 +6,6 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-import verifiers as vf
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.client.env_client import EnvClient
 from verifiers.workers.types import (
@@ -23,10 +21,10 @@ from verifiers.workers.types import (
 
 
 class ZMQEnvClient(EnvClient):
+    """ZMQ-based environment client."""
+
     def __init__(self, address: str = "tcp://127.0.0.1:5000"):
         super().__init__(address=address)
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.address = address
 
         # DEALER socket for async request/response
         self.ctx = zmq.asyncio.Context()
@@ -48,46 +46,20 @@ class ZMQEnvClient(EnvClient):
         self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
 
-    async def health(self) -> bool:
-        request = HealthRequest()
-        response = await self._send_request(request, HealthResponse, timeout=1.0)
-        return response.success
+    async def handle_health_request(self, request: HealthRequest) -> HealthResponse:
+        return await self._send_request(request, HealthResponse, timeout=1.0)
 
-    async def run_rollout(
+    async def handle_run_rollout_request(
         self,
-        input: vf.RolloutInput,
-        client_config: vf.ClientConfig,
-        model: str,
-        sampling_args: vf.SamplingArgs,
-    ) -> vf.RolloutOutput:
-        request = RunRolloutRequest(
-            input=input,
-            client_config=client_config,
-            model=model,
-            sampling_args=sampling_args,
-        )
-        response = await self._send_request(
-            request, RunRolloutResponse, timeout=36000.0
-        )
-        assert response.output is not None
-        return response.output
+        request: RunRolloutRequest,
+    ) -> RunRolloutResponse:
+        return await self._send_request(request, RunRolloutResponse, timeout=36000.0)
 
-    async def run_group(
+    async def handle_run_group_request(
         self,
-        group_inputs: list[vf.RolloutInput],
-        client_config: vf.ClientConfig,
-        model: str,
-        sampling_args: vf.SamplingArgs,
-    ) -> list[vf.RolloutOutput]:
-        request = RunGroupRequest(
-            group_inputs=group_inputs,
-            client_config=client_config,
-            model=model,
-            sampling_args=sampling_args,
-        )
-        response = await self._send_request(request, RunGroupResponse, timeout=36000.0)
-        assert response.outputs is not None
-        return response.outputs
+        request: RunGroupRequest,
+    ) -> RunGroupResponse:
+        return await self._send_request(request, RunGroupResponse, timeout=36000.0)
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
@@ -157,16 +129,7 @@ class ZMQEnvClient(EnvClient):
         response_type: type[BaseResponseT],
         timeout: float | None = None,
     ) -> BaseResponseT:
-        """
-        Send typed request to environment and parse typed response.
-
-        Args:
-            request: Pydantic request model (contains action and request_id)
-            response_type: Expected Pydantic response type
-
-        Returns:
-            Validated response of type T
-        """
+        """Send request to environment and await response"""
         # Auto-start receiver if not already running
         if self._receiver_task is None:
             await self._start()

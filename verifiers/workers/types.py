@@ -40,6 +40,8 @@ class RunRolloutRequest(BaseRequest):
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
+    max_retries: int
+    state_columns: list[str] | None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -53,6 +55,8 @@ class RunGroupRequest(BaseRequest):
     client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
+    max_retries: int
+    state_columns: list[str] | None
 
 
 class RunGroupResponse(BaseResponse):

@@ -17,7 +17,7 @@ from verifiers.workers.types import (
 
 
 class ZMQEnvServer(EnvServer):
-    """Implements an EnvServer via ZMQ sockets."""
+    """ZMQ-based environment server."""
 
     def __init__(self, *args, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(*args, **kwargs)

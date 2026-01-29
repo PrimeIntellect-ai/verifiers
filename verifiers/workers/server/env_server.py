@@ -22,7 +22,7 @@ from verifiers.workers.types import (
 
 
 class EnvServer(ABC):
-    """Server that exposes an environment as a service."""
+    """Base class for environment server."""
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class EnvServer(ABC):
             )
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.logger.info(
+        self.logger.debug(
             f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=})"
         )
 
@@ -57,7 +57,7 @@ class EnvServer(ABC):
         # load environment
         self.env = vf.load_environment(env_id, **self.env_args)
         if self.extra_env_kwargs:
-            self.logger.info(
+            self.logger.debug(
                 f"Setting extra environment kwargs: {self.extra_env_kwargs}"
             )
             self.env.set_kwargs(**self.extra_env_kwargs)
@@ -105,20 +105,24 @@ class EnvServer(ABC):
     ) -> RunRolloutResponse:
         client = await self._resolve_client(request.client_config)
         output = await self.env.run_rollout(
-            request.input,
-            client,
-            request.model,
-            request.sampling_args,
+            input=request.input,
+            client=client,
+            model=request.model,
+            sampling_args=request.sampling_args,
+            max_retries=request.max_retries,
+            state_columns=request.state_columns,
         )
         return RunRolloutResponse(output=output)
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
         client = await self._resolve_client(request.client_config)
         outputs = await self.env.run_group(
-            request.group_inputs,
-            client,
-            request.model,
-            request.sampling_args,
+            group_inputs=request.group_inputs,
+            client=client,
+            model=request.model,
+            sampling_args=request.sampling_args,
+            max_retries=request.max_retries,
+            state_columns=request.state_columns,
         )
         return RunGroupResponse(outputs=outputs)
 

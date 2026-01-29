@@ -775,7 +775,7 @@ class Environment(ABC):
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
             return await self.env_client.run_rollout(
-                input, client, model, sampling_args
+                input, client, model, sampling_args, max_retries, state_columns
             )
 
         async def run_rollout_attempt() -> State:
@@ -813,7 +813,7 @@ class Environment(ABC):
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
             return await self.env_client.run_group(
-                group_inputs, client, model, sampling_args
+                group_inputs, client, model, sampling_args, max_retries, state_columns
             )
 
         async def run_group_attempt() -> list[State]:
