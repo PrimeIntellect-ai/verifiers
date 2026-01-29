@@ -7,7 +7,6 @@ import inspect
 import json
 import logging
 import signal
-import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -72,6 +71,7 @@ from verifiers.utils.message_utils import (
 )
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
+    load_outputs,
     make_dataset,
     push_results_to_hf_hub,
     save_metadata,
@@ -678,15 +678,12 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        # Extract rollout_idx before creating RolloutInput (it's not part of RolloutInput)
-        rollout_idx = state_input.pop("rollout_idx", 0)
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
-        state["rollout_idx"] = rollout_idx
         state["oai_tools"] = None
         if "info" in state and hasattr(state["info"], "oai_tools"):
             state["oai_tools"] = state["info"]["oai_tools"]
@@ -848,6 +845,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         results_path: Path | None = None,
+        resume_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
         push_to_hf_hub: bool = False,
@@ -868,10 +866,6 @@ class Environment(ABC):
             inputs_list = inputs.to_list()
         elif isinstance(inputs, list):
             inputs_list = inputs
-
-        if not inputs_list:
-            self.logger.info("No inputs to generate")
-            sys.exit(0)
 
         # notify caller of actual total count (useful when num_examples=-1)
         if on_start is not None:
@@ -896,6 +890,17 @@ class Environment(ABC):
             sampling_args=sampling_args,
             results_path=results_path,
         )
+
+        if resume_path is not None:
+            outputs = load_outputs(resume_path)
+            builder.add_outputs(outputs)
+            metadata = builder.build_metadata()
+            inputs_list = filter_inputs(
+                inputs_list, outputs, metadata["rollouts_per_example"]
+            )
+            self.logger.info(
+                f"Resuming from {resume_path}. Got {len(outputs)} outputs, filtering {len(inputs_list)} inputs to {len(inputs_list)} inputs"
+            )
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
@@ -951,10 +956,18 @@ class Environment(ABC):
 
             pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
-        # process tasks as they complete
-        reward_sum, reward_count = 0, 0
-        groups_or_rollouts_completed = 0
-        outputs: list[RolloutOutput] = []
+        metadata = builder.build_metadata()
+        if independent_scoring:
+            groups_or_rollouts_completed = len(builder.outputs)
+        else:
+            groups_or_rollouts_completed = (
+                len(builder.outputs) // metadata["rollouts_per_example"]
+            )
+        reward_count = len(builder.outputs)
+        reward_sum = reward_count * metadata["avg_reward"]
+        if pbar is not None:
+            pbar.update(groups_or_rollouts_completed)
+
         try:
             for coro in asyncio.as_completed(tasks.keys()):
                 result = await coro
@@ -977,15 +990,12 @@ class Environment(ABC):
                     if reward_count > 0:
                         pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
                 elif on_progress is not None:
-                    on_progress(outputs, new_outputs)
+                    on_progress(builder.outputs, new_outputs)
 
                 if save_results:
                     # incrementally save outputs
                     save_new_outputs(new_outputs, builder.results_path)
                     save_metadata(builder.build_metadata(), builder.results_path)
-                    self.logger.debug(
-                        f"Saved {len(new_outputs)} new outputs to {builder.results_path}"
-                    )
         finally:
             # cancel all outstanding tasks and await their completion
             pending = [task for task in tasks.keys() if not task.done()]
@@ -1083,8 +1093,6 @@ class Environment(ABC):
         Evaluate model on the Environment evaluation dataset.
         """
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
-        if resume_path is not None:
-            inputs = filter_inputs(inputs, resume_path, rollouts_per_example)
         return await self.generate(
             inputs,
             client=client,
@@ -1094,6 +1102,7 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
+            resume_path=resume_path,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             use_tqdm=use_tqdm,

@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-from verifiers.utils.save_utils import load_outputs
-
 try:
     import tomllib  # type: ignore[import-not-found]
 except ImportError:
@@ -185,24 +183,22 @@ def load_toml_config(path: Path) -> list[dict]:
 
 
 def filter_inputs(
-    inputs: list[RolloutInput], results_path: Path, rollouts_per_example: int
+    inputs: list[RolloutInput], outputs: list[RolloutOutput], rollouts_per_example: int
 ):
     """Filter inputs based on the number of rollouts per example."""
-    saved_outputs = load_outputs(results_path)
-
     inputs_by_example_id, outputs_by_example_id = defaultdict(list), defaultdict(list)
     for input in inputs:
         inputs_by_example_id[input["example_id"]].append(input)
-    for output in saved_outputs:
+    for output in outputs:
         outputs_by_example_id[output["example_id"]].append(output)
 
     filtered_inputs = []
     for example_id in inputs_by_example_id.keys():
         example_inputs = inputs_by_example_id[example_id]
         example_outputs = outputs_by_example_id[example_id]
-        rollouts_left = len(example_outputs) - rollouts_per_example
+        rollouts_left = rollouts_per_example - len(example_outputs)
         if rollouts_left > 0:
-            filtered_inputs.extend(example_inputs[:rollouts_per_example])
+            filtered_inputs.extend(example_inputs[:rollouts_left])
 
     return filtered_inputs
 
