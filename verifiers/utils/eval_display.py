@@ -309,10 +309,6 @@ class EvalDisplay(BaseDisplay):
         if config.save_results:
             config_line.append("  |  ", style="dim")
             config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
 
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback

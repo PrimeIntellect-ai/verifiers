@@ -1,5 +1,7 @@
 import os
 
+from verifiers.utils.path_utils import is_valid_eval_results_path
+
 # Suppress tokenizers parallelism warning (only prints when env var is unset)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -212,15 +214,13 @@ def main():
         help="Save results to disk",
     )
     parser.add_argument(
-        "--save-every",
-        "-f",
-        type=int,
-        default=DEFAULT_SAVE_EVERY,
-        help="Save dataset every n rollouts (-1 to disable)",
+        "--resume-path",
+        type=str,
+        default=None,
+        help="Resume from a previous run.",
     )
     parser.add_argument(
         "--independent-scoring",
-        "-R",
         default=False,
         action="store_true",
         help="Score each rollout individually instead of scoring by group",
@@ -389,6 +389,16 @@ def main():
             extra_headers=merged_headers,
         )
 
+        # handle resume path resolution
+        resume_path = raw.get("resume_path")
+        if resume_path is not None:
+            resume_path = Path(resume_path)
+            if not is_valid_eval_results_path(resume_path):
+                raise ValueError(
+                    f"Resume path {resume_path} is not a valid evaluation results path"
+                )
+            logger.info(f"Resuming from: {resume_path}")
+
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
@@ -404,7 +414,7 @@ def main():
             verbose=raw.get("verbose", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
-            save_every=raw.get("save_every", DEFAULT_SAVE_EVERY),
+            resume_path=resume_path,
             independent_scoring=raw.get("independent_scoring", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
