@@ -45,7 +45,7 @@ class RunRolloutRequest(BaseRequest):
 
 
 class RunRolloutResponse(BaseResponse):
-    output: CoercedRolloutOutput | None
+    output: CoercedRolloutOutput | None = None
 
 
 class RunGroupRequest(BaseRequest):
@@ -60,7 +60,7 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    outputs: list[CoercedRolloutOutput] | None
+    outputs: list[CoercedRolloutOutput] | None = None
 
 
 BaseRequestT = TypeVar("BaseRequestT", bound=BaseRequest)
