@@ -335,6 +335,10 @@ class HarborEnv(vf.CliAgentEnv):
         """Run Harbor tests to compute reward before sandbox destruction."""
         await super().post_rollout(state)
         await self.capture_terminus_artifacts(state)
+        if isinstance(state.get("error"), vf.InfraError):
+            logger.debug(f"Skipping Harbor tests due to prior error: {state['error']}")
+            state["reward"] = 0.0
+            return
         state["reward"] = await self.compute_reward(state)
 
     async def harbor_reward(self, state: vf.State, **kwargs) -> float:
@@ -422,28 +426,35 @@ class HarborEnv(vf.CliAgentEnv):
                 "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
                 working_dir=None,
             )
-            stdout_val = getattr(reward_result, "stdout", "")
-            if stdout_val is None:
-                reward_val = ""
-            elif isinstance(stdout_val, str):
-                reward_val = stdout_val.strip()
-            else:
-                reward_val = str(stdout_val).strip()
-            if reward_val:
-                try:
-                    # Try as plain float first (reward.txt format)
-                    value = float(reward_val)
-                    logger.info(f"Reward from reward.txt: {value}")
-                    return value
-                except ValueError:
-                    # Fall back to JSON (reward.json format)
-                    data = json.loads(reward_val)
-                    value = float(data.get("reward", 0.0))
-                    logger.info(f"Reward from reward.json: {value}")
-                    return value
-
-            logger.warning("No reward.txt or reward.json produced by Harbor tests")
-            return 0.0
         except Exception as e:
+            if state.get("error") is None:
+                state["error"] = vf.SandboxError(str(e))
             logger.error(f"Error computing Harbor reward: {e}")
             return 0.0
+
+        stdout_val = getattr(reward_result, "stdout", "")
+        if stdout_val is None:
+            reward_val = ""
+        elif isinstance(stdout_val, str):
+            reward_val = stdout_val.strip()
+        else:
+            reward_val = str(stdout_val).strip()
+        if reward_val:
+            try:
+                # Try as plain float first (reward.txt format)
+                value = float(reward_val)
+                logger.info(f"Reward from reward.txt: {value}")
+                return value
+            except ValueError:
+                # Fall back to JSON (reward.json format)
+                try:
+                    data = json.loads(reward_val)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid reward.json: {e}")
+                    return 0.0
+                value = float(data.get("reward", 0.0))
+                logger.info(f"Reward from reward.json: {value}")
+                return value
+
+        logger.warning("No reward.txt or reward.json produced by Harbor tests")
+        return 0.0
