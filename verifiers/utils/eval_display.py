@@ -71,6 +71,11 @@ def _format_messages(messages: Any) -> Text:
         return default
 
     def _normalize_tool_call(tc: Any) -> dict[str, str]:
+        if isinstance(tc, str):
+            try:
+                tc = json.loads(tc)
+            except Exception:
+                return {"name": "", "args": tc}
         src = _attr_or_key(tc, "function") or tc
         name = _attr_or_key(src, "name", "") or ""
         args = _attr_or_key(src, "arguments", {}) or {}
