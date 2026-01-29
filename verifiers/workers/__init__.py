@@ -1,5 +1,5 @@
-from verifiers.workers.client import ZMQEnvClient
-from verifiers.workers.server import ZMQEnvServer
+from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 from verifiers.workers.types import (
     BaseRequest,
     BaseResponse,
