@@ -240,6 +240,7 @@ Endpoints = dict[str, Endpoint]
 class ClientConfig(BaseModel):
     """Pydantic model for OpenAI client configuration."""
 
+    client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     timeout: float = 3600.0
