@@ -33,7 +33,6 @@ dependencies = [
     "numpy",
     "math-verify>=0.8.0",
     "mcp>=1.14.1",
-    "msgpack>=1.1.2",
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
@@ -48,6 +47,8 @@ dependencies = [
     "typing_extensions; python_version < '3.12'",
     "wget>=3.2",
     "gepa",
+    "pyzmq>=27.1.0",
+    "msgpack>=1.1.2",
 ]
 
 [tool.uv.sources]

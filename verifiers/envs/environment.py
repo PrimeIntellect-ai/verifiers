@@ -1202,6 +1202,7 @@ class Environment(ABC):
             self.env_server_process.join(timeout=5)
             if self.env_server_process.is_alive():
                 self.env_server_process.kill()
+                self.env_server_process.join(timeout=5)
             self.env_server_process = None
             self.env_client = None
 
