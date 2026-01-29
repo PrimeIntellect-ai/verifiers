@@ -942,16 +942,7 @@ class Environment(ABC):
         groups_or_rollouts_completed = 0
         try:
             for coro in asyncio.as_completed(tasks.keys()):
-                try:
-                    result = await coro
-                except Exception:
-                    # cancel all outstanding tasks
-                    for task in tasks.keys():
-                        if not task.done():
-                            task.cancel()
-                    # drain cancellations
-                    await asyncio.gather(*tasks.keys(), return_exceptions=True)
-                    raise
+                result = await coro
 
                 # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                 outputs = [result] if independent_scoring else result
@@ -987,6 +978,12 @@ class Environment(ABC):
                     )
                     save_generate_outputs(intermediate_results)
         finally:
+            # cancel all outstanding tasks and await their completion
+            pending = [task for task in tasks.keys() if not task.done()]
+            if pending:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
             if pbar is not None:
                 pbar.close()
 
