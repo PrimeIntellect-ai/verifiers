@@ -16,6 +16,7 @@ from multiprocessing import Process
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Any,
     Awaitable,
     Callable,
     List,
@@ -1173,6 +1174,7 @@ class Environment(ABC):
     async def start_server(
         self,
         address: str | None = None,
+        extra_env_kwargs: dict[str, Any] = {},
         log_level: str | None = None,
         log_file: str | None = None,
     ) -> None:
@@ -1182,7 +1184,7 @@ class Environment(ABC):
             args=(
                 self.env_id,
                 self.env_args,
-                self.extra_env_kwargs,
+                extra_env_kwargs,
                 log_level,
                 log_file,
             ),

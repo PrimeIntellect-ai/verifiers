@@ -338,7 +338,7 @@ async def run_evaluation(
 
     # start env server as sidecar process
     try:
-        await vf_env.start_server()
+        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
 
         # run evaluation
         results_path = get_eval_results_path(config)
