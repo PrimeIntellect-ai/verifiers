@@ -27,8 +27,8 @@ class EnvServer(ABC):
         self,
         # environment
         env_id: str,
-        env_args: dict[str, Any] = {},
-        extra_env_kwargs: dict[str, Any] = {},
+        env_args: dict[str, Any] | None = None,
+        extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
         log_file: str | None = None,
         log_file_level: str | None = None,
@@ -49,8 +49,8 @@ class EnvServer(ABC):
         )
 
         self.env_id = env_id
-        self.env_args = env_args
-        self.extra_env_kwargs = extra_env_kwargs
+        self.env_args = env_args or {}
+        self.extra_env_kwargs = extra_env_kwargs or {}
 
         self.clients: dict[str, AsyncOpenAI] = {}
         self.pending_tasks: set[asyncio.Task] = set()
