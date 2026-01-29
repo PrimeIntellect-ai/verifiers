@@ -86,7 +86,7 @@ def messages_to_printable(messages: Messages) -> Messages:
     return [message_to_printable(m) for m in messages or []]
 
 
-def attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
+def _attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
     val = getattr(obj, key, None)
     if val is not None:
         return val
@@ -98,9 +98,9 @@ def attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
 def normalize_tool_call(tc: Any) -> dict[str, str]:
     if isinstance(tc, str):
         tc = json.loads(tc)
-    src = attr_or_key(tc, "function") or tc
-    name = attr_or_key(src, "name", "") or ""
-    args = attr_or_key(src, "arguments", {}) or {}
+    src = _attr_or_key(tc, "function") or tc
+    name = _attr_or_key(src, "name", "") or ""
+    args = _attr_or_key(src, "arguments", {}) or {}
     if not isinstance(args, str):
         try:
             args = json.dumps(args)
