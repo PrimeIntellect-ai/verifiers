@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+async def with_sem(sem: AsyncContextManager, coro: Coroutine[Any, Any, T]) -> T:
+    """Wrap a coroutine with a context manager (typically a semaphore)."""
+    async with sem:
+        return await coro
+
+
 async def maybe_await(func: Callable, *args, **kwargs):
     result = func(*args, **kwargs)
     if inspect.isawaitable(result):

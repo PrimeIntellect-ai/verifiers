@@ -59,7 +59,12 @@ from verifiers.types import (
     StartCallback,
     State,
 )
-from verifiers.utils.async_utils import NullAsyncContext, maybe_retry, maybe_semaphore
+from verifiers.utils.async_utils import (
+    NullAsyncContext,
+    maybe_retry,
+    maybe_semaphore,
+    with_sem,
+)
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
@@ -755,17 +760,6 @@ class Environment(ABC):
                 return True
         return False
 
-    async def rollout_with_sem(
-        self,
-        input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: SamplingArgs,
-        sem: AsyncContextManager,
-    ) -> State:
-        async with sem:
-            return await self.rollout(input, client, model, sampling_args)
-
     @final
     async def run_rollout(
         self,
@@ -786,9 +780,10 @@ class Environment(ABC):
                 input, client, model, sampling_args
             )
 
-        async def run_rollout() -> State:
-            state = await self.rollout_with_sem(
-                input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+        async def run_rollout_attempt() -> State:
+            state = await with_sem(
+                gen_sem,
+                self.rollout(input, cast(AsyncOpenAI, client), model, sampling_args),
             )
 
             if self.score_rollouts:
@@ -798,7 +793,7 @@ class Environment(ABC):
 
             return state
 
-        state = await maybe_retry(run_rollout, max_retries=max_retries)()
+        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -823,10 +818,13 @@ class Environment(ABC):
                 group_inputs, client, model, sampling_args
             )
 
-        async def run_group() -> list[State]:
+        async def run_group_attempt() -> list[State]:
             rollout_tasks = [
-                self.rollout_with_sem(
-                    input, cast(AsyncOpenAI, client), model, sampling_args, gen_sem
+                with_sem(
+                    gen_sem,
+                    self.rollout(
+                        input, cast(AsyncOpenAI, client), model, sampling_args
+                    ),
                 )
                 for input in group_inputs
             ]
@@ -838,7 +836,7 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
             return group_states
 
-        group_states = await maybe_retry(run_group, max_retries=max_retries)()
+        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -889,8 +887,8 @@ class Environment(ABC):
             score_limit = max_concurrent
 
         # set up semaphores
-        gen_sem = maybe_semaphore(gen_limit)
-        score_sem = maybe_semaphore(score_limit)
+        gen_sem = await maybe_semaphore(gen_limit)
+        score_sem = await maybe_semaphore(score_limit)
 
         # set up sampling args
         sampling_args = deepcopy(self.sampling_args)
