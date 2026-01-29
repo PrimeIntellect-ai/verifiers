@@ -9,7 +9,6 @@ from datasets import Dataset
 from verifiers import EnvGroup, Rubric, SingleTurnEnv
 from verifiers.envs.env_group import EnvGroupRubric
 from verifiers.types import State
-from verifiers.utils.async_utils import NullAsyncContext
 
 
 class TestEnvGroupRubric:
@@ -94,9 +93,8 @@ class TestEnvGroupRubric:
         state["oai_tools"] = []
         state["reward"] = None
         state["metrics"] = None
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert "func1" in state["metrics"]
         assert "func2" in state["metrics"]
@@ -131,9 +129,8 @@ class TestEnvGroupRubric:
         state["oai_tools"] = []
         state["reward"] = None
         state["metrics"] = None
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["reward"] == 0.0
 
@@ -381,7 +378,7 @@ class TestEnvGroup:
         # Mock the scoring with a properly-typed cast
         from typing import cast
 
-        async def mock_score_group(states, score_sem=None):
+        async def mock_score_group(states):
             for state in states:
                 state["reward"] = 0.8 if state["task"] == "math" else 0.9
                 state["metrics"] = {}

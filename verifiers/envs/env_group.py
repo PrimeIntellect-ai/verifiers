@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, AsyncContextManager, Mapping, final
+from typing import TYPE_CHECKING, Mapping, final
 
 from openai import AsyncOpenAI
 
@@ -38,7 +38,6 @@ class EnvGroupRubric(vf.Rubric):
     async def score_rollout(
         self,
         state: vf.State,
-        score_sem: AsyncContextManager,
     ) -> None:
         """
         Evaluate all reward functions in-place for a single rollout.
@@ -57,7 +56,7 @@ class EnvGroupRubric(vf.Rubric):
             state["metrics"] = metrics
             return
 
-        await env.rubric.score_rollout(state, score_sem=score_sem)
+        await env.rubric.score_rollout(state)
         env_reward = state.get("reward", 0.0)
         env_metrics = state.get("metrics", {}).copy() if state.get("metrics") else {}
 
@@ -72,7 +71,6 @@ class EnvGroupRubric(vf.Rubric):
     async def score_group(
         self,
         states: list[vf.State],
-        score_sem: AsyncContextManager,
     ) -> None:
         """
         Score a group of rollouts, routing to appropriate environment rubrics based on task.
@@ -95,7 +93,7 @@ class EnvGroupRubric(vf.Rubric):
             return
 
         # Score all states using the environment's rubric
-        await env.rubric.score_group(states, score_sem=score_sem)
+        await env.rubric.score_group(states)
 
         # Initialize metrics dict with all reward function names
         aggregated_metrics: dict[str, list[float]] = {

@@ -5,7 +5,6 @@ import time
 import pytest
 
 import verifiers as vf
-from verifiers.utils.async_utils import NullAsyncContext
 
 
 class TestMathRubric:
@@ -55,9 +54,8 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["metrics"]["correct_answer"] == 1.0
 
@@ -90,9 +88,8 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["metrics"]["correct_answer"] == 0.0
 
@@ -122,10 +119,9 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
         start_time = time.time()
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
         end_time = time.time()
         elapsed_time = end_time - start_time
         assert state["metrics"]["correct_answer"] == 0.0

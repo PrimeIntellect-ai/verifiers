@@ -736,7 +736,7 @@ class Environment(ABC):
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
                 err_chain = ErrorChain(err)
-                self.logger.error(f"Aborted rollout due to {err_chain}")
+                self.logger.error(f"Aborted rollout due to {repr(err_chain)}")
             return True
         return False
 
