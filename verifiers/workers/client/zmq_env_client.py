@@ -46,20 +46,20 @@ class ZMQEnvClient(EnvClient):
         self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
 
-    async def handle_health_request(self, request: HealthRequest) -> HealthResponse:
-        return await self._send_request(request, HealthResponse, timeout=1.0)
+    async def handle_health_request(
+        self, request: HealthRequest, timeout: float | None
+    ) -> HealthResponse:
+        return await self._send_request(request, HealthResponse, timeout=timeout)
 
     async def handle_run_rollout_request(
-        self,
-        request: RunRolloutRequest,
+        self, request: RunRolloutRequest, timeout: float | None
     ) -> RunRolloutResponse:
-        return await self._send_request(request, RunRolloutResponse, timeout=36000.0)
+        return await self._send_request(request, RunRolloutResponse, timeout=timeout)
 
     async def handle_run_group_request(
-        self,
-        request: RunGroupRequest,
+        self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
-        return await self._send_request(request, RunGroupResponse, timeout=36000.0)
+        return await self._send_request(request, RunGroupResponse, timeout=timeout)
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""

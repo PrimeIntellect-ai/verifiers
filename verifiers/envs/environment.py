@@ -1175,6 +1175,7 @@ class Environment(ABC):
         extra_env_kwargs: dict[str, Any] = {},
         log_level: str | None = None,
         log_file: str | None = None,
+        startup_timeout: float = 10.0,
     ) -> None:
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
         self.env_server_process = Process(
@@ -1191,6 +1192,7 @@ class Environment(ABC):
         )
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(address=address)
+        await self.env_client.health(timeout=startup_timeout)
 
     async def stop_server(self) -> None:
         if self.env_client is not None:

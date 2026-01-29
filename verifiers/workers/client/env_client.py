@@ -24,9 +24,9 @@ class EnvClient(ABC):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
 
-    async def health(self) -> bool:
+    async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
-        response = await self.handle_health_request(request)
+        response = await self.handle_health_request(request, timeout=timeout)
         return response.success
 
     async def run_rollout(
@@ -46,7 +46,7 @@ class EnvClient(ABC):
             max_retries=max_retries,
             state_columns=state_columns,
         )
-        response = await self.handle_run_rollout_request(request)
+        response = await self.handle_run_rollout_request(request, timeout=None)
         assert response.output is not None
         return response.output
 
@@ -67,25 +67,25 @@ class EnvClient(ABC):
             max_retries=max_retries,
             state_columns=state_columns,
         )
-        response = await self.handle_run_group_request(request)
+        response = await self.handle_run_group_request(request, timeout=None)
         assert response.outputs is not None
         return response.outputs
 
     @abstractmethod
-    async def handle_health_request(self, request: HealthRequest) -> HealthResponse: ...
+    async def handle_health_request(
+        self, request: HealthRequest, timeout: float | None
+    ) -> HealthResponse: ...
 
     @abstractmethod
     async def handle_run_rollout_request(
-        self,
-        request: RunRolloutRequest,
+        self, request: RunRolloutRequest, timeout: float | None
     ) -> RunRolloutResponse:
         """Run a rollout on the remote environment server."""
         ...
 
     @abstractmethod
     async def handle_run_group_request(
-        self,
-        request: RunGroupRequest,
+        self, request: RunGroupRequest, timeout: float | None
     ) -> RunGroupResponse:
         """Run a group of rollouts on the remote environment server."""
         ...
