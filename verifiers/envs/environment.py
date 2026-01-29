@@ -913,7 +913,7 @@ class Environment(ABC):
         else:
             groups_or_rollouts_completed = 0
             if save_results:
-                self.logger.info(f"Saving results to {results_path}")
+                self.logger.info(f"Saving results to {builder.results_path}")
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
