@@ -9,7 +9,6 @@ from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import ClientConfig
-from verifiers.utils.async_utils import NullAsyncContext
 from verifiers.utils.client_utils import setup_client
 from verifiers.workers.types import (
     HealthRequest,
@@ -52,7 +51,9 @@ class EnvServer(ABC):
         self.env_id = env_id
         self.env_args = env_args
         self.extra_env_kwargs = extra_env_kwargs
+
         self.clients: dict[str, AsyncOpenAI] = {}
+        self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
         self.env = vf.load_environment(env_id, **self.env_args)
@@ -61,8 +62,6 @@ class EnvServer(ABC):
                 f"Setting extra environment kwargs: {self.extra_env_kwargs}"
             )
             self.env.set_kwargs(**self.extra_env_kwargs)
-
-        self.no_limit = NullAsyncContext()
 
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):

@@ -89,3 +89,8 @@ class EnvClient(ABC):
     ) -> RunGroupResponse:
         """Run a group of rollouts on the remote environment server."""
         ...
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the client and clean up resources."""
+        ...

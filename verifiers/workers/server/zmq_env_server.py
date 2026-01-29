@@ -4,7 +4,6 @@ from typing import cast
 import msgpack
 import zmq
 import zmq.asyncio
-from openai import AsyncOpenAI
 
 from verifiers.utils.worker_utils import msgpack_encoder
 from verifiers.workers.server.env_server import EnvServer
@@ -29,9 +28,6 @@ class ZMQEnvServer(EnvServer):
         self.socket.setsockopt(zmq.RCVHWM, 10000)
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(self.address)
-
-        self.clients: dict[str, AsyncOpenAI] = {}
-        self.pending_tasks: set[asyncio.Task] = set()
 
     async def run(self, stop_event: asyncio.Event | None = None):
         self.logger.debug(f"{self.__class__.__name__} started on {self.address}")

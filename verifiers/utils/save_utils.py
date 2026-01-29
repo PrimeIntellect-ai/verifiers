@@ -109,6 +109,7 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
+        oai_tools=state.get("oai_tools", None),
     )
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")

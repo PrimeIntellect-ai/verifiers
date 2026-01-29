@@ -1196,6 +1196,9 @@ class Environment(ABC):
         self.env_client = ZMQEnvClient(address=address)
 
     async def stop_server(self) -> None:
+        if self.env_client is not None:
+            await self.env_client.close()
+            self.env_client = None
         if self.env_server_process is not None:
             self.env_server_process.terminate()
             self.env_server_process.join(timeout=5)
@@ -1203,7 +1206,6 @@ class Environment(ABC):
                 self.env_server_process.kill()
                 self.env_server_process.join(timeout=5)
             self.env_server_process = None
-            self.env_client = None
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

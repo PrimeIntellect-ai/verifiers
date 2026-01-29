@@ -167,3 +167,22 @@ class ZMQEnvClient(EnvClient):
             raise RuntimeError(f"Server error: {response.error}")
 
         return response
+
+    async def close(self) -> None:
+        """Close the client and clean up ZMQ resources."""
+        # Cancel the receiver task
+        if self._receiver_task is not None:
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except asyncio.CancelledError:
+                pass
+            self._receiver_task = None
+
+        # Fail any pending futures
+        self._fail_all_pending("Client closed")
+
+        # Close socket and terminate context
+        self.socket.close()
+        self.ctx.term()
+        self.logger.debug("ZMQ client closed")
