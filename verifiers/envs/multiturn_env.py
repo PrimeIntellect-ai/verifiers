@@ -1,6 +1,5 @@
 import logging
 from abc import abstractmethod
-from typing import final
 
 from openai import AsyncOpenAI
 
@@ -69,24 +68,6 @@ class MultiTurnEnv(vf.Environment):
         """Override to add environment-specific state fields."""
         return state
 
-    # -------------------------------------------------------------------------
-    # Hooks for subclasses (called by rollout loop)
-    # -------------------------------------------------------------------------
-
-    async def before_loop(self, state: State) -> None:
-        """Called once before the main loop starts. Override to set up turn state."""
-        pass
-
-    async def get_turn_sampling_args(
-        self, state: State, sampling_args: SamplingArgs
-    ) -> SamplingArgs:
-        """Called each turn. Override to modify sampling args (e.g., per-actor)."""
-        return sampling_args
-
-    async def after_turn(self, state: State) -> None:
-        """Called after each turn completes. Override to advance turn state."""
-        pass
-
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages for the current turn."""
         if len(state["trajectory"]) == 0:
@@ -121,10 +102,6 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
-    def get_trajectory_step_extras(self, state: State) -> dict:
-        """Override to add custom extras to trajectory steps (e.g., actor_id)."""
-        return {}
-
     async def add_model_response(
         self,
         state: State,
@@ -148,11 +125,10 @@ class MultiTurnEnv(vf.Environment):
             advantage=None,
             is_truncated=is_truncated,
             trajectory_id=state["trajectory_id"],
-            extras=self.get_trajectory_step_extras(state),
+            extras={},
         )
         await self.add_trajectory_step(state, trajectory_step)
 
-    @final
     async def rollout(
         self,
         input: RolloutInput,
@@ -167,25 +143,16 @@ class MultiTurnEnv(vf.Environment):
             state["error"] = e
             return state
 
-        await self.before_loop(state)  # Hook: set up turn state (e.g., initial actor)
-
         while not await self.is_completed(state):
             try:
                 prompt_messages = await self.get_prompt_messages(state)
                 if state.get("final_env_response") is not None:
                     break
 
-                # Hook: get turn-specific sampling args (e.g., per-actor)
-                turn_sampling_args = await self.get_turn_sampling_args(
-                    state, sampling_args or {}
-                )
-
                 response = await self.get_model_response(
-                    state, prompt_messages, sampling_args=turn_sampling_args
+                    state, prompt_messages, sampling_args=sampling_args
                 )
                 await self.add_model_response(state, prompt_messages, response)
-
-                await self.after_turn(state)  # Hook: advance turn state (e.g., next actor)
 
             except vf.Error as e:
                 if isinstance(e, vf.OverlongPromptError):

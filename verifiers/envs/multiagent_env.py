@@ -15,9 +15,10 @@ Key concepts:
 - State splitting: One game state -> multiple actor states for per-actor rewards
 
 Game Implementation:
-- Subclasses implement two main hooks:
+- Subclasses implement these main hooks:
   - build_actor_prompt(actor_id, state): Build fresh prompt for this actor
   - on_turn_complete(state): Update game state after each turn
+  - on_game_end(state): Compute final metrics after game loop exits (optional)
 - Framework handles timing automatically
 
 """
@@ -74,6 +75,9 @@ class MultiAgentEnv(MultiTurnEnv):
     - get_next_actor(): Who goes next (for alternating turns)
     - build_actor_prompt(): Build prompt for current actor
     - on_turn_complete(): Game logic after each turn
+
+    Subclasses may optionally override:
+    - on_game_end(): Compute final metrics after game loop exits
 
     The Protocol reference is injected by Protocol.__init__ when wiring
     actors to environments.
@@ -208,6 +212,26 @@ class MultiAgentEnv(MultiTurnEnv):
         """
         pass
 
+    async def on_game_end(self, state: State) -> None:
+        """
+        Finalize game state after the game loop exits.
+
+        This is called ONCE after the game loop completes (stop condition met),
+        BEFORE render_completion() and BEFORE the rubric scores the state.
+
+        Use this for:
+        - Computing final metrics (win rates, efficiency scores, etc.)
+        - Declaring the winner
+        - Preparing data that the rubric will read from state["extras"]
+
+        Unlike on_turn_complete() which is called after each turn, this is
+        called exactly once when the game is definitely over.
+
+        Args:
+            state: Final game state (mutate extras as needed for scoring)
+        """
+        pass
+
     # -------------------------------------------------------------------------
     # Parent Class Requirement (env_response)
     # -------------------------------------------------------------------------
@@ -228,17 +252,15 @@ class MultiAgentEnv(MultiTurnEnv):
     # Trajectory Management
     # -------------------------------------------------------------------------
 
-    def get_trajectory_step_extras(self, state: State) -> dict:
-        """Tag trajectory steps with actor_id for credit assignment."""
-        current_actor_id = state["extras"]["current_actor_id"]
-        return {"actor_id": current_actor_id} if current_actor_id else {}
-
     async def add_trajectory_step(
         self, state: State, trajectory_step: TrajectoryStep
     ) -> None:
-        """Record actor history for credit assignment."""
+        """Tag trajectory step with actor_id and record actor history."""
         current_actor_id = state["extras"]["current_actor_id"]
         if current_actor_id:
+            # Tag step with actor_id for credit assignment
+            trajectory_step["extras"]["actor_id"] = current_actor_id
+            # Record history
             turn_index = len(state["trajectory"])
             state["extras"]["actor_history"].append((current_actor_id, turn_index))
         await super().add_trajectory_step(state, trajectory_step)
@@ -266,10 +288,15 @@ class MultiAgentEnv(MultiTurnEnv):
               - Get model response
               - Store in trajectory
               - Process via on_turn_complete()
-        3. Return final state
+        3. Call on_game_end() for final metrics
+        4. Return final state
         """
         state = await self.init_state(input, client, model, sampling_args)
-        state = await self.setup_state(state)
+        try:
+            state = await self.setup_state(state)
+        except vf.Error as e:
+            state["error"] = e
+            return state
 
         while not await self.is_completed(state):
             active_actors = self.get_active_actors(state)
@@ -294,6 +321,10 @@ class MultiAgentEnv(MultiTurnEnv):
                     # 4. Process turn (game logic)
                     await self.on_turn_complete(state)
 
+                except vf.OverlongPromptError:
+                    state["prompt_too_long"] = True
+                    state["is_truncated"] = True
+                    break
                 except vf.Error as e:
                     state["error"] = e
                     break
@@ -302,6 +333,7 @@ class MultiAgentEnv(MultiTurnEnv):
             if await self.is_completed(state):
                 break
 
+        await self.on_game_end(state)
         await self.render_completion(state)
         return state
 
@@ -380,6 +412,10 @@ class MultiAgentEnv(MultiTurnEnv):
         actor_state["reward"] = None
         actor_state["advantage"] = None
         actor_state["metrics"] = None
+
+        # Copy trainability from Actor to State (so downstream doesn't need Protocol lookup)
+        actor = self.get_actor(actor_id)
+        actor_state["is_trainable"] = actor.is_trainable
 
         # Extract actor-specific prompt and completion
         if actor_trajectory:

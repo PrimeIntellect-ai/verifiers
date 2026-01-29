@@ -132,6 +132,12 @@ class Protocol:
 
         all_states = await asyncio.gather(*tasks)
 
+        # Mark spawned states as children (for progress tracking)
+        for state in all_states:
+            if "extras" not in state:
+                state["extras"] = {}
+            state["extras"]["parent_episode_id"] = "spawned"
+
         # Score rollouts if requested
         if score:
             score_sem = await maybe_semaphore(-1)

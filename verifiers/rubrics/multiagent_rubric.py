@@ -149,6 +149,18 @@ class MultiAgentRubric(Rubric):
             actor_groups[actor_id].append(state)
 
         for actor_id, actor_states in actor_groups.items():
+            # Skip GRPO advantage computation for non-trainable actors
+            # (they still get scored for logging, just no advantage for training)
+            if actor_states and not actor_states[0].get("is_trainable", True):
+                for state in actor_states:
+                    state["advantage"] = 0.0
+                    for step in state.get("trajectory", []):
+                        if step.get("advantage") is None:
+                            step["advantage"] = 0.0
+                        if step.get("reward") is None:
+                            step["reward"] = state["reward"]
+                continue
+
             actor_rewards = [s["reward"] for s in actor_states]
             mean_reward = sum(actor_rewards) / len(actor_rewards)
 
@@ -187,7 +199,7 @@ class MultiAgentRubric(Rubric):
         ]
         results = await asyncio.gather(*reward_tasks)
 
-        for state, (reward, metrics) in zip(states, results):
+        for state, actor_id, (reward, metrics) in zip(states, actor_ids, results):
             state["reward"] = reward
             state["metrics"] = metrics
 

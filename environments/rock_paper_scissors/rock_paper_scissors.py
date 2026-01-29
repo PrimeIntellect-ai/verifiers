@@ -173,6 +173,18 @@ class RockPaperScissorsEnv(MultiAgentEnv):
             state["extras"]["p1_choice"] = None
             state["extras"]["p2_choice"] = None
 
+    async def on_game_end(self, state: State) -> None:
+        """Declare final winner after all rounds complete."""
+        p1_score = state["extras"]["p1_score"]
+        p2_score = state["extras"]["p2_score"]
+
+        if p1_score > p2_score:
+            state["extras"]["winner"] = "player1"
+        elif p2_score > p1_score:
+            state["extras"]["winner"] = "player2"
+        else:
+            state["extras"]["winner"] = "tie"
+
     # -------------------------------------------------------------------------
     # Helper Functions
     # -------------------------------------------------------------------------

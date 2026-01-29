@@ -475,8 +475,13 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
 
             # Count completed: unique games for multi-agent, total states for single-agent
             if is_multiagent:
-                # Multi-agent: count unique games (by trajectory_id), not per-actor states
-                completed = len(set(s.get("trajectory_id") for s in all_states))
+                # Multi-agent: count unique parent games (by trajectory_id)
+                # Exclude spawned children (parent_episode_id is set) to avoid overcounting
+                parent_states = [
+                    s for s in all_states
+                    if s.get("extras", {}).get("parent_episode_id") is None
+                ]
+                completed = len(set(s.get("trajectory_id") for s in parent_states))
             else:
                 completed = len(all_states)
 

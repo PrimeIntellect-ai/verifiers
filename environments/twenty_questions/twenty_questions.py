@@ -213,6 +213,17 @@ class TwentyQuestionsEnv(MultiAgentEnv):
             elif state["extras"]["question_count"] >= self.max_questions:
                 state["final_env_response"] = [{"role": "user", "content": f"Game over! The word was: {secret}"}]
 
+    async def on_game_end(self, state: State) -> None:
+        """Compute final game metrics after game loop exits."""
+        won = state["extras"]["won"]
+        questions = state["extras"]["question_count"]
+
+        # Efficiency: winning faster = higher score (1.0 for 1 question, 0.1 for 20)
+        if won:
+            state["extras"]["efficiency"] = 1.0 - 0.9 * (questions - 1) / 19
+        else:
+            state["extras"]["efficiency"] = 0.0
+
 
 # =============================================================================
 # Rubric (Scoring)
@@ -223,12 +234,8 @@ def create_rubric() -> MultiAgentRubric:
     rubric = MultiAgentRubric()
 
     def guesser_reward(state, **kwargs) -> float:
-        extras = state.get("extras", {})
-        won = extras.get("won", False)
-        questions = extras.get("question_count", 20)
-        if won:
-            return 1.0 - 0.9 * (questions - 1) / 19
-        return 0.0
+        """Read efficiency from extras (computed in on_game_end)."""
+        return state.get("extras", {}).get("efficiency", 0.0)
 
     def game_length_metric(state, **kwargs) -> float:
         return float(state.get("extras", {}).get("question_count", 0))
