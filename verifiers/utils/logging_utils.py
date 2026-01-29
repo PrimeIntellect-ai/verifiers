@@ -1,7 +1,6 @@
 import json
 import logging
 import sys
-from collections.abc import Mapping
 from contextlib import contextmanager
 
 from rich.console import Console
@@ -12,6 +11,7 @@ from rich.text import Text
 from verifiers.errors import Error
 from verifiers.types import Messages
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.message_utils import normalize_tool_call
 
 LOGGER_NAME = "verifiers"
 
@@ -81,35 +81,6 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
-    def _attr_or_key(obj, key: str, default=None):
-        """Return obj.key if present, else obj[key] if Mapping, else default."""
-        val = getattr(obj, key, None)
-        if val is not None:
-            return val
-        if isinstance(obj, Mapping):
-            return obj.get(key, default)
-        return default
-
-    def _normalize_tool_call(tc):
-        """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
-        if isinstance(tc, str):
-            try:
-                tc = json.loads(tc)
-            except Exception:
-                return {"name": "", "args": tc}
-        src = (
-            _attr_or_key(tc, "function") or tc
-        )  # prefer nested function object if present
-        name = _attr_or_key(src, "name", "") or ""
-        args = _attr_or_key(src, "arguments", {}) or {}
-
-        if not isinstance(args, str):
-            try:
-                args = json.dumps(args)
-            except Exception:
-                args = str(args)
-        return {"name": name, "args": args}
-
     def _format_messages(messages) -> Text:
         if isinstance(messages, str):
             return Text(messages)
@@ -128,7 +99,7 @@ def print_prompt_completions_sample(
             out.append(content, style=style)
 
             for tc in msg.get("tool_calls") or []:  # treat None as empty list
-                payload = _normalize_tool_call(tc)
+                payload = normalize_tool_call(tc)
                 out.append(
                     "\n\n[tool call]\n"
                     + json.dumps(payload, indent=2, ensure_ascii=False),

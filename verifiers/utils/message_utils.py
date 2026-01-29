@@ -1,5 +1,6 @@
 import json
-from typing import cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -83,6 +84,29 @@ def messages_to_printable(messages: Messages) -> Messages:
     if isinstance(messages, str):
         return messages
     return [message_to_printable(m) for m in messages or []]
+
+
+def attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
+    val = getattr(obj, key, None)
+    if val is not None:
+        return val
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return default
+
+
+def normalize_tool_call(tc: Any) -> dict[str, str]:
+    if isinstance(tc, str):
+        tc = json.loads(tc)
+    src = attr_or_key(tc, "function") or tc
+    name = attr_or_key(src, "name", "") or ""
+    args = attr_or_key(src, "arguments", {}) or {}
+    if not isinstance(args, str):
+        try:
+            args = json.dumps(args)
+        except Exception:
+            args = str(args)
+    return {"name": name, "args": args}
 
 
 def sanitize_tool_calls(messages: Messages):
