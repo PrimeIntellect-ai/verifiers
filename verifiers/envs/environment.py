@@ -102,7 +102,6 @@ class Environment(ABC):
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
-        extra_env_kwargs: dict | None = None,
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
@@ -123,7 +122,6 @@ class Environment(ABC):
 
         self.env_id = env_id or ""
         self.env_args = env_args or {}
-        self.extra_env_kwargs = extra_env_kwargs or {}
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
