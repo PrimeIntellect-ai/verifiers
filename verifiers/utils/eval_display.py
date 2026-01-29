@@ -305,7 +305,12 @@ class EvalDisplay(BaseDisplay):
 
         config_line.append("  |  ", style="dim")
         config_line.append(fmt_concurrency(config.max_concurrent), style="white")
-        config_line.append(" concurrent rollouts", style="dim")
+        concurrency_unit = (
+            " concurrent rollouts"
+            if config.independent_scoring
+            else " concurrent groups"
+        )
+        config_line.append(concurrency_unit, style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")
