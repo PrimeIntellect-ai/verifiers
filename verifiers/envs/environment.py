@@ -901,10 +901,17 @@ class Environment(ABC):
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
             inputs_list = filter_inputs(inputs_list, outputs, rollouts_per_example)
+            if independent_scoring:
+                groups_or_rollouts_completed = len(builder.outputs)
+            else:
+                groups_or_rollouts_completed = (
+                    len(builder.outputs) // rollouts_per_example
+                )
             self.logger.info(
                 f"Resuming evaluaton from {results_path}. Found {len(outputs)} completed rollout(s), {len(inputs_list)} remaining rollout(s)"
             )
         else:
+            groups_or_rollouts_completed = 0
             if save_results:
                 self.logger.info(f"Saving results to {results_path}")
 
@@ -963,12 +970,6 @@ class Environment(ABC):
             from tqdm import tqdm
 
             pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
-
-        if independent_scoring:
-            groups_or_rollouts_completed = len(builder.outputs)
-        else:
-            groups_or_rollouts_completed = len(builder.outputs) // rollouts_per_example
-        if pbar is not None:
             pbar.update(groups_or_rollouts_completed)
 
         try:
