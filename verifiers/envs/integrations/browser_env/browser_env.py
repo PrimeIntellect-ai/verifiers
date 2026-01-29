@@ -115,12 +115,6 @@ class BrowserEnv(vf.StatefulToolEnv):
             prebuilt_image: Docker image to use (default: deepdream19/cua-server:latest)
             **kwargs: Additional arguments passed to StatefulToolEnv
         """
-        # Use default system prompt for mode if not provided
-        if "system_prompt" not in kwargs or kwargs.get("system_prompt") is None:
-            kwargs["system_prompt"] = (
-                DOM_DEFAULT_PROMPT if mode == "dom" else CUA_DEFAULT_PROMPT
-            )
-
         super().__init__(**kwargs)
         self.mode = mode
 

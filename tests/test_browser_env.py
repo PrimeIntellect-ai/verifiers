@@ -9,6 +9,9 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datasets import Dataset
 
+# Skip all tests in this module if browser dependencies are not installed
+pytest.importorskip("stagehand", reason="verifiers[browser] extra not installed")
+
 
 # ============================================================================
 # BrowserEnv Validation Tests
@@ -127,74 +130,6 @@ class TestBrowserEnvValidation:
                         {"question": ["test"], "answer": ["test"]}
                     ),
                 )
-
-
-class TestBrowserEnvSystemPrompt:
-    """Tests for default system prompt selection in BrowserEnv."""
-
-    def test_default_system_prompt_dom(self):
-        """Test that DOM mode uses DOM_DEFAULT_PROMPT by default."""
-        from verifiers.envs.integrations.browser_env.browser_env import (
-            BrowserEnv,
-            DOM_DEFAULT_PROMPT,
-        )
-
-        with patch.dict(
-            os.environ,
-            {
-                "BROWSERBASE_API_KEY": "test",
-                "BROWSERBASE_PROJECT_ID": "test",
-                "MODEL_API_KEY": "test",
-            },
-            clear=True,
-        ):
-            env = BrowserEnv(
-                mode="dom",
-                dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
-            )
-            assert env.system_prompt == DOM_DEFAULT_PROMPT
-
-    def test_default_system_prompt_cua(self):
-        """Test that CUA mode uses CUA_DEFAULT_PROMPT by default."""
-        from verifiers.envs.integrations.browser_env.browser_env import (
-            BrowserEnv,
-            CUA_DEFAULT_PROMPT,
-        )
-
-        with patch.dict(os.environ, {}, clear=True):
-            with patch(
-                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
-            ):
-                env = BrowserEnv(
-                    mode="cua",
-                    env="LOCAL",
-                    use_sandbox=False,
-                    dataset=Dataset.from_dict(
-                        {"question": ["test"], "answer": ["test"]}
-                    ),
-                )
-                assert env.system_prompt == CUA_DEFAULT_PROMPT
-
-    def test_custom_system_prompt_preserved(self):
-        """Test that custom system prompt overrides default."""
-        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
-
-        custom_prompt = "You are a custom browser agent."
-
-        with patch.dict(os.environ, {}, clear=True):
-            with patch(
-                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
-            ):
-                env = BrowserEnv(
-                    mode="cua",
-                    env="LOCAL",
-                    use_sandbox=False,
-                    dataset=Dataset.from_dict(
-                        {"question": ["test"], "answer": ["test"]}
-                    ),
-                    system_prompt=custom_prompt,
-                )
-                assert env.system_prompt == custom_prompt
 
 
 # ============================================================================
@@ -707,26 +642,6 @@ class TestJudgeAnswer:
 
 class TestBrowserEnvConstants:
     """Tests for browser environment constants."""
-
-    def test_dom_default_prompt_exists(self):
-        """Test that DOM_DEFAULT_PROMPT is defined and non-empty."""
-        from verifiers.envs.integrations.browser_env.browser_env import (
-            DOM_DEFAULT_PROMPT,
-        )
-
-        assert DOM_DEFAULT_PROMPT
-        assert len(DOM_DEFAULT_PROMPT) > 50
-        assert "Stagehand" in DOM_DEFAULT_PROMPT
-
-    def test_cua_default_prompt_exists(self):
-        """Test that CUA_DEFAULT_PROMPT is defined and non-empty."""
-        from verifiers.envs.integrations.browser_env.browser_env import (
-            CUA_DEFAULT_PROMPT,
-        )
-
-        assert CUA_DEFAULT_PROMPT
-        assert len(CUA_DEFAULT_PROMPT) > 50
-        assert "click" in CUA_DEFAULT_PROMPT
 
     def test_mode_type_literal(self):
         """Test that ModeType includes expected values."""
