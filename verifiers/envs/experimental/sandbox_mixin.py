@@ -9,14 +9,18 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
+import httpx
 import tenacity as tc
 from prime_sandboxes import (
     AsyncSandboxClient,
     CommandTimeoutError,
     CreateSandboxRequest,
     DownloadTimeoutError,
+    SandboxOOMError,
     SandboxClient,
     SandboxNotRunningError,
+    SandboxTimeoutError,
+    SandboxUnresponsiveError,
     UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
@@ -344,6 +348,77 @@ class SandboxMixin:
             self.active_sandboxes.difference_update(sandbox_ids)
         except Exception as e:
             logger.error(f"Failed to bulk delete sandboxes {sandbox_ids}: {e}")
+
+    async def run_background_job(
+        self,
+        state: dict[str, Any],
+        command: str,
+        timeout: int,
+        working_dir: str | None = None,
+        poll_interval: int = 3,
+        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient | None" = None,
+        start_retry: Callable | None = None,
+        poll_retry: Callable | None = None,
+    ):
+        """Run a command as a background job and poll until completion or timeout."""
+        sandbox_id = state["sandbox_id"]
+        client = sandbox_client or self.sandbox_client
+        start_job = (
+            start_retry(client.start_background_job)
+            if start_retry
+            else client.start_background_job
+        )
+        get_job = (
+            poll_retry(client.get_background_job)
+            if poll_retry
+            else client.get_background_job
+        )
+
+        try:
+            job = await start_job(
+                sandbox_id=sandbox_id, command=command, working_dir=working_dir
+            )
+        except (CommandTimeoutError, httpx.ReadTimeout) as e:
+            logger.error(f"Failed to start background job: {repr(e)}")
+            raise vf.SandboxError() from e
+        except SandboxUnresponsiveError as e:
+            state["sandbox_unresponsive"] = True
+            logger.error(f"Background job failed: {repr(e)}")
+            raise vf.SandboxError() from e
+        except SandboxOOMError as e:
+            state["sandbox_oom"] = True
+            logger.error(f"Sandbox OOM during background job: {repr(e)}")
+            raise vf.SandboxError() from e
+        except SandboxTimeoutError as e:
+            state["sandbox_timeout"] = True
+            logger.error(f"Sandbox timeout during background job: {repr(e)}")
+            raise vf.SandboxError() from e
+
+        try:
+            for elapsed in range(0, timeout + poll_interval, poll_interval):
+                results = await get_job(sandbox_id, job)
+                if results.completed:
+                    return results
+                logger.debug(
+                    f"{sandbox_id=}: Polling job... {elapsed} / {timeout} seconds elapsed"
+                )
+                await asyncio.sleep(poll_interval)
+        except SandboxUnresponsiveError as e:
+            state["sandbox_unresponsive"] = True
+            logger.error(f"Sandbox unresponsive during polling: {repr(e)}")
+            raise vf.SandboxError() from e
+        except SandboxOOMError as e:
+            state["sandbox_oom"] = True
+            logger.error(f"Sandbox OOM during polling: {repr(e)}")
+            raise vf.SandboxError() from e
+        except SandboxTimeoutError as e:
+            state["sandbox_timeout"] = True
+            logger.error(f"Sandbox timeout during polling: {repr(e)}")
+            raise vf.SandboxError() from e
+
+        raise CommandTimeoutError(
+            sandbox_id=sandbox_id, command=command, timeout=timeout
+        )
 
     def teardown_sandboxes(self):
         """Bulk delete remaining sandboxes. Uses sync client for signal handling."""

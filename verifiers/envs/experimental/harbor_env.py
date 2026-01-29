@@ -401,12 +401,22 @@ class HarborEnv(vf.CliAgentEnv):
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
             verifier_timeout = await self.get_verifier_timeout_seconds(state)
-            await retry_short(sandbox_client.execute_command)(
-                sandbox_id,
+            results = await self.run_background_job(
+                state,
                 "bash test.sh",
-                working_dir="/tests",
                 timeout=int(verifier_timeout),
+                working_dir="/tests",
+                poll_interval=5,
+                sandbox_client=sandbox_client,
+                start_retry=retry_short,
+                poll_retry=retry_short,
             )
+            if getattr(results, "exit_code", 0) != 0:
+                logger.warning(
+                    f"Harbor tests exit_code={results.exit_code} "
+                    f"stdout_len={len(getattr(results, 'stdout', '') or '')} "
+                    f"stderr_len={len(getattr(results, 'stderr', '') or '')}"
+                )
 
             reward_result = await retry_short(sandbox_client.execute_command)(
                 sandbox_id,
