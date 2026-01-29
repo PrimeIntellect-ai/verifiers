@@ -141,6 +141,13 @@ def states_to_outputs(
     return [state_to_output(state, state_columns) for state in states]
 
 
+def load_outputs(results_path: Path) -> list[RolloutOutput]:
+    """Load outputs from disk."""
+    outputs_path = results_path / "results.jsonl"
+    with open(outputs_path, "r") as f:
+        return [RolloutOutput(**json.loads(line)) for line in f.readlines()]
+
+
 def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):
     """Save outputs to disk."""
     results_path.mkdir(parents=True, exist_ok=True)
@@ -242,12 +249,6 @@ class GenerateOutputsBuilder:
             self.base_url = (
                 str(self.client.base_url) if hasattr(self.client, "base_url") else ""
             )
-        # Compute example counts
-        example_ids = [o.get("example_id", 0) for o in self.outputs]
-        self.num_examples = len(set(example_ids)) if example_ids else 0
-        self.rollouts_per_example = (
-            len(self.outputs) // self.num_examples if self.num_examples > 0 else 1
-        )
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
@@ -286,6 +287,13 @@ class GenerateOutputsBuilder:
             next((t for t in self.tools_list if t), None)
             if len(unique_tools) == 1
             else None
+        )
+
+        # Compute example counts
+        example_ids = [o.get("example_id", 0) for o in self.outputs]
+        self.num_examples = len(set(example_ids)) if example_ids else 0
+        self.rollouts_per_example = (
+            len(self.outputs) // self.num_examples if self.num_examples > 0 else 1
         )
 
         return GenerateMetadata(

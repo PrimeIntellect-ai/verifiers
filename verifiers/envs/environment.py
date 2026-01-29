@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import signal
+import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -28,6 +29,7 @@ from typing import (
 
 from openai import AsyncOpenAI, BadRequestError, OpenAI
 
+from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
@@ -870,6 +872,10 @@ class Environment(ABC):
         elif isinstance(inputs, list):
             inputs_list = inputs
 
+        if not inputs_list:
+            self.logger.info("No inputs to generate")
+            sys.exit(0)
+
         # notify caller of actual total count (useful when num_examples=-1)
         if on_start is not None:
             on_start(len(inputs_list))
@@ -1081,6 +1087,8 @@ class Environment(ABC):
         Evaluate model on the Environment evaluation dataset.
         """
         inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
+        if resume_path is not None:
+            inputs = filter_inputs(inputs, resume_path, rollouts_per_example)
         return await self.generate(
             inputs,
             client=client,
