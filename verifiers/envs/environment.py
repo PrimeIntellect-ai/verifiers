@@ -1186,6 +1186,7 @@ class Environment(ABC):
                 log_file,
             ),
             kwargs=dict(address=address),
+            daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(address=address)
