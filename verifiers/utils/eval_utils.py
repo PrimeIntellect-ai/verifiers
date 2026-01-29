@@ -144,8 +144,6 @@ def load_toml_config(path: Path) -> list[dict]:
         "num_examples",
         "rollouts_per_example",
         "max_concurrent",
-        "max_concurrent_generation",
-        "max_concurrent_scoring",
         "independent_scoring",
         "max_retries",
         # logging

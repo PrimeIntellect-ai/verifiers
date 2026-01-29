@@ -576,8 +576,6 @@ class EvalConfig(BaseModel):
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
-    max_concurrent_generation: int | None = None
-    max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0

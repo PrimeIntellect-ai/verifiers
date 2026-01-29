@@ -304,17 +304,8 @@ class EvalDisplay(BaseDisplay):
             return "∞" if val == -1 else str(val)
 
         config_line.append("  |  ", style="dim")
-        if config.max_concurrent_generation or config.max_concurrent_scoring:
-            gen_concurrency = config.max_concurrent_generation or config.max_concurrent
-            sem_concurrency = config.max_concurrent_scoring or config.max_concurrent
-            config_line.append(fmt_concurrency(gen_concurrency), style="white")
-            config_line.append(" concurrent generation", style="dim")
-            config_line.append(" and ", style="dim")
-            config_line.append(fmt_concurrency(sem_concurrency), style="white")
-            config_line.append(" concurrent scoring", style="dim")
-        else:
-            config_line.append(fmt_concurrency(config.max_concurrent), style="white")
-            config_line.append(" concurrent rollouts", style="dim")
+        config_line.append(fmt_concurrency(config.max_concurrent), style="white")
+        config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")

@@ -34,8 +34,6 @@ def run_cli(make_metadata, make_state, make_input):
             "num_examples": 1,
             "rollouts_per_example": 1,
             "max_concurrent": 1,
-            "max_concurrent_generation": None,
-            "max_concurrent_scoring": None,
             "independent_scoring": False,
             "max_tokens": 42,
             "temperature": 0.9,
