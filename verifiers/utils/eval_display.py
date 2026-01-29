@@ -6,12 +6,10 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
-import json
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from rich.columns import Columns
 from rich.console import Group
@@ -22,6 +20,7 @@ from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
+from verifiers.utils.message_utils import format_messages
 
 
 @dataclass
@@ -57,54 +56,6 @@ class EnvEvalState:
             return 0.0
         end = self.end_time or time.time()
         return end - self.start_time
-
-
-def _format_messages(messages: Any) -> Text:
-    """Format messages for display (similar to print_prompt_completions_sample)."""
-
-    def _attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
-        val = getattr(obj, key, None)
-        if val is not None:
-            return val
-        if isinstance(obj, Mapping):
-            return obj.get(key, default)
-        return default
-
-    def _normalize_tool_call(tc: Any) -> dict[str, str]:
-        src = _attr_or_key(tc, "function") or tc
-        name = _attr_or_key(src, "name", "") or ""
-        args = _attr_or_key(src, "arguments", {}) or {}
-        if not isinstance(args, str):
-            try:
-                args = json.dumps(args)
-            except Exception:
-                args = str(args)
-        return {"name": name, "args": args}
-
-    if isinstance(messages, str):
-        return Text(messages)
-
-    out = Text()
-    for idx, msg in enumerate(messages):
-        if idx:
-            out.append("\n\n")
-
-        assert isinstance(msg, dict)
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        style = "bright_cyan" if role == "assistant" else "bright_magenta"
-
-        out.append(f"{role}: ", style="bold")
-        out.append(str(content) if content else "", style=style)
-
-        for tc in msg.get("tool_calls") or []:
-            payload = _normalize_tool_call(tc)
-            out.append(
-                "\n\n[tool call]\n" + json.dumps(payload, indent=2, ensure_ascii=False),
-                style=style,
-            )
-
-    return out
 
 
 def _make_histogram(values: list[float], bins: int = 10, width: int = 20) -> Text:
@@ -573,14 +524,14 @@ class EvalDisplay(BaseDisplay):
             # Prompt panel
             items.append(
                 Panel(
-                    _format_messages(prompt),
+                    format_messages(prompt),
                     title="[dim]example 0 — prompt[/dim]",
                     border_style="dim",
                 )
             )
 
             # Completion panel (with error if any)
-            completion_text = _format_messages(completion)
+            completion_text = format_messages(completion)
             if error_0 is not None:
                 completion_text.append("\n\nerror: ", style="bold red")
                 completion_text.append(error_0, style="bold red")
