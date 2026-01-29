@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import ClientConfig
-from verifiers.utils.async_utils import maybe_semaphore
+from verifiers.utils.async_utils import NullAsyncContext
 from verifiers.utils.client_utils import setup_client
 from verifiers.workers.types import (
     HealthRequest,
@@ -62,7 +62,7 @@ class EnvServer(ABC):
             )
             self.env.set_kwargs(**self.extra_env_kwargs)
 
-        self.no_limit = maybe_semaphore(None)
+        self.no_limit = NullAsyncContext()
 
     @abstractmethod
     async def run(self, stop_event: asyncio.Event | None = None):
