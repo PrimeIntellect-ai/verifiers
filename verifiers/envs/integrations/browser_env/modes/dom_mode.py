@@ -170,7 +170,11 @@ class DOMMode:
     # ==================== Tool Methods ====================
 
     async def navigate(self, url: str, session: Any) -> str:
-        """Navigate to a URL."""
+        """Tool to navigate the browser session directly to a url.
+
+        Args:
+            url: The url to navigate to.
+        """
         try:
             await session.navigate(url=url)
             return f"Navigated to {url}"
@@ -180,7 +184,11 @@ class DOMMode:
     async def observe(
         self, instruction: str, session: Any, llm_config: Any = None
     ) -> str:
-        """Find possible actions on the page matching the instruction."""
+        """Tool to find possible actions on the page matching the instruction.
+
+        Args:
+            instruction: The instruction to find possible actions for.
+        """
         try:
             if llm_config:
                 response = await session.observe(
@@ -203,7 +211,16 @@ class DOMMode:
             return f"Error observing page: {str(e)}"
 
     async def act(self, instruction: str, session: Any, llm_config: Any = None) -> str:
-        """Execute an action described in natural language."""
+        """Tool to request an action be performed on the current page.
+        These can be any natural language, as well as be descriptions found by previous observe() calls.
+        Vauge instructions will not get you good results so it is recommended to be as specific as possible so the agent performing the action knows exactly what to do.
+
+        Examples:
+            Things like 'click the article about yesterdays news' or 'open the contact us page'
+
+        Args:
+            instruction: The instruction to perform an action for.
+        """
         try:
             if llm_config:
                 response = await session.act(
@@ -224,7 +241,12 @@ class DOMMode:
         session: Any,
         llm_config: Any = None,
     ) -> str:
-        """Extract structured data from the page."""
+        """Tool to extract structured data from the current page.
+
+        Args:
+            instruction: The instruction to extract data for.
+            schema_json: The schema to use for extraction.
+        """
         try:
             schema = json.loads(schema_json)
             if llm_config:

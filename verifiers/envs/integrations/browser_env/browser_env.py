@@ -14,39 +14,6 @@ logger = logging.getLogger(__name__)
 
 ModeType = Literal["dom", "cua"]
 
-# Default system prompts for each mode
-DOM_DEFAULT_PROMPT = """You are a browser automation agent using Stagehand's AI-driven tools.
-
-Available tools:
-- navigate(url): Navigate to a URL
-- observe(instruction): Find possible actions matching the instruction
-- act(instruction): Execute an action described in natural language
-- extract(instruction, schema_json): Extract structured data from the page
-
-Use natural language to describe what you want to do. Stagehand will intelligently
-find elements and execute actions without needing CSS selectors or coordinates.
-
-Complete the given task efficiently."""
-
-CUA_DEFAULT_PROMPT = """You are a browser automation agent. You can control a web browser using the provided tools.
-
-Available tools:
-- click(x, y, button): Click at coordinates
-- double_click(x, y): Double-click at coordinates
-- type_text(text): Type text into focused element
-- keypress(keys): Press keyboard keys
-- scroll(x, y, scroll_x, scroll_y): Scroll at position
-- goto(url): Navigate to URL
-- back(): Go back in history
-- forward(): Go forward in history
-- wait(time_ms): Wait for specified milliseconds
-- screenshot(): Capture current page state
-
-After each action, you will receive a screenshot showing the current page state.
-Analyze the screenshot to determine your next action.
-
-Complete the given task efficiently using the minimum number of actions necessary."""
-
 
 class BrowserEnv(vf.StatefulToolEnv):
     """
