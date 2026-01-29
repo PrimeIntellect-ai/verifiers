@@ -875,9 +875,8 @@ class Environment(ABC):
         # set up sampling args
         default_sampling_args = deepcopy(self.sampling_args)
         if sampling_args is not None:
-            sampling_args.update(default_sampling_args)
-        else:
-            sampling_args = default_sampling_args
+            default_sampling_args.update(sampling_args)
+        sampling_args = default_sampling_args
 
         # Initialize builder for incremental serialization
         builder = GenerateOutputsBuilder(
