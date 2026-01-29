@@ -21,7 +21,7 @@ from verifiers.types import (
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
-from verifiers.utils.path_utils import get_results_path, is_valid_eval_results_path
+from verifiers.utils.path_utils import get_results_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,21 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return repr(value)
     else:
         return str(value)
+
+
+def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
+    """Auto-generates a dataset name."""
+    metadata = outputs["metadata"]
+    dataset_name = (
+        metadata["env_id"]
+        + "_"
+        + metadata["model"].replace("/", "_")
+        + "_n"
+        + str(metadata["num_examples"])
+        + "_r"
+        + str(metadata["rollouts_per_example"])
+    )
+    return dataset_name
 
 
 def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutput:
@@ -142,87 +157,6 @@ def states_to_outputs(
     return [state_to_output(state, state_columns) for state in states]
 
 
-def load_outputs(results_path: Path) -> list[RolloutOutput]:
-    """Load outputs from disk."""
-    outputs_path = results_path / "results.jsonl"
-    with open(outputs_path, "r") as f:
-        return [RolloutOutput(**json.loads(line)) for line in f.readlines()]
-
-
-def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):
-    """Save outputs to disk."""
-    results_path.mkdir(parents=True, exist_ok=True)
-    outputs_path = results_path / "results.jsonl"
-    with open(outputs_path, mode) as f:
-        for idx, output in enumerate(outputs):
-            example_id = output.get("example_id") or "unknown"
-            try:
-                json.dump(output, f, default=make_serializable)
-                f.write("\n")
-            except Exception as e:
-                logger.error(
-                    f"Failed to save result with index {idx} ({example_id=}): {e}"
-                )
-
-
-def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
-    """Saves new rollout outputs to disk (in append mode)."""
-    save_outputs(new_outputs, results_path, mode="a")
-
-
-def save_metadata(metadata: GenerateMetadata, result_path: Path):
-    """Saves metadata to disk."""
-
-    def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-        """Sanitizes metadata before saving to disk."""
-
-        metadata_dict = dict(metadata)
-        metadata_dict.pop("path_to_save")
-        metadata_dict.pop("date")
-
-        return metadata_dict
-
-    result_path.mkdir(parents=True, exist_ok=True)
-    metadata_path = result_path / "metadata.json"
-    metadata_dict = sanitize_metadata(metadata)
-    with open(metadata_path, "w") as f:
-        try:
-            json.dump(metadata_dict, f, default=make_serializable)
-        except Exception as e:
-            logger.error(f"Failed to save metadata: {e}")
-
-
-def make_dataset(results: GenerateOutputs) -> Dataset:
-    """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
-    return Dataset.from_list(list(results["outputs"]))
-
-
-def get_default_dataset_name(results: GenerateOutputs) -> str:
-    """Auto-generates a dataset name."""
-    metadata = results["metadata"]
-    dataset_name = (
-        metadata["env_id"]
-        + "_"
-        + metadata["model"].replace("/", "_")
-        + "_n"
-        + str(metadata["num_examples"])
-        + "_r"
-        + str(metadata["rollouts_per_example"])
-    )
-    return dataset_name
-
-
-def push_results_to_hf_hub(results: GenerateOutputs, dataset_name: str | None = None):
-    """Push results to Hugging Face Hub."""
-    dataset_name = dataset_name or get_default_dataset_name(results)
-    try:
-        dataset = make_dataset(results)
-        dataset.push_to_hub(dataset_name)
-        logger.info(f"Results pushed to Hugging Face Hub: {dataset_name}")
-    except Exception as e:
-        logger.error(f"Error pushing results to Hugging Face Hub: {e}")
-
-
 class GenerateOutputsBuilder:
     """Incrementally builds GenerateOutputs."""
 
@@ -259,14 +193,6 @@ class GenerateOutputsBuilder:
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
         self.tools_list: list[list[ChatCompletionToolParam] | None] = []
-
-    def maybe_load(self) -> None:
-        """Load outputs from disk if results_path is set."""
-        if is_valid_eval_results_path(self.results_path):
-            self.outputs = load_outputs(self.results_path)
-            self.logger.info(
-                f"Loaded {len(self.outputs)} outputs from {self.results_path}"
-            )
 
     def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
         """Accumulate new outputs."""
@@ -332,3 +258,69 @@ class GenerateOutputsBuilder:
             outputs=self.build_outputs(sort_by_example_id),
             metadata=self.build_metadata(),
         )
+
+
+def load_outputs(results_path: Path) -> list[RolloutOutput]:
+    """Load outputs from disk."""
+    outputs_path = results_path / "results.jsonl"
+    with open(outputs_path, "r") as f:
+        return [RolloutOutput(**json.loads(line)) for line in f.readlines()]
+
+
+def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):
+    """Save outputs to disk."""
+    results_path.mkdir(parents=True, exist_ok=True)
+    outputs_path = results_path / "results.jsonl"
+    with open(outputs_path, mode) as f:
+        for idx, output in enumerate(outputs):
+            example_id = output.get("example_id") or "unknown"
+            try:
+                json.dump(output, f, default=make_serializable)
+                f.write("\n")
+            except Exception as e:
+                logger.error(
+                    f"Failed to save result with index {idx} ({example_id=}): {e}"
+                )
+
+
+def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
+    """Saves new rollout outputs to disk (in append mode)."""
+    save_outputs(new_outputs, results_path, mode="a")
+
+
+def save_metadata(metadata: GenerateMetadata, result_path: Path):
+    """Saves metadata to disk."""
+
+    def sanitize_metadata(metadata: GenerateMetadata) -> dict:
+        """Sanitizes metadata before saving to disk."""
+
+        metadata_dict = dict(metadata)
+        metadata_dict.pop("path_to_save")
+        metadata_dict.pop("date")
+
+        return metadata_dict
+
+    result_path.mkdir(parents=True, exist_ok=True)
+    metadata_path = result_path / "metadata.json"
+    metadata_dict = sanitize_metadata(metadata)
+    with open(metadata_path, "w") as f:
+        try:
+            json.dump(metadata_dict, f, default=make_serializable)
+        except Exception as e:
+            logger.error(f"Failed to save metadata: {e}")
+
+
+def make_dataset(results: GenerateOutputs) -> Dataset:
+    """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
+    return Dataset.from_list(list(results["outputs"]))
+
+
+def push_results_to_hf_hub(results: GenerateOutputs, dataset_name: str | None = None):
+    """Push results to Hugging Face Hub."""
+    dataset_name = dataset_name or get_hf_hub_dataset_name(results)
+    try:
+        dataset = make_dataset(results)
+        dataset.push_to_hub(dataset_name)
+        logger.info(f"Results pushed to Hugging Face Hub: {dataset_name}")
+    except Exception as e:
+        logger.error(f"Error pushing results to Hugging Face Hub: {e}")
