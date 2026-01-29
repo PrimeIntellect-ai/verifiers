@@ -45,6 +45,7 @@ class ZMQEnvClient(EnvClient):
 
         self.pending: dict[str, asyncio.Future] = {}
         self._receiver_task: asyncio.Task | None = None
+        self._start_lock = asyncio.Lock()
 
     async def handle_health_request(
         self, request: HealthRequest, timeout: float | None
@@ -130,9 +131,10 @@ class ZMQEnvClient(EnvClient):
         timeout: float | None = None,
     ) -> BaseResponseT:
         """Send request to environment and await response"""
-        # Auto-start receiver if not already running
+        # auto-start receiver if not already running (with lock to prevent race)
         if self._receiver_task is None:
-            await self._start()
+            async with self._start_lock:
+                await self._start()
 
         # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
