@@ -19,7 +19,7 @@ class SandboxExecutorMixin:
     def _init_sandbox_executor(
         self,
         *,
-        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_workers: int = 50,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         max_retries: int = 5,

@@ -15,7 +15,7 @@ def load_environment(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 10,
+    sandbox_client_max_workers: int = 50,
     **kwargs,
 ):
     dataset = load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
