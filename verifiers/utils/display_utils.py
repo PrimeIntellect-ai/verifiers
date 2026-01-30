@@ -128,7 +128,21 @@ class BaseDisplay:
             else:
                 log_text.append(" ", style="dim")  # placeholder line
 
-        return Panel(log_text, title="[dim]Logs[/dim]", border_style="dim")
+        # Build title with log file path
+        title = Text()
+        title.append("Logs", style="dim")
+        if self._log_files:
+            # Show the first log file path being tailed
+            log_path = next(iter(self._log_files.keys()))
+            title.append(" ", style="dim")
+            title.append(str(log_path), style="dim cyan")
+
+        return Panel(
+            log_text,
+            title=title,
+            title_align="left",
+            border_style="dim",
+        )
 
     def add_log_file(self, path: Path) -> None:
         """Register a log file for tailing."""

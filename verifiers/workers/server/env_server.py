@@ -2,7 +2,6 @@ import asyncio
 import logging
 import signal
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -29,19 +28,10 @@ class EnvServer(ABC):
         env_id: str,
         env_args: dict[str, Any] | None = None,
         extra_env_kwargs: dict[str, Any] | None = None,
-        log_level: str | None = None,
-        log_file: str | None = None,
-        log_file_level: str | None = None,
+        logging_config: dict[str, Any] | None = None,
     ):
         # setup logging
-        log_file = log_file or f"logs/{env_id}.log"
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        if log_level is None:
-            vf.setup_logging(log_file=log_file, log_file_level=log_file_level)
-        else:
-            vf.setup_logging(
-                level=log_level, log_file=log_file, log_file_level=log_file_level
-            )
+        vf.setup_logging(**(logging_config or {}))
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.debug(

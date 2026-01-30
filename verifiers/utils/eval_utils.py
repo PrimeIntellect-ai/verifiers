@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
@@ -338,23 +339,30 @@ async def run_evaluation(
 
     results_path = get_eval_results_path(config)
 
-    # start env server as sidecar process
     if config.debug:
-        log_file_level = None
-        log_file = None
-        log_level = "DEBUG" if config.verbose else "INFO"
+        # in debug mode use regular console logger with specified log level
+        log_level = "DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+        logging_config = dict(log_level=log_level)
     else:
-        log_file_level = "DEBUG" if config.verbose else "INFO"
+        log_file_level = (
+            "DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+        )
         log_file = results_path / "eval.log"
-        log_level = "ERROR"
-        assert on_log_file is not None
-        on_log_file(log_file)
-    try:
-        await vf_env.start_server(
-            extra_env_kwargs=config.extra_env_kwargs,
-            log_level=log_level,
-            log_file=str(log_file) if log_file else None,
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        logging_config: dict[str, Any] = dict(
+            log_to_console=False,
+            log_to_file=True,
+            log_file=log_file,
             log_file_level=log_file_level,
+        )
+        if on_log_file is not None:
+            on_log_file(log_file)
+    try:
+        # start env server as sidecar process
+        await vf_env.start_server(
+            address=None,
+            extra_env_kwargs=config.extra_env_kwargs,
+            logging_config=logging_config,
         )
 
         # run evaluation
@@ -445,7 +453,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         error_accum = 0
 
         def register_log_file(log_file: Path) -> None:
-            display.add_log_file(log_file)
+            display.add_log_file_for_env(env_idx, log_file)
 
         def on_start(total: int) -> None:
             # total is num_examples * rollouts_per_example

@@ -1,6 +1,7 @@
 import logging
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -19,7 +20,9 @@ def setup_logging(
     level: str = "INFO",
     log_format: str | None = None,
     date_format: str | None = None,
-    log_file: str | None = None,
+    log_to_console: bool = True,
+    log_to_file: bool = False,
+    log_file: Path | None = None,
     log_file_level: str | None = None,
 ) -> None:
     """
@@ -53,14 +56,19 @@ def setup_logging(
     logger.setLevel(min(console_level, file_level))
 
     # add console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(console_level)
-    logger.addHandler(console_handler)
+    if log_to_console:
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(console_level)
+        logger.addHandler(console_handler)
 
     # add file handler if log_file is specified
-    if log_file is not None:
-        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    if log_to_file:
+        if log_file is None:
+            raise ValueError("log_file must be specified if log_to_file is True")
+        file_handler = logging.FileHandler(
+            log_file.as_posix(), mode="a", encoding="utf-8"
+        )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(file_level)
         logger.addHandler(file_handler)

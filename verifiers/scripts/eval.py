@@ -269,16 +269,11 @@ def main():
     args = parser.parse_args()
 
     # setup logging for main eval process
-    log_level = "DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
-    log_file = None if args.debug else "logs/eval.log"
-    log_file_level = None
-    if not args.debug:
-        log_file_level = log_level
-        log_level = "ERROR"
-        log_file = "logs/eval.log"
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-
-    setup_logging(log_level, log_file=log_file, log_file_level=log_file_level)
+    if args.debug:  # in debug mode use regular console logger with specified log level
+        log_level = "DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+        setup_logging(log_level)
+    else:  # in rich mode disable console logging from main process
+        setup_logging(log_to_console=False)
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):

@@ -6,7 +6,9 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
+import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -121,6 +123,11 @@ class EvalDisplay(BaseDisplay):
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
 
+        # per-environment log files and log buffers
+        self._env_log_files: dict[int, dict[Path, int]] = {}
+        self._env_logs: dict[int, deque[str]] = {}
+        self._env_log_titles: dict[int, Text] = {}  # cached log panel titles
+
         # initialize env states by index
         for idx, config in enumerate(configs):
             total = config.num_examples * config.rollouts_per_example
@@ -129,6 +136,9 @@ class EvalDisplay(BaseDisplay):
                 num_examples=config.num_examples,
                 rollouts_per_example=config.rollouts_per_example,
             )
+            self._env_log_files[idx] = {}
+            self._env_logs[idx] = deque(maxlen=10)
+            self._env_log_titles[idx] = Text("logs", style="dim")  # default title
 
     def update_env_state(
         self,
@@ -187,6 +197,37 @@ class EvalDisplay(BaseDisplay):
             env_state.results = results
 
         self.refresh()
+
+    def add_log_file_for_env(self, env_idx: int, path: Path) -> None:
+        """Register a log file for tailing for a specific environment."""
+        if env_idx in self._env_log_files:
+            self._env_log_files[env_idx][path] = 0  # start from beginning
+            # Cache the log panel title with file path (avoids flicker on refresh)
+            log_title = Text()
+            log_title.append("logs", style="dim")
+            log_title.append(" ", style="dim")
+            log_title.append(str(path), style="dim cyan")
+            self._env_log_titles[env_idx] = log_title
+
+    async def _tail_log_files(self) -> None:
+        """Background task to tail per-env log files and push lines to per-env buffers."""
+        while True:
+            await asyncio.sleep(0.2)  # poll every 200ms for responsive streaming
+            for env_idx, log_files in list(self._env_log_files.items()):
+                for path in list(log_files.keys()):
+                    if not path.exists():
+                        continue
+                    try:
+                        pos = log_files[path]
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(pos)
+                            for line in f:
+                                line = line.rstrip("\n")
+                                if line:
+                                    self._env_logs[env_idx].append(line)
+                            log_files[path] = f.tell()
+                    except Exception:
+                        pass  # ignore read errors
 
     def _get_error_rate_color(self, error_rate: float) -> str:
         """Get color for error rate: red if > 10%, otherwise default."""
@@ -325,6 +366,28 @@ class EvalDisplay(BaseDisplay):
             error_text.append(env_state.error, style="red")
             error_content = error_text
 
+        # per-env log lines (tailed from log file) - fixed height of 20 lines
+        max_log_lines = 20
+        logs_list = list(self._env_logs.get(env_idx, []))
+        log_text = Text(no_wrap=True, overflow="ellipsis")
+        recent_logs = logs_list[-max_log_lines:]
+        for i in range(max_log_lines):
+            if i > 0:
+                log_text.append("\n")
+            if i < len(recent_logs):
+                log_text.append(recent_logs[i], style="dim")
+
+        # Use cached log title (avoids flicker on refresh)
+        log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
+
+        logs_panel = Panel(
+            log_text,
+            title=log_title,
+            title_align="left",
+            border_style="dim",
+            padding=(1, 1),
+        )
+
         # combine all content
         space = Text("  ")
         content_items = [config_line, space, progress]
@@ -336,6 +399,8 @@ class EvalDisplay(BaseDisplay):
         content_items.append(log_content)
         if error_content:
             content_items.append(error_content)
+        content_items.append(Text(""))  # spacing before logs
+        content_items.append(logs_panel)
 
         # border style based on status
         border_styles = {
@@ -364,8 +429,10 @@ class EvalDisplay(BaseDisplay):
         if not self.configs:
             return Group()
 
-        # create panels for each environment by index
-        panels = [self._make_env_panel(idx) for idx in range(len(self.configs))]
+        # create panels for each environment by index (logs are nested inside each panel)
+        panels: list[Panel] = []
+        for idx in range(len(self.configs)):
+            panels.append(self._make_env_panel(idx))
 
         return Group(*panels)
 
@@ -401,9 +468,6 @@ class EvalDisplay(BaseDisplay):
     def _render(self) -> Group:
         """Create the full display."""
         items: list[Group | Panel] = [self._make_env_stack()]
-
-        # Always show log panel (with placeholder lines if no logs)
-        items.append(self._make_log_panel())
 
         # Only show footer in TUI mode
         if self.screen:
