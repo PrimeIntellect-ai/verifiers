@@ -7,6 +7,7 @@ Provides a visual progress display that works in two modes:
 """
 
 import asyncio
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -123,6 +124,10 @@ class EvalDisplay(BaseDisplay):
         # store configs by index to handle duplicate env_ids
         self.configs: list[EvalConfig] = list(configs)
 
+        # pagination state (TUI mode only)
+        self._current_page: int = 0
+        self._key_listener_task: asyncio.Task | None = None
+
         # per-environment log files and log buffers
         self._env_log_files: dict[int, dict[Path, int]] = {}
         self._env_logs: dict[int, deque[str]] = {}
@@ -208,6 +213,67 @@ class EvalDisplay(BaseDisplay):
             log_title.append(" ", style="dim")
             log_title.append(str(path), style="dim cyan")
             self._env_log_titles[env_idx] = log_title
+
+    @property
+    def _total_pages(self) -> int:
+        """Total number of pages (one per env in TUI mode)."""
+        return len(self.configs)
+
+    def _next_page(self) -> None:
+        """Navigate to the next page (wraps around)."""
+        if self._total_pages > 0:
+            self._current_page = (self._current_page + 1) % self._total_pages
+            self.refresh()
+
+    def _prev_page(self) -> None:
+        """Navigate to the previous page (wraps around)."""
+        if self._total_pages > 0:
+            self._current_page = (self._current_page - 1) % self._total_pages
+            self.refresh()
+
+    async def _key_listener(self) -> None:
+        """Background task to listen for H/L keys for page navigation in TUI mode."""
+        from verifiers.utils.display_utils import HAS_TERMINAL_CONTROL
+
+        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
+            return
+
+        import select as select_module
+        import termios as termios_module
+        import tty as tty_module
+
+        fd = sys.stdin.fileno()
+        old_settings = termios_module.tcgetattr(fd)
+
+        try:
+            # Put terminal in cbreak mode to read individual key presses
+            tty_module.setcbreak(fd)
+
+            while True:
+                await asyncio.sleep(0.05)  # poll every 50ms for responsive navigation
+
+                # Check for input without blocking
+                if select_module.select([sys.stdin], [], [], 0)[0]:
+                    try:
+                        char = sys.stdin.read(1)
+
+                        # Handle escape sequences (ignore them for navigation)
+                        if char == "\x1b":
+                            # Drain escape sequence
+                            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                sys.stdin.read(1)
+                            continue
+
+                        # Handle page navigation
+                        if char in ("l", "L"):
+                            self._next_page()
+                        elif char in ("h", "H"):
+                            self._prev_page()
+                    except Exception:
+                        pass  # ignore read errors
+        finally:
+            # Restore terminal settings
+            termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     async def _tail_log_files(self) -> None:
         """Background task to tail per-env log files and push lines to per-env buffers."""
@@ -425,23 +491,43 @@ class EvalDisplay(BaseDisplay):
         )
 
     def _make_env_stack(self) -> Group:
-        """Create a vertical stack of environment panels."""
+        """Create a vertical stack of environment panels.
+
+        In TUI mode (screen=True): shows one environment per page with H/L navigation.
+        In non-TUI mode (screen=False): stacks all environment panels vertically.
+        """
         if not self.configs:
             return Group()
 
-        # create panels for each environment by index (logs are nested inside each panel)
-        panels: list[Panel] = []
-        for idx in range(len(self.configs)):
-            panels.append(self._make_env_panel(idx))
-
-        return Group(*panels)
+        if self.screen:
+            # TUI mode: show only the current page (one env)
+            return Group(self._make_env_panel(self._current_page))
+        else:
+            # Non-TUI mode: stack all panels
+            panels: list[Panel] = []
+            for idx in range(len(self.configs)):
+                panels.append(self._make_env_panel(idx))
+            return Group(*panels)
 
     def _make_footer(self) -> Panel:
-        """Create the footer panel with instructions."""
+        """Create the footer panel with instructions and page indicator."""
+        footer_text = Text()
+
+        # Page indicator for TUI mode with multiple envs
+        if self.screen and self._total_pages > 1:
+            footer_text.append("H", style="bold cyan")
+            footer_text.append("/", style="dim")
+            footer_text.append("L", style="bold cyan")
+            footer_text.append(" navigate", style="dim")
+            footer_text.append("  │  ", style="dim")
+            footer_text.append(
+                f"{self._current_page + 1}/{self._total_pages}", style="bold"
+            )
+            footer_text.append("  │  ", style="dim")
+
         if self.state.all_completed:
             if self.screen:
                 # TUI mode - show exit instructions
-                footer_text = Text()
                 footer_text.append("Press ", style="dim")
                 footer_text.append("q", style="bold cyan")
                 footer_text.append(" or ", style="dim")
@@ -449,21 +535,18 @@ class EvalDisplay(BaseDisplay):
                 footer_text.append(" to exit", style="dim")
             else:
                 # Normal mode - no exit prompt needed
-                footer_text = Text()
                 footer_text.append("Evaluation complete", style="dim")
-            return Panel(footer_text, border_style="dim")
         else:
             if self.screen:
                 # TUI mode - show interrupt instructions
-                footer_text = Text()
                 footer_text.append("Press ", style="dim")
                 footer_text.append("Ctrl+C", style="bold yellow")
                 footer_text.append(" to interrupt", style="dim")
             else:
                 # Normal mode - show running status
-                footer_text = Text()
                 footer_text.append("Running...", style="dim")
-            return Panel(footer_text, border_style="dim")
+
+        return Panel(footer_text, border_style="dim")
 
     def _render(self) -> Group:
         """Create the full display."""
@@ -474,6 +557,99 @@ class EvalDisplay(BaseDisplay):
             items.append(self._make_footer())
 
         return Group(*items)
+
+    async def __aenter__(self) -> "EvalDisplay":
+        """Start the display and key listener for TUI mode navigation."""
+        await super().__aenter__()
+
+        # Start key listener for page navigation in TUI mode
+        if self.screen and self._total_pages > 1:
+            self._key_listener_task = asyncio.create_task(self._key_listener())
+
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Stop the display and key listener."""
+        # Stop key listener
+        if self._key_listener_task is not None:
+            self._key_listener_task.cancel()
+            try:
+                await self._key_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._key_listener_task = None
+
+        await super().__aexit__(exc_type, exc_val, exc_tb)
+
+    async def wait_for_exit(self) -> None:
+        """Wait for user to press a key to exit, with H/L page navigation support."""
+        # Stop the key listener first to avoid terminal settings conflicts
+        if self._key_listener_task is not None:
+            self._key_listener_task.cancel()
+            try:
+                await self._key_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._key_listener_task = None
+
+        from verifiers.utils.display_utils import HAS_TERMINAL_CONTROL
+
+        if not HAS_TERMINAL_CONTROL or not sys.stdin.isatty():
+            # On Windows or non-tty, just wait for a simple input
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            return
+
+        import select as select_module
+        import termios as termios_module
+        import tty as tty_module
+
+        # Save terminal settings
+        fd = sys.stdin.fileno()
+        old_settings = termios_module.tcgetattr(fd)
+
+        def drain_escape_sequence() -> None:
+            """Consume remaining chars of an escape sequence (mouse events, etc)."""
+            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                sys.stdin.read(1)
+
+        try:
+            # Use cbreak mode (not raw) - allows single char input without corrupting display
+            tty_module.setcbreak(fd)
+
+            # Wait for key press in a non-blocking way
+            while True:
+                # Small delay to keep display responsive
+                await asyncio.sleep(0.1)
+
+                # Use select to check for input without blocking
+                if select_module.select([sys.stdin], [], [], 0)[0]:
+                    char = sys.stdin.read(1)
+
+                    # Handle escape sequences (mouse scroll, arrow keys, etc)
+                    if char == "\x1b":
+                        # Check if more chars follow (escape sequence vs standalone Esc)
+                        if select_module.select([sys.stdin], [], [], 0.05)[0]:
+                            # Escape sequence - drain it and ignore
+                            drain_escape_sequence()
+                            continue
+                        else:
+                            # Standalone Escape key - exit
+                            break
+
+                    # Handle page navigation (H/L)
+                    if char in ("l", "L"):
+                        self._next_page()
+                        continue
+                    elif char in ("h", "H"):
+                        self._prev_page()
+                        continue
+
+                    # Exit on q, Q, or enter
+                    if char in ("q", "Q", "\r", "\n"):
+                        break
+        finally:
+            # Restore terminal settings
+            termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
     def print_final_summary(self) -> None:
         """Print a comprehensive summary after the display closes."""

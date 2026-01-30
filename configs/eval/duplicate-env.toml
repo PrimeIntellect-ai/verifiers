@@ -1,3 +1,5 @@
+verbose = true
+
 [[eval]]
 env_id = "alphabet-sort"
 
