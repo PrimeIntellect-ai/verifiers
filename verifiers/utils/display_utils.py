@@ -90,6 +90,7 @@ class BaseDisplay:
         self._log_handler = DisplayLogHandler(max_lines=3)
         self._old_handler_levels: dict[logging.Handler, int] = {}
         self._old_datasets_level: int | None = None
+        self._refresh_task: asyncio.Task | None = None
 
     def _render(self) -> Any:
         """
@@ -257,13 +258,27 @@ class BaseDisplay:
             # Restore terminal settings
             termios_module.tcsetattr(fd, termios_module.TCSADRAIN, old_settings)
 
+    async def _periodic_refresh(self) -> None:
+        """Background task to refresh the display every second for time updates."""
+        while True:
+            await asyncio.sleep(1.0)
+            self.refresh()
+
     async def __aenter__(self) -> "BaseDisplay":
-        """Async context manager entry - start the display."""
+        """Async context manager entry - start the display and periodic refresh."""
         self.start()
+        self._refresh_task = asyncio.create_task(self._periodic_refresh())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit - stop the display."""
+        """Async context manager exit - stop the display and cancel refresh task."""
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            try:
+                await self._refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._refresh_task = None
         self.stop()
 
     def __enter__(self) -> "BaseDisplay":
