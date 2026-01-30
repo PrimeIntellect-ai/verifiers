@@ -16,6 +16,7 @@ from typing import Literal
 
 from rich.columns import Columns
 from rich.console import Group
+from rich.layout import Layout
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -548,15 +549,21 @@ class EvalDisplay(BaseDisplay):
 
         return Panel(footer_text, border_style="dim")
 
-    def _render(self) -> Group:
+    def _render(self) -> Group | Layout:
         """Create the full display."""
-        items: list[Group | Panel] = [self._make_env_stack()]
-
-        # Only show footer in TUI mode
         if self.screen:
-            items.append(self._make_footer())
-
-        return Group(*items)
+            # TUI mode: use Layout to pin footer to bottom of screen
+            layout = Layout()
+            layout.split_column(
+                Layout(name="main", ratio=1),
+                Layout(name="footer", size=3),
+            )
+            layout["main"].update(self._make_env_stack())
+            layout["footer"].update(self._make_footer())
+            return layout
+        else:
+            # Non-TUI mode: just stack panels
+            return Group(self._make_env_stack())
 
     async def __aenter__(self) -> "EvalDisplay":
         """Start the display and key listener for TUI mode navigation."""
