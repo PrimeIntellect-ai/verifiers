@@ -1,5 +1,5 @@
 import json
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 from openai.types.chat import ChatCompletionAssistantMessageParam
 
@@ -7,6 +7,23 @@ import verifiers as vf
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
+
+VALID_TOOL_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
+
+
+def _is_valid_tool_content_parts(value: Any) -> bool:
+    """Check if value is a valid list of tool content parts.
+
+    Valid content parts have a "type" field with value "text" or "image_url".
+    """
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if item.get("type") not in VALID_TOOL_CONTENT_PART_TYPES:
+            return False
+    return True
 
 
 class ToolMonitorRubric(vf.Rubric):
@@ -133,7 +150,7 @@ class ToolEnv(vf.MultiTurnEnv):
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
-        content = result if isinstance(result, list) else str(result)
+        content = result if _is_valid_tool_content_parts(result) else str(result)
         return cast(
             vf.Message,
             {"role": "tool", "content": content, "tool_call_id": tool_call_id},
