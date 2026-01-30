@@ -92,7 +92,7 @@ class MultiAgentEnv(MultiTurnEnv):
     actors: list[str] = []
 
     # Injected by Protocol.__init__ - provides actor lookup and spawning
-    protocol: "Protocol"
+    protocol: "Protocol | None" = None
 
     def __init__(self, **kwargs):
         """
@@ -141,6 +141,11 @@ class MultiAgentEnv(MultiTurnEnv):
 
     def get_actor(self, actor_id: str) -> "Actor":
         """Get an actor by ID from Protocol."""
+        if self.protocol is None:
+            raise RuntimeError(
+                f"Cannot get_actor('{actor_id}') before Protocol is initialized. "
+                f"Ensure this environment is passed to Protocol(envs=[...])."
+            )
         return self.protocol.get_actor(actor_id)
 
     # -------------------------------------------------------------------------
@@ -363,10 +368,11 @@ class MultiAgentEnv(MultiTurnEnv):
     # NOTE: "input" is deliberately NOT shared because State.__getitem__/__setitem__
     # forward reads/writes for INPUT_FIELDS (prompt, answer, etc.) to input[key].
     # If we shared input, all actor_states would read the same prompt.
+    # NOTE: "timing" is deliberately NOT shared - each actor state gets its own copy
+    # to avoid bugs where score_group() updates the same dict multiple times.
     SHARED_STATE_FIELDS = {
         "client",        # AsyncOpenAI API client
         "model",         # Model name string (e.g., "gpt-4o-mini")
-        "timing",        # Performance metrics (generation_ms, scoring_ms)
         "trajectory_id", # Unique rollout identifier
     }
 
@@ -392,6 +398,7 @@ class MultiAgentEnv(MultiTurnEnv):
         Returns:
             A new State with shared fields referenced and actor-specific fields fresh
         """
+        # Create empty State - no "input" key means INPUT_FIELDS forwarding doesn't apply
         actor_state = State()
 
         # Copy shared fields by reference (not duplicated in memory)
@@ -399,13 +406,15 @@ class MultiAgentEnv(MultiTurnEnv):
             if key in self.SHARED_STATE_FIELDS:
                 actor_state[key] = parent_state[key]
 
-        # Copy INPUT_FIELDS using dict.__setitem__ to bypass State forwarding
-        # State.__setitem__ forwards writes for INPUT_FIELDS to input[key] if
-        # input exists. We bypass this to store directly on actor_state.
-        dict.__setitem__(actor_state, "answer", parent_state.get("answer", ""))
-        dict.__setitem__(actor_state, "task", parent_state.get("task", ""))
-        dict.__setitem__(actor_state, "example_id", parent_state.get("example_id", 0))
-        dict.__setitem__(actor_state, "info", parent_state.get("info", {}))
+        # Copy timing as a new dict (not shared) to avoid score_group() updating same dict multiple times
+        if "timing" in parent_state:
+            actor_state["timing"] = dict(parent_state["timing"])
+
+        # Copy INPUT_FIELDS directly (safe because actor_state has no "input" key)
+        actor_state["answer"] = parent_state.get("answer", "")
+        actor_state["task"] = parent_state.get("task", "")
+        actor_state["example_id"] = parent_state.get("example_id", 0)
+        actor_state["info"] = parent_state.get("info", {})
 
         # Set actor-specific trajectory (filtered to just this actor's steps)
         actor_state["trajectory"] = actor_trajectory
@@ -436,18 +445,18 @@ class MultiAgentEnv(MultiTurnEnv):
                 if raw_prompt[i].get("role") == "system":
                     prompt_ref = raw_prompt[i:]  # From last system message onward
                     break
-            dict.__setitem__(actor_state, "prompt", prompt_ref)
+            actor_state["prompt"] = prompt_ref
 
             # Completion: Collect all responses across all turns
             all_completions = []
             for step in actor_trajectory:
                 step_completion = step.get("completion", [])
                 all_completions.extend(step_completion)
-            dict.__setitem__(actor_state, "completion", all_completions)
+            actor_state["completion"] = all_completions
         else:
             # No trajectory for this actor - use parent's prompt
-            dict.__setitem__(actor_state, "prompt", parent_state.get("prompt", []))
-            dict.__setitem__(actor_state, "completion", [])
+            actor_state["prompt"] = parent_state.get("prompt", [])
+            actor_state["completion"] = []
 
         return actor_state
 
