@@ -470,27 +470,30 @@ class EvalDisplay(BaseDisplay):
         # log message for special events
         log_content = Text()
         if env_state.log_message:
+            log_content.append("\n")
             log_content.append("› ", style="dim cyan")
             log_content.append(env_state.log_message, style="dim")
+        else:
+            log_content.append("\n")
 
         # error message if failed
-        error_content = None
+        error_content = Text()
         if env_state.error:
-            error_text = Text()
-            error_text.append("ERROR: ", style="bold red")
-            error_text.append(env_state.error, style="red")
-            error_content = error_text
+            error_content.append("ERROR: ", style="bold red")
+            error_content.append(env_state.error, style="red")
+        else:
+            error_content.append("\n")
 
         # combine header content
-        space = Text("  ")
-        header_items = [config_line, space, progress]
+        space = Text()
+        header_items = [space, config_line, space, progress]
         if metrics_content:
             header_items.append(metrics_content)
         else:
             header_items.append(space)
         header_items.append(log_content)
-        if error_content:
-            header_items.append(error_content)
+        header_items.append(error_content)
+        header_items.append(space)
 
         # border style based on status
         border_styles = {
