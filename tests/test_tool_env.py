@@ -10,21 +10,21 @@ from openai.types.chat.chat_completion_user_message_param import (
 
 import verifiers as vf
 from tests.conftest import faulty_tool, offset_tool, square_tool
-from verifiers.envs.tool_env import _is_valid_tool_content_parts
+from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 
 class TestIsValidToolContentParts:
     def test_valid_text_content_part(self):
         """Valid list with text content parts."""
         content = [{"type": "text", "text": "Hello world"}]
-        assert _is_valid_tool_content_parts(content) is True
+        assert is_valid_tool_content_parts(content) is True
 
     def test_valid_image_url_content_part(self):
         """Valid list with image_url content parts."""
         content = [
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}}
         ]
-        assert _is_valid_tool_content_parts(content) is True
+        assert is_valid_tool_content_parts(content) is True
 
     def test_valid_mixed_content_parts(self):
         """Valid list with mixed text and image_url content parts."""
@@ -32,38 +32,38 @@ class TestIsValidToolContentParts:
             {"type": "text", "text": "Here's the screenshot"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
         ]
-        assert _is_valid_tool_content_parts(content) is True
+        assert is_valid_tool_content_parts(content) is True
 
     def test_empty_list_is_valid(self):
         """Empty list is valid (no invalid parts)."""
-        assert _is_valid_tool_content_parts([]) is True
+        assert is_valid_tool_content_parts([]) is True
 
     def test_invalid_type_value(self):
         """Content part with invalid type value should fail."""
         content = [{"type": "invalid_type", "data": "some data"}]
-        assert _is_valid_tool_content_parts(content) is False
+        assert is_valid_tool_content_parts(content) is False
 
     def test_missing_type_key(self):
         """Content part without type key should fail."""
         content = [{"text": "Hello world"}]
-        assert _is_valid_tool_content_parts(content) is False
+        assert is_valid_tool_content_parts(content) is False
 
     def test_non_dict_item_in_list(self):
         """Non-dict item in list should fail."""
         content = ["just a string", {"type": "text", "text": "hello"}]
-        assert _is_valid_tool_content_parts(content) is False
+        assert is_valid_tool_content_parts(content) is False
 
     def test_non_list_input(self):
         """Non-list input should fail."""
-        assert _is_valid_tool_content_parts("just a string") is False
-        assert _is_valid_tool_content_parts({"type": "text", "text": "hi"}) is False
-        assert _is_valid_tool_content_parts(42) is False
-        assert _is_valid_tool_content_parts(None) is False
+        assert is_valid_tool_content_parts("just a string") is False
+        assert is_valid_tool_content_parts({"type": "text", "text": "hi"}) is False
+        assert is_valid_tool_content_parts(42) is False
+        assert is_valid_tool_content_parts(None) is False
 
     def test_list_of_primitives(self):
         """List of primitives should fail (not valid content parts)."""
-        assert _is_valid_tool_content_parts([1, 2, 3]) is False
-        assert _is_valid_tool_content_parts(["a", "b", "c"]) is False
+        assert is_valid_tool_content_parts([1, 2, 3]) is False
+        assert is_valid_tool_content_parts(["a", "b", "c"]) is False
 
 
 def _build_tool_call(name: str, arguments: dict, tool_call_id: str = "call_0"):
