@@ -1177,6 +1177,12 @@ class Environment(ABC):
         log_file: str | None = None,
         startup_timeout: float = 10.0,
     ) -> None:
+        """Start a ZMQ server process for this environment.
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
         self.env_server_process = Process(
             target=ZMQEnvServer.run_server,
@@ -1195,6 +1201,12 @@ class Environment(ABC):
         await self.env_client.health(timeout=startup_timeout)
 
     async def stop_server(self) -> None:
+        """Stop the ZMQ server process for this environment.
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
         if self.env_client is not None:
             await self.env_client.close()
             self.env_client = None
