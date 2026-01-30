@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -66,6 +67,10 @@ class DisplayLogHandler(logging.Handler):
         except Exception:
             pass
 
+    def add_message(self, message: str) -> None:
+        """Add a message directly (not from Python logging)."""
+        self.logs.append(message)
+
 
 class BaseDisplay:
     """
@@ -87,10 +92,12 @@ class BaseDisplay:
         self.console = Console()
         self._live: Live | None = None
         self._old_terminal_settings: list | None = None
-        self._log_handler = DisplayLogHandler(max_lines=3)
+        self._log_handler = DisplayLogHandler(max_lines=10)
         self._old_handler_levels: dict[logging.Handler, int] = {}
         self._old_datasets_level: int | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._log_files: dict[Path, int] = {}  # path -> file position
+        self._tail_task: asyncio.Task | None = None
 
     def _render(self) -> Any:
         """
@@ -122,6 +129,29 @@ class BaseDisplay:
                 log_text.append(" ", style="dim")  # placeholder line
 
         return Panel(log_text, title="[dim]Logs[/dim]", border_style="dim")
+
+    def add_log_file(self, path: Path) -> None:
+        """Register a log file for tailing."""
+        self._log_files[path] = 0  # start from beginning
+
+    async def _tail_log_files(self) -> None:
+        """Background task to tail log files and push lines to display."""
+        while True:
+            await asyncio.sleep(0.2)  # poll every 200ms for responsive streaming
+            for path in list(self._log_files.keys()):
+                if not path.exists():
+                    continue
+                try:
+                    pos = self._log_files[path]
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(pos)
+                        for line in f:
+                            line = line.rstrip("\n")
+                            if line:
+                                self._log_handler.add_message(line)
+                        self._log_files[path] = f.tell()
+                except Exception:
+                    pass  # ignore read errors
 
     def start(self) -> None:
         """Start the live display."""
@@ -265,13 +295,14 @@ class BaseDisplay:
             self.refresh()
 
     async def __aenter__(self) -> "BaseDisplay":
-        """Async context manager entry - start the display and periodic refresh."""
+        """Async context manager entry - start the display, periodic refresh, and log tailing."""
         self.start()
         self._refresh_task = asyncio.create_task(self._periodic_refresh())
+        self._tail_task = asyncio.create_task(self._tail_log_files())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit - stop the display and cancel refresh task."""
+        """Async context manager exit - stop the display and cancel background tasks."""
         if self._refresh_task is not None:
             self._refresh_task.cancel()
             try:
@@ -279,6 +310,13 @@ class BaseDisplay:
             except asyncio.CancelledError:
                 pass
             self._refresh_task = None
+        if self._tail_task is not None:
+            self._tail_task.cancel()
+            try:
+                await self._tail_task
+            except asyncio.CancelledError:
+                pass
+            self._tail_task = None
         self.stop()
 
     def __enter__(self) -> "BaseDisplay":

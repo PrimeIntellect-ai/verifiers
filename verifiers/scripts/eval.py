@@ -268,7 +268,17 @@ def main():
     )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    # setup logging for main eval process
+    log_level = "DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+    log_file = None if args.debug else "logs/eval.log"
+    log_file_level = None
+    if not args.debug:
+        log_file_level = log_level
+        log_level = "ERROR"
+        log_file = "logs/eval.log"
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(log_level, log_file=log_file, log_file_level=log_file_level)
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
@@ -408,6 +418,7 @@ def main():
             independent_scoring=raw.get("independent_scoring", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),
+            debug=raw.get("debug", False),
         )
 
     # Check Hub environments are installed before running

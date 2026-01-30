@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
@@ -148,6 +148,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         # logging
         "verbose",
+        "debug",
         # saving
         "state_columns",
         "save_results",
@@ -323,6 +324,7 @@ def quiet_datasets():
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
+    on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
@@ -334,12 +336,28 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
+    results_path = get_eval_results_path(config)
+
     # start env server as sidecar process
+    if config.debug:
+        log_file_level = None
+        log_file = None
+        log_level = "DEBUG" if config.verbose else "INFO"
+    else:
+        log_file_level = "DEBUG" if config.verbose else "INFO"
+        log_file = results_path / "eval.log"
+        log_level = "ERROR"
+        assert on_log_file is not None
+        on_log_file(log_file)
     try:
-        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
+        await vf_env.start_server(
+            extra_env_kwargs=config.extra_env_kwargs,
+            log_level=log_level,
+            log_file=str(log_file) if log_file else None,
+            log_file_level=log_file_level,
+        )
 
         # run evaluation
-        results_path = get_eval_results_path(config)
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
@@ -426,6 +444,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         metrics_accum = defaultdict(float)
         error_accum = 0
 
+        def register_log_file(log_file: Path) -> None:
+            display.add_log_file(log_file)
+
         def on_start(total: int) -> None:
             # total is num_examples * rollouts_per_example
             # compute actual num_examples (resolves -1 to actual count)
@@ -474,6 +495,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_start=on_start,
                 on_progress=on_progress,
                 on_log=on_log,
+                on_log_file=register_log_file,
             )
 
             # get save path if results were saved

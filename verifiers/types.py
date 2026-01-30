@@ -270,6 +270,7 @@ class EvalConfig(BaseModel):
     # logging
     verbose: bool = False
     use_tqdm: bool = True
+    debug: bool = False
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
