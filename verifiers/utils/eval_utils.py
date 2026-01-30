@@ -342,7 +342,7 @@ async def run_evaluation(
     if config.debug:
         # in debug mode use regular console logger with specified log level
         log_level = "DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
-        logging_config = dict(log_level=log_level)
+        logging_config = dict(level=log_level)
     else:
         log_file_level = (
             "DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO")
