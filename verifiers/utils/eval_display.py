@@ -26,6 +26,9 @@ from verifiers.types import EvalConfig, GenerateOutputs
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
+MAX_LOG_LINES = 100  # TUI mode (expandable)
+MAX_LOG_LINES_NON_TUI = 20  # Non-TUI mode (fixed height)
+
 
 @dataclass
 class EnvEvalState:
@@ -143,7 +146,7 @@ class EvalDisplay(BaseDisplay):
                 rollouts_per_example=config.rollouts_per_example,
             )
             self._env_log_files[idx] = {}
-            self._env_logs[idx] = deque(maxlen=10)
+            self._env_logs[idx] = deque(maxlen=MAX_LOG_LINES)
             self._env_log_titles[idx] = Text("logs", style="dim")  # default title
 
     def update_env_state(
@@ -343,8 +346,55 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_env_panel(self, env_idx: int) -> Panel:
-        """Create a full-width panel for a single environment with config and progress."""
+    def _make_logs_panel(self, env_idx: int, max_lines: int | None = None) -> Panel:
+        """Create a logs panel for an environment.
+
+        Args:
+            env_idx: Index of the environment.
+            max_lines: Maximum number of log lines to show. If None, shows all available.
+        """
+        logs_list = list(self._env_logs.get(env_idx, []))
+        log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
+
+        log_text = Text(no_wrap=True, overflow="ellipsis")
+        recent_logs = (
+            logs_list[-max_lines:] if max_lines else logs_list[-MAX_LOG_LINES:]
+        )
+
+        if max_lines:
+            # Fixed height mode: pad with empty lines
+            for i in range(max_lines):
+                if i > 0:
+                    log_text.append("\n")
+                if i < len(recent_logs):
+                    log_text.append(recent_logs[i], style="dim")
+        else:
+            # Dynamic mode: just show available logs
+            for i, line in enumerate(recent_logs):
+                if i > 0:
+                    log_text.append("\n")
+                log_text.append(line, style="dim")
+
+        return Panel(
+            log_text,
+            title=log_title,
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+        )
+
+    def _make_env_header_content(
+        self, env_idx: int, include_extra: bool = False
+    ) -> tuple[list, str, Text]:
+        """Build header content items, border style, and title for an environment.
+
+        Args:
+            env_idx: Index of the environment.
+            include_extra: If True, include sampling_args and save_results in config line.
+
+        Returns:
+            Tuple of (header_items, border_style, title)
+        """
         config = self.configs[env_idx]
         env_state = self.state.envs[env_idx]
 
@@ -371,34 +421,32 @@ class EvalDisplay(BaseDisplay):
         )
         config_line.append(concurrency_unit, style="dim")
 
-        if config.sampling_args and any(config.sampling_args.values()):
-            config_line.append("  |  ", style="dim")
-            config_line.append("custom sampling ", style="white")
-            config_line.append("(", style="dim")
-            for key, value in config.sampling_args.items():
-                if value is not None:
-                    config_line.append(f"{key}={value}", style="dim")
-            config_line.append(")", style="dim")
-        if config.save_results:
-            config_line.append("  |  ", style="dim")
-            config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
+        if include_extra:
+            if config.sampling_args and any(config.sampling_args.values()):
+                config_line.append("  |  ", style="dim")
+                config_line.append("custom sampling ", style="white")
+                config_line.append("(", style="dim")
+                for key, value in config.sampling_args.items():
+                    if value is not None:
+                        config_line.append(f"{key}={value}", style="dim")
+                config_line.append(")", style="dim")
+            if config.save_results:
+                config_line.append("  |  ", style="dim")
+                config_line.append("saving results", style="white")
+                if config.save_every > 0:
+                    config_line.append(" every ", style="dim")
+                    config_line.append(str(config.save_every), style="white")
+                    config_line.append(" steps", style="dim")
 
         # create progress bar with timing
-        # use env_state.total which gets updated by on_start callback
         total_rollouts = env_state.total
-        completed_rollouts = env_state.progress  # always rollout-based
+        completed_rollouts = env_state.progress
         pct = (completed_rollouts / total_rollouts * 100) if total_rollouts > 0 else 0
 
-        # format elapsed time
         elapsed = env_state.elapsed_time
         mins, secs = divmod(int(elapsed), 60)
         time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-        # show "..." for total if not yet known
         total_str = "..." if total_rollouts <= 0 else str(total_rollouts)
         progress = Progress(
             SpinnerColumn() if env_state.status == "running" else TextColumn(""),
@@ -433,41 +481,16 @@ class EvalDisplay(BaseDisplay):
             error_text.append(env_state.error, style="red")
             error_content = error_text
 
-        # per-env log lines (tailed from log file) - fixed height of 20 lines
-        max_log_lines = 20
-        logs_list = list(self._env_logs.get(env_idx, []))
-        log_text = Text(no_wrap=True, overflow="ellipsis")
-        recent_logs = logs_list[-max_log_lines:]
-        for i in range(max_log_lines):
-            if i > 0:
-                log_text.append("\n")
-            if i < len(recent_logs):
-                log_text.append(recent_logs[i], style="dim")
-
-        # Use cached log title (avoids flicker on refresh)
-        log_title = self._env_log_titles.get(env_idx, Text("logs", style="dim"))
-
-        logs_panel = Panel(
-            log_text,
-            title=log_title,
-            title_align="left",
-            border_style="dim",
-            padding=(1, 1),
-        )
-
-        # combine all content
+        # combine header content
         space = Text("  ")
-        content_items = [config_line, space, progress]
+        header_items = [config_line, space, progress]
         if metrics_content:
-            content_items.append(metrics_content)
+            header_items.append(metrics_content)
         else:
-            content_items.append(space)
-        content_items.append(space)
-        content_items.append(log_content)
+            header_items.append(space)
+        header_items.append(log_content)
         if error_content:
-            content_items.append(error_content)
-        content_items.append(Text(""))  # spacing before logs
-        content_items.append(logs_panel)
+            header_items.append(error_content)
 
         # border style based on status
         border_styles = {
@@ -478,9 +501,20 @@ class EvalDisplay(BaseDisplay):
         }
         border_style = border_styles.get(env_state.status, "dim")
 
-        # build title with env name only
         title = Text()
         title.append(config.env_id, style="bold cyan")
+
+        return header_items, border_style, title
+
+    def _make_env_panel(self, env_idx: int) -> Panel:
+        """Create a full-width panel for a single environment with config and progress."""
+        header_items, border_style, title = self._make_env_header_content(
+            env_idx, include_extra=True
+        )
+        logs_panel = self._make_logs_panel(env_idx, max_lines=MAX_LOG_LINES_NON_TUI)
+
+        # Add spacing and logs panel to content
+        content_items = header_items + [Text(""), logs_panel]
 
         return Panel(
             Group(*content_items),
@@ -549,16 +583,43 @@ class EvalDisplay(BaseDisplay):
 
         return Panel(footer_text, border_style="dim")
 
+    def _make_tui_env_panel(self, env_idx: int) -> Layout:
+        """Create an expandable env panel for TUI mode with header and logs sections."""
+        header_items, border_style, title = self._make_env_header_content(env_idx)
+        logs_panel = self._make_logs_panel(env_idx)  # No max_lines = expandable
+
+        # Header panel with env title/border
+        header_panel = Panel(
+            Group(*header_items),
+            title=title,
+            title_align="left",
+            border_style=border_style,
+            padding=(0, 1),
+            expand=True,
+        )
+
+        # Use Layout to combine header (fixed) and logs (expandable)
+        env_layout = Layout()
+        env_layout.split_column(
+            Layout(name="header", size=9),
+            Layout(name="logs", ratio=1),
+        )
+        env_layout["header"].update(header_panel)
+        env_layout["logs"].update(logs_panel)
+
+        return env_layout
+
     def _render(self) -> Group | Layout:
         """Create the full display."""
         if self.screen:
-            # TUI mode: use Layout to pin footer to bottom of screen
+            # TUI mode: use Layout with env panel (header + logs) and footer
             layout = Layout()
             layout.split_column(
                 Layout(name="main", ratio=1),
                 Layout(name="footer", size=3),
             )
-            layout["main"].update(self._make_env_stack())
+            env_idx = self._current_page
+            layout["main"].update(self._make_tui_env_panel(env_idx))
             layout["footer"].update(self._make_footer())
             return layout
         else:
