@@ -133,7 +133,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
         env_vars = await self.build_env_vars(state)
         docker_image = await self.get_docker_image(state)
 
-        sandbox_client = AsyncSandboxClient()
+        sandbox_client = AsyncSandboxClient(
+            max_connections=100,
+            max_keepalive_connections=50,
+        )
         sandbox_request = CreateSandboxRequest(
             name=rollout_id,
             docker_image=docker_image,
@@ -243,7 +246,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
-        sandbox_client = AsyncSandboxClient()
+        sandbox_client = AsyncSandboxClient(
+            max_connections=100,
+            max_keepalive_connections=50,
+        )
         while True:
             status: BackgroundJobStatus = await sandbox_client.get_background_job(
                 sandbox_id, background_job
@@ -793,7 +799,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
             try:
-                sandbox_client = AsyncSandboxClient()
+                sandbox_client = AsyncSandboxClient(
+                    max_connections=100,
+                    max_keepalive_connections=50,
+                )
                 await sandbox_client.delete(sandbox_id)
                 self.active_sandboxes.discard(sandbox_id)
                 logger.debug(f"Deleted sandbox {sandbox_id}")

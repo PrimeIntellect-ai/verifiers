@@ -213,7 +213,10 @@ class HarborEnv(vf.CliAgentEnv):
             logger.error(f"Task directory not found: {task_dir}")
             return 0.0
 
-        sandbox_client = AsyncSandboxClient()
+        sandbox_client = AsyncSandboxClient(
+            max_connections=100,
+            max_keepalive_connections=50,
+        )
         try:
             # Upload test assets now that agent has completed
             await self.upload_test_assets(sandbox_client, sandbox_id, task_dir)
