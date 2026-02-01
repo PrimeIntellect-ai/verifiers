@@ -415,7 +415,44 @@ class EvalDisplay(BaseDisplay):
         """Print a comprehensive summary after the display closes."""
         self.console.print()
 
-        # Summary table with main metrics
+        # Per-environment detailed sections
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
+            results = env_state.results
+
+            if results is None:
+                continue
+
+            self.console.print()
+            self.console.print(
+                Panel(
+                    self._make_env_detail(config, env_state, results),
+                    title=f"[bold blue]{config.env_id}[/bold blue]",
+                    border_style="dim",
+                )
+            )
+
+        # Print save paths if any
+        saved_envs = [
+            (idx, env_state)
+            for idx, env_state in self.state.envs.items()
+            if env_state.save_path is not None
+        ]
+        if saved_envs:
+            self.console.print()
+            self.console.print("[bold]Results saved to:[/bold]")
+            for idx, env_state in saved_envs:
+                self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
+
+        # Print errors if any
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
+            if env_state.error:
+                self.console.print()
+                self.console.print(f"[red]error in {config.env_id}:[/red]")
+                self.console.print(f"  {env_state.error}")
+
+        # Summary table with main metrics (printed last)
         table = Table(title="Evaluation Summary")
         table.add_column("env_id", style="cyan")
         table.add_column("status", justify="center")
@@ -466,45 +503,8 @@ class EvalDisplay(BaseDisplay):
                 time_str,
             )
 
+        self.console.print()
         self.console.print(table)
-
-        # Per-environment detailed sections
-        for idx, config in enumerate(self.configs):
-            env_state = self.state.envs[idx]
-            results = env_state.results
-
-            if results is None:
-                continue
-
-            self.console.print()
-            self.console.print(
-                Panel(
-                    self._make_env_detail(config, env_state, results),
-                    title=f"[bold blue]{config.env_id}[/bold blue]",
-                    border_style="dim",
-                )
-            )
-
-        # Print save paths if any
-        saved_envs = [
-            (idx, env_state)
-            for idx, env_state in self.state.envs.items()
-            if env_state.save_path is not None
-        ]
-        if saved_envs:
-            self.console.print()
-            self.console.print("[bold]Results saved to:[/bold]")
-            for idx, env_state in saved_envs:
-                self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
-
-        # Print errors if any
-        for idx, config in enumerate(self.configs):
-            env_state = self.state.envs[idx]
-            if env_state.error:
-                self.console.print()
-                self.console.print(f"[red]error in {config.env_id}:[/red]")
-                self.console.print(f"  {env_state.error}")
-
         self.console.print()
 
     def _make_env_detail(
