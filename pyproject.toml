@@ -52,7 +52,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-prime-tunnel = { git = "https://github.com/PrimeIntellect-ai/prime.git", branch = "feature/tunnel", subdirectory = "packages/prime-tunnel" }
+prime-tunnel = { git = "https://github.com/PrimeIntellect-ai/prime.git", subdirectory = "packages/prime-tunnel" }
 
 [dependency-groups]
 dev = [
