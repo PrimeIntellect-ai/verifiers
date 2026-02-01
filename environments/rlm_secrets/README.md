@@ -93,3 +93,9 @@ This environment is specifically designed to test RLM capabilities:
 5. **Tests information flow**: Data must flow: file → sub-LLM → root-LLM → tool → answer
 
 The puzzle is simple enough that models should be able to solve it, while being complex enough to exercise all RLM components.
+
+## Changelog
+
+- v0.1.1 (01 Feb 2026):
+  - add default "rlm-secrets" label to the `sandbox_labels` no matter what the user passes ther in the kwargs
+  - dedupe `sandbox_labels` if passed via the kwargs
