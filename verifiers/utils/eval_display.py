@@ -92,7 +92,7 @@ def _make_histogram(values: list[float], bins: int = 10, height: int = 8) -> Tex
     out = Text()
     # Counts (top row)
     for i, count in enumerate(counts):
-        out.append(str(count).rjust(col_width), style="dim")
+        out.append(str(count).center(col_width), style="dim")
         if i < bins - 1:
             out.append(spacer)
     out.append("\n")
@@ -115,7 +115,7 @@ def _make_histogram(values: list[float], bins: int = 10, height: int = 8) -> Tex
     # Bin labels (start values)
     for i in range(bins):
         bin_start = min_val + i * bin_width
-        label = f"{bin_start:.2f}".rjust(label_width)
+        label = f"{bin_start:.2f}".center(col_width)
         out.append(label, style="dim")
         if i < bins - 1:
             out.append(spacer)
