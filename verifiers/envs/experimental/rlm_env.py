@@ -1380,7 +1380,7 @@ _SUB_LLM_SYSTEM_PROMPT_STORE = {
         "You will be given a task to perform."
         " Consider the tools at your disposal closely,"
         " and don't be afraid to think as much as you need about every step."
-        "You have {num_turns} turns available to fulfill your task."
+        "\n\nYou have {num_turns} turns available to fulfill your task."
         " You will be warned when there's only one turn left."
     ),
     "heavy": (
@@ -2532,6 +2532,16 @@ class RLMEnv(vf.StatefulToolEnv):
         if execution_backend not in {"local", "sandbox"}:
             raise ValueError(
                 f"Unsupported execution_backend '{execution_backend}'. Expected 'local' or 'sandbox'."
+            )
+        if sub_prompt_verbosity not in {"light", "medium", "heavy"}:
+            raise ValueError(
+                f"Unsupported sub_prompt_verbosity '{sub_prompt_verbosity}. "
+                "Expected 'light', 'medium', or 'high'"
+            )
+        if root_prompt_verbosity not in {"light", "medium", "heavy"}:
+            raise ValueError(
+                f"Unsupported root_prompt_verbosity '{root_prompt_verbosity}. "
+                "Expected 'light', 'medium', or 'high'"
             )
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.root_prompt_verbosity = root_prompt_verbosity
