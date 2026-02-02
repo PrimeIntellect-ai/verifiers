@@ -486,7 +486,7 @@ def load_environment(
     sandbox_labels = kwargs.pop("sandbox_labels", [])
     if not (
         isinstance(sandbox_labels, list)
-        and all(isinstance(l, str) for l in sandbox_labels)
+        and all(isinstance(label, str) for label in sandbox_labels)
     ):
         raise ValueError(
             f"sandbox_labels must be of type list[str]; you provided {sandbox_labels}"
