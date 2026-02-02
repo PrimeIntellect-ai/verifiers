@@ -147,17 +147,17 @@ prime eval run primeintellect/math-python
 
 ## Documentation
 
-**[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
+**[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
 
-**[Evaluation](evaluation.md)** - Evaluate models using your environments.
+**[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 
-**[Training](training.md)** — Train models in your environments with reinforcement learning.
+**[Training](docs/training.md)** — Train models in your environments with reinforcement learning.
 
-**[Development](development.md)** — Contributing to verifiers
+**[Development](docs/development.md)** — Contributing to verifiers
 
-**[API Reference](reference.md)** — Understanding the API and data structures
+**[API Reference](docs/reference.md)** — Understanding the API and data structures
 
-**[FAQs](faqs.md)** - Other frequently asked questions.
+**[FAQs](docs/faqs.md)** - Other frequently asked questions.
 
 
 ## Citation
