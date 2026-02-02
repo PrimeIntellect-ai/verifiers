@@ -863,44 +863,35 @@ class Environment(ABC):
         Generate rollouts for a set of inputs.
         """
         from datasets import Dataset
-
-        if isinstance(inputs, Dataset):
-            inputs_list = cast(list[RolloutInput], inputs.to_list())
-        elif isinstance(inputs, list):
-            inputs_list = inputs
-
-        # set up semaphores
-        sem = await maybe_semaphore(max_concurrent)
-
-        # set up sampling args
-        default_sampling_args = deepcopy(self.sampling_args)
-        if sampling_args is not None:
-            default_sampling_args.update(sampling_args)
-        sampling_args = default_sampling_args
-
         from tqdm import tqdm
 
         pbar: tqdm | None = None
 
         def default_on_start(
-            all_inputs: list[RolloutInput] | list[list[RolloutInput]],
+            raw_inputs: list[RolloutInput],
+            _: list[RolloutInput] | list[list[RolloutInput]],
         ) -> None:
+            """Initializes the progress bar from the raw inputs."""
             nonlocal pbar
 
-            pbar_total = len(all_inputs)
-            if isinstance(all_inputs[0], list):
-                total_rollouts = sum(len(group) for group in all_inputs)
-                pbar_desc = f"Processing {len(all_inputs)} groups ({total_rollouts} total rollouts)"
-            else:
-                pbar_desc = f"Processing {len(all_inputs)} rollouts"
+            total_rollouts = len(raw_inputs)
+            total_groups = len(set([i["example_id"] for i in raw_inputs]))
+            if inputs:
+                if isinstance(inputs[0], list):
+                    pbar_total = total_rollouts
+                    pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
+                else:
+                    pbar_total = total_rollouts
+                    pbar_desc = f"Processing {total_rollouts} rollouts"
 
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
+                pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
 
         def default_on_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
             new_metadata: GenerateMetadata,
         ) -> None:
+            """Updates the progress bar from the new outputs."""
             nonlocal pbar
             assert pbar is not None
 
@@ -912,15 +903,30 @@ class Environment(ABC):
             pbar.set_postfix(reward=avg_reward)
 
         def default_on_log(message: str) -> None:
+            """Logs using the environment logger."""
             self.logger.info(message)
 
         on_start = on_start or cast(StartCallback, default_on_start)
         on_progress = on_progress or cast(ProgressCallback, default_on_progress)
         on_log = on_log or cast(LogCallback, default_on_log)
 
+        if isinstance(inputs, Dataset):
+            raw_inputs = cast(list[RolloutInput], inputs.to_list())
+        elif isinstance(inputs, list):
+            raw_inputs = inputs
+
+        # set up semaphores
+        sem = await maybe_semaphore(max_concurrent)
+
+        # set up sampling args
+        default_sampling_args = deepcopy(self.sampling_args)
+        if sampling_args is not None:
+            default_sampling_args.update(sampling_args)
+        sampling_args = default_sampling_args
+
         # initialize outputs builder
-        total_rollouts = len(inputs_list)
-        num_examples = len(set([i["example_id"] for i in inputs_list]))
+        total_rollouts = len(raw_inputs)
+        num_examples = len(set([i["example_id"] for i in raw_inputs]))
         rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
@@ -936,21 +942,27 @@ class Environment(ABC):
 
         # load existing results if available
         if results_path is not None and is_valid_eval_results_path(results_path):
+            on_log(f"Resuming evaluaton from {results_path}")
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
-            inputs_list = filter_inputs(inputs_list, outputs, rollouts_per_example)
-            self.logger.info(
-                f"Resuming evaluaton from {results_path}. Found {len(outputs)} completed rollout(s), {len(inputs_list)} remaining rollout(s)"
+            filtered_inputs = filter_inputs(raw_inputs, outputs, rollouts_per_example)
+            if not filtered_inputs:
+                on_log("No remaining rollouts to evaluate, returning completed outputs")
+                return builder.build(sort_by_example_id=True)
+            on_log(
+                f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
             )
+        else:
+            filtered_inputs = raw_inputs
 
         if save_results:
-            self.logger.info(f"Saving results to {builder.results_path}")
+            on_log(f"Saving results to {builder.results_path}")
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
-            on_start(inputs_list)
-            for i, rollout_input in enumerate(inputs_list):
+            on_start(raw_inputs, filtered_inputs)
+            for i, rollout_input in enumerate(filtered_inputs):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
@@ -967,13 +979,13 @@ class Environment(ABC):
                 tasks[task] = i
         else:
             group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
-            for rollout_input in inputs_list:
+            for rollout_input in filtered_inputs:
                 example_id = rollout_input["example_id"]
                 group_inputs[example_id].append(rollout_input)
-            group_inputs_list = list(group_inputs.values())
-            on_start(group_inputs_list)
+            filtered_group_inputs = list(group_inputs.values())
+            on_start(raw_inputs, filtered_group_inputs)
 
-            for i, group_input in enumerate(group_inputs_list):
+            for i, group_input in enumerate(filtered_group_inputs):
                 task = asyncio.create_task(
                     with_sem(
                         sem,

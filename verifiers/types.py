@@ -186,7 +186,9 @@ class State(dict):
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 # callbacks
-StartCallback = Callable[[list[RolloutInput] | list[list[RolloutInput]]], None]
+StartCallback = Callable[
+    [list[RolloutInput], list[RolloutInput] | list[list[RolloutInput]]], None
+]
 ProgressCallback = Callable[
     [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
 ]  # all_outputs, new_outputs, new_metadata

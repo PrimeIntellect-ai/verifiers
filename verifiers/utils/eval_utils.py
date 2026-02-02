@@ -28,6 +28,7 @@ from verifiers.types import (
     Endpoints,
     EvalConfig,
     EvalRunConfig,
+    GenerateMetadata,
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
@@ -443,46 +444,23 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         env_config: EvalConfig, env_idx: int
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
-        reward_accum = 0
-        metrics_accum = defaultdict(float)
-        error_accum = 0
 
-        def on_start(total: int) -> None:
-            # total is num_examples * rollouts_per_example
-            # compute actual num_examples (resolves -1 to actual count)
+        def on_start(raw_inputs: list[RolloutInput], _) -> None:
+            total = len(raw_inputs)
             num_examples = total // env_config.rollouts_per_example
             display.update_env_state(env_idx, total=total, num_examples=num_examples)
 
         def on_progress(
-            all_outputs: list[RolloutOutput], new_outputs: list[RolloutOutput]
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            metadata: GenerateMetadata,
         ) -> None:
-            nonlocal error_accum, reward_accum, metrics_accum
-
-            # Progress is always rollout-based
-            completed = len(all_outputs)
-
-            for o in new_outputs:
-                if o.get("error") is not None:
-                    error_accum += 1
-                reward = o.get("reward")
-                if reward is not None:
-                    reward_accum += reward
-                output_metrics = o.get("metrics") or {}
-                for name, value in output_metrics.items():
-                    if value is not None:
-                        metrics_accum[name] += value
-
-            # Compute averages over completed rollouts
-            reward = reward_accum / completed
-            metrics = {name: metrics_accum[name] / completed for name in metrics_accum}
-            error_rate = error_accum / completed
-
             display.update_env_state(
                 env_idx,
-                progress=completed,
-                reward=reward,
-                metrics=metrics,
-                error_rate=error_rate,
+                progress=len(all_outputs),
+                reward=metadata.get("avg_reward"),
+                metrics=metadata.get("avg_metrics"),
+                error_rate=metadata.get("error_rate"),
             )
 
         def on_log(message: str) -> None:
