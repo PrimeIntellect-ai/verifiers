@@ -58,8 +58,8 @@ class EnvEvalState:
         return end - self.start_time
 
 
-def _make_histogram(values: list[float], bins: int = 10, width: int = 20) -> Text:
-    """Create a simple text histogram of values."""
+def _make_histogram(values: list[float], bins: int = 10, height: int = 8) -> Text:
+    """Create a simple vertical text histogram of values."""
     if not values:
         return Text("no data", style="dim")
 
@@ -74,16 +74,51 @@ def _make_histogram(values: list[float], bins: int = 10, width: int = 20) -> Tex
         counts[bin_idx] += 1
 
     max_count = max(counts)
+    scaled = [
+        int(round((c / max_count) * height)) if max_count > 0 else 0 for c in counts
+    ]
+
+    label_width = max(
+        4,
+        len(f"{min_val:.2f}"),
+        len(f"{max_val:.2f}"),  # keep labels aligned
+    )
+    count_width = max(len(str(c)) for c in counts)
+    col_width = max(label_width, count_width)
+    spacer = " "
+    bar_on = "█" * col_width
+    bar_off = "░" * col_width
+
     out = Text()
-
+    # Counts (top row)
     for i, count in enumerate(counts):
-        bin_start = min_val + i * bin_width
-        bar_len = int((count / max_count) * width) if max_count > 0 else 0
-        bar = "█" * bar_len + "░" * (width - bar_len)
+        out.append(str(count).center(col_width), style="dim")
+        if i < bins - 1:
+            out.append(spacer)
+    out.append("\n")
 
-        out.append(f"{bin_start:5.2f} ", style="dim")
-        out.append(bar, style="cyan")
-        out.append(f" {count}\n", style="dim")
+    # Bars (top to bottom)
+    for row in range(height, 0, -1):
+        for i, h in enumerate(scaled):
+            if h >= row:
+                out.append(bar_on, style="cyan")
+            else:
+                out.append(bar_off, style="dim")
+            if i < bins - 1:
+                out.append(spacer)
+        out.append("\n")
+
+    # Baseline
+    out.append("─" * (bins * col_width + (bins - 1)), style="dim")
+    out.append("\n")
+
+    # Bin labels (start values)
+    for i in range(bins):
+        bin_start = min_val + i * bin_width
+        label = f"{bin_start:.2f}".center(col_width)
+        out.append(label, style="dim")
+        if i < bins - 1:
+            out.append(spacer)
 
     return out
 
@@ -415,7 +450,44 @@ class EvalDisplay(BaseDisplay):
         """Print a comprehensive summary after the display closes."""
         self.console.print()
 
-        # Summary table with main metrics
+        # Per-environment detailed sections
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
+            results = env_state.results
+
+            if results is None:
+                continue
+
+            self.console.print()
+            self.console.print(
+                Panel(
+                    self._make_env_detail(config, env_state, results),
+                    title=f"[bold blue]{config.env_id}[/bold blue]",
+                    border_style="dim",
+                )
+            )
+
+        # Print save paths if any
+        saved_envs = [
+            (idx, env_state)
+            for idx, env_state in self.state.envs.items()
+            if env_state.save_path is not None
+        ]
+        if saved_envs:
+            self.console.print()
+            self.console.print("[bold]Results saved to:[/bold]")
+            for idx, env_state in saved_envs:
+                self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
+
+        # Print errors if any
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
+            if env_state.error:
+                self.console.print()
+                self.console.print(f"[red]error in {config.env_id}:[/red]")
+                self.console.print(f"  {env_state.error}")
+
+        # Summary table with main metrics (printed last)
         table = Table(title="Evaluation Summary")
         table.add_column("env_id", style="cyan")
         table.add_column("status", justify="center")
@@ -466,45 +538,8 @@ class EvalDisplay(BaseDisplay):
                 time_str,
             )
 
+        self.console.print()
         self.console.print(table)
-
-        # Per-environment detailed sections
-        for idx, config in enumerate(self.configs):
-            env_state = self.state.envs[idx]
-            results = env_state.results
-
-            if results is None:
-                continue
-
-            self.console.print()
-            self.console.print(
-                Panel(
-                    self._make_env_detail(config, env_state, results),
-                    title=f"[bold blue]{config.env_id}[/bold blue]",
-                    border_style="dim",
-                )
-            )
-
-        # Print save paths if any
-        saved_envs = [
-            (idx, env_state)
-            for idx, env_state in self.state.envs.items()
-            if env_state.save_path is not None
-        ]
-        if saved_envs:
-            self.console.print()
-            self.console.print("[bold]Results saved to:[/bold]")
-            for idx, env_state in saved_envs:
-                self.console.print(f"  [cyan]•[/cyan] {env_state.save_path}")
-
-        # Print errors if any
-        for idx, config in enumerate(self.configs):
-            env_state = self.state.envs[idx]
-            if env_state.error:
-                self.console.print()
-                self.console.print(f"[red]error in {config.env_id}:[/red]")
-                self.console.print(f"  {env_state.error}")
-
         self.console.print()
 
     def _make_env_detail(
@@ -552,7 +587,7 @@ class EvalDisplay(BaseDisplay):
             # All rollouts histogram
             all_rollouts_content = Group(
                 Text("all rollouts:", style="bold"),
-                _make_histogram(rewards, bins=8, width=25),
+                _make_histogram(rewards, bins=8, height=8),
             )
 
             # Per-example averages if multiple rollouts
@@ -566,7 +601,7 @@ class EvalDisplay(BaseDisplay):
 
                 per_example_content = Group(
                     Text("per-example avg:", style="bold"),
-                    _make_histogram(example_avgs, bins=8, width=25),
+                    _make_histogram(example_avgs, bins=8, height=8),
                 )
 
                 # Side by side
