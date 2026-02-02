@@ -71,9 +71,6 @@ class VerifiersGEPAAdapter:
     # GEPA adapter protocol: None means use default proposer with reflection_lm
     propose_new_texts: Callable[..., dict[str, str]] | None = None
 
-    # Display control
-    use_tqdm: bool = False
-
     # Internal: track candidates by prompt hash
     _seen_prompts: dict[str, int] = field(default_factory=dict)
 
@@ -95,7 +92,6 @@ class VerifiersGEPAAdapter:
                 model=self.model,
                 sampling_args=self.sampling_args,
                 max_concurrent=self.max_concurrent,
-                use_tqdm=self.use_tqdm,
                 state_columns=self.state_columns,
             )
         )

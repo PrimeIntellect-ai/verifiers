@@ -367,8 +367,6 @@ async def run_evaluation(
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
-        # disable tqdm when callbacks are provided (TUI handles progress display)
-        use_tqdm = config.use_tqdm and on_progress is None
         outputs = await vf_env.evaluate(
             client=config.client_config,
             model=config.model,
@@ -381,7 +379,6 @@ async def run_evaluation(
             save_results=config.save_results,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,
-            use_tqdm=use_tqdm,
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
             on_start=on_start,
