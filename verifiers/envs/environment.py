@@ -491,6 +491,7 @@ class Environment(ABC):
                         error_text = e.response.text.lower()
                         context_length_phrases = [
                             "this model's maximum context length is",
+                            "this endpoint's maximum context length is",
                             "is longer than the model's context length",
                             "exceeds the model's context length",
                             "exceed the configured limit",
