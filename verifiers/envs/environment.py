@@ -10,6 +10,7 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import Process
@@ -48,6 +49,7 @@ from verifiers.types import (
     ChatMessage,
     ClientConfig,
     DatasetBuilder,
+    GenerateMetadata,
     GenerateOutputs,
     LogCallback,
     Messages,
@@ -863,13 +865,9 @@ class Environment(ABC):
         from datasets import Dataset
 
         if isinstance(inputs, Dataset):
-            inputs_list = inputs.to_list()
+            inputs_list = cast(list[RolloutInput], inputs.to_list())
         elif isinstance(inputs, list):
             inputs_list = inputs
-
-        # notify caller of actual total count (useful when num_examples=-1)
-        if on_start is not None:
-            on_start(len(inputs_list))
 
         # set up semaphores
         sem = await maybe_semaphore(max_concurrent)
@@ -880,11 +878,50 @@ class Environment(ABC):
             default_sampling_args.update(sampling_args)
         sampling_args = default_sampling_args
 
-        # initialize generate outputs builder
+        from tqdm import tqdm
+
+        pbar: tqdm | None = None
+
+        def default_on_start(
+            all_inputs: list[RolloutInput] | list[list[RolloutInput]],
+        ) -> None:
+            nonlocal pbar
+
+            pbar_total = len(all_inputs)
+            if isinstance(all_inputs[0], list):
+                total_rollouts = sum(len(group) for group in all_inputs)
+                pbar_desc = f"Processing {len(all_inputs)} groups ({total_rollouts} total rollouts)"
+            else:
+                pbar_desc = f"Processing {len(all_inputs)} rollouts"
+
+            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
+
+        def default_on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            new_metadata: GenerateMetadata,
+        ) -> None:
+            nonlocal pbar
+            assert pbar is not None
+
+            if pbar.n == 0:
+                pbar.update(len(all_outputs))
+            else:
+                pbar.update(len(new_outputs))
+            avg_reward = new_metadata.get("avg_reward")
+            pbar.set_postfix(reward=avg_reward)
+
+        def default_on_log(message: str) -> None:
+            self.logger.info(message)
+
+        on_start = on_start or cast(StartCallback, default_on_start)
+        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        on_log = on_log or cast(LogCallback, default_on_log)
+
+        # initialize outputs builder
         total_rollouts = len(inputs_list)
         num_examples = len(set([i["example_id"] for i in inputs_list]))
-        rollouts_per_example = total_rollouts // num_examples
-        total_groups = num_examples
+        rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
@@ -897,33 +934,28 @@ class Environment(ABC):
             results_path=results_path,
         )
 
+        # load existing results if available
         if results_path is not None and is_valid_eval_results_path(results_path):
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
             inputs_list = filter_inputs(inputs_list, outputs, rollouts_per_example)
-            if independent_scoring:
-                groups_or_rollouts_completed = len(builder.outputs)
-            else:
-                groups_or_rollouts_completed = (
-                    len(builder.outputs) // rollouts_per_example
-                )
             self.logger.info(
                 f"Resuming evaluaton from {results_path}. Found {len(outputs)} completed rollout(s), {len(inputs_list)} remaining rollout(s)"
             )
-        else:
-            groups_or_rollouts_completed = 0
-            if save_results:
-                self.logger.info(f"Saving results to {builder.results_path}")
+
+        if save_results:
+            self.logger.info(f"Saving results to {builder.results_path}")
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
-            for i, input_item in enumerate(inputs_list):
+            on_start(inputs_list)
+            for i, rollout_input in enumerate(inputs_list):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
                         self.run_rollout(
-                            input_item,
+                            rollout_input,
                             client,
                             model,
                             sampling_args,
@@ -933,23 +965,20 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = total_rollouts
-            pbar_desc = f"Processing {total_rollouts} rollouts"
         else:
-            input_groups: dict[int, list[RolloutInput]] = {}
-            for input_item in inputs_list:
-                example_id = input_item["example_id"]
-                if example_id not in input_groups:
-                    input_groups[example_id] = []
-                input_groups[example_id].append(input_item)
-            group_list = list(input_groups.values())
+            group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+            for rollout_input in inputs_list:
+                example_id = rollout_input["example_id"]
+                group_inputs[example_id].append(rollout_input)
+            group_inputs_list = list(group_inputs.values())
+            on_start(group_inputs_list)
 
-            for i, group in enumerate(group_list):
+            for i, group_input in enumerate(group_inputs_list):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
                         self.run_group(
-                            group,
+                            group_input,
                             client,
                             model,
                             sampling_args,
@@ -959,18 +988,6 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = total_groups
-            pbar_desc = (
-                f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
-            )
-
-        # set up progress bar (only when use_tqdm=True and no external progress callback)
-        pbar = None
-        if use_tqdm and on_progress is None:
-            from tqdm import tqdm
-
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
-            pbar.update(groups_or_rollouts_completed)
 
         try:
             for coro in asyncio.as_completed(tasks.keys()):
@@ -979,18 +996,12 @@ class Environment(ABC):
                 # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                 new_outputs = [result] if independent_scoring else result
                 builder.add_outputs(new_outputs)
-                groups_or_rollouts_completed += 1
                 metadata = builder.build_metadata()
 
-                # update progress bar or call callback
-                if pbar is not None:
-                    pbar.update(1)
-                    pbar.set_postfix(reward=f"{metadata['avg_reward']:.3f}")
-                elif on_progress is not None:
-                    on_progress(builder.outputs, new_outputs)
+                on_progress(builder.outputs, new_outputs, metadata)
 
+                # incrementally save outputs
                 if save_results:
-                    # incrementally save outputs
                     save_new_outputs(new_outputs, builder.results_path)
                     save_metadata(builder.build_metadata(), builder.results_path)
         finally:
@@ -1003,7 +1014,7 @@ class Environment(ABC):
             if pbar is not None:
                 pbar.close()
 
-        # Build final results (sorted by example_id for deterministic ordering)
+        # build final results (sorted by example_id for deterministic ordering)
         results = builder.build(sort_by_example_id=True)
 
         # save if requested
@@ -1013,7 +1024,7 @@ class Environment(ABC):
             if push_to_hf_hub:
                 push_results_to_hf_hub(results, hf_hub_dataset_name)
             if on_log is not None:
-                on_log(f"Saved final outputs to {results['metadata']['path_to_save']}")
+                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
 
         return results
 

@@ -184,7 +184,7 @@ def load_toml_config(path: Path) -> list[dict]:
 
 def filter_inputs(
     inputs: list[RolloutInput], outputs: list[RolloutOutput], rollouts_per_example: int
-):
+) -> list[RolloutInput]:
     """Filter inputs based on the number of rollouts per example."""
     inputs_by_example_id, outputs_by_example_id = defaultdict(list), defaultdict(list)
     for input in inputs:
@@ -192,7 +192,7 @@ def filter_inputs(
     for output in outputs:
         outputs_by_example_id[output["example_id"]].append(output)
 
-    filtered_inputs = []
+    filtered_inputs: list[RolloutInput] = []
     for example_id in inputs_by_example_id.keys():
         example_inputs = inputs_by_example_id[example_id]
         example_outputs = outputs_by_example_id[example_id]
