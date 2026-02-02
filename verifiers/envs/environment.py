@@ -492,7 +492,7 @@ class Environment(ABC):
                     # we raise a special overlong prompt error
                     error_text = e.response.text.lower()
                     context_length_phrases = [
-                        "this model's maximum context length is",
+                        "maximum context length is",
                         "is longer than the model's context length",
                         "exceeds the model's context length",
                         "exceed the configured limit",
