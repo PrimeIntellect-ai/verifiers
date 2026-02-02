@@ -9,6 +9,7 @@ import os
 import pickle
 import shutil
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -392,6 +393,109 @@ class TestBashPrompt:
             assert "RLM_CONTENT" in prompt
         finally:
             await env.cleanup_rlm_state(result)
+
+
+class TestPromptVerbosity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "verbosity, expected_snippets, unexpected_snippets",
+        [
+            (
+                "light",
+                [
+                    "You have the `call_python_repl` tool and a filesystem available to you."
+                ],
+                [
+                    "This is an iterative environment.",
+                    "Critical: This is an ITERATIVE environment",
+                ],
+            ),
+            (
+                "medium",
+                [
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "This is an iterative environment.",
+                ],
+                ["Critical: This is an ITERATIVE environment"],
+            ),
+            (
+                "heavy",
+                [
+                    "iterative Python REPL where you explore data step by step.",
+                    "Critical: This is an ITERATIVE environment",
+                ],
+                ["This is an iterative environment."],
+            ),
+        ],
+    )
+    async def test_root_prompt_verbosity_python(
+        self,
+        verbosity: str,
+        expected_snippets: list[str],
+        unexpected_snippets: list[str],
+    ):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset, repl_language="python", root_prompt_verbosity=verbosity
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            for snippet in expected_snippets:
+                assert snippet in prompt
+            for snippet in unexpected_snippets:
+                assert snippet not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verbosity", ["light", "medium", "heavy"])
+    async def test_sub_prompt_verbosity(self, verbosity: str, rlm_env: RLMEnv):
+        env = rlm_env
+        env.sub_prompt_verbosity = verbosity
+        env.sub_tool_max_turns = 7
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_run_sub_llm(state, client, model, messages):
+            captured["messages"] = messages
+            return {
+                "final_content": "ok",
+                "turns": [
+                    {
+                        "prompt_messages": [{"role": "user", "content": "hi"}],
+                        "response": {},
+                        "tool_call_count": 0,
+                    }
+                ],
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "tool_call_count": 0,
+                "num_turns": 1,
+                "max_turns_reached": False,
+            }
+
+        env._run_sub_llm = AsyncMock(side_effect=_fake_run_sub_llm)
+
+        await env._run_sub_llm_request(
+            state_ref={},
+            client=MagicMock(),
+            sub_model="m",
+            messages=[{"role": "user", "content": "task"}],
+            batch_id="b",
+            request_id="r",
+            parent_turn=0,
+        )
+
+        expected = rlm_module._SUB_LLM_SYSTEM_PROMPT_STORE[verbosity].format(
+            num_turns=env.sub_tool_max_turns
+        )
+        assert captured["messages"][0]["role"] == "system"
+        assert captured["messages"][0]["content"] == expected
 
 
 class TestBashReplOutput:
