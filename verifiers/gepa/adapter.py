@@ -85,6 +85,9 @@ class VerifiersGEPAAdapter:
         """
         inputs = _inject_system_prompt(batch, candidate.get("system_prompt", ""))
 
+        def do_nothing(*args, **kwargs) -> None:
+            pass
+
         results = asyncio.get_event_loop().run_until_complete(
             self.env.generate(
                 inputs=inputs,
@@ -93,6 +96,8 @@ class VerifiersGEPAAdapter:
                 sampling_args=self.sampling_args,
                 max_concurrent=self.max_concurrent,
                 state_columns=self.state_columns,
+                on_start=do_nothing,
+                on_progress=do_nothing,
             )
         )
 
