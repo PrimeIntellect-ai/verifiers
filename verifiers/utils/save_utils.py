@@ -216,6 +216,11 @@ class GenerateOutputsBuilder:
                         metrics[metric_name].append(metric_value)
         avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
 
+        # compute error rate from accumulated outputs
+        errors = [o.get("error") for o in self.outputs]
+        has_errors = [e is not None for e in errors]
+        avg_error = sum(has_errors) / len(has_errors) if has_errors else 0.0
+
         # Determine tools (use first non-None if all same)
         def tools_key(tools: list | None) -> str:
             if not tools:
@@ -241,6 +246,7 @@ class GenerateOutputsBuilder:
             time_ms=(time.time() - self.start_time) * 1000.0,
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
+            avg_error=avg_error,
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,

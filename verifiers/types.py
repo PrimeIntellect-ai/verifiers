@@ -209,6 +209,7 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    avg_error: float
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None

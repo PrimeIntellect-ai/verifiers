@@ -468,7 +468,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 progress=len(all_outputs),
                 reward=metadata.get("avg_reward"),
                 metrics=metadata.get("avg_metrics"),
-                error_rate=metadata.get("error_rate"),
+                error_rate=metadata.get("avg_error"),
             )
 
         def on_log(message: str) -> None:
