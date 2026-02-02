@@ -144,7 +144,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
 
-Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/` as a Hugging Face dataset, containing:
+Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
