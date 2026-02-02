@@ -913,9 +913,9 @@ class Environment(ABC):
         ) -> None:
             """Updates the progress bar from the new outputs."""
             nonlocal pbar
-            assert pbar is not None
-            pbar.update(1)
-            pbar.set_postfix(reward=new_metadata.get("avg_reward"))
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
 
         def default_on_log(message: str) -> None:
             """Logs using the environment logger."""
