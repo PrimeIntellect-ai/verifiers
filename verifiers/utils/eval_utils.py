@@ -442,10 +442,21 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 
-        def on_start(raw_inputs: list[RolloutInput], _) -> None:
+        def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
             total = len(raw_inputs)
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining = len(filtered_inputs) if filtered_inputs else 0
+            resumed = total - remaining
             num_examples = total // env_config.rollouts_per_example
-            display.update_env_state(env_idx, total=total, num_examples=num_examples)
+            display.update_env_state(
+                env_idx, total=total, num_examples=num_examples, progress=resumed
+            )
 
         def on_progress(
             all_outputs: list[RolloutOutput],

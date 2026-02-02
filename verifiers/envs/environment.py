@@ -868,22 +868,43 @@ class Environment(ABC):
 
         def default_on_start(
             raw_inputs: list[RolloutInput],
-            _: list[RolloutInput] | list[list[RolloutInput]],
+            filtered_inputs: list[RolloutInput] | list[list[RolloutInput]],
         ) -> None:
             """Initializes the progress bar from the raw inputs."""
             nonlocal pbar
 
             total_rollouts = len(raw_inputs)
             total_groups = len(set([i["example_id"] for i in raw_inputs]))
-            if inputs:
-                if isinstance(inputs[0], list):
-                    pbar_total = total_rollouts
+            rollouts_per_example = (
+                total_rollouts // total_groups if total_groups > 0 else 0
+            )
+
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining_rollouts = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining_rollouts = len(filtered_inputs)
+            saved_rollouts = total_rollouts - remaining_rollouts
+
+            if filtered_inputs:
+                if isinstance(filtered_inputs[0], list):
+                    pbar_total = total_groups
+                    pbar_initial = saved_rollouts // rollouts_per_example
                     pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
                 else:
                     pbar_total = total_rollouts
+                    pbar_initial = saved_rollouts
                     pbar_desc = f"Processing {total_rollouts} rollouts"
 
-                pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
+                pbar = tqdm(
+                    total=pbar_total,
+                    initial=pbar_initial,
+                    desc=pbar_desc,
+                    postfix=dict(reward="?"),
+                )
 
         def default_on_progress(
             all_outputs: list[RolloutOutput],
@@ -893,13 +914,8 @@ class Environment(ABC):
             """Updates the progress bar from the new outputs."""
             nonlocal pbar
             assert pbar is not None
-
-            if pbar.n == 0:
-                pbar.update(len(all_outputs))
-            else:
-                pbar.update(len(new_outputs))
-            avg_reward = new_metadata.get("avg_reward")
-            pbar.set_postfix(reward=avg_reward)
+            pbar.update(1)
+            pbar.set_postfix(reward=new_metadata.get("avg_reward"))
 
         def default_on_log(message: str) -> None:
             """Logs using the environment logger."""
