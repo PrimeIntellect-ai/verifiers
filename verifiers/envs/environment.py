@@ -26,7 +26,7 @@ from typing import (
     final,
 )
 
-from openai import AsyncOpenAI, BadRequestError, OpenAI
+from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
 
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
@@ -484,24 +484,24 @@ class Environment(ABC):
             async def wrapper(*args, **kwargs):
                 try:
                     return await func(*args, **kwargs)
-                except Exception as e:
+                except AuthenticationError:
+                    # re-raise auth errors to exit immediately
+                    raise
+                except BadRequestError as e:
                     # in case of making a request with an overlong prompt, e.g
                     # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
+                    error_text = e.response.text.lower()
+                    context_length_phrases = [
+                        "this model's maximum context length is",
+                        "is longer than the model's context length",
+                        "exceeds the model's context length",
+                        "exceed the configured limit",
+                        "exceeds the configured limit",
+                        "exceeded model",
+                    ]
+                    if any(phrase in error_text for phrase in context_length_phrases):
+                        self.logger.debug("Caught overlong prompt.")
+                        raise vf.OverlongPromptError from e
                     # in all other case we raise a generic model error
                     raise vf.ModelError from e
 
@@ -1177,12 +1177,6 @@ class Environment(ABC):
         log_file: str | None = None,
         startup_timeout: float = 10.0,
     ) -> None:
-        """Start a ZMQ server process for this environment.
-
-        .. warning::
-            This method is subject to change. External users should avoid
-            depending on it directly.
-        """
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
         self.env_server_process = Process(
             target=ZMQEnvServer.run_server,
@@ -1201,12 +1195,6 @@ class Environment(ABC):
         await self.env_client.health(timeout=startup_timeout)
 
     async def stop_server(self) -> None:
-        """Stop the ZMQ server process for this environment.
-
-        .. warning::
-            This method is subject to change. External users should avoid
-            depending on it directly.
-        """
         if self.env_client is not None:
             await self.env_client.close()
             self.env_client = None
