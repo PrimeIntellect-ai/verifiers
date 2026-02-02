@@ -36,7 +36,7 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
-    "prime-tunnel",
+    "prime-tunnel>=0.1.0",
     "prime-sandboxes>=0.2.14",
     "pydantic>=2.11.9",
     "requests",
@@ -86,6 +86,9 @@ browser = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
+]
+harbor = [
+    "harbor>=0.1.43; python_version >= '3.12'",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
