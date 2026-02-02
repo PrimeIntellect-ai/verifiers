@@ -579,11 +579,10 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
-    print_results: bool = False
     verbose: bool = False
     state_columns: list[str] | None = None
     save_results: bool = False
-    save_every: int = -1
+    resume_path: Path | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
 ```
