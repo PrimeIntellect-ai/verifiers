@@ -1,0 +1,13 @@
+[project]
+name = "endless-terminals-env"
+description = "Endless Terminals environment"
+tags = ["eval", "terminal", "generated"]
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers[harbor]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
