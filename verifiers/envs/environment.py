@@ -502,6 +502,7 @@ class Environment(ABC):
                     if any(phrase in error_text for phrase in context_length_phrases):
                         self.logger.debug("Caught overlong prompt.")
                         raise vf.OverlongPromptError from e
+                except Exception as e:
                     # in all other case we raise a generic model error
                     raise vf.ModelError from e
 
