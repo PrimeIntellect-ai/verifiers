@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Mapping, final
+from typing import TYPE_CHECKING, Mapping, TypeVar, final
 
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import RolloutInput, SamplingArgs
-from verifiers.utils.worker_utils import get_free_port
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -298,22 +297,32 @@ class EnvGroup(vf.Environment):
 
     async def start_servers(
         self,
-        addresses: list[str] | None = None,
-        log_level: str | None = None,
-        log_file: str | None = None,
-        startup_timeout: float = 10,
+        address: list[str] | None = None,
+        log_level: list[str] | str | None = None,
+        log_file: list[str] | str | None = None,
+        startup_timeout: list[float] | float = 10,
     ) -> None:
-        if addresses is None:
-            addresses = [f"tcp://127.0.0.1:{get_free_port()}" for _ in self.envs]
-        assert len(addresses) == len(self.envs), (
-            "Number of addresses must match number of environments"
-        )
-        for env, address in zip(self.envs, addresses):
+        T = TypeVar("T")
+
+        def normalize(value: list[T] | T | None) -> list[T] | list[None]:
+            if value is None:
+                return [None] * len(self.envs)
+            if not isinstance(value, list):
+                return [value] * len(self.envs)
+            return value
+
+        for env, env_address, env_log_level, env_log_file, env_startup_timeout in zip(
+            self.envs,
+            normalize(address),
+            normalize(log_level),
+            normalize(log_file),
+            normalize(startup_timeout),
+        ):
             await env.start_server(
-                address=address,
-                log_level=log_level,
-                log_file=log_file,
-                startup_timeout=startup_timeout,
+                address=env_address,
+                log_level=env_log_level,
+                log_file=env_log_file,
+                startup_timeout=env_startup_timeout or 10,
             )
 
     async def stop_servers(self) -> None:
