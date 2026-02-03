@@ -15,6 +15,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from verifiers.utils.save_utils import (
+    extract_usage_tokens,
     make_serializable,
     states_to_outputs,
 )
@@ -105,6 +106,7 @@ class TestSavingMetadata:
             time_ms=1000.0,
             avg_reward=0.5,
             avg_metrics={"num_turns": 1.0},
+            usage={"input_tokens": 12.0, "output_tokens": 7.0},
             state_columns=[],
             path_to_save=Path("/results/test"),
             tools=None,
@@ -123,10 +125,38 @@ class TestSavingMetadata:
         assert result["time_ms"] == 1000.0
         assert result["avg_reward"] == 0.5
         assert result["avg_metrics"] == {"num_turns": 1.0}
+        assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
         assert result["state_columns"] == []
 
 
 class TestSavingResults:
+    def test_extract_usage_tokens_prompt_completion(self):
+        response = type(
+            "Response",
+            (),
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "input_tokens": 999,
+                    "output_tokens": 999,
+                }
+            },
+        )()
+        input_tokens, output_tokens = extract_usage_tokens(response)
+        assert input_tokens == 10
+        assert output_tokens == 5
+
+    def test_extract_usage_tokens_input_output(self):
+        response = type(
+            "Response",
+            (),
+            {"usage": {"input_tokens": 8, "output_tokens": 3}},
+        )()
+        input_tokens, output_tokens = extract_usage_tokens(response)
+        assert input_tokens == 8
+        assert output_tokens == 3
+
     def test_states_to_outputs(self, make_state):
         states = [
             make_state(

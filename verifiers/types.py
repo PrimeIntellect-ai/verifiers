@@ -68,6 +68,11 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
 
 
+class TokenUsage(TypedDict):
+    input_tokens: float
+    output_tokens: float
+
+
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -115,7 +120,8 @@ class RolloutOutput(dict):
 
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools
+    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools,
+                     token_usage
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -136,6 +142,7 @@ class RolloutOutput(dict):
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     oai_tools: list["ChatCompletionToolParam"]
+    token_usage: TokenUsage
 
 
 class State(dict):
@@ -207,6 +214,7 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    usage: TokenUsage | None
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None

@@ -425,6 +425,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         reward_accum = 0
         metrics_accum = defaultdict(float)
         error_accum = 0
+        input_tokens_accum = 0.0
+        output_tokens_accum = 0.0
+        usage_seen = False
 
         def on_start(total: int) -> None:
             # total is num_examples * rollouts_per_example
@@ -436,6 +439,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             all_outputs: list[RolloutOutput], new_outputs: list[RolloutOutput]
         ) -> None:
             nonlocal error_accum, reward_accum, metrics_accum
+            nonlocal input_tokens_accum, output_tokens_accum, usage_seen
 
             # Progress is always rollout-based
             completed = len(all_outputs)
@@ -450,17 +454,29 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 for name, value in output_metrics.items():
                     if value is not None:
                         metrics_accum[name] += value
+                token_usage = o.get("token_usage", {})
+                if isinstance(token_usage, dict):
+                    usage_seen = True
+                    input_tokens_accum += float(token_usage.get("input_tokens", 0.0))
+                    output_tokens_accum += float(token_usage.get("output_tokens", 0.0))
 
             # Compute averages over completed rollouts
             reward = reward_accum / completed
             metrics = {name: metrics_accum[name] / completed for name in metrics_accum}
             error_rate = error_accum / completed
+            usage = None
+            if usage_seen:
+                usage = {
+                    "input_tokens": input_tokens_accum / completed,
+                    "output_tokens": output_tokens_accum / completed,
+                }
 
             display.update_env_state(
                 env_idx,
                 progress=completed,
                 reward=reward,
                 metrics=metrics,
+                usage=usage,
                 error_rate=error_rate,
             )
 
