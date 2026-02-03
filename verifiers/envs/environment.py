@@ -1212,6 +1212,7 @@ class Environment(ABC):
         extra_env_kwargs: dict[str, Any] = {},
         log_level: str | None = None,
         log_file: str | None = None,
+        log_file_level: str | None = None,
         startup_timeout: float = 10.0,
     ) -> None:
         """Start a ZMQ server process for this environment.
@@ -1229,6 +1230,7 @@ class Environment(ABC):
                 extra_env_kwargs,
                 log_level,
                 log_file,
+                log_file_level,
             ),
             kwargs=dict(address=address),
             daemon=True,  # ensure server process is terminated when parent exits

@@ -332,6 +332,7 @@ class EnvGroup(vf.Environment):
         address: list[str] | None = None,
         log_level: list[str] | str | None = None,
         log_file: list[str] | str | None = None,
+        log_file_level: list[str] | str | None = None,
         startup_timeout: list[float] | float = 10,
     ) -> None:
         T = TypeVar("T")
@@ -343,17 +344,26 @@ class EnvGroup(vf.Environment):
                 return [value] * len(self.envs)
             return value
 
-        for env, env_address, env_log_level, env_log_file, env_startup_timeout in zip(
+        for (
+            env,
+            env_address,
+            env_log_level,
+            env_log_file,
+            env_log_file_level,
+            env_startup_timeout,
+        ) in zip(
             self.envs,
             normalize(address),
             normalize(log_level),
             normalize(log_file),
+            normalize(log_file_level),
             normalize(startup_timeout),
         ):
             await env.start_server(
                 address=env_address,
                 log_level=env_log_level,
                 log_file=env_log_file,
+                log_file_level=env_log_file_level,
                 startup_timeout=env_startup_timeout or 10,
             )
 
