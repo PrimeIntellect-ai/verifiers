@@ -198,7 +198,6 @@ class TestSandboxFilesystemProvisioning:
         env = build_env(dataset, execution_backend="sandbox", repl_language="bash")
         state = {
             "rollout_id": "rlm_test",
-            "rlm_fs_metadata": {"file_count": 1, "total_size": 3},
             "model": "m",
             "client": MagicMock(),
         }
@@ -238,7 +237,6 @@ class TestSandboxFilesystemProvisioning:
         state = {
             "rollout_id": "rlm_test",
             "rlm_fs_root": "/tmp/rlm_rlm_test/rlm_fs",
-            "rlm_fs_metadata": {"file_count": 0, "total_size": 0},
             "model": "m",
             "client": MagicMock(),
             "interception_url": "http://example.invalid",
