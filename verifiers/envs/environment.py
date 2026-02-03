@@ -837,7 +837,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | ClientConfig,
+        client: AsyncOpenAI | ClientConfig | "ClientPool",
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -856,7 +856,12 @@ class Environment(ABC):
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
+
+        Args:
+            client: Can be a single AsyncOpenAI client, a ClientConfig, or a ClientPool
+                for round-robin distribution across multiple servers.
         """
+        from verifiers.utils.client_utils import ClientPool
         from datasets import Dataset
 
         if isinstance(inputs, Dataset):
@@ -888,6 +893,22 @@ class Environment(ABC):
             results_path=results_path,
         )
 
+        # Normalize client to ClientPool for uniform handling
+        # This enables round-robin across multiple servers when ClientPool is provided
+        if isinstance(client, ClientPool):
+            client_pool = client
+        elif isinstance(client, ClientConfig):
+            client_pool = ClientPool.from_config(client)
+        else:
+            # AsyncOpenAI - wrap in single-config pool
+            client_pool = None  # Use client directly (legacy path)
+
+        def get_client_for_group() -> AsyncOpenAI | ClientConfig:
+            """Get next client config (round-robin) or return single client."""
+            if client_pool is not None:
+                return client_pool.get_next_config()
+            return client
+
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
@@ -897,7 +918,7 @@ class Environment(ABC):
                         sem,
                         self.run_rollout(
                             input_item,
-                            client,
+                            get_client_for_group(),
                             model,
                             sampling_args,
                             max_retries=max_retries,
@@ -918,12 +939,14 @@ class Environment(ABC):
             group_list = list(input_groups.values())
 
             for i, group in enumerate(group_list):
+                # Round-robin: each group gets next client from pool
+                group_client = get_client_for_group()
                 task = asyncio.create_task(
                     with_sem(
                         sem,
                         self.run_group(
                             group,
-                            client,
+                            group_client,
                             model,
                             sampling_args,
                             max_retries=max_retries,

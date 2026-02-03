@@ -133,10 +133,10 @@ def main():
     parser.add_argument(
         "--api-base-url",
         "-b",
-        type=str,
+        action="append",
         default=None,
         help=(
-            "Base URL for API "
+            "Base URL for API. Repeatable for multi-server round-robin. "
             "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
         ),
     )

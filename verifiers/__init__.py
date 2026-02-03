@@ -33,6 +33,7 @@ from .utils.data_utils import (
     extract_hash_answer,
     load_example_dataset,
 )
+from .utils.client_utils import ClientPool
 from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.env_utils import load_environment
 from .utils.logging_utils import (
@@ -46,6 +47,7 @@ from .utils.logging_utils import (
 setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
 
 __all__ = [
+    "ClientPool",
     "DatasetBuilder",
     "Parser",
     "ThinkParser",

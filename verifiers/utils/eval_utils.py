@@ -326,6 +326,8 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
+    from verifiers.utils.client_utils import resolve_client
+
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
@@ -333,6 +335,9 @@ async def run_evaluation(
     if config.extra_env_kwargs:
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
+
+    # Resolve client config to ClientPool if multiple URLs provided
+    client = resolve_client(config.client_config)
 
     # start env server as sidecar process
     try:
@@ -347,7 +352,7 @@ async def run_evaluation(
         # disable tqdm when callbacks are provided (TUI handles progress display)
         use_tqdm = config.use_tqdm and on_progress is None
         outputs = await vf_env.evaluate(
-            client=config.client_config,
+            client=client,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
