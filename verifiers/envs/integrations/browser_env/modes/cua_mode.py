@@ -289,8 +289,11 @@ class CUAMode:
         if loop is not None:
             import concurrent.futures
 
+            def _run_health_check() -> None:
+                asyncio.run(self._check_server_health())
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self._check_server_health())
+                future = executor.submit(_run_health_check)
                 future.result()
         else:
             asyncio.run(self._check_server_health())

@@ -2,7 +2,7 @@
 name = "rlm-secrets"
 description = "File puzzle environment for testing RLM capabilities: root tools, sub-LLM tools, file operations"
 tags = ["multi-turn", "rlm", "tools", "eval"]
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>=0.1.8",

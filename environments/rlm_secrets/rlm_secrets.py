@@ -483,6 +483,16 @@ def load_environment(
         weights=[0.5, 0.5],
     )
 
+    sandbox_labels = kwargs.pop("sandbox_labels", [])
+    if not (
+        isinstance(sandbox_labels, list)
+        and all(isinstance(label, str) for label in sandbox_labels)
+    ):
+        raise ValueError(
+            f"sandbox_labels must be of type list[str]; you provided {sandbox_labels}"
+        )
+    sandbox_labels = list(set(["rlm-secrets"] + sandbox_labels))
+
     return RLMSecretsEnv(
         dataset=train_dataset,
         num_files=num_files,
@@ -492,5 +502,6 @@ def load_environment(
         sub_tool_max_turns=sub_tool_max_turns,
         max_sub_llm_parallelism=max_sub_llm_parallelism,
         code_execution_timeout=code_execution_timeout,
+        sandbox_labels=sandbox_labels,
         **kwargs,
     )

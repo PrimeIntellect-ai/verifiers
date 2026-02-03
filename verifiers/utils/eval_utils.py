@@ -6,7 +6,7 @@ import logging
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -493,19 +493,30 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             display.update_env_state(env_idx, status="failed", error=str(e))
             raise
 
+    async def refresh_loop() -> None:
+        while not display.state.all_completed:
+            display.refresh()
+            await asyncio.sleep(1)
+
     try:
         async with display:
-            await asyncio.gather(
-                *[
-                    run_with_progress(env_config, idx)
-                    for idx, env_config in enumerate(config.evals)
-                ],
-                return_exceptions=True,
-            )
+            refresh_task = asyncio.create_task(refresh_loop())
+            try:
+                await asyncio.gather(
+                    *[
+                        run_with_progress(env_config, idx)
+                        for idx, env_config in enumerate(config.evals)
+                    ],
+                    return_exceptions=True,
+                )
 
-            display.refresh()
-            if tui_mode:
-                await display.wait_for_exit()
+                display.refresh()
+                if tui_mode:
+                    await display.wait_for_exit()
+            finally:
+                refresh_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await refresh_task
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
