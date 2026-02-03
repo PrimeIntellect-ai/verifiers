@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.utils.worker_utils import get_free_port
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -294,3 +295,27 @@ class EnvGroup(vf.Environment):
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)
+
+    async def start_servers(
+        self,
+        addresses: list[str] | None = None,
+        log_level: str | None = None,
+        log_file: str | None = None,
+        startup_timeout: float = 10,
+    ) -> None:
+        if addresses is None:
+            addresses = [f"tcp://127.0.0.1:{get_free_port()}" for _ in self.envs]
+        assert len(addresses) == len(self.envs), (
+            "Number of addresses must match number of environments"
+        )
+        for env, address in zip(self.envs, addresses):
+            await env.start_server(
+                address=address,
+                log_level=log_level,
+                log_file=log_file,
+                startup_timeout=startup_timeout,
+            )
+
+    async def stop_servers(self) -> None:
+        for env in self.envs:
+            await env.stop_server()
