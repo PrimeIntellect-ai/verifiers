@@ -759,6 +759,38 @@ class Environment(ABC):
                 return True
         return False
 
+    @property
+    def in_server_mode(self) -> bool:
+        return self.env_client is not None
+
+    async def run_rollout_on_server(
+        self,
+        input: RolloutInput,
+        client: ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> RolloutOutput:
+        assert self.env_client is not None
+        return await self.env_client.run_rollout(
+            input, client, model, sampling_args, max_retries, state_columns
+        )
+
+    async def run_group_on_server(
+        self,
+        group_inputs: list[RolloutInput],
+        client: ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> list[RolloutOutput]:
+        assert self.env_client is not None
+        return await self.env_client.run_group(
+            group_inputs, client, model, sampling_args, max_retries, state_columns
+        )
+
     @final
     async def run_rollout(
         self,
@@ -771,12 +803,12 @@ class Environment(ABC):
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
-        if self.env_client is not None:  # in server mode
+        if self.in_server_mode:  # in server mode
             if not isinstance(client, ClientConfig):
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            return await self.env_client.run_rollout(
+            return await self.run_rollout_on_server(
                 input, client, model, sampling_args, max_retries, state_columns
             )
 
@@ -809,9 +841,12 @@ class Environment(ABC):
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
 
-        if self.env_client is not None:  # in server mode
-            assert isinstance(client, ClientConfig)
-            return await self.env_client.run_group(
+        if self.in_server_mode:
+            if not isinstance(client, ClientConfig):
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await self.run_group_on_server(
                 group_inputs, client, model, sampling_args, max_retries, state_columns
             )
 

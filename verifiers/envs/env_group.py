@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Mapping, TypeVar, final
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -262,6 +262,38 @@ class EnvGroup(vf.Environment):
             "Task column should be set during concatenation in __init__"
         )
         return dataset
+
+    @property
+    def in_server_mode(self) -> bool:
+        return all(env.in_server_mode for env in self.envs)
+
+    async def run_rollout_on_server(
+        self,
+        input: RolloutInput,
+        client: ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> vf.RolloutOutput:
+        env = self.get_env_for_task(input["task"])
+        return await env.run_rollout_on_server(
+            input, client, model, sampling_args, max_retries, state_columns
+        )
+
+    async def run_group_on_server(
+        self,
+        group_inputs: list[RolloutInput],
+        client: ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> list[vf.RolloutOutput]:
+        env = self.get_env_for_task(group_inputs[0]["task"])
+        return await env.run_group_on_server(
+            group_inputs, client, model, sampling_args, max_retries, state_columns
+        )
 
     @final
     async def rollout(
