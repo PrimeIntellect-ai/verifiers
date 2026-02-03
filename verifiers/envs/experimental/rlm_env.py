@@ -403,12 +403,10 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     answer_default = f'{dict_open}"ready": False, "content": ""{dict_close}'
     fs_context_block = [
         "fs_root = None",
-        f"fs_metadata = {dict_open}{dict_close}",
         "if Path(CONTEXT_FILE).exists():",
         '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
         "        context = json.load(f)",
         '        fs_root = context.get("fs_root")',
-        f'        fs_metadata = context.get("fs_metadata") or {dict_open}{dict_close}',
     ]
     lines: list[str] = [
         "",
@@ -511,7 +509,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     lines.extend(
         [
             '    "extra_data": extra_data,',
-            '    "fs_metadata": fs_metadata,',
             '    "answer": answer,',
             f"{dict_close}",
             "for tool_name in ROOT_TOOL_NAMES:",
@@ -1400,17 +1397,9 @@ _SUB_LLM_SYSTEM_PROMPT_STORE = {
 _RLM_PYTHON_SYSTEM_PROMPT_STORE = {
     "light": """You have the `call_python_repl` tool and a filesystem available to you.
 
-filesystem info:
-
-{filesystem_summary}
-
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
 """,
     "medium": """You have the `call_python_repl` tool and a filesystem available to you.
-
-filesystem info:
-
-{filesystem_summary}
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
 
@@ -1418,14 +1407,13 @@ This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever 
 """,
     "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
 
+A filesystem is available; explore it as needed.
+
 ## Critical: This is an ITERATIVE environment
 
 You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
-
-## Filesystem Context
-{filesystem_summary}
 
 ## Workflow
 
@@ -1461,17 +1449,9 @@ answer["ready"] = True
 _RLM_BASH_SYSTEM_PROMPT_STORE = {
     "light": """You have the `call_bash_repl` tool and a filesystem available to you.
 
-filesystem info:
-
-{filesystem_summary}
-
 In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
 """,
     "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
-
-filesystem info:
-
-{filesystem_summary}
 
 In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
 
@@ -1479,14 +1459,13 @@ This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever 
 """,
     "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
 
+A filesystem is available; explore it as needed.
+
 ## Critical: This is an ITERATIVE environment
 
 You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
 Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
-
-## Filesystem Context
-{filesystem_summary}
 
 ## Workflow
 
@@ -1774,7 +1753,6 @@ class LocalRLMExecutor(BaseRLMExecutor):
         Path(session.control_dir).mkdir(parents=True, exist_ok=True)
         context = {
             "fs_root": state.get("rlm_fs_root"),
-            "fs_metadata": state.get("rlm_fs_metadata") or {},
         }
         Path(session.paths.context_file).write_text(
             json.dumps(context), encoding="utf-8"
@@ -2125,7 +2103,6 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         assert session.paths is not None
         context = {
             "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
-            "fs_metadata": state.get("rlm_fs_metadata") or {},
         }
         context_path = Path(session.local_control_dir) / "rlm_context.json"
         answer_path = Path(session.local_control_dir) / "rlm_answer.json"
@@ -2890,26 +2867,6 @@ class RLMEnv(vf.StatefulToolEnv):
             ) from exc
         path = os.path.join(fs_root, "context.json")
         Path(path).write_text(payload, encoding="utf-8")
-
-    def _generate_filesystem_summary(
-        self, *, fs_root: str, metadata: dict[str, Any], has_data: bool
-    ) -> str:
-        """Generate a concise summary of filesystem context for the system prompt."""
-        lines = [f"Working directory: {fs_root}"]
-        if has_data:
-            file_count = metadata.get("file_count")
-            total_size = metadata.get("total_size", metadata.get("total_bytes"))
-            if file_count is not None:
-                lines.append(f"File count: {file_count}")
-            if total_size is not None:
-                lines.append(f"Total size (bytes): {total_size}")
-        else:
-            lines.append(
-                "No extra data was provided. The working directory exists but is empty."
-            )
-            lines.append("You can still use this directory for any files you create.")
-        lines.append("Never access files or directories outside the working directory.")
-        return "\n".join(lines)
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -3685,24 +3642,10 @@ class RLMEnv(vf.StatefulToolEnv):
                 fs_has_data = True
                 self._write_builtin_context(context_data, fs_root)
 
-        fs_metadata = self._compute_fs_metadata(fs_root)
         state["rlm_fs_root"] = fs_root
         state["rlm_fs_source"] = fs_source
-        state["rlm_fs_metadata"] = fs_metadata
         state["rlm_fs_has_data"] = fs_has_data
         state["retain_filesystem_after_rollout"] = self.retain_filesystem_after_rollout
-
-        fs_root_for_prompt = (
-            state.get("rlm_fs_root_remote")
-            if self.execution_backend == "sandbox"
-            else fs_root
-        )
-
-        filesystem_summary = self._generate_filesystem_summary(
-            fs_root=fs_root_for_prompt or fs_root,
-            metadata=fs_metadata,
-            has_data=fs_has_data,
-        )
         if self.custom_system_prompt:
             base_system_prompt = self.custom_system_prompt
         elif self.repl_language == "bash":
@@ -3713,14 +3656,6 @@ class RLMEnv(vf.StatefulToolEnv):
             base_system_prompt = _RLM_PYTHON_SYSTEM_PROMPT_STORE[
                 self.root_prompt_verbosity
             ]
-        if "{filesystem_summary}" in base_system_prompt:
-            # Use replace instead of format to avoid conflict with curly braces from Python code
-            base_system_prompt = base_system_prompt.replace(
-                "{filesystem_summary}", filesystem_summary
-            )
-        else:
-            # If custom prompt doesn't have placeholder, prepend it
-            base_system_prompt = f"{filesystem_summary}\n\n{base_system_prompt}"
 
         packages_docs = self._generate_packages_documentation()
         root_tools_docs = self._generate_root_tools_documentation()
@@ -3970,7 +3905,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         The Bash session maintains state across calls and provides access to:
 
-        - Files in the working directory (current working directory is the context root).
+        - Files in the working directory.
         - `RLM_CONTENT`: Your current best answer (string).
         - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
 
@@ -3995,9 +3930,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         The REPL maintains state across calls and provides access to:
 
-        - Files in the working directory (current working directory is the context root).
-        - `extra_data`: The working directory path (string) for convenience.
-        - `fs_metadata`: Metadata about the filesystem context (file_count, total_size).
+        - Files in the working directory.
 
         - `answer`: A dictionary for your final answer:
           - `answer["content"]`: Your answer (string) - update this as you work
