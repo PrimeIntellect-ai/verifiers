@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from datasets import Dataset
 from openai import AsyncOpenAI
@@ -18,6 +19,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
     State,
+    TokenUsage,
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -66,6 +68,24 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return str(value)
 
 
+def extract_usage_tokens(response: object) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0
+
+    def get_usage_value(usage_obj: object, key: str) -> int | float:
+        if isinstance(usage_obj, dict):
+            return cast(dict[str, Any], usage_obj).get(key, 0)
+        return getattr(usage_obj, key, 0)
+
+    prompt_tokens = get_usage_value(usage, "prompt_tokens")
+    completion_tokens = get_usage_value(usage, "completion_tokens")
+    if not prompt_tokens and not completion_tokens:
+        prompt_tokens = get_usage_value(usage, "input_tokens")
+        completion_tokens = get_usage_value(usage, "output_tokens")
+    return int(prompt_tokens or 0), int(completion_tokens or 0)
+
+
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     """Auto-generates a dataset name."""
     metadata = outputs["metadata"]
@@ -111,6 +131,24 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         metrics=state.get("metrics", {}),
         oai_tools=state.get("oai_tools", None),
     )
+    trajectory = state.get("trajectory", [])
+    input_tokens = 0
+    output_tokens = 0
+    usage_seen = False
+    for step in trajectory:
+        response = step.get("response")
+        if response is None:
+            continue
+        if getattr(response, "usage", None) is not None:
+            usage_seen = True
+        step_input_tokens, step_output_tokens = extract_usage_tokens(response)
+        input_tokens += step_input_tokens
+        output_tokens += step_output_tokens
+    if usage_seen:
+        output["token_usage"] = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
@@ -228,6 +266,25 @@ class GenerateOutputsBuilder:
                         metrics[metric_name].append(metric_value)
         avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
 
+        input_tokens_total = 0.0
+        output_tokens_total = 0.0
+        usage_seen = False
+        usage_count = 0
+        for output in outputs:
+            token_usage = output.get("token_usage")
+            if not isinstance(token_usage, dict):
+                continue
+            usage_seen = True
+            usage_count += 1
+            input_tokens_total += float(token_usage.get("input_tokens", 0.0))
+            output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+        usage: TokenUsage | None = None
+        if usage_seen and usage_count > 0:
+            usage = {
+                "input_tokens": input_tokens_total / usage_count,
+                "output_tokens": output_tokens_total / usage_count,
+            }
+
         # Compute example counts
         example_ids = [o.get("example_id", 0) for o in outputs]
         num_examples = len(set(example_ids)) if example_ids else 0
@@ -258,6 +315,7 @@ class GenerateOutputsBuilder:
             time_ms=(time.time() - self.start_time) * 1000.0,
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
+            usage=usage,
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,

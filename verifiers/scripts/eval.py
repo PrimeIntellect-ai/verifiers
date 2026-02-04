@@ -369,7 +369,6 @@ def main():
         raw_temp = raw.get("temperature")
         if raw_temp is not None and "temperature" not in merged_sampling_args:
             merged_sampling_args["temperature"] = raw_temp
-
         # Build headers
         merged_headers: dict[str, str] = {}
         for h in raw.get("header") or []:

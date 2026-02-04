@@ -335,10 +335,9 @@ class TestContextFilesystemSetup:
         result = await env.setup_state(state)
         try:
             prompt = result["rlm_system_prompt"]
-            fs_root = result["rlm_fs_root"]
-            assert f"Working directory: {fs_root}" in prompt
-            assert "No extra data was provided" in prompt
-            assert "can still use this directory" in prompt
+            assert "filesystem available" in prompt
+            assert "Working directory:" not in prompt
+            assert "No extra data was provided" not in prompt
         finally:
             await env.cleanup_rlm_state(result)
 

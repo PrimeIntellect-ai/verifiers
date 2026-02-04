@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
-from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
+from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
 
@@ -39,6 +39,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
+    usage: dict[str, float] | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -174,6 +175,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
+        usage: dict[str, float] | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -205,6 +207,9 @@ class EvalDisplay(BaseDisplay):
 
         if metrics is not None:
             env_state.metrics = metrics
+
+        if usage is not None:
+            env_state.usage = usage
 
         if error_rate is not None:
             env_state.error_rate = error_rate
@@ -241,15 +246,7 @@ class EvalDisplay(BaseDisplay):
 
         for i, (name, value) in enumerate(metrics.items()):
             # format value
-            if isinstance(value, float):
-                if value == int(value):
-                    value_str = str(int(value))
-                elif abs(value) < 0.01:
-                    value_str = f"{value:.4f}"
-                else:
-                    value_str = f"{value:.3f}"
-            else:
-                value_str = str(value)
+            value_str = format_numeric(value)
 
             # add metric with dotted leader
             metrics_text.append(name, style="dim")
@@ -269,6 +266,23 @@ class EvalDisplay(BaseDisplay):
             error_text.append(error_rate_str, style=f"bold {error_color}")
 
         return make_aligned_row(metrics_text, error_text)
+
+    def _make_tokens_row(self, usage: dict[str, float]) -> Table | None:
+        """Create a tokens row with input/output values."""
+        tokens_text = Text()
+        tokens_text.append("╰─ ", style="dim")
+        token_items = [
+            ("input", usage.get("input_tokens", 0.0)),
+            ("output", usage.get("output_tokens", 0.0)),
+        ]
+        for i, (name, value) in enumerate(token_items):
+            value_str = format_numeric(value)
+            tokens_text.append(name, style="dim")
+            tokens_text.append(" ", style="dim")
+            tokens_text.append(value_str, style="bold")
+            if i < len(token_items) - 1:
+                tokens_text.append("   ")
+        return make_aligned_row(tokens_text, Text())
 
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
@@ -291,12 +305,7 @@ class EvalDisplay(BaseDisplay):
 
         config_line.append("  |  ", style="dim")
         config_line.append(fmt_concurrency(config.max_concurrent), style="white")
-        concurrency_unit = (
-            " concurrent rollouts"
-            if config.independent_scoring
-            else " concurrent groups"
-        )
-        config_line.append(concurrency_unit, style="dim")
+        config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")
@@ -345,6 +354,11 @@ class EvalDisplay(BaseDisplay):
         metrics_content = self._make_metrics_row(
             env_state.reward, env_state.metrics, env_state.error_rate
         )
+        tokens_content = (
+            self._make_tokens_row(env_state.usage)
+            if env_state.usage is not None
+            else None
+        )
 
         # log message for special events
         log_content = Text()
@@ -365,6 +379,10 @@ class EvalDisplay(BaseDisplay):
         content_items = [config_line, space, progress]
         if metrics_content:
             content_items.append(metrics_content)
+        else:
+            content_items.append(space)
+        if tokens_content:
+            content_items.append(tokens_content)
         else:
             content_items.append(space)
         content_items.append(space)
@@ -494,6 +512,17 @@ class EvalDisplay(BaseDisplay):
         table.add_column("examples", justify="center")
         table.add_column("rollouts", justify="center")
         table.add_column("reward", justify="center")
+        show_usage = any(
+            env_state.usage is not None
+            or (
+                env_state.results is not None
+                and env_state.results["metadata"].get("usage") is not None
+            )
+            for env_state in self.state.envs.values()
+        )
+        if show_usage:
+            table.add_column("input", justify="center")
+            table.add_column("output", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
@@ -514,6 +543,16 @@ class EvalDisplay(BaseDisplay):
             rollouts_str = str(config.rollouts_per_example)
 
             reward = f"{env_state.reward:.3f}"
+            input_tokens = None
+            output_tokens = None
+            usage = None
+            if env_state.results is not None:
+                usage = env_state.results["metadata"].get("usage")
+            else:
+                usage = env_state.usage
+            if usage is not None:
+                input_tokens = format_numeric(usage.get("input_tokens", 0.0))
+                output_tokens = format_numeric(usage.get("output_tokens", 0.0))
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -528,15 +567,11 @@ class EvalDisplay(BaseDisplay):
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            table.add_row(
-                config.env_id,
-                status,
-                examples_str,
-                rollouts_str,
-                reward,
-                error_str,
-                time_str,
-            )
+            row = [config.env_id, status, examples_str, rollouts_str, reward]
+            if show_usage:
+                row.extend([input_tokens or "-", output_tokens or "-"])
+            row.extend([error_str, time_str])
+            table.add_row(*row)
 
         self.console.print()
         self.console.print(table)
@@ -625,10 +660,7 @@ class EvalDisplay(BaseDisplay):
         if env_state.metrics:
             metrics_text = Text()
             for name, value in env_state.metrics.items():
-                if isinstance(value, float):
-                    value_str = f"{value:.4f}"
-                else:
-                    value_str = str(value)
+                value_str = format_numeric(value)
                 metrics_text.append(f"• {name}: ", style="cyan")
                 metrics_text.append(f"{value_str}\n")
 
@@ -636,6 +668,26 @@ class EvalDisplay(BaseDisplay):
                 Panel(
                     metrics_text,
                     title="[dim]metrics (avg)[/dim]",
+                    border_style="dim",
+                )
+            )
+
+        usage = results["metadata"].get("usage")
+        if usage is not None:
+            tokens_text = Text()
+            for name, value in usage.items():
+                value_str = (
+                    format_numeric(value)
+                    if isinstance(value, (int, float, str))
+                    else str(value)
+                )
+                label = name.replace("_", " ")
+                tokens_text.append(f"• {label}: ", style="cyan")
+                tokens_text.append(f"{value_str}\n")
+            items.append(
+                Panel(
+                    tokens_text,
+                    title="[dim]usage (avg)[/dim]",
                     border_style="dim",
                 )
             )
