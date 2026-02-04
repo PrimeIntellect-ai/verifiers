@@ -63,7 +63,10 @@ class DisplayLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            if record.name.endswith(".stdout") or record.name.endswith(".stderr"):
+                msg = record.getMessage()
+            else:
+                msg = self.format(record)
             self.logs.append(msg)
         except Exception:
             pass
