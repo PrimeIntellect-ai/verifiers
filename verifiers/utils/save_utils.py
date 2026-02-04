@@ -270,7 +270,10 @@ class GenerateOutputsBuilder:
         output_tokens_total = 0.0
         usage_seen = False
         for output in outputs:
-            token_usage = output.get("token_usage", {})
+            if "token_usage" in output:
+                token_usage = output.get("token_usage")
+            else:
+                token_usage = None
             if not isinstance(token_usage, dict):
                 continue
             usage_seen = True

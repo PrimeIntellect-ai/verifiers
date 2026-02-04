@@ -32,6 +32,16 @@ def make_aligned_row(left: Text, right: Text) -> Table:
     return table
 
 
+def format_numeric(value: float | int | str) -> str:
+    if isinstance(value, float):
+        if value == int(value):
+            return str(int(value))
+        if abs(value) < 0.01:
+            return f"{value:.4f}"
+        return f"{value:.3f}"
+    return str(value)
+
+
 # Suppress tokenizers parallelism warning (only prints when env var is unset)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 

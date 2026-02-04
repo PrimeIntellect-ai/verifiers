@@ -21,6 +21,8 @@ from textual.theme import Theme
 from textual.widgets import Footer, Input, Label, OptionList, Static, TextArea
 from textual.widgets._option_list import Option
 
+from verifiers.utils.display_utils import format_numeric
+
 
 # ----------------------------
 # Discovery and data loading
@@ -666,24 +668,20 @@ class ViewRunScreen(Screen):
         def format_sampling_param(value: Any) -> str:
             return str(value) if value is not None else "N/A"
 
-        def format_numeric(value: Any) -> str:
-            if isinstance(value, float):
-                if value == int(value):
-                    return str(int(value))
-                if abs(value) < 0.01:
-                    return f"{value:.4f}"
-                return f"{value:.3f}"
-            if isinstance(value, int):
-                return str(value)
-            return str(value) if value else "N/A"
+        def format_numeric_or_na(value: Any) -> str:
+            if value is None:
+                return "N/A"
+            if isinstance(value, (float, int, str)):
+                return format_numeric(value)
+            return str(value)
 
         temperature_str = format_sampling_param(sampling_args.get("temperature"))
         max_tokens_str = format_sampling_param(sampling_args.get("max_tokens"))
         avg_input_tokens = None
         avg_output_tokens = None
         if usage is not None:
-            avg_input_tokens = format_numeric(usage.get("input_tokens", None))
-            avg_output_tokens = format_numeric(usage.get("output_tokens", None))
+            avg_input_tokens = format_numeric_or_na(usage.get("input_tokens", None))
+            avg_output_tokens = format_numeric_or_na(usage.get("output_tokens", None))
 
         # Create three columns of information without markup, with styled labels
         col1_items = [

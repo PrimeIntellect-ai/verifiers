@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs
-from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
+from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
 
@@ -246,7 +246,7 @@ class EvalDisplay(BaseDisplay):
 
         for i, (name, value) in enumerate(metrics.items()):
             # format value
-            value_str = self._format_value(value)
+            value_str = format_numeric(value)
 
             # add metric with dotted leader
             metrics_text.append(name, style="dim")
@@ -276,22 +276,13 @@ class EvalDisplay(BaseDisplay):
             ("output", usage.get("output_tokens", 0.0)),
         ]
         for i, (name, value) in enumerate(token_items):
-            value_str = self._format_value(value)
+            value_str = format_numeric(value)
             tokens_text.append(name, style="dim")
             tokens_text.append(" ", style="dim")
             tokens_text.append(value_str, style="bold")
             if i < len(token_items) - 1:
                 tokens_text.append("   ")
         return make_aligned_row(tokens_text, Text())
-
-    def _format_value(self, value: float | int | str) -> str:
-        if isinstance(value, float):
-            if value == int(value):
-                return str(int(value))
-            if abs(value) < 0.01:
-                return f"{value:.4f}"
-            return f"{value:.3f}"
-        return str(value)
 
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
@@ -314,12 +305,7 @@ class EvalDisplay(BaseDisplay):
 
         config_line.append("  |  ", style="dim")
         config_line.append(fmt_concurrency(config.max_concurrent), style="white")
-        concurrency_unit = (
-            " concurrent rollouts"
-            if config.independent_scoring
-            else " concurrent groups"
-        )
-        config_line.append(concurrency_unit, style="dim")
+        config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")
@@ -565,8 +551,8 @@ class EvalDisplay(BaseDisplay):
             else:
                 usage = env_state.usage
             if usage is not None:
-                input_tokens = self._format_value(usage.get("input_tokens", 0.0))
-                output_tokens = self._format_value(usage.get("output_tokens", 0.0))
+                input_tokens = format_numeric(usage.get("input_tokens", 0.0))
+                output_tokens = format_numeric(usage.get("output_tokens", 0.0))
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -691,7 +677,7 @@ class EvalDisplay(BaseDisplay):
         if env_state.metrics:
             metrics_text = Text()
             for name, value in env_state.metrics.items():
-                value_str = self._format_value(value)
+                value_str = format_numeric(value)
                 metrics_text.append(f"• {name}: ", style="cyan")
                 metrics_text.append(f"{value_str}\n")
 
@@ -708,7 +694,7 @@ class EvalDisplay(BaseDisplay):
             tokens_text = Text()
             for name, value in usage.items():
                 value_str = (
-                    self._format_value(value)
+                    format_numeric(value)
                     if isinstance(value, (int, float, str))
                     else str(value)
                 )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import math
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
@@ -346,13 +347,23 @@ async def run_evaluation(
         )
         # disable tqdm when callbacks are provided (TUI handles progress display)
         use_tqdm = config.use_tqdm and on_progress is None
+        effective_max_concurrent = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            effective_max_concurrent = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+
         outputs = await vf_env.evaluate(
             client=config.client_config,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=config.max_concurrent,
+            max_concurrent=effective_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
@@ -454,7 +465,10 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 for name, value in output_metrics.items():
                     if value is not None:
                         metrics_accum[name] += value
-                token_usage = o.get("token_usage", {})
+                if "token_usage" in o:
+                    token_usage = o.get("token_usage")
+                else:
+                    token_usage = None
                 if isinstance(token_usage, dict):
                     usage_seen = True
                     input_tokens_accum += float(token_usage.get("input_tokens", 0.0))
