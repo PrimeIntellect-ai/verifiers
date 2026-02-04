@@ -269,26 +269,20 @@ class GenerateOutputsBuilder:
         input_tokens_total = 0.0
         output_tokens_total = 0.0
         usage_seen = False
+        usage_count = 0
         for output in outputs:
-            if "token_usage" in output:
-                token_usage = output.get("token_usage")
-            else:
-                token_usage = None
+            token_usage = output.get("token_usage")
             if not isinstance(token_usage, dict):
                 continue
             usage_seen = True
+            usage_count += 1
             input_tokens_total += float(token_usage.get("input_tokens", 0.0))
             output_tokens_total += float(token_usage.get("output_tokens", 0.0))
-        num_outputs = len(outputs)
         usage: TokenUsage | None = None
-        if usage_seen:
+        if usage_seen and usage_count > 0:
             usage = {
-                "input_tokens": input_tokens_total / num_outputs
-                if num_outputs > 0
-                else 0.0,
-                "output_tokens": output_tokens_total / num_outputs
-                if num_outputs > 0
-                else 0.0,
+                "input_tokens": input_tokens_total / usage_count,
+                "output_tokens": output_tokens_total / usage_count,
             }
 
         # Compute example counts
