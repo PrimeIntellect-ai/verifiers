@@ -293,6 +293,8 @@ class BaseDisplay:
             sys.stderr = self._old_stderr  # type: ignore[assignment]
             self._old_stderr = None
         if self._console_file is not None:
+            # Redirect console back to original stdout before closing temp stream
+            self.console = Console(file=sys.stdout, force_terminal=sys.stdout.isatty())
             try:
                 self._console_file.flush()
                 self._console_file.close()
