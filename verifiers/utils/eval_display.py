@@ -567,28 +567,11 @@ class EvalDisplay(BaseDisplay):
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
+            row = [config.env_id, status, examples_str, rollouts_str, reward]
             if show_usage:
-                table.add_row(
-                    config.env_id,
-                    status,
-                    examples_str,
-                    rollouts_str,
-                    reward,
-                    input_tokens or "-",
-                    output_tokens or "-",
-                    error_str,
-                    time_str,
-                )
-            else:
-                table.add_row(
-                    config.env_id,
-                    status,
-                    examples_str,
-                    rollouts_str,
-                    reward,
-                    error_str,
-                    time_str,
-                )
+                row.extend([input_tokens or "-", output_tokens or "-"])
+            row.extend([error_str, time_str])
+            table.add_row(*row)
 
         self.console.print()
         self.console.print(table)
