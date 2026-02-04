@@ -3958,6 +3958,17 @@ class RLMEnv(vf.StatefulToolEnv):
         update_rlm_metrics_from_step(state, trajectory_step)
         await super().add_trajectory_step(state, trajectory_step)
 
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: ModelResponse,
+    ):
+        """Add model response and align stored prompt with injected scaffold on first turn."""
+        if len(state["trajectory"]) == 0:
+            state["prompt"] = prompt_messages
+        await super().add_model_response(state, prompt_messages, response)
+
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
         if len(state["trajectory"]) == 0:
