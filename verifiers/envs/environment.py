@@ -682,8 +682,11 @@ class Environment(ABC):
         state["is_completed"] = False
         state["is_truncated"] = False
         state["oai_tools"] = None
-        if "info" in state and hasattr(state["info"], "oai_tools"):
-            state["oai_tools"] = state["info"]["oai_tools"]
+        info = state.get("info")
+        if isinstance(info, dict) and "oai_tools" in info:
+            state["oai_tools"] = info["oai_tools"]
+        elif info is not None and hasattr(info, "oai_tools"):
+            state["oai_tools"] = getattr(info, "oai_tools")
         elif hasattr(self, "oai_tools"):
             state["oai_tools"] = self.oai_tools
         else:
