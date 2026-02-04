@@ -95,7 +95,7 @@ class RolloutInput(BaseRolloutInput, total=False):
     # required: prompt, example_id, task
     # optional: answer, info
     answer: str
-    info: Info
+    info: Info | str
 
 
 class RolloutTiming(TypedDict, total=False):
