@@ -2380,6 +2380,8 @@ class RLMEnv(vf.StatefulToolEnv):
     - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
+    - Record the actual model-visible prompt (with RLM scaffolding) in state["prompt"]
+      on the first turn; the original prompt is preserved in state["raw_prompt"]
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
@@ -3966,6 +3968,8 @@ class RLMEnv(vf.StatefulToolEnv):
     ):
         """Add model response and align stored prompt with injected scaffold on first turn."""
         if len(state["trajectory"]) == 0:
+            if "raw_prompt" not in state:
+                state["raw_prompt"] = state["prompt"]
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
 
