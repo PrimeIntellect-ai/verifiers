@@ -136,7 +136,7 @@ def load_environment(
     agent_workdir: str = "/app",
     docker_image: str = "python:3.11-slim",
     system_prompt_path: str | Path | None = None,
-    disabled_tools: list[str] | None = None,
+    disabled_tools: list[str] | None = ["webfetch", "question"],
     timeout_seconds: float = 900.0,
     cpu_cores: int = 2,
     memory_gb: int = 4,
