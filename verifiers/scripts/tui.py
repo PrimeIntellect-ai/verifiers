@@ -254,6 +254,58 @@ def format_prompt_or_completion(prompt_or_completion) -> Text:
     return out
 
 
+def _coerce_info_value(info: Any) -> Any:
+    """Return parsed JSON when info is a JSON string, otherwise original value."""
+    if not isinstance(info, str):
+        return info
+    stripped = info.strip()
+    if not stripped:
+        return ""
+    if stripped[0] not in "[{":
+        return info
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return info
+
+
+def format_info_for_details(
+    info: Any,
+    *,
+    max_chars: int = 1200,
+    max_lines: int = 5,
+) -> str:
+    """Format record info for the compact details panel in rollout view."""
+    info_value = _coerce_info_value(info)
+    if isinstance(info_value, (dict, list)):
+        rendered = json.dumps(info_value, ensure_ascii=False, indent=2)
+    else:
+        rendered = str(info_value)
+
+    if len(rendered) <= max_chars and rendered.count("\n") + 1 <= max_lines:
+        return rendered
+
+    # Keep the details panel compact by truncating to a few lines and chars.
+    kept_lines: List[str] = []
+    used_chars = 0
+    all_lines = rendered.splitlines() or [rendered]
+    for line in all_lines:
+        line_chars = len(line)
+        if used_chars + line_chars > max_chars or len(kept_lines) >= max_lines:
+            break
+        kept_lines.append(line)
+        used_chars += line_chars
+
+    if not kept_lines:
+        kept_lines = [rendered[: max(0, max_chars - 1)].rstrip()]
+
+    preview = "\n".join(kept_lines).rstrip()
+    return (
+        f"{preview}\n"
+        f"… (truncated; {len(rendered):,} chars, {len(all_lines):,} lines total)"
+    )
+
+
 # ----------------------------
 # Custom Panel Widget
 # ----------------------------
@@ -803,13 +855,14 @@ class ViewRunScreen(Screen):
         info = record.get("info", None)
         if info not in (None, {}):
             details_lines.append("Info: ", style="bold")
-            try:
-                details_lines.append(json.dumps(info, ensure_ascii=False, indent=2))
-            except Exception:
-                details_lines.append(str(info))
+            details_lines.append(format_info_for_details(info))
+            details_lines.append("\n", style="dim")
+            details_lines.append("(full info available in results.jsonl)", style="dim")
 
         task = record.get("task", None)
         if task not in (None, ""):
+            if details_lines.plain and not details_lines.plain.endswith("\n"):
+                details_lines.append("\n")
             details_lines.append("Task: ", style="bold")
             details_lines.append(str(task))
 
