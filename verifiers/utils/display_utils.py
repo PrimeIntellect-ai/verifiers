@@ -181,10 +181,14 @@ class BaseDisplay:
             else:
                 log_text.append(" ", style="dim")  # placeholder line
 
-        log_text.append("\n")
-        log_text.append("full logs: --debug", style="dim")
-
-        return Panel(log_text, title="[dim]Logs[/dim]", border_style="dim")
+        subtitle = Text("full logs: --debug", style="dim")
+        return Panel(
+            log_text,
+            title="[dim]Logs[/dim]",
+            subtitle=subtitle,
+            subtitle_align="center",
+            border_style="dim",
+        )
 
     def start(self) -> None:
         """Start the live display."""
