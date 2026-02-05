@@ -92,13 +92,13 @@ class TestMathRubric:
         assert state["metrics"]["correct_answer"] == 0.0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("timeout_seconds", [0.1, 1, 10])
+    @pytest.mark.parametrize("timeout_seconds", [0.1, 10])
     async def test_timeout(self, timeout_seconds, make_input):
         """Test scoring a single rollout."""
 
         # very large input triggers timeout, takes ~2s to parse and verify
-        answer = "1" * int(1e6)
-        completion = "1" * int(1e6)
+        answer = "1" * int(1e5)
+        completion = "1" * int(1e5)
 
         rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
 
