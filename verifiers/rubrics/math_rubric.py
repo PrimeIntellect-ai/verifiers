@@ -1,8 +1,7 @@
 import asyncio
 import logging
-import multiprocessing
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from math_verify import parse, verify  # type: ignore[unresolved-import]
@@ -24,7 +23,11 @@ class MathVerifyResult:
 
 
 def verify_response(response: str, answer: str) -> MathVerifyResult:
-    """Verify a response against an answer using math_verify."""
+    """
+    Verify a response against an answer using math_verify.
+
+    Times itself internally so event loop lag doesn't affect scoring.
+    """
     start = time.perf_counter()
     try:
         parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore[arg-type]
@@ -48,7 +51,7 @@ class MathRubric(Rubric):
         funcs: list[RewardFunc] | None = None,
         weights: list[float] | None = None,
         parser: Parser | None = None,
-        max_workers: int = 1,
+        max_workers: int = 4,
         timeout: float = 5,
     ):
         parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
@@ -56,11 +59,9 @@ class MathRubric(Rubric):
         self.add_reward_func(self.correct_answer)
         self.timeout = timeout
 
-        # use 'spawn' for clean process isolation (no inherited state)
-        ctx = multiprocessing.get_context("spawn")
-        self.executor = ProcessPoolExecutor(
+        self.executor = ThreadPoolExecutor(
             max_workers=max_workers,
-            mp_context=ctx,
+            thread_name_prefix="math-verify",
         )
 
         # suppress math_verify timeout warnings (we handle timeouts ourselves)
