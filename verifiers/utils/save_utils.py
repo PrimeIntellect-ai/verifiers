@@ -341,7 +341,9 @@ def load_outputs(results_path: Path) -> list[RolloutOutput]:
         except json.JSONDecodeError:
             # A crash during append can leave the final JSONL line partially written.
             # Recover completed records, but keep raising for malformed non-trailing rows.
-            has_nonempty_lines_after = any(remaining.strip() for remaining in lines[line_idx:])
+            has_nonempty_lines_after = any(
+                remaining.strip() for remaining in lines[line_idx:]
+            )
             if has_nonempty_lines_after:
                 raise
 
