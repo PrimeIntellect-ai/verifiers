@@ -1,0 +1,16 @@
+[project]
+name = "openenv-echo"
+description = "OpenEnv Echo environment via verifiers OpenEnvEnv adapter"
+tags = ["openenv", "mcp", "tools"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[openenv]>=0.1.10.dev2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["openenv_echo.py"]

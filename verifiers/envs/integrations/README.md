@@ -7,6 +7,7 @@ Integrations with third-party environment libraries, which may require additiona
 | `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
+| `OpenEnvEnv` | `openenv` | `uv add 'verifiers[openenv]'` |
 
 ## TextArenaEnv
 
@@ -129,3 +130,43 @@ BROWSERBASE_PROJECT_ID      # Browserbase cloud project
 MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
 OPENAI_API_KEY              # For LLM judge evaluation
 ```
+
+## OpenEnvEnv
+
+Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.
+
+### Quick Start
+
+```python
+from verifiers.envs.integrations.openenv_env import OpenEnvEnv
+
+# Local OpenEnv project
+env = OpenEnvEnv(openenv_project="/path/to/openenv_project")
+
+# Hugging Face Space (uses registry.hf.space image)
+env = OpenEnvEnv(openenv_project="openenv/echo-env")
+
+# Git URL (cloned to temp)
+env = OpenEnvEnv(openenv_project="https://github.com/you/my-openenv.git")
+```
+
+### Bundling an OpenEnv Project
+
+If you want to ship the OpenEnv project inside your verifiers environment module:
+
+```python
+from pathlib import Path
+from verifiers.envs.integrations.openenv_env import OpenEnvEnv
+
+env = OpenEnvEnv(openenv_project=Path(__file__).parent / "openenv_project")
+```
+
+### Dockerfile Support
+
+If the OpenEnv project includes a Dockerfile (common for environments), build and register the image once:
+
+```bash
+vf-openenv-build --path /path/to/openenv_project
+```
+
+This writes a `.openenv_image` marker in the project directory. `OpenEnvEnv` will use that image when creating Prime sandboxes.

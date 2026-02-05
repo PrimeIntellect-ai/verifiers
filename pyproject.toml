@@ -75,6 +75,9 @@ ta = [
     "textarena",
     "nltk",
 ]
+openenv = [
+    "openenv-core>=0.2.0",
+]
 browser = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
@@ -105,6 +108,7 @@ vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
+vf-openenv-build = "verifiers.scripts.openenv_build:main"
 vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"

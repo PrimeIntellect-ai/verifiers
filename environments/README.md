@@ -23,6 +23,7 @@ This folder contains installable example environments that showcase common usage
 - **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
+- **openenv_echo**: OpenEnv integration example using `OpenEnvEnv` against the Echo MCP environment.
 
 ### Tool use
 - **ToolEnv (native function-calling)**
