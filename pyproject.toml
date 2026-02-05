@@ -64,6 +64,7 @@ dev = [
     "ipywidgets",
     "reasoning-gym",
     "textarena",
+    "openenv-core>=0.2.0",
     "nltk",
 ]
 

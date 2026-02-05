@@ -4,17 +4,19 @@ import asyncio
 import json
 import logging
 import shutil
+import subprocess
 import tarfile
 import tempfile
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal, cast, overload
 
 import requests
+import tenacity as tc
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.types import ChatMessage, ChatMessages
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 try:
@@ -33,10 +35,13 @@ except ImportError as e:
         "OpenEnvEnv requires prime-sandboxes. Install with: uv add prime-sandboxes"
     ) from e
 
+yaml: Any | None
 try:
-    import yaml  # type: ignore
+    import yaml as _yaml  # type: ignore
 except ImportError:
     yaml = None
+else:
+    yaml = _yaml
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,7 @@ class _OpenEnvServer:
     port: int
     background_job: Any | None = None
     needs_manual_start: bool = False
+    temp_dir: Path | None = None
 
 
 class OpenEnvEpisodicSumRubric(vf.Rubric):
@@ -81,6 +87,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         seed: int = 0,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
+        max_retries: int = 5,
+        base_delay: float = 0.5,
+        backoff_factor: float = 2.0,
+        max_backoff_seconds: float = 30.0,
+        jitter: float = 1e-3,
         **kwargs: Any,
     ):
         self.openenv_project = str(openenv_project)
@@ -88,13 +99,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self.num_eval_examples = num_eval_examples
         self.seed = seed
 
-        self._server: _OpenEnvServer | None = None
-        self._server_lock = asyncio.Lock()
-        self._rollout_lock = asyncio.Lock()
+        self._active_servers: dict[str, _OpenEnvServer] = {}
         self._mode: str | None = None  # "sim" or "mcp"
         self._action_schema: dict[str, Any] | None = None
-        self._mcp_tools: list[dict[str, Any]] | None = None
-        self._temp_dir: Path | None = None
+        self._mcp_tools: list[Any] | None = None
 
         dataset, eval_dataset = self._build_seed_datasets()
 
@@ -106,6 +114,17 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             message_type="chat",
             **kwargs,
         )
+        self._with_retry = tc.AsyncRetrying(
+            stop=tc.stop_after_attempt(max_retries),
+            wait=tc.wait_exponential_jitter(
+                initial=base_delay,
+                exp_base=backoff_factor,
+                max=max_backoff_seconds,
+                jitter=jitter,
+            ),
+            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
+            reraise=True,
+        ).wraps
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:
         def make_rows(start_idx: int, count: int) -> list[dict[str, Any]]:
@@ -128,54 +147,73 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         return dataset, eval_dataset
 
     async def setup_state(self, state: vf.State) -> vf.State:
-        await self._rollout_lock.acquire()
-        state["_openenv_lock"] = True
+        try:
+            server = await self._create_server()
+            state["openenv_server"] = server
+            mode, action_schema = await self._ensure_mode_and_schema(server.base_url)
+            state["openenv_mode"] = mode
+            state["openenv_action_schema"] = action_schema
+            if self._mode is None:
+                self._mode = mode
+            if self._action_schema is None:
+                self._action_schema = action_schema
 
-        server = await self._ensure_server()
-        mode, action_schema = await self._ensure_mode_and_schema(server.base_url)
-        self._mode = mode
-        self._action_schema = action_schema
+            seed = 0
+            info = state.get("info")
+            if isinstance(info, dict):
+                seed = int(info.get("seed", 0))
 
-        seed = 0
-        info = state.get("info")
-        if isinstance(info, dict):
-            seed = int(info.get("seed", 0))
+            if self._mode == "mcp":
+                mcp_client = MCPToolClient(base_url=server.base_url)
+                openenv_mcp = cast(Any, mcp_client)
+                await openenv_mcp.connect()
+                state["openenv_mcp_client"] = mcp_client
+                if self._mcp_tools is None:
+                    self._mcp_tools = await openenv_mcp.list_tools()
+                state["oai_tools"] = self._convert_mcp_tools(self._mcp_tools)
+                result = await openenv_mcp.reset(seed=seed)
+                state["openenv_done"] = bool(result.done)
+                obs_messages = self._obs_to_messages(result.observation)
+                state["prompt"] = self._maybe_prepend_system(obs_messages)
+                return state
 
-        if self._mode == "mcp":
-            mcp_client = MCPToolClient(base_url=server.base_url)
-            await mcp_client.connect()
-            state["openenv_mcp_client"] = mcp_client
-            if self._mcp_tools is None:
-                self._mcp_tools = await mcp_client.list_tools()
-            state["oai_tools"] = self._convert_mcp_tools(self._mcp_tools)
-            result = await mcp_client.reset(seed=seed)
+            client = GenericEnvClient(base_url=server.base_url)
+            openenv_client = cast(Any, client)
+            await openenv_client.connect()
+            state["openenv_client"] = client
+            result = await openenv_client.reset(seed=seed)
             state["openenv_done"] = bool(result.done)
             obs_messages = self._obs_to_messages(result.observation)
             state["prompt"] = self._maybe_prepend_system(obs_messages)
             return state
+        except Exception:
+            await self._cleanup_openenv_state(state)
+            raise
 
-        client = GenericEnvClient(base_url=server.base_url)
-        await client.connect()
-        state["openenv_client"] = client
-        result = await client.reset(seed=seed)
-        state["openenv_done"] = bool(result.done)
-        obs_messages = self._obs_to_messages(result.observation)
-        state["prompt"] = self._maybe_prepend_system(obs_messages)
-        return state
+    def _make_user_message(self, content: str) -> ChatMessage:
+        return cast(ChatMessage, {"role": "user", "content": content})
 
-    def _maybe_prepend_system(
-        self, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _make_system_message(self, content: str) -> ChatMessage:
+        return cast(ChatMessage, {"role": "system", "content": content})
+
+    def _make_tool_message(self, content: Any, tool_call_id: str) -> ChatMessage:
+        return cast(
+            ChatMessage,
+            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
+        )
+
+    def _maybe_prepend_system(self, messages: ChatMessages) -> ChatMessages:
         if self.system_prompt:
             if messages and messages[0].get("role") == "system":
                 return messages
-            return [{"role": "system", "content": self.system_prompt}] + messages
+            return [self._make_system_message(self.system_prompt)] + messages
         return messages
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
-        if self._mode == "mcp":
+        mode = state.get("openenv_mode") or self._mode
+        if mode == "mcp":
             return await self._mcp_env_response(messages, state)
         return await self._sim_env_response(messages, state)
 
@@ -185,10 +223,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         last_msg = messages[-1]
         if last_msg.get("role") != "assistant":
-            return [{"role": "user", "content": "Expected assistant response."}]
+            return [self._make_user_message("Expected assistant response.")]
 
         raw_text = str(last_msg.get("content", "")).strip()
-        action = self._parse_action(raw_text, self._action_schema or {})
+        action_schema = state.get("openenv_action_schema") or self._action_schema or {}
+        action = self._parse_action(raw_text, action_schema)
 
         client: GenericEnvClient = state["openenv_client"]
         result = await client.step(action)
@@ -209,10 +248,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             last_msg.get("tool_calls", []) if isinstance(last_msg, dict) else []
         )
         if not tool_calls:
-            return []
+            return cast(ChatMessages, [])
 
         mcp_client: MCPToolClient = state["openenv_mcp_client"]
-        tool_messages = []
+        tool_messages: ChatMessages = []
         total_reward = 0.0
         done = False
         for tool_call in tool_calls:
@@ -245,9 +284,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             except Exception as e:
                 content = f"Error: {e}"
 
-            tool_messages.append(
-                {"role": "tool", "content": content, "tool_call_id": tool_call_id}
-            )
+            tool_messages.append(self._make_tool_message(content, tool_call_id))
         if state["trajectory"]:
             state["trajectory"][-1]["reward"] = total_reward
         state["openenv_done"] = done
@@ -262,11 +299,13 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     @vf.stop
     async def openenv_done(self, state: vf.State) -> bool:
-        return bool(state.get("openenv_done")) and self._mode == "sim"
+        mode = state.get("openenv_mode") or self._mode
+        return bool(state.get("openenv_done")) and mode == "sim"
 
     @vf.stop
     async def mcp_no_tool_calls(self, state: vf.State) -> bool:
-        if self._mode != "mcp":
+        mode = state.get("openenv_mode") or self._mode
+        if mode != "mcp":
             return False
         if state.get("openenv_done"):
             return True
@@ -275,77 +314,128 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         last_msg = state["trajectory"][-1]["completion"][-1]
         return last_msg.get("role") == "assistant" and not last_msg.get("tool_calls")
 
-    @vf.cleanup
-    async def cleanup_openenv(self, state: vf.State) -> None:
+    async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
         if client is not None:
-            await client.close()
+            await cast(Any, client).close()
 
         mcp_client = state.pop("openenv_mcp_client", None)
         if mcp_client is not None:
-            await mcp_client.close()
+            await cast(Any, mcp_client).close()
 
-        if state.pop("_openenv_lock", None):
-            self._rollout_lock.release()
+        server = state.pop("openenv_server", None)
+        if server is not None:
+            await self._cleanup_server(server)
+
+    @vf.cleanup
+    async def cleanup_openenv(self, state: vf.State) -> None:
+        await self._cleanup_openenv_state(state)
+
+    async def _cleanup_server(self, server: _OpenEnvServer) -> None:
+        async with AsyncSandboxClient() as sandboxes:
+            try:
+                await self._with_retry(sandboxes.unexpose)(
+                    server.sandbox_id, server.exposure_id
+                )
+            except Exception:
+                pass
+            try:
+                await self._with_retry(sandboxes.delete)(server.sandbox_id)
+            except Exception:
+                pass
+        self._active_servers.pop(server.sandbox_id, None)
+        if server.temp_dir is not None:
+            shutil.rmtree(server.temp_dir, ignore_errors=True)
+
+    async def _try_get_logs(
+        self, sandboxes: AsyncSandboxClient, sandbox_id: str
+    ) -> str | None:
+        try:
+            logs = await sandboxes.get_logs(sandbox_id)
+        except Exception:
+            return None
+        if not logs:
+            return None
+        logs_str = str(logs)
+        if len(logs_str) > 4000:
+            return logs_str[-4000:]
+        return logs_str
+
+    def _format_sandbox_error(
+        self,
+        sandbox_id: str,
+        context: str,
+        err: Exception,
+        image: str | None = None,
+        logs: str | None = None,
+    ) -> vf.SandboxError:
+        parts = [f"OpenEnv sandbox {sandbox_id} failed during {context}."]
+        status = getattr(err, "status", None) or getattr(err, "sandbox_status", None)
+        if status:
+            parts.append(f"Status={status}.")
+        if image:
+            parts.append(f"Image={image}.")
+        parts.append(
+            "If this uses a custom Dockerfile, ensure the image is built and available in Prime."
+        )
+        if logs:
+            parts.append(f"Logs (tail):\n{logs}")
+        return vf.SandboxError(" ".join(parts))
 
     @vf.teardown
     async def teardown_server(self) -> None:
-        if self._server is None:
+        if not self._active_servers:
             return
-        sandbox_id = self._server.sandbox_id
-        exposure_id = self._server.exposure_id
-        async with AsyncSandboxClient() as sandboxes:
+        servers = list(self._active_servers.values())
+        for server in servers:
             try:
-                await sandboxes.unexpose(sandbox_id, exposure_id)
+                await self._cleanup_server(server)
             except Exception:
                 pass
-            try:
-                await sandboxes.delete(sandbox_id)
-            except Exception:
-                pass
-        self._server = None
-        if self._temp_dir is not None:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-            self._temp_dir = None
 
-    async def _ensure_server(self) -> _OpenEnvServer:
-        async with self._server_lock:
-            if self._server is not None:
-                return self._server
-
-            project_path, source_type = self._resolve_project_path()
-            dockerfile = (
-                self._find_dockerfile(project_path) if source_type == "local" else None
-            )
-
+    async def _create_server(self) -> _OpenEnvServer:
+        project_path, source_type, temp_dir = self._resolve_project_path()
+        try:
             if source_type == "hf":
-                repo_id = project_path
+                repo_id = cast(str, project_path)
                 image = f"registry.hf.space/{repo_id.replace('/', '-')}:latest"
-                self._server = await self._launch_image_server(image, 8000)
-                return self._server
+                server = await self._launch_image_server(image, 8000)
+            else:
+                assert isinstance(project_path, Path)
+                dockerfile = self._find_dockerfile(project_path)
+                if dockerfile is not None:
+                    image = self._read_image_marker(project_path)
+                    if image is None:
+                        raise RuntimeError(
+                            "OpenEnv project contains a Dockerfile but no .openenv_image marker. "
+                            "Run: vf-openenv-build --path <openenv_project> to build and register the image."
+                        )
+                    port = self._read_project_port(project_path)
+                    server = await self._launch_image_server(image, port)
+                else:
+                    port = self._read_project_port(project_path)
+                    server = await self._launch_source_server(project_path, port)
+        except Exception:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
 
-            if dockerfile is not None:
-                image = self._read_image_marker(project_path)
-                if image is None:
-                    raise RuntimeError(
-                        "OpenEnv project contains a Dockerfile but no .openenv_image marker. "
-                        "Run: vf-openenv-build --path <openenv_project> to build and register the image."
-                    )
-                port = self._read_project_port(project_path)
-                self._server = await self._launch_image_server(image, port)
-                return self._server
+        server.temp_dir = temp_dir
+        self._active_servers[server.sandbox_id] = server
+        return server
 
-            port = self._read_project_port(project_path)
-            self._server = await self._launch_source_server(project_path, port)
-            return self._server
+    @overload
+    def _resolve_project_path(self) -> tuple[Path, Literal["local"], Path | None]: ...
 
-    def _resolve_project_path(self) -> tuple[str | Path, str]:
+    @overload
+    def _resolve_project_path(self) -> tuple[str, Literal["hf"], None]: ...
+
+    def _resolve_project_path(self) -> tuple[str | Path, str, Path | None]:
         path = Path(self.openenv_project)
         if path.exists():
-            return path.resolve(), "local"
+            return path.resolve(), "local", None
         if "://" in self.openenv_project or self.openenv_project.endswith(".git"):
             tmpdir = Path(tempfile.mkdtemp(prefix="openenv_git_"))
-            self._temp_dir = tmpdir
             cmd = ["git", "clone", self.openenv_project, str(tmpdir)]
             try:
                 subprocess.run(
@@ -363,9 +453,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 raise RuntimeError(
                     f"Failed to clone OpenEnv project: {self.openenv_project}{suffix}"
                 ) from e
-            return tmpdir.resolve(), "local"
+            return tmpdir.resolve(), "local", tmpdir
         if "/" in self.openenv_project:
-            return self.openenv_project, "hf"
+            return self.openenv_project, "hf", None
         raise ValueError(f"Unsupported openenv_project: {self.openenv_project}")
 
     def _find_dockerfile(self, project_path: Path) -> Path | None:
@@ -401,18 +491,41 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     async def _launch_image_server(self, image: str, port: int) -> _OpenEnvServer:
         async with AsyncSandboxClient() as sandboxes:
             req = self._build_sandbox_request(image, start_command=None)
-            sandbox = await sandboxes.create(req)
-            await sandboxes.wait_for_creation(sandbox.id)
-            exposure = await sandboxes.expose(sandbox.id, port=port, name="openenv-env")
-            server = _OpenEnvServer(
-                sandbox_id=sandbox.id,
-                exposure_id=exposure.exposure_id,
-                base_url=exposure.url.rstrip("/"),
-                port=port,
-                needs_manual_start=False,
-            )
-            await self._wait_for_ready(server.base_url)
-            return server
+            try:
+                sandbox = await self._with_retry(sandboxes.create)(req)
+            except Exception as e:
+                raise vf.SandboxError(
+                    f"Failed to create OpenEnv sandbox for image {image}."
+                ) from e
+            exposure = None
+            try:
+                await self._with_retry(sandboxes.wait_for_creation)(sandbox.id)
+                exposure = await self._with_retry(sandboxes.expose)(
+                    sandbox.id, port=port, name="openenv-env"
+                )
+                server = _OpenEnvServer(
+                    sandbox_id=sandbox.id,
+                    exposure_id=exposure.exposure_id,
+                    base_url=exposure.url.rstrip("/"),
+                    port=port,
+                    needs_manual_start=False,
+                )
+                await self._wait_for_ready(server.base_url)
+                return server
+            except Exception as e:
+                logs = await self._try_get_logs(sandboxes, sandbox.id)
+                if exposure is not None:
+                    try:
+                        await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
+                    except Exception:
+                        pass
+                try:
+                    await sandboxes.delete(sandbox.id)
+                except Exception:
+                    pass
+                raise self._format_sandbox_error(
+                    sandbox.id, "startup", e, image=image, logs=logs
+                ) from e
 
     async def _launch_source_server(
         self, project_path: Path, port: int
@@ -421,35 +534,56 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             req = self._build_sandbox_request(
                 "python:3.11-slim", start_command="tail -f /dev/null"
             )
-            sandbox = await sandboxes.create(req)
-            await sandboxes.wait_for_creation(sandbox.id)
+            try:
+                sandbox = await self._with_retry(sandboxes.create)(req)
+            except Exception as e:
+                raise vf.SandboxError("Failed to create OpenEnv sandbox.") from e
+            exposure = None
+            try:
+                await self._with_retry(sandboxes.wait_for_creation)(sandbox.id)
 
-            await self._upload_project(sandboxes, sandbox.id, project_path)
-            await sandboxes.execute_command(
-                sandbox.id,
-                "python -m pip install -e /workspace/openenv_project",
-                working_dir="/workspace/openenv_project",
-            )
-            await sandboxes.start_background_job(
-                sandbox.id,
-                "bash -lc 'cd /workspace/openenv_project && server'",
-            )
+                await self._upload_project(sandboxes, sandbox.id, project_path)
+                await self._with_retry(sandboxes.execute_command)(
+                    sandbox.id,
+                    "python -m pip install -e /workspace/openenv_project",
+                    working_dir="/workspace/openenv_project",
+                )
+                await self._with_retry(sandboxes.start_background_job)(
+                    sandbox.id,
+                    "bash -lc 'cd /workspace/openenv_project && server'",
+                )
 
-            exposure = await sandboxes.expose(sandbox.id, port=port, name="openenv-env")
-            server = _OpenEnvServer(
-                sandbox_id=sandbox.id,
-                exposure_id=exposure.exposure_id,
-                base_url=exposure.url.rstrip("/"),
-                port=port,
-                needs_manual_start=True,
-            )
-            await self._wait_for_ready(server.base_url)
-            return server
+                exposure = await self._with_retry(sandboxes.expose)(
+                    sandbox.id, port=port, name="openenv-env"
+                )
+                server = _OpenEnvServer(
+                    sandbox_id=sandbox.id,
+                    exposure_id=exposure.exposure_id,
+                    base_url=exposure.url.rstrip("/"),
+                    port=port,
+                    needs_manual_start=True,
+                )
+                await self._wait_for_ready(server.base_url)
+                return server
+            except Exception as e:
+                logs = await self._try_get_logs(sandboxes, sandbox.id)
+                if exposure is not None:
+                    try:
+                        await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
+                    except Exception:
+                        pass
+                try:
+                    await sandboxes.delete(sandbox.id)
+                except Exception:
+                    pass
+                raise self._format_sandbox_error(
+                    sandbox.id, "startup", e, logs=logs
+                ) from e
 
     def _build_sandbox_request(
         self, image: str, start_command: str | None
     ) -> CreateSandboxRequest:
-        kwargs = {
+        params: dict[str, Any] = {
             "name": "openenv-env",
             "docker_image": image,
             "cpu_cores": 2,
@@ -459,13 +593,13 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             "environment_vars": {"ENABLE_WEB_INTERFACE": "false"},
         }
         if start_command is not None:
-            kwargs["start_command"] = start_command
+            params["start_command"] = start_command
         try:
-            return CreateSandboxRequest(**kwargs)
+            return CreateSandboxRequest(**cast(Any, params))
         except TypeError:
-            if "start_command" not in kwargs:
-                kwargs["start_command"] = "tail -f /dev/null"
-                return CreateSandboxRequest(**kwargs)
+            if "start_command" not in params:
+                params["start_command"] = "tail -f /dev/null"
+                return CreateSandboxRequest(**cast(Any, params))
             raise
 
     async def _upload_project(
@@ -477,8 +611,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             with tarfile.open(tar_path, "w:gz") as tar:
                 tar.add(project_path, arcname="openenv_project")
             remote_tar = "/tmp/openenv_project.tar.gz"
-            await sandboxes.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandboxes.execute_command(
+            await self._with_retry(sandboxes.upload_file)(
+                sandbox_id, remote_tar, str(tar_path)
+            )
+            await self._with_retry(sandboxes.execute_command)(
                 sandbox_id,
                 "mkdir -p /workspace && tar -xzf /tmp/openenv_project.tar.gz -C /workspace",
                 working_dir="/",
@@ -578,7 +714,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             return field_name
         return None
 
-    def _obs_to_messages(self, obs: Any) -> list[dict[str, Any]]:
+    def _obs_to_messages(self, obs: Any) -> ChatMessages:
         if hasattr(obs, "model_dump"):
             try:
                 obs = obs.model_dump()
@@ -586,17 +722,17 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 pass
         if isinstance(obs, dict):
             if "messages" in obs and self._looks_like_messages(obs["messages"]):
-                return list(obs["messages"])
+                return cast(ChatMessages, list(obs["messages"]))
             for key in ("prompt", "content", "message"):
                 if key in obs and isinstance(obs[key], str):
-                    return [{"role": "user", "content": obs[key]}]
+                    return [self._make_user_message(obs[key])]
             metadata = obs.get("metadata")
             if isinstance(metadata, dict):
                 for key in ("prompt", "content", "message"):
                     if key in metadata and isinstance(metadata[key], str):
-                        return [{"role": "user", "content": metadata[key]}]
-            return [{"role": "user", "content": json.dumps(obs, ensure_ascii=True)}]
-        return [{"role": "user", "content": str(obs)}]
+                        return [self._make_user_message(metadata[key])]
+            return [self._make_user_message(json.dumps(obs, ensure_ascii=True))]
+        return [self._make_user_message(str(obs))]
 
     def _looks_like_messages(self, value: Any) -> bool:
         if not isinstance(value, list):
