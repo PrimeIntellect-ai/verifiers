@@ -52,12 +52,12 @@ class MathRubric(Rubric):
         weights: list[float] | None = None,
         parser: Parser | None = None,
         max_workers: int = 4,
-        timeout: float = 5,
+        timeout_seconds: float = 5,
     ):
         parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
         super().__init__(funcs=funcs, weights=weights, parser=parser)
         self.add_reward_func(self.correct_answer)
-        self.timeout = timeout
+        self.timeout_seconds = timeout_seconds
 
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -95,9 +95,9 @@ class MathRubric(Rubric):
             self.logger.warning(f"Math verification failed: {result.error}")
 
         # Enforce timeout based on actual verification wall-clock time (measured in worker)
-        if result.elapsed > self.timeout:
+        if result.elapsed > self.timeout_seconds:
             self.logger.debug(
-                f"Math verification exceeded time limit after {result.elapsed:.2f}s (>{self.timeout:.1f}s)"
+                f"Math verification exceeded time limit after {result.elapsed:.2f}s (>{self.timeout_seconds:.1f}s)"
             )
             return 0.0
 
