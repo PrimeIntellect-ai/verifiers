@@ -254,6 +254,47 @@ def format_prompt_or_completion(prompt_or_completion) -> Text:
     return out
 
 
+def _coerce_info_value(info: Any) -> Any:
+    """Return parsed JSON when info is a JSON string, otherwise original value."""
+    if not isinstance(info, str):
+        return info
+    stripped = info.strip()
+    if not stripped:
+        return ""
+    if stripped[0] not in "[{":
+        return info
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return info
+
+
+def format_info_for_details(
+    info: Any,
+    *,
+    max_chars: int = 280,
+    max_lines: int = 3,
+) -> str:
+    """Format record info for the compact details panel in rollout view."""
+    info_value = _coerce_info_value(info)
+    if isinstance(info_value, (dict, list)):
+        rendered = json.dumps(info_value, ensure_ascii=False, separators=(",", ": "))
+    else:
+        rendered = str(info_value)
+
+    normalized = " ".join(rendered.split())
+    if len(normalized) <= max_chars and rendered.count("\n") + 1 <= max_lines:
+        return normalized
+
+    preview_len = max(1, max_chars - 1)
+    preview = normalized[:preview_len].rstrip()
+    original_lines = rendered.count("\n") + 1
+    return (
+        f"{preview}… "
+        f"(truncated; {len(rendered):,} chars, {original_lines:,} lines total)"
+    )
+
+
 # ----------------------------
 # Custom Panel Widget
 # ----------------------------
@@ -803,13 +844,14 @@ class ViewRunScreen(Screen):
         info = record.get("info", None)
         if info not in (None, {}):
             details_lines.append("Info: ", style="bold")
-            try:
-                details_lines.append(json.dumps(info, ensure_ascii=False, indent=2))
-            except Exception:
-                details_lines.append(str(info))
+            details_lines.append(format_info_for_details(info))
+            details_lines.append("\n", style="dim")
+            details_lines.append("(full info available in results.jsonl)", style="dim")
 
         task = record.get("task", None)
         if task not in (None, ""):
+            if details_lines.plain and not details_lines.plain.endswith("\n"):
+                details_lines.append("\n")
             details_lines.append("Task: ", style="bold")
             details_lines.append(str(task))
 
