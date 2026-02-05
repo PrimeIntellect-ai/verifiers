@@ -80,9 +80,6 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
-harbor = [
-    "harbor>=0.1.43; python_version >= '3.12'",
-]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
