@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 
 from math_verify import parse, verify  # type: ignore[unresolved-import]
 
@@ -11,36 +10,6 @@ from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import Messages, RewardFunc
 from verifiers.utils.data_utils import extract_boxed_answer
-
-
-@dataclass
-class MathVerifyResult:
-    """Result of math verification with timing information."""
-
-    reward: float
-    elapsed: float
-    error: str | None = None
-
-
-def verify_response(response: str, answer: str) -> MathVerifyResult:
-    """
-    Verify a response against an answer using math_verify.
-
-    Times itself internally so event loop lag doesn't affect scoring.
-    """
-    start = time.perf_counter()
-    try:
-        parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore[arg-type]
-        parsed_response = parse(f"\\boxed{{{response}}}", parsing_timeout=None)  # type: ignore[arg-type]
-        is_correct = verify(parsed_answer, parsed_response, timeout_seconds=None)
-        elapsed = time.perf_counter() - start
-
-        return MathVerifyResult(reward=float(is_correct), elapsed=elapsed)
-    except BaseException as e:
-        elapsed = time.perf_counter() - start
-        return MathVerifyResult(
-            reward=0.0, elapsed=elapsed, error=f"{type(e).__name__}: {e!r}"
-        )
 
 
 class MathRubric(Rubric):
@@ -73,16 +42,36 @@ class MathRubric(Rubric):
     ) -> float:
         """Reward function that checks if the final answer matches the expected answer."""
 
-        response = parser.parse_answer(completion) or ""
-        if response == "":
-            self.logger.debug("Parsed response is empty")
-            return 0.0
+        def verify_response() -> tuple[float, float]:
+            """
+            Verify a response against an answer using math_verify.
+
+            Times itself internally so event loop lag doesn't affect scoring.
+            """
+            start = time.perf_counter()
+            response = parser.parse_answer(completion) or ""
+            if response == "":
+                elapsed = time.perf_counter() - start
+                return 0.0, elapsed
+
+            try:
+                parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore[arg-type]
+                parsed_response = parse(f"\\boxed{{{response}}}", parsing_timeout=None)  # type: ignore[arg-type]
+                is_correct = verify(
+                    parsed_answer, parsed_response, timeout_seconds=None
+                )
+                elapsed = time.perf_counter() - start
+
+                return float(is_correct), elapsed
+            except BaseException:
+                elapsed = time.perf_counter() - start
+                return 0.0, elapsed
 
         loop = asyncio.get_running_loop()
 
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(self.executor, verify_response, response, answer),
+            reward, elapsed = await asyncio.wait_for(
+                loop.run_in_executor(self.executor, verify_response),
                 timeout=self.HARD_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -90,18 +79,17 @@ class MathRubric(Rubric):
                 f"Math verification hit hard timeout after {self.HARD_TIMEOUT_SECONDS:.0f}s. Worker may be hung or main event loop experiences severe lag."
             )
             return 0.0
+        except Exception as e:
+            self.logger.warning(f"Math verification failed: {e}")
+            return 0.0
 
-        if result.error is not None:
-            self.logger.warning(f"Math verification failed: {result.error}")
-
-        # Enforce timeout based on actual verification wall-clock time (measured in worker)
-        if result.elapsed > self.timeout_seconds:
+        if elapsed > self.timeout_seconds:
             self.logger.debug(
-                f"Math verification exceeded time limit after {result.elapsed:.2f}s (>{self.timeout_seconds:.1f}s)"
+                f"Math verification exceeded time limit after {elapsed:.2f}s (>{self.timeout_seconds:.1f}s)"
             )
             return 0.0
 
-        return result.reward
+        return reward
 
     def __del__(self):
         """Shutdown the thread pool executor when the object is garbage collected."""
