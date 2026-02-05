@@ -122,7 +122,6 @@ class ZMQEnvClient(EnvClient):
     async def _start(self):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.socket.connect(self.address)
-        self.logger.debug("ZMQ client started")
 
     async def _send_request(
         self,
@@ -187,4 +186,3 @@ class ZMQEnvClient(EnvClient):
         # Close socket and terminate context
         self.socket.close()
         self.ctx.term()
-        self.logger.debug("ZMQ client closed")

@@ -44,7 +44,7 @@ class EnvServer(ABC):
             )
 
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.logger.debug(
+        self.logger.info(
             f"Initializing {self.__class__.__name__} to serve {env_id} ({env_args=}, {extra_env_kwargs=})"
         )
 
@@ -59,7 +59,7 @@ class EnvServer(ABC):
         with vf.quiet_verifiers():
             self.env = vf.load_environment(self.env_id, **self.env_args)
             if self.extra_env_kwargs:
-                self.logger.debug(
+                self.logger.info(
                     f"Setting extra environment kwargs: {self.extra_env_kwargs}"
                 )
                 self.env.set_kwargs(**self.extra_env_kwargs)
@@ -81,7 +81,7 @@ class EnvServer(ABC):
             stop_event = asyncio.Event()
 
             def signal_handler(sig):
-                server.logger.debug(
+                server.logger.info(
                     f"Received signal {sig.name}, initiating graceful shutdown"
                 )
                 stop_event.set()
