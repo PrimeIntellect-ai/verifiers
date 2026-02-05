@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, cast
+from typing import Any, Callable, cast, Literal
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -403,12 +403,10 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     answer_default = f'{dict_open}"ready": False, "content": ""{dict_close}'
     fs_context_block = [
         "fs_root = None",
-        f"fs_metadata = {dict_open}{dict_close}",
         "if Path(CONTEXT_FILE).exists():",
         '    with open(CONTEXT_FILE, "r", encoding="utf-8") as f:',
         "        context = json.load(f)",
         '        fs_root = context.get("fs_root")',
-        f'        fs_metadata = context.get("fs_metadata") or {dict_open}{dict_close}',
     ]
     lines: list[str] = [
         "",
@@ -511,7 +509,6 @@ def _build_python_worker_script_template(*, sandboxed: bool) -> str:
     lines.extend(
         [
             '    "extra_data": extra_data,',
-            '    "fs_metadata": fs_metadata,',
             '    "answer": answer,',
             f"{dict_close}",
             "for tool_name in ROOT_TOOL_NAMES:",
@@ -1374,23 +1371,49 @@ def _render_worker_script(
 
 
 # System prompt for sub-LLMs (called via llm_batch)
-_SUB_LLM_SYSTEM_PROMPT = """You are a sub-agent being called by a parent model to help with a specific task.
-Answer the query directly and concisely. Put your final answer inside \\boxed{}.
-
-Example: If asked "What is 2+2?", respond with reasoning then \\boxed{4}."""
+_SUB_LLM_SYSTEM_PROMPT_STORE = {
+    "light": ("You have {num_turns} turns available to fulfill your task."),
+    "medium": (
+        "You will be given a task to perform."
+        " Consider the tools at your disposal closely,"
+        " and don't be afraid to think as much as you need about every step."
+        "\n\nYou have {num_turns} turns available to fulfill your task."
+        " You will be warned when there's only one turn left."
+    ),
+    "heavy": (
+        "You will be given a task to perform."
+        " Consider the tools at your disposal closely,"
+        " and don't be afraid to think as much as you need about every step."
+        "\n\nYou have {num_turns} turns available to fulfill your task."
+        " Unless the task is trivial, use the turns to their fullest to make sure you get the answer right."
+        " Plan well for how to fulfill the task within the turn limit, but don't be afraid to experiment;"
+        " there's a tradeoff to be had and you should think very carefully about how to optimize it."
+        " You will be warned when there's only one turn left."
+    ),
+}
 
 
 # System prompt for RLM
-_RLM_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
+_RLM_PYTHON_SYSTEM_PROMPT_STORE = {
+    "light": """You have the `call_python_repl` tool and a filesystem available to you.
+
+There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
+""",
+    "medium": """You have the `call_python_repl` tool and a filesystem available to you.
+
+There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
+
+This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
+""",
+    "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Python REPL where you explore data step by step.
+
+A filesystem is available; explore it as needed.
 
 ## Critical: This is an ITERATIVE environment
 
 You will write code, see its output, then write more code based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
 Use the `call_python_repl` tool to execute Python code. The REPL maintains state across calls. See the tool description for available variables and functions.
-
-## Filesystem Context
-{filesystem_summary}
 
 ## Workflow
 
@@ -1419,19 +1442,30 @@ answer["ready"] = True
 2. **One step at a time** - make small tool calls, see output, then continue
 3. **Use `llm_batch()` for semantic tasks** - summarization, understanding text, classification, etc.
    Pass a list of strings only (no message dicts).
-"""
+""",
+}
 
 
-_RLM_BASH_SYSTEM_PROMPT = """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
+_RLM_BASH_SYSTEM_PROMPT_STORE = {
+    "light": """You have the `call_bash_repl` tool and a filesystem available to you.
+
+In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
+""",
+    "medium": """You have the `call_bash_repl` tool and a filesystem available to you.
+
+In the end, the `RLM_CONTENT` environment variable must contain your answer. When the final answer is set, call `export RLM_READY=1`.
+
+This is an iterative environment. Make use of sub-LLMs via `llm_batch` whenever they could be useful; prefer calling them in parallel to calling them sequentially.
+""",
+    "heavy": """You are operating in a Recursive Language Model (RLM) environment - an iterative Bash REPL where you explore data step by step.
+
+A filesystem is available; explore it as needed.
 
 ## Critical: This is an ITERATIVE environment
 
 You will run shell commands, see their output, then run more commands based on what you learned. **Do NOT try to solve everything in one tool call.** Each tool call executes and returns output before you continue.
 
 Use the `call_bash_repl` tool to execute Bash commands. The shell maintains state across calls. See the tool description for available variables and commands.
-
-## Filesystem Context
-{filesystem_summary}
 
 ## Workflow
 
@@ -1464,7 +1498,8 @@ export RLM_READY=1
    - For structured args/kwargs, use `--json` with a payload like `{"args":[...],"kwargs":{...}}`
      (or provide the JSON via stdin).
    - `llm_batch` accepts `--json` with `{"prompts":[...]}`
-"""
+""",
+}
 
 
 class BaseRLMExecutor:
@@ -1718,7 +1753,6 @@ class LocalRLMExecutor(BaseRLMExecutor):
         Path(session.control_dir).mkdir(parents=True, exist_ok=True)
         context = {
             "fs_root": state.get("rlm_fs_root"),
-            "fs_metadata": state.get("rlm_fs_metadata") or {},
         }
         Path(session.paths.context_file).write_text(
             json.dumps(context), encoding="utf-8"
@@ -2069,7 +2103,6 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         assert session.paths is not None
         context = {
             "fs_root": state.get("rlm_fs_root_remote") or state.get("rlm_fs_root"),
-            "fs_metadata": state.get("rlm_fs_metadata") or {},
         }
         context_path = Path(session.local_control_dir) / "rlm_context.json"
         answer_path = Path(session.local_control_dir) / "rlm_answer.json"
@@ -2347,6 +2380,8 @@ class RLMEnv(vf.StatefulToolEnv):
     - Interact with large input data stored in a working directory (filesystem)
     - Make recursive sub-LLM calls via `llm_batch()`
     - Return final answers via an `answer` variable
+    - Record the actual model-visible prompt (with RLM scaffolding) in state["prompt"]
+      on the first turn; the original prompt is preserved in state["raw_prompt"]
 
     Architecture:
     - REPL loop runs in the framework (standard MultiTurnEnv pattern)
@@ -2370,6 +2405,8 @@ class RLMEnv(vf.StatefulToolEnv):
                    share a name within a list, initialization raises an error.
         sub_tool_max_turns: Maximum tool-calling turns for sub-LLM calls (default: 5)
         sub_model: Model to use for sub-LLM calls (defaults to same as root model)
+        sub_prompt_verbosity: The verbosity of the sub-LLMs' system prompt; "light", "medium", or "high"
+        root_prompt_verbosity: The verbosity of the root-LLM's system prompt; "light", "medium", or "high"
         max_iterations: Maximum REPL iterations before stopping (maps to max_turns)
         max_output_length: Maximum length of code execution output
         max_sub_llm_parallelism: Maximum number of concurrent sub-LLM calls
@@ -2427,6 +2464,8 @@ class RLMEnv(vf.StatefulToolEnv):
         sub_tools: list[Callable] | None = None,
         sub_tool_max_turns: int = 5,
         sub_model: str | None = None,
+        sub_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
+        root_prompt_verbosity: Literal["light", "medium", "heavy"] = "light",
         max_iterations: int = 50,
         max_output_length: int = 8192,
         max_sub_llm_parallelism: int = 5,
@@ -2435,8 +2474,8 @@ class RLMEnv(vf.StatefulToolEnv):
         context_key: str = "context",
         context_dir_key: str = "context_dir",
         system_prompt: str | None = None,
-        repl_language: str = "bash",
-        execution_backend: str = "local",
+        repl_language: Literal["bash", "python"] = "bash",
+        execution_backend: Literal["local", "sandbox"] = "local",
         interception_host: str | None = None,
         interception_port: int = 8766,
         interception_url: str | None = None,
@@ -2473,6 +2512,18 @@ class RLMEnv(vf.StatefulToolEnv):
             raise ValueError(
                 f"Unsupported execution_backend '{execution_backend}'. Expected 'local' or 'sandbox'."
             )
+        if sub_prompt_verbosity not in {"light", "medium", "heavy"}:
+            raise ValueError(
+                f"Unsupported sub_prompt_verbosity '{sub_prompt_verbosity}. "
+                "Expected 'light', 'medium', or 'high'"
+            )
+        if root_prompt_verbosity not in {"light", "medium", "heavy"}:
+            raise ValueError(
+                f"Unsupported root_prompt_verbosity '{root_prompt_verbosity}. "
+                "Expected 'light', 'medium', or 'high'"
+            )
+        self.sub_prompt_verbosity = sub_prompt_verbosity
+        self.root_prompt_verbosity = root_prompt_verbosity
         self.repl_language = repl_language
         self.execution_backend = execution_backend
         self.sub_model = sub_model
@@ -2818,26 +2869,6 @@ class RLMEnv(vf.StatefulToolEnv):
             ) from exc
         path = os.path.join(fs_root, "context.json")
         Path(path).write_text(payload, encoding="utf-8")
-
-    def _generate_filesystem_summary(
-        self, *, fs_root: str, metadata: dict[str, Any], has_data: bool
-    ) -> str:
-        """Generate a concise summary of filesystem context for the system prompt."""
-        lines = [f"Working directory: {fs_root}"]
-        if has_data:
-            file_count = metadata.get("file_count")
-            total_size = metadata.get("total_size", metadata.get("total_bytes"))
-            if file_count is not None:
-                lines.append(f"File count: {file_count}")
-            if total_size is not None:
-                lines.append(f"Total size (bytes): {total_size}")
-        else:
-            lines.append(
-                "No extra data was provided. The working directory exists but is empty."
-            )
-            lines.append("You can still use this directory for any files you create.")
-        lines.append("Never access files or directories outside the working directory.")
-        return "\n".join(lines)
 
     async def _call_sub_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str
@@ -3241,7 +3272,15 @@ class RLMEnv(vf.StatefulToolEnv):
         elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
         messages_with_system: ChatMessages = [
-            cast(ChatMessage, {"role": "system", "content": _SUB_LLM_SYSTEM_PROMPT}),
+            cast(
+                ChatMessage,
+                {
+                    "role": "system",
+                    "content": _SUB_LLM_SYSTEM_PROMPT_STORE[
+                        self.sub_prompt_verbosity
+                    ].format(num_turns=self.sub_tool_max_turns),
+                },
+            ),
             *messages,
         ]
 
@@ -3605,38 +3644,20 @@ class RLMEnv(vf.StatefulToolEnv):
                 fs_has_data = True
                 self._write_builtin_context(context_data, fs_root)
 
-        fs_metadata = self._compute_fs_metadata(fs_root)
         state["rlm_fs_root"] = fs_root
         state["rlm_fs_source"] = fs_source
-        state["rlm_fs_metadata"] = fs_metadata
         state["rlm_fs_has_data"] = fs_has_data
         state["retain_filesystem_after_rollout"] = self.retain_filesystem_after_rollout
-
-        fs_root_for_prompt = (
-            state.get("rlm_fs_root_remote")
-            if self.execution_backend == "sandbox"
-            else fs_root
-        )
-
-        filesystem_summary = self._generate_filesystem_summary(
-            fs_root=fs_root_for_prompt or fs_root,
-            metadata=fs_metadata,
-            has_data=fs_has_data,
-        )
         if self.custom_system_prompt:
             base_system_prompt = self.custom_system_prompt
         elif self.repl_language == "bash":
-            base_system_prompt = _RLM_BASH_SYSTEM_PROMPT
+            base_system_prompt = _RLM_BASH_SYSTEM_PROMPT_STORE[
+                self.root_prompt_verbosity
+            ]
         else:
-            base_system_prompt = _RLM_SYSTEM_PROMPT
-        if "{filesystem_summary}" in base_system_prompt:
-            # Use replace instead of format to avoid conflict with curly braces from Python code
-            base_system_prompt = base_system_prompt.replace(
-                "{filesystem_summary}", filesystem_summary
-            )
-        else:
-            # If custom prompt doesn't have placeholder, prepend it
-            base_system_prompt = f"{filesystem_summary}\n\n{base_system_prompt}"
+            base_system_prompt = _RLM_PYTHON_SYSTEM_PROMPT_STORE[
+                self.root_prompt_verbosity
+            ]
 
         packages_docs = self._generate_packages_documentation()
         root_tools_docs = self._generate_root_tools_documentation()
@@ -3886,7 +3907,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         The Bash session maintains state across calls and provides access to:
 
-        - Files in the working directory (current working directory is the context root).
+        - Files in the working directory.
         - `RLM_CONTENT`: Your current best answer (string).
         - `RLM_READY`: Set to a truthy value to finish (terminates execution immediately).
 
@@ -3911,9 +3932,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         The REPL maintains state across calls and provides access to:
 
-        - Files in the working directory (current working directory is the context root).
-        - `extra_data`: The working directory path (string) for convenience.
-        - `fs_metadata`: Metadata about the filesystem context (file_count, total_size).
+        - Files in the working directory.
 
         - `answer`: A dictionary for your final answer:
           - `answer["content"]`: Your answer (string) - update this as you work
@@ -3940,6 +3959,19 @@ class RLMEnv(vf.StatefulToolEnv):
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         update_rlm_metrics_from_step(state, trajectory_step)
         await super().add_trajectory_step(state, trajectory_step)
+
+    async def add_model_response(
+        self,
+        state: State,
+        prompt_messages: Messages,
+        response: ModelResponse,
+    ):
+        """Add model response and align stored prompt with injected scaffold on first turn."""
+        if len(state["trajectory"]) == 0:
+            if "raw_prompt" not in state:
+                state["raw_prompt"] = state["prompt"]
+            state["prompt"] = prompt_messages
+        await super().add_model_response(state, prompt_messages, response)
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""

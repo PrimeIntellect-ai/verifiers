@@ -27,7 +27,7 @@ from typing import (
     final,
 )
 
-from openai import AsyncOpenAI, BadRequestError, OpenAI
+from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
 
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
@@ -492,24 +492,26 @@ class Environment(ABC):
             async def wrapper(*args, **kwargs):
                 try:
                     return await func(*args, **kwargs)
-                except Exception as e:
+                except AuthenticationError:
+                    # re-raise auth errors to exit immediately
+                    raise
+                except BadRequestError as e:
                     # in case of making a request with an overlong prompt, e.g
                     # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
+                    error_text = e.response.text.lower()
+                    context_length_phrases = [
+                        "maximum context length is",
+                        "is longer than the model's context length",
+                        "exceeds the model's context length",
+                        "exceed the configured limit",
+                        "exceeds the configured limit",
+                        "exceeded model",
+                    ]
+                    if any(phrase in error_text for phrase in context_length_phrases):
+                        self.logger.debug("Caught overlong prompt.")
+                        raise vf.OverlongPromptError from e
+                    raise vf.ModelError from e
+                except Exception as e:
                     # in all other case we raise a generic model error
                     raise vf.ModelError from e
 
@@ -688,8 +690,11 @@ class Environment(ABC):
         state["is_completed"] = False
         state["is_truncated"] = False
         state["oai_tools"] = None
-        if "info" in state and hasattr(state["info"], "oai_tools"):
-            state["oai_tools"] = state["info"]["oai_tools"]
+        info = state.get("info")
+        if isinstance(info, dict) and "oai_tools" in info:
+            state["oai_tools"] = info["oai_tools"]
+        elif info is not None and hasattr(info, "oai_tools"):
+            state["oai_tools"] = getattr(info, "oai_tools")
         elif hasattr(self, "oai_tools"):
             state["oai_tools"] = self.oai_tools
         else:

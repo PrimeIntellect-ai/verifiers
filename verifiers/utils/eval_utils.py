@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import math
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
@@ -367,13 +368,23 @@ async def run_evaluation(
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
+        effective_max_concurrent = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            effective_max_concurrent = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+
         outputs = await vf_env.evaluate(
             client=config.client_config,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=config.max_concurrent,
+            max_concurrent=effective_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
@@ -469,6 +480,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 reward=metadata.get("avg_reward"),
                 metrics=metadata.get("avg_metrics"),
                 error_rate=metadata.get("avg_error"),
+                usage=metadata.get("usage"),
             )
 
         def on_log(message: str) -> None:
