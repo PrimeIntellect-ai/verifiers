@@ -51,7 +51,7 @@ class MathRubric(Rubric):
         funcs: list[RewardFunc] | None = None,
         weights: list[float] | None = None,
         parser: Parser | None = None,
-        max_workers: int = 4,
+        max_workers: int = 50,
         timeout_seconds: float = 5,
     ):
         parser = parser or MaybeThinkParser(extract_fn=extract_boxed_answer)
