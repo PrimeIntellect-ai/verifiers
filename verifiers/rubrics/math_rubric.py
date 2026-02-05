@@ -75,7 +75,7 @@ class MathRubric(Rubric):
 
         response = parser.parse_answer(completion) or ""
         if response == "":
-            self.logger.warning("Parsed response is empty")
+            self.logger.debug("Parsed response is empty")
             return 0.0
 
         loop = asyncio.get_running_loop()
@@ -87,11 +87,9 @@ class MathRubric(Rubric):
             )
         except asyncio.TimeoutError:
             self.logger.warning(
-                f"Math verification hard timeout after {self.HARD_TIMEOUT_SECONDS:.0f}s. Worker may be hung or main event loop experiences severe lag."
+                f"Math verification hit hard timeout after {self.HARD_TIMEOUT_SECONDS:.0f}s. Worker may be hung or main event loop experiences severe lag."
             )
             return 0.0
-        except asyncio.CancelledError:
-            raise
 
         if result.error is not None:
             self.logger.warning(f"Math verification failed: {result.error}")
@@ -99,8 +97,7 @@ class MathRubric(Rubric):
         # Enforce timeout based on actual verification wall-clock time (measured in worker)
         if result.elapsed > self.timeout:
             self.logger.debug(
-                f"Math verification exceeded time limit: "
-                f"{result.elapsed:.2f}s > {self.timeout:.1f}s"
+                f"Math verification exceeded time limit after {result.elapsed:.2f}s (>{self.timeout:.1f}s)"
             )
             return 0.0
 
