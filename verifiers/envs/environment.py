@@ -48,22 +48,27 @@ from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
     ClientConfig,
+    CompleteEvent,
     DatasetBuilder,
-    GenerateMetadata,
+    EvalEvent,
+    EventHandler,
     GenerateOutputs,
-    LogCallback,
+    GroupCompleteEvent,
+    LogEvent,
     Messages,
     MessageType,
     ModelResponse,
-    ProgressCallback,
+    ProgressEvent,
     RolloutInput,
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
-    StartCallback,
+    SaveEvent,
+    StartEvent,
     State,
 )
 from verifiers.utils.async_utils import (
+    maybe_await,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -247,6 +252,13 @@ class Environment(ABC):
             ),
         )
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
+
+    async def _emit_event(
+        self, event: EvalEvent, handler: EventHandler | None
+    ) -> None:
+        """Emit event to handler if present."""
+        if handler is not None:
+            await maybe_await(handler, event)
 
     def _ensure_example_id(self, dataset: Dataset) -> Dataset:
         """Ensure example_id column exists and is integer type."""
@@ -810,6 +822,36 @@ class Environment(ABC):
         output = state_to_output(state, state_columns or [])
         return output
 
+    async def _run_group_with_states(
+        self,
+        group_inputs: list[RolloutInput],
+        client: AsyncOpenAI,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> tuple[list[State], list[RolloutOutput]]:
+        """Internal method that returns both states and outputs."""
+
+        async def run_group_attempt() -> list[State]:
+            rollout_tasks = [
+                self.rollout(input, client, model, sampling_args)
+                for input in group_inputs
+            ]
+            group_states = await asyncio.gather(*rollout_tasks)
+
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states)
+            else:
+                await self.rubric.dummy_score_group(group_states)
+            return group_states
+
+        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        outputs = [
+            state_to_output(state, state_columns or []) for state in group_states
+        ]
+        return group_states, outputs
+
     @final
     async def run_group(
         self,
@@ -829,23 +871,14 @@ class Environment(ABC):
                 group_inputs, client, model, sampling_args, max_retries, state_columns
             )
 
-        async def run_group_attempt() -> list[State]:
-            rollout_tasks = [
-                self.rollout(input, cast(AsyncOpenAI, client), model, sampling_args)
-                for input in group_inputs
-            ]
-            group_states = await asyncio.gather(*rollout_tasks)
-
-            if self.score_rollouts:
-                await self.rubric.score_group(group_states)
-            else:
-                await self.rubric.dummy_score_group(group_states)
-            return group_states
-
-        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
-        outputs = [
-            state_to_output(state, state_columns or []) for state in group_states
-        ]
+        _, outputs = await self._run_group_with_states(
+            group_inputs,
+            cast(AsyncOpenAI, client),
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+        )
         return outputs
 
     async def generate(
@@ -862,76 +895,12 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
-        on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
-        on_log: LogCallback | None = None,
+        on_event: EventHandler | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
         """
         from datasets import Dataset
-        from tqdm import tqdm
-
-        pbar: tqdm | None = None
-
-        def default_on_start(
-            raw_inputs: list[RolloutInput],
-            filtered_inputs: list[RolloutInput] | list[list[RolloutInput]],
-        ) -> None:
-            """Initializes the progress bar from the raw inputs."""
-            nonlocal pbar
-
-            total_rollouts = len(raw_inputs)
-            total_groups = len(set([i["example_id"] for i in raw_inputs]))
-            rollouts_per_example = (
-                total_rollouts // total_groups if total_groups > 0 else 0
-            )
-
-            if (
-                isinstance(filtered_inputs, list)
-                and filtered_inputs
-                and isinstance(filtered_inputs[0], list)
-            ):
-                remaining_rollouts = sum(len(g) for g in filtered_inputs)
-            else:
-                remaining_rollouts = len(filtered_inputs)
-            saved_rollouts = total_rollouts - remaining_rollouts
-
-            if filtered_inputs:
-                if isinstance(filtered_inputs[0], list):
-                    pbar_total = total_groups
-                    pbar_initial = saved_rollouts // rollouts_per_example
-                    pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
-                else:
-                    pbar_total = total_rollouts
-                    pbar_initial = saved_rollouts
-                    pbar_desc = f"Processing {total_rollouts} rollouts"
-
-                pbar = tqdm(
-                    total=pbar_total,
-                    initial=pbar_initial,
-                    desc=pbar_desc,
-                    postfix=dict(reward="?"),
-                )
-
-        def default_on_progress(
-            all_outputs: list[RolloutOutput],
-            new_outputs: list[RolloutOutput],
-            new_metadata: GenerateMetadata,
-        ) -> None:
-            """Updates the progress bar from the new outputs."""
-            nonlocal pbar
-            if pbar is not None:
-                pbar.update(1)
-                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
-
-        def default_on_log(message: str) -> None:
-            """Logs using the environment logger."""
-            self.logger.info(message)
-
-        on_start = on_start or cast(StartCallback, default_on_start)
-        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
-        on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
             raw_inputs = cast(list[RolloutInput], inputs.to_list())
@@ -972,26 +941,59 @@ class Environment(ABC):
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
             )
-            on_log(f"Resuming evaluation from {results_path}")
+            await self._emit_event(
+                LogEvent(
+                    type="log",
+                    message=f"Resuming evaluation from {results_path}",
+                    level="info",
+                    source="environment",
+                    timestamp=time.time(),
+                ),
+                on_event,
+            )
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
             filtered_inputs = filter_inputs(raw_inputs, outputs, rollouts_per_example)
             if not filtered_inputs:
-                on_log("No remaining rollouts to evaluate, returning completed outputs")
+                await self._emit_event(
+                    LogEvent(
+                        type="log",
+                        message="No remaining rollouts to evaluate, returning completed outputs",
+                        level="info",
+                        source="environment",
+                        timestamp=time.time(),
+                    ),
+                    on_event,
+                )
                 return builder.build(sort_by_example_id=True)
-            on_log(
-                f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
+            await self._emit_event(
+                LogEvent(
+                    type="log",
+                    message=f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)",
+                    level="info",
+                    source="environment",
+                    timestamp=time.time(),
+                ),
+                on_event,
             )
         else:
             filtered_inputs = raw_inputs
 
         if save_results:
-            on_log(f"Saving results to {builder.results_path}")
+            await self._emit_event(
+                LogEvent(
+                    type="log",
+                    message=f"Saving results to {builder.results_path}",
+                    level="info",
+                    source="environment",
+                    timestamp=time.time(),
+                ),
+                on_event,
+            )
 
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
-            on_start(raw_inputs, filtered_inputs)
             for i, rollout_input in enumerate(filtered_inputs):
                 task = asyncio.create_task(
                     with_sem(
@@ -1013,15 +1015,14 @@ class Environment(ABC):
                 example_id = rollout_input["example_id"]
                 group_inputs[example_id].append(rollout_input)
             filtered_group_inputs = list(group_inputs.values())
-            on_start(raw_inputs, filtered_group_inputs)
 
             for i, group_input in enumerate(filtered_group_inputs):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
-                        self.run_group(
+                        self._run_group_with_states(
                             group_input,
-                            client,
+                            cast(AsyncOpenAI, client),
                             model,
                             sampling_args,
                             max_retries=max_retries,
@@ -1031,20 +1032,62 @@ class Environment(ABC):
                 )
                 tasks[task] = i
 
+        # Emit start event with resolved counts
+        await self._emit_event(
+            StartEvent(
+                type="start",
+                total_rollouts=total_rollouts,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+            ),
+            on_event,
+        )
         try:
             for coro in asyncio.as_completed(tasks.keys()):
                 result = await coro
 
-                # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
-                new_outputs = [result] if independent_scoring else result
-                builder.add_outputs(new_outputs)
-                metadata = builder.build_metadata()
+                # Extract outputs and states
+                if independent_scoring:
+                    # result is a single RolloutOutput
+                    new_outputs = [result]
+                    states = None
+                    example_id = None
+                else:
+                    # result is tuple[list[State], list[RolloutOutput]]
+                    states, new_outputs = result
+                    # Get example_id from first state in group
+                    example_id = states[0]["input"]["example_id"] if states else None
 
-                on_progress(builder.outputs, new_outputs, metadata)
+                builder.add_outputs(new_outputs)
+
+                # emit progress event
+                await self._emit_event(
+                    ProgressEvent(
+                        type="progress",
+                        all_outputs=builder.outputs,
+                        new_outputs=new_outputs,
+                        completed_count=len(builder.outputs),
+                        total_count=total_rollouts,
+                    ),
+                    on_event,
+                )
+
+                # Emit GroupCompleteEvent for non-independent scoring (PR #632)
+                if states is not None and example_id is not None:
+                    await self._emit_event(
+                        GroupCompleteEvent(
+                            type="group_complete",
+                            example_id=example_id,
+                            states=states,
+                            outputs=new_outputs,
+                        ),
+                        on_event,
+                    )
 
                 # incrementally save outputs
                 if save_results:
                     save_new_outputs(new_outputs, builder.results_path)
+                    metadata = builder.build_metadata()
                     save_metadata(metadata, builder.results_path)
         finally:
             # cancel all outstanding tasks and await their completion
@@ -1053,8 +1096,6 @@ class Environment(ABC):
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
-            if pbar is not None:
-                pbar.close()
 
         # build final results (sorted by example_id for deterministic ordering)
         results = builder.build(sort_by_example_id=True)
@@ -1065,8 +1106,36 @@ class Environment(ABC):
             save_metadata(results["metadata"], builder.results_path)
             if push_to_hf_hub:
                 push_results_to_hf_hub(results, hf_hub_dataset_name)
-            if on_log is not None:
-                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
+            await self._emit_event(
+                SaveEvent(
+                    type="save",
+                    path=results["metadata"]["path_to_save"],
+                    is_intermediate=False,
+                    output_count=len(results["outputs"]),
+                ),
+                on_event,
+            )
+            await self._emit_event(
+                LogEvent(
+                    type="log",
+                    message=f"Saved final outputs to {results['metadata']['path_to_save']}",
+                    level="info",
+                    source="environment",
+                    timestamp=time.time(),
+                ),
+                on_event,
+            )
+
+        # Emit completion event
+        await self._emit_event(
+            CompleteEvent(
+                type="complete",
+                total_outputs=len(results["outputs"]),
+                avg_reward=results["metadata"]["avg_reward"],
+                total_time_ms=results["metadata"]["time_ms"],
+            ),
+            on_event,
+        )
 
         return results
 
@@ -1132,9 +1201,7 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
-        on_start: StartCallback | None = None,
-        on_progress: ProgressCallback | None = None,
-        on_log: LogCallback | None = None,
+        on_event: EventHandler | None = None,
         **kwargs,
     ) -> GenerateOutputs:
         """
@@ -1154,9 +1221,7 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
-            on_start=on_start,
-            on_progress=on_progress,
-            on_log=on_log,
+            on_event=on_event,
             **kwargs,
         )
 
