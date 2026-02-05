@@ -129,6 +129,20 @@ def main():
     parser.add_argument("--sampling-args", "-S", type=json.loads, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument(
+        "--see-components",
+        action="store_true",
+        help="Print available prompt components for the environment and exit",
+    )
+    parser.add_argument(
+        "--components",
+        nargs="*",
+        default=None,
+        help=(
+            "Limit optimization to specific components (space-separated or comma-separated). "
+            "Example: --components system_prompt tool:search"
+        ),
+    )
 
     # Output
     parser.add_argument(
@@ -216,6 +230,8 @@ def main():
         run_dir=run_dir,
         save_results=save_results,
         tui_mode=args.tui,
+        list_components=args.see_components,
+        components_to_update=args.components,
     )
 
 
@@ -239,7 +255,27 @@ def run_gepa_optimization(
     run_dir: Path | None,
     save_results: bool,
     tui_mode: bool = False,
+    list_components: bool = False,
+    components_to_update: list[str] | None = None,
 ):
+    if list_components:
+        env = vf.load_environment(env_id=env_id, **env_args)
+        if isinstance(env, vf.EnvGroup):
+            raise ValueError(
+                "GEPA is not supported for EnvGroup. Optimize each environment individually."
+            )
+        if extra_env_kwargs:
+            env.set_kwargs(**extra_env_kwargs)
+        seed_candidate = env.get_prompt_components()
+        if not seed_candidate:
+            raise ValueError(
+                "Environment returned no prompt components to optimize. "
+                "Implement get_prompt_components() to expose at least one component."
+            )
+        for key in sorted(seed_candidate.keys()):
+            print(key)
+        return None
+
     # Create run_dir early
     if run_dir:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -272,18 +308,32 @@ def run_gepa_optimization(
             logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
             env.set_kwargs(**extra_env_kwargs)
 
-        # Check system prompt
-        initial_prompt = env.system_prompt or ""
-        if not initial_prompt:
-            logger.warning("No system prompt attached to environment.")
-            if env.message_type == "chat":
-                logger.warning(
-                    "Will add a system message block to the start of chat messages."
+
+        # Fetch optimizable prompt components from environment
+        seed_candidate = env.get_prompt_components()
+        if not seed_candidate:
+            raise ValueError(
+                "Environment returned no prompt components to optimize. "
+                "Implement get_prompt_components() to expose at least one component."
+            )
+
+        if components_to_update:
+            requested: set[str] = set()
+            for item in components_to_update:
+                for part in item.split(","):
+                    part = part.strip()
+                    if part:
+                        requested.add(part)
+            missing = requested - set(seed_candidate.keys())
+            if missing:
+                raise ValueError(
+                    "Unknown prompt components: "
+                    + ", ".join(sorted(missing))
+                    + ". Use --see-components to list available components."
                 )
-            else:
-                logger.warning(
-                    "Will prepend system prompt to the start of completion prompts."
-                )
+            seed_candidate = {k: v for k, v in seed_candidate.items() if k in requested}
+            if not seed_candidate:
+                raise ValueError("No prompt components selected for optimization.")
 
         # Get datasets
         logger.debug(f"Loading trainset ({num_train} examples)")
@@ -336,7 +386,7 @@ def run_gepa_optimization(
                 f"Perfect score: {perfect_score} (will not reflect on minibatches with perfect score)"
             )
 
-        seed_candidate = {"system_prompt": initial_prompt}
+
         optimize_kwargs: dict = {
             "seed_candidate": seed_candidate,
             "trainset": trainset,
@@ -376,7 +426,9 @@ def run_gepa_optimization(
             logger.debug(f"Results saved to {run_dir}")
 
         # Set result info for final summary
-        best_prompt = result.best_candidate.get("system_prompt", "")
+        best_prompt = result.best_candidate.get(
+            "system_prompt", result.best_candidate.get("base_system_prompt", "")
+        )
         display.set_result(best_prompt=best_prompt, save_path=save_path)
 
     return result

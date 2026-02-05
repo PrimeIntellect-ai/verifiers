@@ -673,6 +673,15 @@ class Environment(ABC):
         state_input = deepcopy(input)
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
+        info = state_input.get("info")
+        if isinstance(info, dict):
+            prompt_components = info.get("prompt_components")
+            if isinstance(prompt_components, dict):
+                system_prompt = prompt_components.get("system_prompt")
+                if isinstance(system_prompt, str) and system_prompt:
+                    state_input["prompt"] = self._inject_system_prompt_to_prompt(
+                        state_input.get("prompt"), system_prompt
+                    )
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
         state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
@@ -717,6 +726,37 @@ class Environment(ABC):
         Run a rollout for a given input.
         """
         pass
+
+    def get_prompt_components(self) -> dict[str, str]:
+        """Return optimizable prompt components for GEPA.
+
+        Key conventions:
+        - system_prompt: primary system prompt
+        - tool:<tool_name>: per-tool description (ToolEnv)
+        - base_system_prompt: RLM base prompt before docs/scaffolding
+        """
+        if not self.system_prompt:
+            return {}
+        return {"system_prompt": self.system_prompt}
+
+
+    @staticmethod
+    def _inject_system_prompt_to_prompt(
+        prompt: Messages | None,
+        system_prompt: str,
+    ) -> Messages:
+        """Inject or replace system prompt in a prompt payload."""
+        if prompt is None:
+            return [{"role": "system", "content": system_prompt}]
+        if isinstance(prompt, str):
+            return f"{system_prompt}\n\n{prompt}"
+        prompt_list = [dict(m) for m in prompt]
+        if not prompt_list:
+            return [{"role": "system", "content": system_prompt}]
+        if prompt_list[0].get("role") == "system":
+            prompt_list[0] = {**prompt_list[0], "content": system_prompt}
+            return prompt_list
+        return [{"role": "system", "content": system_prompt}] + prompt_list
 
     async def _cleanup(self, state: State):
         """

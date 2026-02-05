@@ -2,8 +2,9 @@
 Simple artifact saving for GEPA optimization.
 
 Saves:
-- pareto_frontier.jsonl: Per valset row, the best prompt(s) and their scores
-- best_prompt.txt: The single best overall system prompt
+- pareto_frontier.jsonl: Per valset row, the best candidate(s) and their scores
+- best_candidate.json: The single best overall candidate (all components)
+- best_prompt.txt: The best system prompt (if present)
 - metadata.json: Run configuration and summary
 """
 
@@ -72,11 +73,11 @@ def save_gepa_results(
 
             best_score = max(score for _, score in row_scores)
             best_prompts = [
-                {
-                    "candidate_idx": cand_idx,
-                    "system_prompt": candidates[cand_idx].get("system_prompt", ""),
-                    "score": score,
-                }
+                    {
+                        "candidate_idx": cand_idx,
+                        "candidate": candidates[cand_idx],
+                        "score": score,
+                    }
                 for cand_idx, score in row_scores
                 if score == best_score
             ]
@@ -93,9 +94,15 @@ def save_gepa_results(
         frontier_ds = Dataset.from_list(records)
         frontier_ds.to_json(run_dir / "pareto_frontier.jsonl")
 
-    # Save best prompt as plain text
-    best_prompt = best_candidate.get("system_prompt", "")
-    (run_dir / "best_prompt.txt").write_text(best_prompt)
+    # Save best candidate as JSON
+    (run_dir / "best_candidate.json").write_text(
+        json.dumps(best_candidate, indent=2)
+    )
+
+    # Save best system prompt as plain text (if present)
+    best_prompt = best_candidate.get("system_prompt")
+    if isinstance(best_prompt, str):
+        (run_dir / "best_prompt.txt").write_text(best_prompt)
 
     # Build and save metadata
     val_scores = getattr(result, "val_aggregate_scores", [])

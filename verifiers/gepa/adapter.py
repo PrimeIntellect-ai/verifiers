@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
@@ -86,7 +87,10 @@ class VerifiersGEPAAdapter:
         """
         Run verifiers evaluation with the candidate system prompt.
         """
-        inputs = _inject_system_prompt(batch, candidate.get("system_prompt", ""))
+
+        # Attach prompt components to info for envs that read them,
+        # leaving prompt mutation to the environment.
+        inputs = _attach_prompt_components(batch, candidate, self.env)
 
         results = asyncio.get_event_loop().run_until_complete(
             self.env.generate(
@@ -106,10 +110,10 @@ class VerifiersGEPAAdapter:
 
         # Update display if configured
         if self.display is not None:
-            prompt_text = candidate.get("system_prompt", "")
-            if prompt_text not in self._seen_prompts:
-                self._seen_prompts[prompt_text] = len(self._seen_prompts)
-            candidate_idx = self._seen_prompts[prompt_text]
+            candidate_key = _candidate_key(candidate)
+            if candidate_key not in self._seen_prompts:
+                self._seen_prompts[candidate_key] = len(self._seen_prompts)
+            candidate_idx = self._seen_prompts[candidate_key]
 
             self.display.update_eval(
                 candidate_idx=candidate_idx,
@@ -158,35 +162,56 @@ class VerifiersGEPAAdapter:
 
             records.append(record)
 
+        # we might want this to become more sophisticated, only giving the relevant records for each component
         return {comp: records for comp in components_to_update}
 
 
-def _inject_system_prompt(
+def _attach_prompt_components(
     inputs: list[RolloutInput],
-    system_prompt: str,
+    candidate: dict[str, str],
+    env: Environment,
 ) -> list[RolloutInput]:
-    """Inject or replace system prompt in each input's prompt."""
-    if not system_prompt:
+    """Attach prompt components to info and update tool descriptions if provided."""
+    if not candidate:
         return inputs
+
+    tool_overrides = {
+        key.split(":", 1)[1]: value
+        for key, value in candidate.items()
+        if key.startswith("tool:") and isinstance(value, str)
+    }
 
     modified = []
     for inp in inputs:
         inp_copy = dict(inp)
-        prompt = inp_copy.get("prompt", [])
+        info = inp_copy.get("info")
+        if not isinstance(info, dict):
+            info = {}
+        info = dict(info)
+        info["prompt_components"] = dict(candidate)
 
-        if isinstance(prompt, str):
-            inp_copy["prompt"] = f"{system_prompt}\n\n{prompt}"
-        else:
-            prompt = [dict(m) for m in prompt]
-            if not prompt:
-                # Empty prompt list - just add system message
-                prompt = [{"role": "system", "content": system_prompt}]
-            elif prompt[0].get("role") == "system":
-                prompt[0] = {**prompt[0], "content": system_prompt}
-            else:
-                prompt = [{"role": "system", "content": system_prompt}] + prompt
-            inp_copy["prompt"] = prompt
+        if tool_overrides and getattr(env, "oai_tools", None):
+            new_tools = []
+            for tool in env.oai_tools or []:
+                tool_copy = dict(tool)
+                func = tool_copy.get("function")
+                if not isinstance(func, dict):
+                    logger.warning("Skipping tool override: invalid tool function")
+                    new_tools.append(tool_copy)
+                    continue
+                tool_name = func.get("name")
+                if not tool_name:
+                    logger.warning("Skipping tool override: missing tool name")
+                    new_tools.append(tool_copy)
+                    continue
+                if tool_name in tool_overrides:
+                    func_copy = dict(func)
+                    func_copy["description"] = tool_overrides[tool_name]
+                    tool_copy["function"] = func_copy
+                new_tools.append(tool_copy)
+            info["oai_tools"] = new_tools
 
+        inp_copy["info"] = info
         modified.append(inp_copy)
     return modified
 
@@ -202,3 +227,11 @@ def _extract_user_query(prompt: Messages) -> str:
                 return content
             return str(content) if content else ""
     return ""
+
+
+def _candidate_key(candidate: dict[str, str]) -> str:
+    """Stable key for multi-component candidates."""
+    try:
+        return json.dumps(candidate, sort_keys=True, ensure_ascii=True)
+    except (TypeError, ValueError):
+        return str(sorted(candidate.items()))

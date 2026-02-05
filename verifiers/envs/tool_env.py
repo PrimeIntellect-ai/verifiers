@@ -116,6 +116,17 @@ class ToolEnv(vf.MultiTurnEnv):
         self.tool_map.pop(tool_name)
         self.tool_monitor_rubric.remove_tool_metric(tool)
 
+    def get_prompt_components(self) -> dict[str, str]:
+        components = super().get_prompt_components()
+        for tool in self.oai_tools or []:
+            func = tool.get("function", {})
+            name = func.get("name")
+            if not name:
+                continue
+            description = func.get("description", "")
+            components[f"tool:{name}"] = description
+        return components
+
     @vf.stop
     async def no_tools_called(self, state: vf.State) -> bool:
         if len(state["trajectory"]) == 0:
