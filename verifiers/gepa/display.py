@@ -107,6 +107,9 @@ class GEPADisplay(BaseDisplay):
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    def get_log_hint(self) -> Text | None:
+        return None
+
     def set_valset_info(self, valset_size: int, valset_example_ids: list[int]) -> None:
         """Update valset info after environment is loaded."""
         self.valset_size = valset_size
