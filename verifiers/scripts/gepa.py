@@ -308,7 +308,6 @@ def run_gepa_optimization(
             logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
             env.set_kwargs(**extra_env_kwargs)
 
-
         # Fetch optimizable prompt components from environment
         seed_candidate = env.get_prompt_components()
         if not seed_candidate:
@@ -385,7 +384,6 @@ def run_gepa_optimization(
             logger.debug(
                 f"Perfect score: {perfect_score} (will not reflect on minibatches with perfect score)"
             )
-
 
         optimize_kwargs: dict = {
             "seed_candidate": seed_candidate,

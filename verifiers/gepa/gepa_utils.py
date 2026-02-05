@@ -73,21 +73,23 @@ def save_gepa_results(
 
             best_score = max(score for _, score in row_scores)
             best_prompts = [
-                    {
-                        "candidate_idx": cand_idx,
-                        "candidate": candidates[cand_idx],
-                        "score": score,
-                    }
+                {
+                    "candidate_idx": cand_idx,
+                    "candidate": candidates[cand_idx],
+                    "score": score,
+                }
                 for cand_idx, score in row_scores
                 if score == best_score
             ]
 
-            records.append({
-                "valset_row": row_idx,
-                "best_score": best_score,
-                "num_best_prompts": len(best_prompts),
-                "best_prompts": best_prompts,
-            })
+            records.append(
+                {
+                    "valset_row": row_idx,
+                    "best_score": best_score,
+                    "num_best_prompts": len(best_prompts),
+                    "best_prompts": best_prompts,
+                }
+            )
 
     # Save frontier as JSONL
     if records:
@@ -95,9 +97,7 @@ def save_gepa_results(
         frontier_ds.to_json(run_dir / "pareto_frontier.jsonl")
 
     # Save best candidate as JSON
-    (run_dir / "best_candidate.json").write_text(
-        json.dumps(best_candidate, indent=2)
-    )
+    (run_dir / "best_candidate.json").write_text(json.dumps(best_candidate, indent=2))
 
     # Save best system prompt as plain text (if present)
     best_prompt = best_candidate.get("system_prompt")
@@ -109,7 +109,9 @@ def save_gepa_results(
     metadata = {
         "num_candidates": len(candidates),
         "best_idx": best_idx,
-        "best_score": float(val_scores[best_idx]) if val_scores and best_idx < len(val_scores) else None,
+        "best_score": float(val_scores[best_idx])
+        if val_scores and best_idx < len(val_scores)
+        else None,
         "total_metric_calls": getattr(result, "total_metric_calls", None),
         "completed_at": datetime.now().isoformat(),
     }

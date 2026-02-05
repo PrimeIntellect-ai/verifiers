@@ -730,15 +730,11 @@ class Environment(ABC):
     def get_prompt_components(self) -> dict[str, str]:
         """Return optimizable prompt components for GEPA.
 
-        Key conventions:
-        - system_prompt: primary system prompt
-        - tool:<tool_name>: per-tool description (ToolEnv)
-        - base_system_prompt: RLM base prompt before docs/scaffolding
+        Default is to just return the system prompt
         """
         if not self.system_prompt:
             return {}
         return {"system_prompt": self.system_prompt}
-
 
     @staticmethod
     def _inject_system_prompt_to_prompt(
@@ -746,17 +742,16 @@ class Environment(ABC):
         system_prompt: str,
     ) -> Messages:
         """Inject or replace system prompt in a prompt payload."""
-        if prompt is None:
-            return [{"role": "system", "content": system_prompt}]
+        sys_msg = cast(ChatMessage, {"role": "system", "content": system_prompt})
+        if prompt is None or (isinstance(prompt, list) and not prompt):
+            return [sys_msg]
         if isinstance(prompt, str):
             return f"{system_prompt}\n\n{prompt}"
-        prompt_list = [dict(m) for m in prompt]
-        if not prompt_list:
-            return [{"role": "system", "content": system_prompt}]
+        prompt_list = cast(List[ChatMessage], [dict(m) for m in prompt])
         if prompt_list[0].get("role") == "system":
-            prompt_list[0] = {**prompt_list[0], "content": system_prompt}
+            prompt_list[0]["content"] = system_prompt
             return prompt_list
-        return [{"role": "system", "content": system_prompt}] + prompt_list
+        return [sys_msg] + prompt_list
 
     async def _cleanup(self, state: State):
         """
