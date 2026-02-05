@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Mapping, TypeVar, final
+from typing import TYPE_CHECKING, Mapping, final
 
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import ClientConfig, RolloutInput, SamplingArgs
+from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -263,36 +264,44 @@ class EnvGroup(vf.Environment):
         )
         return dataset
 
-    @property
-    def in_server_mode(self) -> bool:
-        return all(env.in_server_mode for env in self.envs)
-
-    async def run_rollout_on_server(
+    @final
+    async def run_rollout(  # type: ignore[override]
         self,
         input: RolloutInput,
-        client: ClientConfig,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
         env = self.get_env_for_task(input["task"])
-        return await env.run_rollout_on_server(
-            input, client, model, sampling_args, max_retries, state_columns
+        env_client = env_client or env.env_client
+        return await env.run_rollout(
+            input, client, model, sampling_args, max_retries, state_columns, env_client
         )
 
-    async def run_group_on_server(
+    @final
+    async def run_group(  # type: ignore[override]
         self,
         group_inputs: list[RolloutInput],
-        client: ClientConfig,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
         env = self.get_env_for_task(group_inputs[0]["task"])
-        return await env.run_group_on_server(
-            group_inputs, client, model, sampling_args, max_retries, state_columns
+        env_client = env_client or env.env_client
+        return await env.run_group(
+            group_inputs,
+            client,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+            env_client,
         )
 
     @final
@@ -326,47 +335,3 @@ class EnvGroup(vf.Environment):
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)
-
-    async def start_servers(
-        self,
-        address: list[str] | None = None,
-        log_level: list[str] | str | None = None,
-        log_file: list[str] | str | None = None,
-        log_file_level: list[str] | str | None = None,
-        startup_timeout: list[float] | float = 10,
-    ) -> None:
-        T = TypeVar("T")
-
-        def normalize(value: list[T] | T | None) -> list[T] | list[None]:
-            if value is None:
-                return [None] * len(self.envs)
-            if not isinstance(value, list):
-                return [value] * len(self.envs)
-            return value
-
-        for (
-            env,
-            env_address,
-            env_log_level,
-            env_log_file,
-            env_log_file_level,
-            env_startup_timeout,
-        ) in zip(
-            self.envs,
-            normalize(address),
-            normalize(log_level),
-            normalize(log_file),
-            normalize(log_file_level),
-            normalize(startup_timeout),
-        ):
-            await env.start_server(
-                address=env_address,
-                log_level=env_log_level,
-                log_file=env_log_file,
-                log_file_level=env_log_file_level,
-                startup_timeout=env_startup_timeout or 10,
-            )
-
-    async def stop_servers(self) -> None:
-        for env in self.envs:
-            await env.stop_server()
