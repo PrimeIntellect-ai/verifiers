@@ -327,8 +327,77 @@ class GenerateOutputsBuilder:
 def load_outputs(results_path: Path) -> list[RolloutOutput]:
     """Load outputs from disk."""
     outputs_path = results_path / "results.jsonl"
+    outputs: list[RolloutOutput] = []
+
     with open(outputs_path, "r") as f:
-        return [RolloutOutput(**json.loads(line)) for line in f.readlines()]
+        lines = f.readlines()
+
+    for line_idx, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+
+        try:
+            outputs.append(RolloutOutput(**json.loads(line)))
+        except json.JSONDecodeError:
+            # A crash during append can leave the final JSONL line partially written.
+            # Recover completed records, but keep raising for malformed non-trailing rows.
+            has_nonempty_lines_after = any(remaining.strip() for remaining in lines[line_idx:])
+            if has_nonempty_lines_after:
+                raise
+
+            logger.warning(
+                f"Ignoring malformed trailing line in {outputs_path} at line {line_idx}"
+            )
+            break
+
+    return outputs
+
+
+def validate_resume_metadata(
+    results_path: Path,
+    env_id: str,
+    model: str,
+    num_examples: int,
+    rollouts_per_example: int,
+) -> None:
+    """Validate saved metadata matches the current resume configuration."""
+    metadata_path = results_path / "metadata.json"
+
+    try:
+        with open(metadata_path, "r") as f:
+            saved_metadata_raw = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata at {metadata_path} is not valid JSON."
+        ) from e
+
+    if not isinstance(saved_metadata_raw, dict):
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata at {metadata_path} must be a JSON object."
+        )
+
+    saved_metadata = cast(dict[str, Any], saved_metadata_raw)
+    expected = {
+        "env_id": env_id,
+        "model": model,
+        "num_examples": num_examples,
+        "rollouts_per_example": rollouts_per_example,
+    }
+
+    mismatches: list[str] = []
+    for field, expected_value in expected.items():
+        saved_value = saved_metadata.get(field, "<missing>")
+        if saved_value != expected_value:
+            mismatches.append(
+                f"{field}: saved={saved_value!r}, current={expected_value!r}"
+            )
+
+    if mismatches:
+        mismatch_text = "; ".join(mismatches)
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata mismatch ({mismatch_text}). "
+            "Use matching evaluation settings or provide a new results path."
+        )
 
 
 def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):

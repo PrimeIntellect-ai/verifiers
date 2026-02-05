@@ -81,6 +81,7 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_outputs,
     state_to_output,
+    validate_resume_metadata,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
@@ -962,6 +963,13 @@ class Environment(ABC):
 
         # load existing results if available
         if results_path is not None and is_valid_eval_results_path(results_path):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id=self.env_id,
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+            )
             on_log(f"Resuming evaluaton from {results_path}")
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
