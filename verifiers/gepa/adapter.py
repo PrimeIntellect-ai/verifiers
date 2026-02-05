@@ -190,9 +190,11 @@ def _attach_prompt_components(
         info = dict(info)
         info["prompt_components"] = dict(candidate)
 
-        if tool_overrides and getattr(env, "oai_tools", None):
+        tool_source_env = _resolve_env_for_input(env, inp_copy)
+        tool_source = getattr(tool_source_env, "oai_tools", None)
+        if tool_overrides and tool_source:
             new_tools = []
-            for tool in env.oai_tools or []:
+            for tool in tool_source or []:
                 tool_copy = dict(tool)
                 func = tool_copy.get("function")
                 if not isinstance(func, dict):
@@ -214,6 +216,21 @@ def _attach_prompt_components(
         inp_copy["info"] = info
         modified.append(inp_copy)
     return modified
+
+
+def _resolve_env_for_input(env: Environment, inp: RolloutInput) -> Environment:
+    """Resolve per-task sub-environment for EnvGroup-like wrappers."""
+    task = inp.get("task")
+    if task is not None and hasattr(env, "get_env_for_task"):
+        get_env_for_task = getattr(env, "get_env_for_task")
+        if callable(get_env_for_task):
+            try:
+                resolved = get_env_for_task(task)
+                if isinstance(resolved, Environment):
+                    return resolved
+            except Exception:
+                pass
+    return env
 
 
 def _extract_user_query(prompt: Messages) -> str:

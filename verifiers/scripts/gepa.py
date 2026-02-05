@@ -260,10 +260,6 @@ def run_gepa_optimization(
 ):
     if list_components:
         env = vf.load_environment(env_id=env_id, **env_args)
-        if isinstance(env, vf.EnvGroup):
-            raise ValueError(
-                "GEPA is not supported for EnvGroup. Optimize each environment individually."
-            )
         if extra_env_kwargs:
             env.set_kwargs(**extra_env_kwargs)
         seed_candidate = env.get_prompt_components()
@@ -297,11 +293,6 @@ def run_gepa_optimization(
         # Load environment (inside display context to suppress logs)
         logger.debug(f"Loading environment: {env_id}")
         env = vf.load_environment(env_id=env_id, **env_args)
-
-        if isinstance(env, vf.EnvGroup):
-            raise ValueError(
-                "GEPA is not supported for EnvGroup. Optimize each environment individually."
-            )
 
         # Set extra env kwargs
         if extra_env_kwargs:

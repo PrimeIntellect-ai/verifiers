@@ -277,6 +277,29 @@ class EnvGroup(vf.Environment):
     def get_env_for_task(self, task: str) -> vf.Environment:
         return self.env_map.get(task, self.envs[0])
 
+    def get_prompt_components(self) -> dict[str, str]:
+        """Return shared prompt components across all sub-environments.
+
+        Enforces strict matching: every sub-environment must expose identical
+        prompt component keys and identical initial values.
+        """
+        if not self.envs:
+            return {}
+
+        reference = self.envs[0].get_prompt_components()
+        reference_name = self.env_names[0]
+
+        for env, name in zip(self.envs[1:], self.env_names[1:]):
+            components = env.get_prompt_components()
+            if components != reference:
+                raise ValueError(
+                    "EnvGroup GEPA requires all sub-environments to expose identical "
+                    "prompt components and initial values. "
+                    f"Mismatch between '{reference_name}' and '{name}'."
+                )
+
+        return dict(reference)
+
     def set_max_seq_len(self, max_seq_len: int | None) -> None:
         """Set the max_seq_len value for this environment group and all sub-environments."""
         self.max_seq_len = max_seq_len
