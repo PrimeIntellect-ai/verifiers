@@ -125,6 +125,7 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
 | `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
 | `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
+| `--independent-scoring` | `-i` | false | Score each rollout individually instead of by group |
 | `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
@@ -139,7 +140,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--save-results` | `-s` | false | Save results to disk |
-| `--resume [PATH]` | — | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
+| `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |

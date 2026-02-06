@@ -24,8 +24,8 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
-from verifiers.utils.install_utils import check_hub_env_installed
 from verifiers.utils.import_utils import load_toml
+from verifiers.utils.install_utils import check_hub_env_installed
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,7 @@ def main():
     )
     parser.add_argument(
         "--resume",
+        "-R",
         nargs="?",
         const=True,
         default=None,
@@ -224,7 +225,7 @@ def main():
     )
     parser.add_argument(
         "--independent-scoring",
-        "-R",
+        "-i",
         default=False,
         action="store_true",
         help="Score each rollout individually instead of scoring by group",
