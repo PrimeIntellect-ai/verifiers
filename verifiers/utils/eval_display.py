@@ -169,19 +169,24 @@ class EvalDisplay(BaseDisplay):
 
     @staticmethod
     def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
-        """Return the effective concurrency shown in the UI."""
-        max_concurrent = config.max_concurrent
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
         if (
             not config.independent_scoring
-            and max_concurrent > 0
+            and config.max_concurrent > 0
             and config.rollouts_per_example > 1
         ):
-            max_concurrent = math.ceil(max_concurrent / config.rollouts_per_example)
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
 
-        if max_concurrent > 0 and total_rollouts > 0:
-            return min(max_concurrent, total_rollouts)
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
 
-        return max_concurrent
+        return display_rollout_concurrency
 
     def update_env_state(
         self,
@@ -320,9 +325,7 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
-        display_max_concurrent = self._display_max_concurrent(
-            config, env_state.total
-        )
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
         config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")

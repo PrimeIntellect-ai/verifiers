@@ -4,12 +4,10 @@ import asyncio
 import inspect
 import json
 import logging
-import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, cast
-from urllib.parse import urlparse
 
 import requests
 import tenacity as tc
@@ -83,7 +81,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         prompt_renderer: Callable[..., ChatMessages] | None = None,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
-        dns_resolution_timeout_seconds: int = 10,
         startup_timeout_seconds: int = 30,
         startup_poll_interval_seconds: float = 1.0,
         health_request_timeout_seconds: float = 2.0,
@@ -107,7 +104,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 "to non-empty chat messages."
             )
         self.prompt_renderer = prompt_renderer
-        self.dns_resolution_timeout_seconds = dns_resolution_timeout_seconds
         self.startup_timeout_seconds = startup_timeout_seconds
         self.startup_poll_interval_seconds = startup_poll_interval_seconds
         self.health_request_timeout_seconds = health_request_timeout_seconds
@@ -141,6 +137,22 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             max_turns=max_turns,
             message_type="chat",
             **kwargs,
+        )
+
+    async def start_server(
+        self,
+        address: str | None = None,
+        extra_env_kwargs: dict[str, Any] | None = None,
+        log_level: str | None = None,
+        log_file: str | None = None,
+        startup_timeout: float = 120.0,
+    ) -> None:
+        await super().start_server(
+            address=address,
+            extra_env_kwargs=extra_env_kwargs or {},
+            log_level=log_level,
+            log_file=log_file,
+            startup_timeout=startup_timeout,
         )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:
@@ -857,69 +869,33 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self, base_url: str, timeout_s: int | None = None
     ) -> None:
         timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
-        parsed = urlparse(base_url)
-
         loop = asyncio.get_running_loop()
-        dns_start = loop.time()
-        last_dns_error = "no attempts"
-        while (loop.time() - dns_start) < self.dns_resolution_timeout_seconds:
-            dns_ok, dns_detail = await asyncio.to_thread(
-                self._check_dns, base_url, parsed
-            )
-            if dns_ok:
-                break
-            last_dns_error = dns_detail
-            await asyncio.sleep(self.startup_poll_interval_seconds)
-        else:
-            raise RuntimeError(
-                "OpenEnv exposure DNS did not resolve after "
-                f"{self.dns_resolution_timeout_seconds}s: {base_url}. "
-                f"Last error: {last_dns_error}"
-            )
-
-        health_start = loop.time()
+        start = loop.time()
         last_health_error = "no attempts"
-        while (loop.time() - health_start) < timeout:
+        while (loop.time() - start) < timeout:
             ok, detail = await asyncio.to_thread(self._check_health, base_url)
             if ok:
                 return
             last_health_error = detail
             await asyncio.sleep(self.startup_poll_interval_seconds)
         raise RuntimeError(
-            "OpenEnv server not ready after DNS resolution. "
+            "OpenEnv server not ready. "
             f"Health check timeout={timeout}s, url={base_url}, "
             f"last error: {last_health_error}"
         )
 
     def _wait_for_ready_sync(self, base_url: str, timeout_s: int | None = None) -> None:
         timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
-        parsed = urlparse(base_url)
-
-        dns_start = time.monotonic()
-        last_dns_error = "no attempts"
-        while (time.monotonic() - dns_start) < self.dns_resolution_timeout_seconds:
-            dns_ok, dns_detail = self._check_dns(base_url, parsed)
-            if dns_ok:
-                break
-            last_dns_error = dns_detail
-            time.sleep(self.startup_poll_interval_seconds)
-        else:
-            raise RuntimeError(
-                "OpenEnv exposure DNS did not resolve after "
-                f"{self.dns_resolution_timeout_seconds}s: {base_url}. "
-                f"Last error: {last_dns_error}"
-            )
-
-        health_start = time.monotonic()
+        start = time.monotonic()
         last_health_error = "no attempts"
-        while (time.monotonic() - health_start) < timeout:
+        while (time.monotonic() - start) < timeout:
             ok, detail = self._check_health(base_url)
             if ok:
                 return
             last_health_error = detail
             time.sleep(self.startup_poll_interval_seconds)
         raise RuntimeError(
-            "OpenEnv server not ready after DNS resolution. "
+            "OpenEnv server not ready. "
             f"Health check timeout={timeout}s, url={base_url}, "
             f"last error: {last_health_error}"
         )
@@ -932,19 +908,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         except Exception:
             return None
         return self._trim_logs(logs)
-
-    def _check_dns(self, base_url: str, parsed: Any | None = None) -> tuple[bool, str]:
-        parsed_url = parsed or urlparse(base_url)
-        hostname = parsed_url.hostname or ""
-        if not hostname:
-            return False, f"Invalid exposure URL (missing hostname): {base_url}"
-        try:
-            socket.getaddrinfo(
-                hostname, parsed_url.port or 443, type=socket.SOCK_STREAM
-            )
-            return True, "dns-ok"
-        except Exception as e:
-            return False, f"DNS {type(e).__name__}: {e}"
 
     def _check_health(self, base_url: str) -> tuple[bool, str]:
         try:
