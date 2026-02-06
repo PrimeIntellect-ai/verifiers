@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: <single-turn | multi-turn | tool use>
-- **Parser**: <e.g., ThinkParser, XMLParser, custom>
 - **Rubric overview**: <briefly list reward functions and key metrics>
 
 ### Quickstart
