@@ -14,14 +14,10 @@ from typing import TYPE_CHECKING, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ImportError:
-    import tomli as tomllib  # type: ignore[import-not-found]
-
 import numpy as np
 
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
 
 if TYPE_CHECKING:
     pass
@@ -103,7 +99,7 @@ def load_toml_config(path: Path) -> list[dict]:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "rb") as f:
-        raw_config = tomllib.load(f)
+        raw_config = load_toml(f)
 
     # validate schema
     eval_list = raw_config.get("eval", [])
@@ -347,15 +343,21 @@ async def run_evaluation(
         )
         # disable tqdm when callbacks are provided (TUI handles progress display)
         use_tqdm = config.use_tqdm and on_progress is None
-        effective_max_concurrent = config.max_concurrent
+        effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
             and config.max_concurrent > 0
             and config.rollouts_per_example > 1
         ):
-            effective_max_concurrent = math.ceil(
+            # Grouped scoring applies the semaphore at group level. Convert
+            # rollout-level concurrency to group-level slots.
+            effective_group_max_concurrent = math.ceil(
                 config.max_concurrent / config.rollouts_per_example
             )
+            if config.num_examples > 0:
+                effective_group_max_concurrent = min(
+                    effective_group_max_concurrent, config.num_examples
+                )
 
         outputs = await vf_env.evaluate(
             client=config.client_config,
@@ -363,7 +365,7 @@ async def run_evaluation(
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_max_concurrent,
+            max_concurrent=effective_group_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,

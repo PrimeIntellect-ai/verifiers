@@ -6,6 +6,7 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -166,6 +167,27 @@ class EvalDisplay(BaseDisplay):
                 rollouts_per_example=config.rollouts_per_example,
             )
 
+    @staticmethod
+    def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
+
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
+
+        return display_rollout_concurrency
+
     def update_env_state(
         self,
         env_idx: int,
@@ -303,8 +325,9 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
-        config_line.append(fmt_concurrency(config.max_concurrent), style="white")
+        config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):

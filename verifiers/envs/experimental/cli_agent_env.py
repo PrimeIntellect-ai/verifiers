@@ -551,7 +551,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             if self.interception_server is not None:
                 return
 
-            app = web.Application()  # type: ignore
+            app = web.Application()
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self.handle_intercepted_request,
@@ -562,9 +562,9 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 lambda _: web.json_response({"status": "ok"}),
             )
 
-            runner = web.AppRunner(app)  # type: ignore
+            runner = web.AppRunner(app)
             await runner.setup()
-            site = web.TCPSite(runner, "0.0.0.0", self.interception_port)  # type: ignore
+            site = web.TCPSite(runner, "0.0.0.0", self.interception_port)
             await site.start()
 
             self.interception_server = app
@@ -580,14 +580,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
-            return web.json_response(  # type: ignore
+            return web.json_response(
                 {"error": "Rollout not found"}, status=404
             )
 
         try:
             request_body = await request.json()
         except Exception as e:
-            return web.json_response(  # type: ignore
+            return web.json_response(
                 {"error": f"Invalid JSON: {e}"}, status=400
             )
 
@@ -622,12 +622,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 )
                 response = await response_future
             except asyncio.CancelledError:
-                return web.json_response(  # type: ignore
+                return web.json_response(
                     {"error": "Rollout cancelled"}, status=499
                 )
             except Exception as e:
                 logger.error(f"Error processing intercepted request: {e}")
-                return web.json_response(  # type: ignore
+                return web.json_response(
                     {"error": str(e)}, status=500
                 )
 
@@ -638,7 +638,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             )
 
             self.log_response(rollout_id, response_dict)
-            return web.json_response(response_dict)  # type: ignore
+            return web.json_response(response_dict)
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict
@@ -647,7 +647,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
         chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
         response_future = cast(asyncio.Future[Any], intercept["response_future"])
 
-        response = web.StreamResponse(  # type: ignore
+        response = web.StreamResponse(
             status=200,
             headers={
                 "Content-Type": "text/event-stream",

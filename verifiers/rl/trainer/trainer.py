@@ -2,7 +2,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import deepspeed
 import torch
@@ -66,7 +66,9 @@ class RLTrainer(Trainer):
         assert isinstance(model, PreTrainedModel)
         if args.use_lora and isinstance(args.lora_config, PeftConfig):
             model = prepare_peft_model(model, args.lora_config, args)
-        model.warnings_issued["estimate_tokens"] = True  # suppress warning
+        warnings_issued = getattr(model, "warnings_issued", None)
+        if isinstance(warnings_issued, dict):
+            warnings_issued["estimate_tokens"] = True  # suppress warning
 
         super().__init__(
             model=model,
@@ -130,7 +132,7 @@ class RLTrainer(Trainer):
         # metrics
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self._total_train_tokens = 0
-        self._textual_logs = {
+        self._textual_logs: dict[str, Any] = {
             "prompt": deque(),
             "completion": deque(),
             "error": deque(),
@@ -179,7 +181,7 @@ class RLTrainer(Trainer):
         for microbatch in local_microbatches:
             input_ids = pad(
                 [torch.tensor(x, device=device) for x in microbatch.input_ids],
-                padding_value=pad_token_id,  # type: ignore :(
+                padding_value=pad_token_id,
                 padding_side="right",
             )
             loss_mask = pad(
@@ -237,10 +239,7 @@ class RLTrainer(Trainer):
 
         if self.accelerator.is_main_process:
             metrics_to_log = {**batch.metrics_dict, **extra_metrics}
-            self.log_metrics(
-                mode="train",
-                batch_metrics=metrics_to_log,
-            )
+            self.log_metrics(split="train", metrics=metrics_to_log)
             self.log_rollouts(
                 prompts=batch.prompts,
                 completions=batch.completions,
@@ -351,25 +350,26 @@ class RLTrainer(Trainer):
             self.logger.info("Starting weight sync to vLLM")
 
             if is_peft_model(self.model):
+                peft_model = cast(Any, self.model)
                 # PEFT: gather + merge, then update each parameter
-                with gather_if_zero3(list(self.model.parameters())):
-                    self.model.merge_adapter()  # type: ignore :(
-                    for name, param in self.model.named_parameters():
+                with gather_if_zero3(list(peft_model.parameters())):
+                    peft_model.merge_adapter()
+                    for name, param in peft_model.named_parameters():
                         # recover original parameter names
                         name = name.removeprefix("base_model.model.").replace(
                             ".base_layer", ""
                         )
-                        if self.model.prefix in name:  # type: ignore :(
+                        if peft_model.prefix in name:
                             continue  # discard some parameters
                         if "original_module" in name:  # from modules_to_save
                             continue
                         name = name.replace("modules_to_save.default.", "")
                         if self.client:
                             self.client.update_named_param(name, param.data)
-                    self.model.unmerge_adapter()  # type: ignore :(
+                    peft_model.unmerge_adapter()
             else:
                 # non-PEFT models: gather + update each parameter individually
-                for name, param in self.model.named_parameters():  # type: ignore :(
+                for name, param in self.model.named_parameters():
                     with gather_if_zero3([param]):
                         if self.client:
                             self.client.update_named_param(name, param.data)
@@ -384,14 +384,14 @@ class RLTrainer(Trainer):
         self.accelerator.wait_for_everyone()
 
     def get_train_dataloader(self):
-        class StepsDataset(Dataset):
+        class StepsDataset(Dataset[dict[str, int]]):
             def __init__(self, n: int):
                 self.n = n
 
             def __len__(self):
                 return self.n
 
-            def __getitem__(self, idx):  # type: ignore[override]
+            def __getitem__(self, index: Any) -> dict[str, int]:
                 return {"labels": 0}
 
         return DataLoader(StepsDataset(self.max_steps))
@@ -416,11 +416,13 @@ class RLTrainer(Trainer):
         self._metrics[mode].clear()
 
         if self.accelerator.is_main_process:
+            textual_logs = cast(dict[str, Any], self._textual_logs)
+            rewards_map = cast(dict[str, Any], textual_logs["rewards"])
             print_prompt_completions_sample(
-                list(self._textual_logs["prompt"]),  # type: ignore[arg-type]
-                list(self._textual_logs["completion"]),  # type: ignore[arg-type]
-                list(self._textual_logs["error"]),  # type: ignore[arg-type]
-                list(self._textual_logs["rewards"]["reward"]),  # type: ignore[arg-type]
+                list(textual_logs["prompt"]),
+                list(textual_logs["completion"]),
+                list(textual_logs["error"]),
+                list(rewards_map["reward"]),
                 self.state.global_step,
             )
 
@@ -444,28 +446,28 @@ class RLTrainer(Trainer):
 
                 prompts_clean = [
                     role_content_only(sanitize_tool_calls(messages_to_printable(p)))
-                    for p in self._textual_logs["prompt"]
+                    for p in textual_logs["prompt"]
                 ]
                 completions_clean = [
                     role_content_only(sanitize_tool_calls(messages_to_printable(c)))
-                    for c in self._textual_logs["completion"]
+                    for c in textual_logs["completion"]
                 ]
                 table = {
                     "step": [str(self.state.global_step)]
-                    * len(self._textual_logs["prompt"]),
+                    * len(textual_logs["prompt"]),
                     "prompt": prompts_clean,
                     "completion": completions_clean,
-                    **{k: list(v) for k, v in self._textual_logs["rewards"].items()},  # type: ignore[union-attr]
+                    **{k: list(v) for k, v in rewards_map.items()},
                 }
                 df = pd.DataFrame(table)
                 wandb.log({"completions": wandb.Table(dataframe=df)})
 
             # clear after logging
-            self._textual_logs["prompt"].clear()
-            self._textual_logs["completion"].clear()
-            self._textual_logs["error"].clear()
-            for key in self._textual_logs["rewards"]:
-                self._textual_logs["rewards"][key].clear()
+            textual_logs["prompt"].clear()
+            textual_logs["completion"].clear()
+            textual_logs["error"].clear()
+            for key in rewards_map:
+                rewards_map[key].clear()
 
     def log_rollouts(
         self,
@@ -474,20 +476,18 @@ class RLTrainer(Trainer):
         errors: List[Error | None],
         rewards_dict: Dict[str, Any],
     ) -> None:
-        self._textual_logs["prompt"].extend(prompts)  # type: ignore[union-attr]
-        self._textual_logs["completion"].extend(completions)  # type: ignore[union-attr]
-        self._textual_logs["error"].extend(errors)  # type: ignore[union-attr]
+        textual_logs = cast(dict[str, Any], self._textual_logs)
+        rewards_map = cast(dict[str, Any], textual_logs["rewards"])
+        textual_logs["prompt"].extend(prompts)
+        textual_logs["completion"].extend(completions)
+        textual_logs["error"].extend(errors)
         for reward_key in rewards_dict:
             reward_values = rewards_dict[reward_key]
-            self._textual_logs["rewards"][reward_key].extend(reward_values)  # type: ignore[union-attr]
+            rewards_map[reward_key].extend(reward_values)
 
-    def log_metrics(  # type: ignore[override]
-        self,
-        mode: str,
-        batch_metrics: Dict[str, float],
-    ) -> None:
-        for key, value in batch_metrics.items():
-            self._metrics[mode][key].append(value)
+    def log_metrics(self, split: str, metrics: Dict[str, float]) -> None:
+        for key, value in metrics.items():
+            self._metrics[split][key].append(value)
 
     def maybe_clear_cache(self):
         if (

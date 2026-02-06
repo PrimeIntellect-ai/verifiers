@@ -67,7 +67,7 @@ class Rubric:
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs]  # type: ignore[possibly-missing-attribute]
+        return [getattr(func, "__name__", repr(func)) for func in self.funcs]
 
     def _get_reward_funcs(self) -> list[RewardFunc]:
         return [func for func in self.funcs]
@@ -93,10 +93,10 @@ class Rubric:
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [getattr(func, "__name__", repr(func)) for func in self.funcs if not self._is_group_func(func)]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [func for func in self.funcs if not self._is_group_func(func)]
 
     def _get_individual_reward_weights(self) -> list[float]:
         return [
@@ -152,10 +152,10 @@ class Rubric:
 
     # group-level reward helpers
     def _get_group_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [getattr(func, "__name__", repr(func)) for func in self.funcs if self._is_group_func(func)]
 
     def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
-        return [func for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return cast(list[GroupRewardFunc], [func for func in self.funcs if self._is_group_func(func)])
 
     def _get_group_reward_weights(self) -> list[float]:
         return [
