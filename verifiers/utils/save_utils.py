@@ -429,8 +429,62 @@ def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "
                 )
 
 
+def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:
+    """Return byte offset + contents for the last non-empty line in a file."""
+    file_obj.seek(0, 2)
+    file_size = file_obj.tell()
+    if file_size == 0:
+        return None
+
+    cursor = file_size
+
+    # Skip trailing whitespace/newlines to locate the real end of the last row.
+    while cursor > 0:
+        cursor -= 1
+        file_obj.seek(cursor)
+        if file_obj.read(1) not in b" \t\r\n":
+            break
+    else:
+        return None
+
+    line_end = cursor + 1
+    line_start = cursor
+    while line_start > 0:
+        file_obj.seek(line_start - 1)
+        if file_obj.read(1) == b"\n":
+            break
+        line_start -= 1
+
+    file_obj.seek(line_start)
+    return line_start, file_obj.read(line_end - line_start)
+
+
+def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
+    """Drop a malformed trailing JSONL row so future appends stay valid."""
+    if not outputs_path.exists() or not outputs_path.is_file():
+        return
+
+    with open(outputs_path, "rb+") as f:
+        last_line_info = _get_last_nonempty_line_bounds(f)
+        if last_line_info is None:
+            return
+
+        line_start, line_bytes = last_line_info
+        try:
+            json.loads(line_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning(
+                "Removing malformed trailing line in %s at byte offset %s",
+                outputs_path,
+                line_start,
+            )
+            f.truncate(line_start)
+
+
 def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     """Saves new rollout outputs to disk (in append mode)."""
+    outputs_path = results_path / "results.jsonl"
+    _truncate_malformed_trailing_line(outputs_path)
     save_outputs(new_outputs, results_path, mode="a")
 
 

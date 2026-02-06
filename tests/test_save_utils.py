@@ -19,6 +19,7 @@ from verifiers.utils.save_utils import (
     extract_usage_tokens,
     load_outputs,
     make_serializable,
+    save_new_outputs,
     states_to_outputs,
     validate_resume_metadata,
 )
@@ -235,6 +236,42 @@ class TestLoadOutputs:
 
         with pytest.raises(json.JSONDecodeError):
             load_outputs(results_path)
+
+
+class TestSaveNewOutputs:
+    def test_truncates_malformed_trailing_line_before_append(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        existing_outputs = [
+            {"example_id": 0, "task": "task-0"},
+            {"example_id": 1, "task": "task-1"},
+        ]
+        malformed_trailing_line = '{"example_id": 2, "task": "task-2"'
+        lines = [json.dumps(output) for output in existing_outputs]
+        outputs_path.write_text(
+            "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
+        )
+
+        save_new_outputs(
+            [{"example_id": 3, "task": "task-3"}],
+            results_path,
+        )
+
+        persisted_lines = [
+            line
+            for line in outputs_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        parsed_outputs = [json.loads(line) for line in persisted_lines]
+
+        assert [output["example_id"] for output in parsed_outputs] == [0, 1, 3]
+        assert [output["example_id"] for output in load_outputs(results_path)] == [
+            0,
+            1,
+            3,
+        ]
 
 
 class TestResumeMetadataValidation:
