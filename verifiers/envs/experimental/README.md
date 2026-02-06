@@ -22,6 +22,10 @@ Environment for running custom agent code inside sandboxes. Intercepts the agent
 
 Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments. The root model interacts with a REPL (`repl_language="bash"` by default, or `repl_language="python"` for the Python REPL) and can spawn sub-LLM calls to process chunks of the context recursively. Execution supports both local and sandbox backends via `execution_backend` (`"local"` default, `"sandbox"` to run inside a Prime Sandbox). Extra context is still provided as a filesystem (either a copied `context_dir` or JSON-serializable `context` written to `context.json`/`context.txt`). The RLM scaffolding prompt is injected into the first user message; the model-visible prompt is stored in `state["prompt"]`, while the original input prompt is preserved in `state["raw_prompt"]`. Sandbox interception for sub-LLM/root-tool calls is routed through a Prime Tunnel unless `interception_url` is provided.
 
+Notes:
+- When using the sandbox backend, the sandbox and worker are started eagerly during `setup_state`.
+- Package installation in sandboxes is best-effort: packages are only installed if they are not importable, which avoids unnecessary installs on images that already include them.
+
 Tool split:
 
 - `tools`: shared between root and sub-LLMs
