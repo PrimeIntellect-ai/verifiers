@@ -17,6 +17,8 @@ def load_environment(**kwargs):
         judge_response = await judge(prompt, completion, answer, state)
         return 1.0 if "yes" in judge_response.lower() else 0.0
 
+    rub.add_reward_func(judge_reward, weight=1.0)
+
     env = vf.MCPEnv(
         mcp_servers=[
             {"name": "fetch", "command": "uvx", "args": ["mcp-server-fetch"]}
