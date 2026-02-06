@@ -1,5 +1,7 @@
 import argparse
+import os
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -479,16 +481,13 @@ def test_cli_resume_explicit_path(monkeypatch, run_cli, tmp_path: Path):
     assert captured["configs"][0].resume_path == resume_dir
 
 
-def test_cli_resume_auto_detects_latest_incomplete(monkeypatch, run_cli, tmp_path: Path):
+def test_cli_resume_auto_detects_latest_incomplete(
+    monkeypatch, run_cli, tmp_path: Path
+):
     """--resume with no path auto-detects latest matching incomplete run."""
     env_id = "dummy-env"
     model = "gpt-4.1-mini"
-    run_base = (
-        tmp_path
-        / "outputs"
-        / "evals"
-        / f"{env_id}--{model.replace('/', '--')}"
-    )
+    run_base = tmp_path / "outputs" / "evals" / f"{env_id}--{model.replace('/', '--')}"
     old_run = run_base / "oldrun"
     new_run = run_base / "newrun"
     old_run.mkdir(parents=True)
@@ -505,6 +504,9 @@ def test_cli_resume_auto_detects_latest_incomplete(monkeypatch, run_cli, tmp_pat
     (new_run / "results.jsonl").write_text(
         '{"example_id":0}\n{"example_id":1}\n', encoding="utf-8"
     )
+    now = time.time()
+    os.utime(old_run, (now, now))
+    os.utime(new_run, (now + 1, now + 1))
 
     monkeypatch.chdir(tmp_path)
     captured = run_cli(
@@ -525,14 +527,14 @@ def test_cli_toml_resume_false_disables_global_resume(monkeypatch, run_cli):
     """Per-eval resume=false overrides global resume=true in TOML configs."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            'resume = true\n'
-            '\n'
-            '[[eval]]\n'
+            "resume = true\n"
+            "\n"
+            "[[eval]]\n"
             'env_id = "env-a"\n'
-            '\n'
-            '[[eval]]\n'
+            "\n"
+            "[[eval]]\n"
             'env_id = "env-b"\n'
-            'resume = false\n'
+            "resume = false\n"
         )
         f.flush()
         captured = run_cli(
