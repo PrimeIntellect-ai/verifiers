@@ -134,14 +134,16 @@ def build_vllm_command(model: str, inference_cfg: dict, inference_gpu_str: str) 
 
 
 def build_train_command(env_id: str, config_path_str: str, trainer_gpu_str: str) -> str:
-    parts: list[str] = []
-    if "/" in env_id:
-        parts.extend(["prime env install", env_id, "&&"])
-    else:
-        parts.extend(["prime env install", env_id, "&&"])
-
-    parts.extend([trainer_gpu_str, "uv run", "vf-train", "@", str(config_path_str)])
-
+    parts = [
+        "prime env install",
+        env_id,
+        "&&",
+        trainer_gpu_str,
+        "uv run",
+        "vf-train",
+        "@",
+        str(config_path_str),
+    ]
     return " ".join(parts)
 
 
@@ -182,6 +184,8 @@ def main() -> None:
     if not isinstance(model, str) or not model:
         raise SystemExit("Missing required 'model' at top level in TOML.")
     env_id = data.get("env", {}).get("id")
+    if not isinstance(env_id, str) or not env_id:
+        raise SystemExit("Missing required 'env.id' in TOML.")
 
     num_inference_gpus: int = data.get("inference", {}).get("gpus")
     if not isinstance(num_inference_gpus, int) or num_inference_gpus <= 0:

@@ -52,16 +52,21 @@ class VLLMClient(AsyncOpenAI):
             try:
                 response = requests.get(url)
             except RequestException as exc:
-                elapsed_time = time.time() - start_time
-                if elapsed_time >= total_timeout:
-                    raise ConnectionError(
-                        f"The vLLM server can't be reached at {self.host}:{self.server_port} after {total_timeout} "
-                        "seconds. Make sure the server is running by running `vf-vllm`."
-                    ) from exc
+                last_error = exc
             else:
                 if response.status_code == 200:
                     logger.info("Server is up!")
                     return None
+                last_error = ConnectionError(
+                    f"Health check returned status {response.status_code}: {response.text}"
+                )
+
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= total_timeout:
+                raise ConnectionError(
+                    f"The vLLM server can't be reached at {self.host}:{self.server_port} after {total_timeout} "
+                    "seconds. Make sure the server is running by running `vf-vllm`."
+                ) from last_error
 
             logger.info(
                 f"Server is not up yet. Retrying in {retry_interval} seconds..."

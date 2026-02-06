@@ -4,6 +4,7 @@ import torch._dynamo
 
 from .config import RLConfig
 from .trainer import RLTrainer
+from .utils import get_model, get_model_and_tokenizer
 
 torch._dynamo.config.suppress_errors = True
 
@@ -34,4 +35,6 @@ __all__ = [
     "GRPOConfig",
     "grpo_defaults",
     "lora_defaults",
+    "get_model",
+    "get_model_and_tokenizer",
 ]
