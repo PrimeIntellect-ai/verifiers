@@ -4080,6 +4080,11 @@ class RLMEnv(vf.StatefulToolEnv):
         await self._ensure_final_answer(state)
         return True
 
+    @vf.stop
+    async def no_tools_called(self, state: State) -> bool:
+        """Disabled for RLMEnv - we only stop on answer_ready or max_turns."""
+        return False
+
     # =========================================================================
     # Cleanup
     # =========================================================================
