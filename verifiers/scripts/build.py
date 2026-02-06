@@ -414,7 +414,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if status is None:
         status = _get_image_status(resolved_image)
-    status = _wait_for_ready(resolved_image)
+    if status is None or (
+        not _is_success_status(status) and not _is_failure_status(status)
+    ):
+        status = _wait_for_ready(resolved_image)
     if status is None:
         print(
             "Timed out waiting for image status. Run `prime images list` to check progress.",
