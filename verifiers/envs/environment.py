@@ -1092,8 +1092,8 @@ class Environment(ABC):
                 await self._emit_event(
                     ProgressEvent(
                         type="progress",
-                        all_outputs=builder.outputs,
-                        new_outputs=new_outputs,
+                        all_outputs=list(builder.outputs),  # Copy to avoid mutation
+                        new_outputs=list(new_outputs),  # Copy for consistency
                         completed_count=len(builder.outputs),
                         total_count=total_rollouts,
                     ),
@@ -1106,8 +1106,8 @@ class Environment(ABC):
                         GroupCompleteEvent(
                             type="group_complete",
                             example_id=example_id,
-                            states=states,
-                            outputs=new_outputs,
+                            states=list(states),  # Copy to avoid mutation
+                            outputs=list(new_outputs),  # Copy to avoid mutation
                         ),
                         on_event,
                     )
