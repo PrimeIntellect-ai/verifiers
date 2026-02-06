@@ -6,7 +6,6 @@ import json
 import logging
 import socket
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, cast
@@ -45,8 +44,6 @@ class _OpenEnvServer:
     base_url: str
     port: int
     contract: str
-    background_job: Any | None = None
-    needs_manual_start: bool = False
 
 
 class OpenEnvEpisodicSumRubric(vf.Rubric):
@@ -84,8 +81,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         num_eval_examples: int = 50,
         seed: int = 0,
         prompt_renderer: Callable[..., ChatMessages] | None = None,
-        observation_messages_fields: Iterable[str] | None = None,
-        observation_prompt_fields: Iterable[str] | None = None,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
         dns_resolution_timeout_seconds: int = 10,
@@ -105,17 +100,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
-        if (
-            observation_messages_fields is not None
-            or observation_prompt_fields is not None
-        ):
-            warnings.warn(
-                "OpenEnvEnv `observation_messages_fields` and "
-                "`observation_prompt_fields` are deprecated and ignored. "
-                "Use `prompt_renderer` to render observations into chat messages.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         if prompt_renderer is None:
             raise ValueError(
                 "OpenEnvEnv requires `prompt_renderer`. "
@@ -157,22 +141,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             max_turns=max_turns,
             message_type="chat",
             **kwargs,
-        )
-
-    async def start_server(
-        self,
-        address: str | None = None,
-        extra_env_kwargs: dict[str, Any] | None = None,
-        log_level: str | None = None,
-        log_file: str | None = None,
-        startup_timeout: float = 120.0,
-    ) -> None:
-        await super().start_server(
-            address=address,
-            extra_env_kwargs=extra_env_kwargs or {},
-            log_level=log_level,
-            log_file=log_file,
-            startup_timeout=startup_timeout,
         )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:
@@ -518,6 +486,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             logs = await sandboxes.get_logs(sandbox_id)
         except Exception:
             return None
+        return self._trim_logs(logs)
+
+    def _trim_logs(self, logs: Any) -> str | None:
         if not logs:
             return None
         logs_str = str(logs)
@@ -652,7 +623,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                     base_url=base_url,
                     port=port,
                     contract=contract,
-                    needs_manual_start=False,
                 )
                 await self._wait_for_ready(server.base_url)
                 return server
@@ -707,7 +677,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 base_url=base_url,
                 port=port,
                 contract=contract,
-                needs_manual_start=False,
             )
             self._wait_for_ready_sync(server.base_url)
             return server
@@ -889,36 +858,14 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     ) -> None:
         timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
         parsed = urlparse(base_url)
-        hostname = parsed.hostname or ""
-
-        def _check_dns() -> tuple[bool, str]:
-            if not hostname:
-                return False, f"Invalid exposure URL (missing hostname): {base_url}"
-            try:
-                socket.getaddrinfo(
-                    hostname, parsed.port or 443, type=socket.SOCK_STREAM
-                )
-                return True, "dns-ok"
-            except Exception as e:
-                return False, f"DNS {type(e).__name__}: {e}"
-
-        def _check_health() -> tuple[bool, str]:
-            try:
-                resp = requests.get(
-                    f"{base_url}/health",
-                    timeout=self.health_request_timeout_seconds,
-                )
-                if resp.status_code == 200:
-                    return True, "ok"
-                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
-            except Exception as e:
-                return False, f"{type(e).__name__}: {e}"
 
         loop = asyncio.get_running_loop()
         dns_start = loop.time()
         last_dns_error = "no attempts"
         while (loop.time() - dns_start) < self.dns_resolution_timeout_seconds:
-            dns_ok, dns_detail = await asyncio.to_thread(_check_dns)
+            dns_ok, dns_detail = await asyncio.to_thread(
+                self._check_dns, base_url, parsed
+            )
             if dns_ok:
                 break
             last_dns_error = dns_detail
@@ -933,7 +880,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         health_start = loop.time()
         last_health_error = "no attempts"
         while (loop.time() - health_start) < timeout:
-            ok, detail = await asyncio.to_thread(_check_health)
+            ok, detail = await asyncio.to_thread(self._check_health, base_url)
             if ok:
                 return
             last_health_error = detail
@@ -947,35 +894,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     def _wait_for_ready_sync(self, base_url: str, timeout_s: int | None = None) -> None:
         timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
         parsed = urlparse(base_url)
-        hostname = parsed.hostname or ""
-
-        def _check_dns() -> tuple[bool, str]:
-            if not hostname:
-                return False, f"Invalid exposure URL (missing hostname): {base_url}"
-            try:
-                socket.getaddrinfo(
-                    hostname, parsed.port or 443, type=socket.SOCK_STREAM
-                )
-                return True, "dns-ok"
-            except Exception as e:
-                return False, f"DNS {type(e).__name__}: {e}"
-
-        def _check_health() -> tuple[bool, str]:
-            try:
-                resp = requests.get(
-                    f"{base_url}/health",
-                    timeout=self.health_request_timeout_seconds,
-                )
-                if resp.status_code == 200:
-                    return True, "ok"
-                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
-            except Exception as e:
-                return False, f"{type(e).__name__}: {e}"
 
         dns_start = time.monotonic()
         last_dns_error = "no attempts"
         while (time.monotonic() - dns_start) < self.dns_resolution_timeout_seconds:
-            dns_ok, dns_detail = _check_dns()
+            dns_ok, dns_detail = self._check_dns(base_url, parsed)
             if dns_ok:
                 break
             last_dns_error = dns_detail
@@ -990,7 +913,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         health_start = time.monotonic()
         last_health_error = "no attempts"
         while (time.monotonic() - health_start) < timeout:
-            ok, detail = _check_health()
+            ok, detail = self._check_health(base_url)
             if ok:
                 return
             last_health_error = detail
@@ -1008,12 +931,32 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             logs = sandboxes.get_logs(sandbox_id)
         except Exception:
             return None
-        if not logs:
-            return None
-        logs_str = str(logs)
-        if len(logs_str) > 4000:
-            return logs_str[-4000:]
-        return logs_str
+        return self._trim_logs(logs)
+
+    def _check_dns(self, base_url: str, parsed: Any | None = None) -> tuple[bool, str]:
+        parsed_url = parsed or urlparse(base_url)
+        hostname = parsed_url.hostname or ""
+        if not hostname:
+            return False, f"Invalid exposure URL (missing hostname): {base_url}"
+        try:
+            socket.getaddrinfo(
+                hostname, parsed_url.port or 443, type=socket.SOCK_STREAM
+            )
+            return True, "dns-ok"
+        except Exception as e:
+            return False, f"DNS {type(e).__name__}: {e}"
+
+    def _check_health(self, base_url: str) -> tuple[bool, str]:
+        try:
+            resp = requests.get(
+                f"{base_url}/health",
+                timeout=self.health_request_timeout_seconds,
+            )
+            if resp.status_code == 200:
+                return True, "ok"
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
 
     def _cleanup_server_sync(self, server: _OpenEnvServer) -> None:
         sandboxes = SandboxClient(APIClient())
