@@ -1,36 +1,11 @@
-import argparse
-from pathlib import Path
-
-import verifiers as vf
-from verifiers.utils.import_utils import load_toml
+import importlib
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("at", type=str)
-    parser.add_argument("config_path", type=str)
-    args = parser.parse_args()
-
-    if args.at != "@":
-        raise SystemExit("Usage: vf-train @ path/to/file.toml")
-
-    config_path_str = args.config_path
-
-    config_path = Path(config_path_str)
-    if not config_path.exists():
-        raise SystemExit(f"TOML config not found: {config_path}")
-
-    with config_path.open("rb") as f:
-        config = load_toml(f)
-
-    model = config["model"]
-    env_id = config["env"]["id"]
-    env_args = config["env"].get("args", {})
-    env = vf.load_environment(env_id=env_id, **env_args)
-    rl_config = vf.RLConfig(**config["trainer"].get("args", {}))
-    trainer = vf.RLTrainer(model=model, env=env, args=rl_config)
-    trainer.train()
-
-
-if __name__ == "__main__":
-    main()
+def main() -> None:
+    try:
+        mod = importlib.import_module("verifiers_rl.scripts.train")
+    except ModuleNotFoundError as e:
+        raise SystemExit(
+            "vf-train now lives in the optional 'verifiers-rl' package. Install with: uv add verifiers-rl"
+        ) from e
+    mod.main()

@@ -1,0 +1,22 @@
+name: Publish verifiers-rl
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "verifiers-rl-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build verifiers-rl
+        run: uv build packages/verifiers-rl
+      - name: Publish to PyPI (trusted publishing)
+        run: uv publish packages/verifiers-rl/dist/*
