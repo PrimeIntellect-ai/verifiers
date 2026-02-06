@@ -422,8 +422,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 )
                 if isinstance(result.reward, (int, float)):
                     total_reward += float(result.reward)
-                if isinstance(result.done, bool):
-                    done = done or result.done
+                done = done or bool(result.done)
                 content = self._format_tool_content(
                     self._extract_mcp_tool_content(result.observation)
                 )

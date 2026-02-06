@@ -46,7 +46,7 @@ class SandboxExecutorMixin:
                 jitter=jitter,
             ),
             before_sleep=tc.before_sleep_log(
-                cast(logging.Logger, self._sandbox_logger),
+                cast(Any, self._sandbox_logger),
                 logging.WARNING,
             ),
             reraise=True,

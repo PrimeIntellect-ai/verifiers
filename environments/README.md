@@ -71,6 +71,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
+- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
 - **MCP integration**: `mcp_search_env`
 - **RLM (recursive LLM)**: `rlm_secrets`
