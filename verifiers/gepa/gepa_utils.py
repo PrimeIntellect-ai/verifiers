@@ -2,8 +2,9 @@
 Simple artifact saving for GEPA optimization.
 
 Saves:
-- pareto_frontier.jsonl: Per valset row, the best prompt(s) and their scores
-- best_prompt.txt: The single best overall system prompt
+- pareto_frontier.jsonl: Per valset row, the best candidate(s) and their scores
+- best_candidate.json: The single best overall candidate (all components)
+- best_prompt.txt: The best system prompt (if present)
 - metadata.json: Run configuration and summary
 """
 
@@ -74,35 +75,43 @@ def save_gepa_results(
             best_prompts = [
                 {
                     "candidate_idx": cand_idx,
-                    "system_prompt": candidates[cand_idx].get("system_prompt", ""),
+                    "candidate": candidates[cand_idx],
                     "score": score,
                 }
                 for cand_idx, score in row_scores
                 if score == best_score
             ]
 
-            records.append({
-                "valset_row": row_idx,
-                "best_score": best_score,
-                "num_best_prompts": len(best_prompts),
-                "best_prompts": best_prompts,
-            })
+            records.append(
+                {
+                    "valset_row": row_idx,
+                    "best_score": best_score,
+                    "num_best_prompts": len(best_prompts),
+                    "best_prompts": best_prompts,
+                }
+            )
 
     # Save frontier as JSONL
     if records:
         frontier_ds = Dataset.from_list(records)
         frontier_ds.to_json(run_dir / "pareto_frontier.jsonl")
 
-    # Save best prompt as plain text
-    best_prompt = best_candidate.get("system_prompt", "")
-    (run_dir / "best_prompt.txt").write_text(best_prompt)
+    # Save best candidate as JSON
+    (run_dir / "best_candidate.json").write_text(json.dumps(best_candidate, indent=2))
+
+    # Save best system prompt as plain text (if present)
+    best_prompt = best_candidate.get("system_prompt")
+    if isinstance(best_prompt, str):
+        (run_dir / "best_prompt.txt").write_text(best_prompt)
 
     # Build and save metadata
     val_scores = getattr(result, "val_aggregate_scores", [])
     metadata = {
         "num_candidates": len(candidates),
         "best_idx": best_idx,
-        "best_score": float(val_scores[best_idx]) if val_scores and best_idx < len(val_scores) else None,
+        "best_score": float(val_scores[best_idx])
+        if val_scores and best_idx < len(val_scores)
+        else None,
         "total_metric_calls": getattr(result, "total_metric_calls", None),
         "completed_at": datetime.now().isoformat(),
     }
