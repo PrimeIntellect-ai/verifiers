@@ -154,7 +154,7 @@ class SandboxMixin:
             ) from e
 
         try:
-            await self.post_sandbox_setup(state, self.sandbox_client)
+            await self.post_sandbox_setup(state)
         except vf.SandboxError:
             raise
         except Exception as e:
@@ -162,9 +162,7 @@ class SandboxMixin:
 
         return sandbox.id
 
-    async def post_sandbox_setup(
-        self, state, sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient"
-    ):
+    async def post_sandbox_setup(self, state):
         """Hook for subclasses to run setup after sandbox is ready."""
         pass
 

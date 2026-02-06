@@ -110,9 +110,9 @@ class OpenCodeHarborEnv(HarborEnv):
             **kwargs,
         )
 
-    async def post_sandbox_setup(self, state, sandbox_client) -> None:
+    async def post_sandbox_setup(self, state) -> None:
         """Upload Harbor task assets and optional system prompt after sandbox creation."""
-        await super().post_sandbox_setup(state, sandbox_client)
+        await super().post_sandbox_setup(state)
 
         if self.system_prompt_path:
             if not self.system_prompt_path.exists():
@@ -121,10 +121,10 @@ class OpenCodeHarborEnv(HarborEnv):
                 )
 
             sandbox_id = state["sandbox_id"]
-            await sandbox_client.execute_command(
+            await self.sandbox_client.execute_command(
                 sandbox_id, "mkdir -p /opencode", working_dir=None
             )
-            await sandbox_client.upload_file(
+            await self.sandbox_client.upload_file(
                 sandbox_id, "/opencode/prompt.txt", str(self.system_prompt_path)
             )
             logger.info(f"Uploaded system prompt from {self.system_prompt_path}")

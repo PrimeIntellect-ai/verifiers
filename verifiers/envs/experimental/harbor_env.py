@@ -6,11 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
-from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
-from verifiers.envs.experimental.sandbox_mixin import ThreadedAsyncSandboxClient
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +101,7 @@ class HarborEnv(vf.CliAgentEnv):
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
         return env_vars
 
-    async def post_sandbox_setup(
-        self,
-        state: vf.State,
-        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
-    ) -> None:
+    async def post_sandbox_setup(self, state: vf.State) -> None:
         """Upload Harbor task assets after sandbox creation."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
         task_dir_str = task_info.get("task_dir", "")
@@ -119,16 +113,11 @@ class HarborEnv(vf.CliAgentEnv):
         if not task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {task_dir}")
 
-        await self.prepare_harbor_task(sandbox_client, state["sandbox_id"], task_dir)
+        await self.prepare_harbor_task(state["sandbox_id"], task_dir)
         state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
-    async def prepare_harbor_task(
-        self,
-        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
-        sandbox_id: str,
-        task_dir: Path,
-    ) -> None:
+    async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
         instruction_path = task_dir / "instruction.md"
         task_toml_path = task_dir / "task.toml"
@@ -145,8 +134,8 @@ class HarborEnv(vf.CliAgentEnv):
                     tar.add(task_toml_path, arcname="task/task.toml")
 
             remote_tar = "/tmp/harbor_task.tar.gz"
-            await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandbox_client.execute_command(
+            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self.sandbox_client.execute_command(
                 sandbox_id,
                 f"mkdir -p /task /logs/verifier {self.agent_workdir} && "
                 f"tar -xzf {remote_tar} -C / && rm {remote_tar}",
@@ -156,12 +145,7 @@ class HarborEnv(vf.CliAgentEnv):
         finally:
             tar_path.unlink(missing_ok=True)
 
-    async def upload_test_assets(
-        self,
-        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
-        sandbox_id: str,
-        task_dir: Path,
-    ) -> None:
+    async def upload_test_assets(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload oracle/tests after agent completes, right before running tests."""
         solution_dir = task_dir / "solution"
         tests_dir = task_dir / "tests"
@@ -180,8 +164,8 @@ class HarborEnv(vf.CliAgentEnv):
                         tar.add(item, arcname=f"tests/{item.name}")
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
-            await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandbox_client.execute_command(
+            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self.sandbox_client.execute_command(
                 sandbox_id,
                 f"mkdir -p /oracle /tests && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 working_dir=None,
@@ -224,9 +208,7 @@ class HarborEnv(vf.CliAgentEnv):
             return 0.0
 
         try:
-            await self.with_retry(self.upload_test_assets)(
-                self.sandbox_client, sandbox_id, task_dir
-            )
+            await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
             results = await self.run_background_job(

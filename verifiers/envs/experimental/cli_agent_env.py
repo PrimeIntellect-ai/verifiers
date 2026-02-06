@@ -6,7 +6,6 @@ import uuid
 from openai import AsyncOpenAI
 from prime_sandboxes import (
     AdvancedConfigs,
-    AsyncSandboxClient,
     BackgroundJob,
     BackgroundJobStatus,
     CreateSandboxRequest,
@@ -14,10 +13,7 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
-from verifiers.envs.experimental.sandbox_mixin import (
-    SandboxMixin,
-    ThreadedAsyncSandboxClient,
-)
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.types import (
     ChatCompletionToolParam,
     Messages,
@@ -169,7 +165,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
-        await self.start_agent(state, self.sandbox_client)
+        await self.start_agent(state)
 
         return state
 
@@ -189,23 +185,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             env_vars["OPENAI_MODEL"] = model
         return env_vars
 
-    async def post_sandbox_setup(
-        self,
-        state: State,
-        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
-    ) -> None:
+    async def post_sandbox_setup(self, state: State) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
-    async def start_agent(
-        self,
-        state: State,
-        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
-    ) -> None:
+    async def start_agent(self, state: State) -> None:
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        background_job: BackgroundJob = await sandbox_client.start_background_job(
+        background_job: BackgroundJob = await self.sandbox_client.start_background_job(
             sandbox_id,
             self.run_command,
         )
