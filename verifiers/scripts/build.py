@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import shutil
@@ -36,15 +37,11 @@ def _normalize_env_id(raw_env_id: str) -> tuple[str, str]:
 
 
 def _find_dockerfile(project_dir: Path) -> Path:
-    candidates = [
-        project_dir / "server" / "Dockerfile",
-        project_dir / "Dockerfile",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
+    dockerfile = project_dir / "server" / "Dockerfile"
+    if dockerfile.exists():
+        return dockerfile
     raise FileNotFoundError(
-        f"No Dockerfile found in {project_dir}. Expected proj/server/Dockerfile or proj/Dockerfile."
+        f"No Dockerfile found at {dockerfile}. Expected enforced layout with proj/server/Dockerfile."
     )
 
 
@@ -91,14 +88,111 @@ def _read_project_port(project_dir: Path) -> int:
     return 8000
 
 
+def _read_project_app(project_dir: Path) -> str:
+    openenv_yaml = project_dir / "openenv.yaml"
+    if not openenv_yaml.exists() or yaml is None:
+        return "server.app:app"
+    try:
+        data = yaml.safe_load(openenv_yaml.read_text())
+    except Exception:
+        return "server.app:app"
+    if isinstance(data, dict):
+        app = data.get("app")
+        if isinstance(app, str) and app.strip():
+            return app.strip()
+    return "server.app:app"
+
+
+def _build_start_command(app: str, port: int) -> str:
+    # Prime sandboxes default to `tail -f /dev/null` unless start_command is explicit.
+    # Also avoid relying on image-level PATH, which may not be propagated by sandbox runtime.
+    return (
+        "sh -lc "
+        f'"cd /app/env && /app/.venv/bin/uvicorn {app} --host 0.0.0.0 --port {int(port)}"'
+    )
+
+
+def _resolve_app_module(project_dir: Path, app: str) -> Path:
+    module = app.split(":", 1)[0].strip()
+    if not module:
+        raise RuntimeError(f"Invalid app entrypoint in openenv.yaml: {app}")
+    app_module = project_dir / Path(*module.split("."))
+    app_py = app_module.with_suffix(".py")
+    if app_py.exists():
+        return app_py
+    init_py = app_module / "__init__.py"
+    if init_py.exists():
+        return init_py
+    raise RuntimeError(
+        f"Could not resolve app module from openenv.yaml app='{app}'. "
+        f"Expected {app_py} or {init_py}."
+    )
+
+
+def _name_from_ast(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _detect_contract(project_dir: Path, app: str) -> str:
+    """
+    Detect OpenEnv contract from create_app(..., action_cls, observation_cls, ...):
+    - mcp: action_cls=CallToolAction and observation_cls=CallToolObservation
+    - gym: all other supported create_app signatures
+    """
+    app_file = _resolve_app_module(project_dir, app)
+    try:
+        tree = ast.parse(app_file.read_text(), filename=str(app_file))
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to parse app module for contract detection: {app_file}"
+        ) from e
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func_name = _name_from_ast(node.func)
+        if func_name != "create_app":
+            continue
+        if len(node.args) < 3:
+            continue
+        action_name = _name_from_ast(node.args[1])
+        observation_name = _name_from_ast(node.args[2])
+        if (
+            action_name == "CallToolAction"
+            and observation_name == "CallToolObservation"
+        ):
+            return "mcp"
+        return "gym"
+
+    raise RuntimeError(
+        f"Could not detect OpenEnv contract: no supported create_app(...) call found in {app_file}."
+    )
+
+
 def _write_build_manifest(
-    project_dir: Path, image: str, port: int, env_id: str, status: str | None
+    project_dir: Path,
+    image: str,
+    port: int,
+    env_id: str,
+    status: str | None,
+    start_command: str,
+    app: str,
+    contract: str,
 ) -> Path:
     manifest = {
         "schema_version": 1,
         "environment_id": env_id,
         "image": image,
         "port": int(port),
+        "app": app,
+        "contract": contract,
+        "start_command": start_command,
         "image_status": status,
     }
     manifest_path = project_dir / ".build.json"
@@ -270,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
     dockerfile_rel = dockerfile.relative_to(project_dir)
     image = f"{env_id_dash}:latest"
     port = _read_project_port(project_dir)
+    app = _read_project_app(project_dir)
+    contract = _detect_contract(project_dir, app)
+    start_command = _build_start_command(app=app, port=port)
 
     cmd = [
         "prime",
@@ -337,9 +434,13 @@ def main(argv: list[str] | None = None) -> int:
         port=port,
         env_id=env_id_dash,
         status=status,
+        start_command=start_command,
+        app=app,
+        contract=contract,
     )
     print(
-        f"Wrote {manifest_path} with image='{resolved_image}' port={port} status={status}"
+        f"Wrote {manifest_path} with image='{resolved_image}' port={port} app='{app}' contract='{contract}' "
+        f"start_command='{start_command}' status={status}"
     )
     return 0
 

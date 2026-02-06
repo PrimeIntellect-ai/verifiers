@@ -37,7 +37,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel",
-    "prime-sandboxes>=0.2.9",
+    "prime-sandboxes>=0.2.14",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -64,7 +64,7 @@ dev = [
     "ipywidgets",
     "reasoning-gym",
     "textarena",
-    "openenv-core>=0.2.0",
+    "openenv-core[core]==0.2.1",
     "nltk",
 ]
 
@@ -77,7 +77,7 @@ ta = [
     "nltk",
 ]
 openenv = [
-    "openenv-core>=0.2.0",
+    "openenv-core[core]==0.2.1",
 ]
 browser = [
     "stagehand>=3.0.0",

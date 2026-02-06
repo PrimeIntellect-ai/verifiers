@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
+import socket
+import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, Callable, Iterable, cast
+from urllib.parse import urlparse
 
 import requests
 import tenacity as tc
@@ -17,15 +22,14 @@ from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 try:
     from openenv.core.generic_client import GenericEnvClient
-    from openenv.core.mcp_client import MCPToolClient
-    from openenv.core.env_server.mcp_types import CallToolAction, CallToolObservation
 except ImportError as e:
     raise ImportError(
         "OpenEnvEnv requires openenv-core. Install with: uv add 'verifiers[openenv]'"
     ) from e
 
 try:
-    from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+    from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest, SandboxClient
+    from prime_sandboxes.core import APIClient
 except ImportError as e:
     raise ImportError(
         "OpenEnvEnv requires prime-sandboxes. Install with: uv add prime-sandboxes"
@@ -40,6 +44,7 @@ class _OpenEnvServer:
     exposure_id: str
     base_url: str
     port: int
+    contract: str
     background_job: Any | None = None
     needs_manual_start: bool = False
 
@@ -64,17 +69,31 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     - Always runs inside Prime Sandboxes.
     - Uses prebuilt container images at runtime (from `.build.json`).
     - Uses seeds as the generic dataset mechanism.
-    - Supports both simulation (step/reset) and MCP tool environments.
+    - Supports both gym (step/reset) and MCP tool environments.
+    - Expects a prompt renderer that maps observations to chat messages.
     """
+
+    _DATASET_RESET_MAX_RETRIES = 5
+    _DATASET_RESET_BASE_BACKOFF_SECONDS = 0.25
+    _DATASET_RESET_MAX_BACKOFF_SECONDS = 3.0
 
     def __init__(
         self,
         openenv_project: str | Path,
-        num_train_examples: int = 1000,
-        num_eval_examples: int = 100,
+        num_train_examples: int = 100,
+        num_eval_examples: int = 50,
         seed: int = 0,
+        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        observation_messages_fields: Iterable[str] | None = None,
+        observation_prompt_fields: Iterable[str] | None = None,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
+        dns_resolution_timeout_seconds: int = 10,
+        startup_timeout_seconds: int = 30,
+        startup_poll_interval_seconds: float = 1.0,
+        health_request_timeout_seconds: float = 2.0,
+        schema_request_timeout_seconds: float = 5.0,
+        wait_for_creation_max_attempts: int = 20,
         max_retries: int = 5,
         base_delay: float = 0.5,
         backoff_factor: float = 2.0,
@@ -86,11 +105,48 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
+        if (
+            observation_messages_fields is not None
+            or observation_prompt_fields is not None
+        ):
+            warnings.warn(
+                "OpenEnvEnv `observation_messages_fields` and "
+                "`observation_prompt_fields` are deprecated and ignored. "
+                "Use `prompt_renderer` to render observations into chat messages.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if prompt_renderer is None:
+            raise ValueError(
+                "OpenEnvEnv requires `prompt_renderer`. "
+                "Define a renderer in your environment module that converts observations "
+                "to non-empty chat messages."
+            )
+        self.prompt_renderer = prompt_renderer
+        self.dns_resolution_timeout_seconds = dns_resolution_timeout_seconds
+        self.startup_timeout_seconds = startup_timeout_seconds
+        self.startup_poll_interval_seconds = startup_poll_interval_seconds
+        self.health_request_timeout_seconds = health_request_timeout_seconds
+        self.schema_request_timeout_seconds = schema_request_timeout_seconds
+        self.wait_for_creation_max_attempts = wait_for_creation_max_attempts
 
         self._active_servers: dict[str, _OpenEnvServer] = {}
-        self._mode: str | None = None  # "sim" or "mcp"
+        self._contract: str | None = None  # "gym" or "mcp"
         self._action_schema: dict[str, Any] | None = None
         self._mcp_tools: list[Any] | None = None
+        self._mcp_request_id = 0
+
+        self._with_retry = tc.AsyncRetrying(
+            stop=tc.stop_after_attempt(max_retries),
+            wait=tc.wait_exponential_jitter(
+                initial=base_delay,
+                exp_base=backoff_factor,
+                max=max_backoff_seconds,
+                jitter=jitter,
+            ),
+            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        ).wraps
 
         dataset, eval_dataset = self._build_seed_datasets()
 
@@ -102,47 +158,185 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             message_type="chat",
             **kwargs,
         )
-        self._with_retry = tc.AsyncRetrying(
-            stop=tc.stop_after_attempt(max_retries),
-            wait=tc.wait_exponential_jitter(
-                initial=base_delay,
-                exp_base=backoff_factor,
-                max=max_backoff_seconds,
-                jitter=jitter,
-            ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
-            reraise=True,
-        ).wraps
+
+    async def start_server(
+        self,
+        address: str | None = None,
+        extra_env_kwargs: dict[str, Any] | None = None,
+        log_level: str | None = None,
+        log_file: str | None = None,
+        startup_timeout: float = 120.0,
+    ) -> None:
+        await super().start_server(
+            address=address,
+            extra_env_kwargs=extra_env_kwargs or {},
+            log_level=log_level,
+            log_file=log_file,
+            startup_timeout=startup_timeout,
+        )
 
     def _build_seed_datasets(self) -> tuple[Dataset, Dataset | None]:
-        def make_rows(start_idx: int, count: int) -> list[dict[str, Any]]:
-            rows = []
-            for i in range(count):
-                seed = self.seed + start_idx + i
+        total = self.num_train_examples + self.num_eval_examples
+        rows = self._build_seed_rows(total)
+        train_rows = rows[: self.num_train_examples]
+        eval_rows = rows[self.num_train_examples :]
+
+        dataset = Dataset.from_list(train_rows)
+        eval_dataset = Dataset.from_list(eval_rows) if eval_rows else None
+        self._validate_dataset_prompts(dataset, split_name="train")
+        if eval_dataset is not None:
+            self._validate_dataset_prompts(eval_dataset, split_name="eval")
+        return dataset, eval_dataset
+
+    def _build_seed_rows(self, total: int) -> list[dict[str, Any]]:
+        if total <= 0:
+            return []
+        project_path = self._resolve_project_path()
+        image, port, start_command, contract = self._resolve_runtime_config(
+            project_path
+        )
+        server = self._launch_image_server_sync(image, port, start_command, contract)
+        rows: list[dict[str, Any]] = []
+        mcp_action_schema: dict[str, Any] | None = None
+        try:
+            if contract == "mcp":
+                mcp_action_schema = self._fetch_action_schema_sync(server.base_url)
+            seeds = [self.seed + i for i in range(total)]
+            observations = self._fetch_reset_observations_sync(server.base_url, seeds)
+            for seed, obs in zip(seeds, observations, strict=False):
+                prompt = self._render_observation_messages(
+                    obs,
+                    context="reset",
+                    action_schema=mcp_action_schema if contract == "mcp" else None,
+                    contract=contract,
+                    seed=seed,
+                )
                 rows.append(
                     {
-                        "question": f"OpenEnv episode seed={seed}",
+                        "prompt": prompt,
                         "info": {"seed": seed},
                     }
                 )
             return rows
+        finally:
+            self._cleanup_server_sync(server)
 
-        train_rows = make_rows(0, self.num_train_examples)
-        eval_rows = make_rows(self.num_train_examples, self.num_eval_examples)
+    def _fetch_reset_observations_sync(
+        self, base_url: str, seeds: list[int]
+    ) -> list[Any]:
+        if not seeds:
+            return []
+        client = GenericEnvClient(base_url=base_url)
+        observations: list[Any] = []
+        try:
+            self._connect_generic_client_sync(client)
+            for seed in seeds:
+                observation = self._reset_with_retry_sync(client, seed)
+                observations.append(observation)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        return observations
 
-        dataset = Dataset.from_list(train_rows)
-        eval_dataset = Dataset.from_list(eval_rows) if eval_rows else None
-        return dataset, eval_dataset
+    def _connect_generic_client_sync(self, client: GenericEnvClient) -> None:
+        try:
+            client.connect()
+        except Exception as e:
+            raise RuntimeError(
+                "OpenEnv dataset bootstrap failed to establish a reset session."
+            ) from e
+
+    def _reset_with_retry_sync(self, client: GenericEnvClient, seed: int) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(1, self._DATASET_RESET_MAX_RETRIES + 1):
+            try:
+                result = client.reset(seed=int(seed))
+                observation = getattr(result, "observation", None)
+                if observation is None:
+                    raise RuntimeError(
+                        "OpenEnv reset result is missing required `observation`."
+                    )
+                return observation
+            except Exception as e:
+                last_error = e
+                if attempt >= self._DATASET_RESET_MAX_RETRIES:
+                    break
+                backoff = min(
+                    self._DATASET_RESET_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+                    self._DATASET_RESET_MAX_BACKOFF_SECONDS,
+                )
+                time.sleep(backoff)
+                # Reconnect the session before retrying this seed.
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                self._connect_generic_client_sync(client)
+        assert last_error is not None
+        raise RuntimeError(
+            f"OpenEnv reset failed during dataset build for seed={seed} "
+            f"after {self._DATASET_RESET_MAX_RETRIES} attempts."
+        ) from last_error
+
+    def _fetch_action_schema_sync(self, base_url: str) -> dict[str, Any]:
+        try:
+            response = requests.get(
+                f"{base_url}/schema",
+                timeout=self.schema_request_timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:
+            raise RuntimeError(
+                "OpenEnv schema fetch failed while building dataset."
+            ) from e
+        if not isinstance(payload, dict):
+            raise RuntimeError("OpenEnv /schema response must be a JSON object.")
+        action_schema = payload.get("action", {})
+        if not isinstance(action_schema, dict):
+            raise RuntimeError(
+                "OpenEnv /schema response missing object `action` schema."
+            )
+        return action_schema
+
+    def _validate_dataset_prompts(self, dataset: Dataset, split_name: str) -> None:
+        if "prompt" not in dataset.column_names:
+            raise RuntimeError(
+                f"OpenEnv {split_name} dataset is invalid: missing required `prompt` column."
+            )
+        prompts = dataset["prompt"]
+        for idx, prompt in enumerate(prompts):
+            if not self._looks_like_messages(prompt):
+                raise RuntimeError(
+                    f"OpenEnv {split_name} dataset is invalid at row {idx}: "
+                    "`prompt` must be a non-empty chat messages list."
+                )
+            messages = cast(list[dict[str, Any]], prompt)
+            if not messages:
+                raise RuntimeError(
+                    f"OpenEnv {split_name} dataset is invalid at row {idx}: "
+                    "`prompt` cannot be empty."
+                )
+            for msg_idx, msg in enumerate(messages):
+                content = msg.get("content")
+                if content is None:
+                    raise RuntimeError(
+                        f"OpenEnv {split_name} dataset is invalid at row {idx}, "
+                        f"message {msg_idx}: `content` cannot be null."
+                    )
 
     async def setup_state(self, state: vf.State) -> vf.State:
         try:
             server = await self._create_server()
             state["openenv_server"] = server
-            mode, action_schema = await self._ensure_mode_and_schema(server.base_url)
-            state["openenv_mode"] = mode
+            state["openenv_contract"] = server.contract
+            action_schema = await self._fetch_action_schema(server.base_url)
+            self._assert_contract_matches_schema(server.contract, action_schema)
             state["openenv_action_schema"] = action_schema
-            if self._mode is None:
-                self._mode = mode
+            if self._contract is None:
+                self._contract = server.contract
             if self._action_schema is None:
                 self._action_schema = action_schema
 
@@ -151,28 +345,24 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             if isinstance(info, dict):
                 seed = int(info.get("seed", 0))
 
-            if self._mode == "mcp":
-                mcp_client = MCPToolClient(base_url=server.base_url)
-                openenv_mcp = cast(Any, mcp_client)
-                await openenv_mcp.connect()
+            if server.contract == "mcp":
+                mcp_client = GenericEnvClient(base_url=server.base_url)
+                await self._invoke(cast(Any, mcp_client).connect)
                 state["openenv_mcp_client"] = mcp_client
                 if self._mcp_tools is None:
-                    self._mcp_tools = await openenv_mcp.list_tools()
+                    self._mcp_tools = await self._mcp_list_tools(mcp_client)
                 state["oai_tools"] = self._convert_mcp_tools(self._mcp_tools)
-                result = await openenv_mcp.reset(seed=seed)
+                result = await self._invoke(cast(Any, mcp_client).reset, seed=seed)
                 state["openenv_done"] = bool(result.done)
-                obs_messages = self._obs_to_messages(result.observation)
-                state["prompt"] = self._maybe_prepend_system(obs_messages)
+                state["prompt"] = self._require_prompt_messages(state)
                 return state
 
             client = GenericEnvClient(base_url=server.base_url)
-            openenv_client = cast(Any, client)
-            await openenv_client.connect()
+            await self._invoke(cast(Any, client).connect)
             state["openenv_client"] = client
-            result = await openenv_client.reset(seed=seed)
+            result = await self._invoke(cast(Any, client).reset, seed=seed)
             state["openenv_done"] = bool(result.done)
-            obs_messages = self._obs_to_messages(result.observation)
-            state["prompt"] = self._maybe_prepend_system(obs_messages)
+            state["prompt"] = self._require_prompt_messages(state)
             return state
         except Exception:
             await self._cleanup_openenv_state(state)
@@ -181,31 +371,21 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     def _make_user_message(self, content: str) -> ChatMessage:
         return cast(ChatMessage, {"role": "user", "content": content})
 
-    def _make_system_message(self, content: str) -> ChatMessage:
-        return cast(ChatMessage, {"role": "system", "content": content})
-
     def _make_tool_message(self, content: Any, tool_call_id: str) -> ChatMessage:
         return cast(
             ChatMessage,
             {"role": "tool", "content": content, "tool_call_id": tool_call_id},
         )
 
-    def _maybe_prepend_system(self, messages: ChatMessages) -> ChatMessages:
-        if self.system_prompt:
-            if messages and messages[0].get("role") == "system":
-                return messages
-            return [self._make_system_message(self.system_prompt)] + messages
-        return messages
-
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
-        mode = state.get("openenv_mode") or self._mode
-        if mode == "mcp":
+        contract = state.get("openenv_contract") or self._contract
+        if contract == "mcp":
             return await self._mcp_env_response(messages, state)
-        return await self._sim_env_response(messages, state)
+        return await self._gym_env_response(messages, state)
 
-    async def _sim_env_response(
+    async def _gym_env_response(
         self, messages: vf.Messages, state: vf.State
     ) -> vf.Messages:
         assert isinstance(messages, list)
@@ -217,14 +397,19 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
         action = self._parse_action(raw_text, action_schema)
 
-        client: GenericEnvClient = state["openenv_client"]
-        result = await client.step(action)
+        client: Any = state["openenv_client"]
+        result = await self._invoke(client.step, action)
 
         if state["trajectory"]:
             state["trajectory"][-1]["reward"] = result.reward
 
         state["openenv_done"] = bool(result.done)
-        obs_messages = self._obs_to_messages(result.observation)
+        obs_messages = self._render_observation_messages(
+            result.observation,
+            context="step",
+            action_schema=action_schema if isinstance(action_schema, dict) else None,
+            contract="gym",
+        )
         return obs_messages
 
     async def _mcp_env_response(
@@ -238,37 +423,30 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not tool_calls:
             return cast(ChatMessages, [])
 
-        mcp_client: MCPToolClient = state["openenv_mcp_client"]
+        mcp_client: Any = state["openenv_mcp_client"]
         tool_messages: ChatMessages = []
         total_reward = 0.0
         done = False
         for tool_call in tool_calls:
             tool_call_id = tool_call.get("id", "")
-            tool_name = tool_call.get("function", {}).get("name", "")
+            fn_payload = tool_call.get("function", {})
+            tool_name = str(fn_payload.get("name", "")).strip()
             try:
-                tool_args = json.loads(
-                    tool_call.get("function", {}).get("arguments", "{}")
-                )
+                tool_args = json.loads(fn_payload.get("arguments", "{}"))
                 if not isinstance(tool_args, dict):
                     raise ValueError("tool arguments must be an object")
-                step_result = await mcp_client.step(
-                    CallToolAction(tool_name=tool_name, arguments=tool_args)
+                if not tool_name:
+                    raise ValueError("tool name cannot be empty")
+                result = await self._mcp_step_tool(
+                    mcp_client, tool_name=tool_name, arguments=tool_args
                 )
-                obs = step_result.observation
-                if isinstance(obs, CallToolObservation) and obs.error is not None:
-                    content = f"Error: {obs.error.message}"
-                else:
-                    result_payload = obs
-                    if isinstance(obs, CallToolObservation):
-                        result_payload = obs.result
-                    elif hasattr(obs, "result"):
-                        result_payload = getattr(obs, "result")
-                    if hasattr(result_payload, "model_dump"):
-                        result_payload = result_payload.model_dump()
-                    content = self._format_tool_content(result_payload)
-                if step_result.reward is not None:
-                    total_reward += float(step_result.reward)
-                done = done or bool(step_result.done)
+                if isinstance(result.reward, (int, float)):
+                    total_reward += float(result.reward)
+                if isinstance(result.done, bool):
+                    done = done or result.done
+                content = self._format_tool_content(
+                    self._extract_mcp_tool_content(result.observation)
+                )
             except Exception as e:
                 content = f"Error: {e}"
 
@@ -287,13 +465,13 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     @vf.stop
     async def openenv_done(self, state: vf.State) -> bool:
-        mode = state.get("openenv_mode") or self._mode
-        return bool(state.get("openenv_done")) and mode == "sim"
+        contract = state.get("openenv_contract") or self._contract
+        return bool(state.get("openenv_done")) and contract == "gym"
 
     @vf.stop
     async def mcp_no_tool_calls(self, state: vf.State) -> bool:
-        mode = state.get("openenv_mode") or self._mode
-        if mode != "mcp":
+        contract = state.get("openenv_contract") or self._contract
+        if contract != "mcp":
             return False
         if state.get("openenv_done"):
             return True
@@ -305,11 +483,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
         if client is not None:
-            await cast(Any, client).close()
+            await self._invoke(cast(Any, client).close)
 
         mcp_client = state.pop("openenv_mcp_client", None)
         if mcp_client is not None:
-            await cast(Any, mcp_client).close()
+            await self._invoke(cast(Any, mcp_client).close)
 
         server = state.pop("openenv_server", None)
         if server is not None:
@@ -381,8 +559,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     async def _create_server(self) -> _OpenEnvServer:
         project_path = self._resolve_project_path()
-        image, port = self._resolve_runtime_config(project_path)
-        server = await self._launch_image_server(image, port)
+        image, port, start_command, contract = self._resolve_runtime_config(
+            project_path
+        )
+        server = await self._launch_image_server(image, port, start_command, contract)
         self._active_servers[server.sandbox_id] = server
         return server
 
@@ -395,10 +575,12 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             f"Got: {self.openenv_project}"
         )
 
-    def _resolve_runtime_config(self, project_path: Path) -> tuple[str, int]:
+    def _resolve_runtime_config(self, project_path: Path) -> tuple[str, int, str, str]:
         manifest = self._read_build_manifest(project_path)
         image = manifest.get("image")
         port = manifest.get("port", 8000)
+        start_command = manifest.get("start_command")
+        contract = manifest.get("contract")
         if not isinstance(image, str) or not image.strip():
             raise RuntimeError(
                 "Invalid .build.json: `image` must be a non-empty string. "
@@ -408,7 +590,17 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             port_num = int(port)
         except Exception as e:
             raise RuntimeError("Invalid .build.json: `port` must be an integer.") from e
-        return image.strip(), port_num
+        if not isinstance(start_command, str) or not start_command.strip():
+            raise RuntimeError(
+                "Invalid .build.json: `start_command` must be a non-empty string. "
+                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+            )
+        if not isinstance(contract, str) or contract not in {"gym", "mcp"}:
+            raise RuntimeError(
+                "Invalid .build.json: `contract` must be either 'gym' or 'mcp'. "
+                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+            )
+        return image.strip(), port_num, start_command.strip(), contract
 
     def _read_build_manifest(self, project_path: Path) -> dict[str, Any]:
         manifest_path = project_path / ".build.json"
@@ -430,9 +622,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             )
         return data
 
-    async def _launch_image_server(self, image: str, port: int) -> _OpenEnvServer:
+    async def _launch_image_server(
+        self, image: str, port: int, start_command: str, contract: str
+    ) -> _OpenEnvServer:
         async with AsyncSandboxClient() as sandboxes:
-            req = self._build_sandbox_request(image, start_command=None)
+            req = self._build_sandbox_request(image, start_command=start_command)
             try:
                 sandbox = await self._with_retry(sandboxes.create)(req)
             except Exception as e:
@@ -441,21 +635,34 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 ) from e
             exposure = None
             try:
-                await self._with_retry(sandboxes.wait_for_creation)(sandbox.id)
-                exposure = await self._with_retry(sandboxes.expose)(
-                    sandbox.id, port=port, name="openenv-env"
+                await sandboxes.wait_for_creation(
+                    sandbox.id,
+                    max_attempts=self.wait_for_creation_max_attempts,
                 )
+                exposure = await sandboxes.expose(
+                    sandbox.id,
+                    port=port,
+                    name="openenv-env",
+                    protocol="TCP",
+                )
+                base_url = self._exposure_to_base_url(exposure)
                 server = _OpenEnvServer(
                     sandbox_id=sandbox.id,
                     exposure_id=exposure.exposure_id,
-                    base_url=exposure.url.rstrip("/"),
+                    base_url=base_url,
                     port=port,
+                    contract=contract,
                     needs_manual_start=False,
                 )
                 await self._wait_for_ready(server.base_url)
                 return server
             except Exception as e:
                 logs = await self._try_get_logs(sandboxes, sandbox.id)
+                local_health = await self._probe_local_health(
+                    sandboxes, sandbox.id, port
+                )
+                if local_health:
+                    logs = (logs + "\n" if logs else "") + local_health
                 if exposure is not None:
                     try:
                         await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
@@ -469,65 +676,393 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                     sandbox.id, "startup", e, image=image, logs=logs
                 ) from e
 
+    def _launch_image_server_sync(
+        self, image: str, port: int, start_command: str, contract: str
+    ) -> _OpenEnvServer:
+        sandboxes = SandboxClient(APIClient())
+        req = self._build_sandbox_request(image, start_command=start_command)
+        try:
+            sandbox = sandboxes.create(req)
+        except Exception as e:
+            raise vf.SandboxError(
+                f"Failed to create OpenEnv sandbox for image {image}."
+            ) from e
+
+        exposure: Any | None = None
+        try:
+            sandboxes.wait_for_creation(
+                sandbox.id,
+                max_attempts=self.wait_for_creation_max_attempts,
+            )
+            exposure = sandboxes.expose(
+                sandbox.id,
+                port=port,
+                name="openenv-env",
+                protocol="TCP",
+            )
+            base_url = self._exposure_to_base_url(exposure)
+            server = _OpenEnvServer(
+                sandbox_id=sandbox.id,
+                exposure_id=exposure.exposure_id,
+                base_url=base_url,
+                port=port,
+                contract=contract,
+                needs_manual_start=False,
+            )
+            self._wait_for_ready_sync(server.base_url)
+            return server
+        except Exception as e:
+            logs = self._try_get_logs_sync(sandboxes, sandbox.id)
+            local_health = self._probe_local_health_sync(sandboxes, sandbox.id, port)
+            if local_health:
+                logs = (logs + "\n" if logs else "") + local_health
+            if exposure is not None:
+                try:
+                    sandboxes.unexpose(sandbox.id, exposure.exposure_id)
+                except Exception:
+                    pass
+            try:
+                sandboxes.delete(sandbox.id)
+            except Exception:
+                pass
+            raise self._format_sandbox_error(
+                sandbox.id, "startup", e, image=image, logs=logs
+            ) from e
+
+    async def _probe_local_health(
+        self, sandboxes: AsyncSandboxClient, sandbox_id: str, port: int
+    ) -> str | None:
+        """Debug helper to distinguish app-start failures vs exposure/network failures."""
+        cmd = f'sh -lc "curl -sS -m 2 http://localhost:{int(port)}/health 2>&1 || true"'
+        try:
+            result = await sandboxes.execute_command(
+                sandbox_id,
+                cmd,
+                timeout=5,
+            )
+        except Exception as e:
+            return f"Local /health probe failed to execute: {type(e).__name__}: {e}"
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        if stdout:
+            return f"Local /health probe stdout: {stdout}"
+        if stderr:
+            return f"Local /health probe stderr: {stderr}"
+        return "Local /health probe returned no output."
+
+    def _probe_local_health_sync(
+        self, sandboxes: SandboxClient, sandbox_id: str, port: int
+    ) -> str | None:
+        cmd = f'sh -lc "curl -sS -m 2 http://localhost:{int(port)}/health 2>&1 || true"'
+        try:
+            result = sandboxes.execute_command(
+                sandbox_id,
+                cmd,
+                timeout=5,
+            )
+        except Exception as e:
+            return f"Local /health probe failed to execute: {type(e).__name__}: {e}"
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        if stdout:
+            return f"Local /health probe stdout: {stdout}"
+        if stderr:
+            return f"Local /health probe stderr: {stderr}"
+        return "Local /health probe returned no output."
+
+    def _exposure_to_base_url(self, exposure: Any) -> str:
+        endpoint = getattr(exposure, "external_endpoint", None)
+        if isinstance(endpoint, str) and endpoint.strip():
+            return f"http://{endpoint.strip()}"
+
+        raw_url = str(getattr(exposure, "url", "") or "").strip()
+        if raw_url.startswith("tcp://"):
+            host_port = raw_url[len("tcp://") :].rstrip("/")
+            if host_port:
+                return f"http://{host_port}"
+        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+            return raw_url.rstrip("/")
+
+        raise RuntimeError(
+            "OpenEnv sandbox exposure did not provide a usable endpoint URL."
+        )
+
+    async def _invoke(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        if inspect.iscoroutinefunction(fn):
+            return await fn(*args, **kwargs)
+        return await asyncio.to_thread(lambda: fn(*args, **kwargs))
+
+    def _next_mcp_request_id(self) -> int:
+        self._mcp_request_id += 1
+        return self._mcp_request_id
+
+    async def _mcp_rpc(
+        self, client: GenericEnvClient, method: str, params: dict[str, Any]
+    ) -> Any:
+        request = {
+            "type": "mcp",
+            "data": {
+                "jsonrpc": "2.0",
+                "id": self._next_mcp_request_id(),
+                "method": method,
+                "params": params,
+            },
+        }
+        response = await self._invoke(cast(Any, client)._send_and_receive, request)
+        if not isinstance(response, dict):
+            raise RuntimeError(f"Invalid MCP response type: {type(response).__name__}")
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("Invalid MCP response: missing JSON-RPC data object.")
+        if data.get("jsonrpc") != "2.0":
+            raise RuntimeError("Invalid MCP response: jsonrpc must be '2.0'.")
+        if "error" in data:
+            err = data["error"]
+            if isinstance(err, dict):
+                raise RuntimeError(
+                    f"MCP RPC error ({err.get('code', 'unknown')}): {err.get('message', err)}"
+                )
+            raise RuntimeError(f"MCP RPC error: {err}")
+        if "result" not in data:
+            raise RuntimeError("Invalid MCP response: missing result.")
+        return data["result"]
+
+    async def _mcp_list_tools(self, client: GenericEnvClient) -> list[dict[str, Any]]:
+        result = await self._mcp_rpc(client, method="tools/list", params={})
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid MCP tools/list result: expected object.")
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeError("Invalid MCP tools/list result: missing tools list.")
+        parsed_tools: list[dict[str, Any]] = []
+        for tool in tools:
+            if isinstance(tool, dict):
+                parsed_tools.append(tool)
+        if not parsed_tools:
+            raise RuntimeError("MCP tools/list returned no usable tools.")
+        return parsed_tools
+
+    async def _mcp_step_tool(
+        self, client: GenericEnvClient, tool_name: str, arguments: dict[str, Any]
+    ) -> Any:
+        return await self._invoke(
+            client.step,
+            {"type": "call_tool", "tool_name": tool_name, "arguments": arguments},
+        )
+
+    def _extract_mcp_tool_content(self, observation: Any) -> Any:
+        if hasattr(observation, "model_dump"):
+            try:
+                observation = observation.model_dump()
+            except Exception:
+                pass
+        if not isinstance(observation, dict):
+            return observation
+        if observation.get("error") is not None:
+            return {"error": observation.get("error")}
+        return self._unwrap_mcp_result(observation.get("result"))
+
+    def _unwrap_mcp_result(self, value: Any) -> Any:
+        if hasattr(value, "data"):
+            return cast(Any, value).data
+        if isinstance(value, dict) and "data" in value:
+            return value["data"]
+        return value
+
     def _build_sandbox_request(
-        self, image: str, start_command: str | None
+        self, image: str, start_command: str
     ) -> CreateSandboxRequest:
         params: dict[str, Any] = {
             "name": "openenv-env",
             "docker_image": image,
+            "start_command": start_command,
             "cpu_cores": 2,
             "memory_gb": 4,
             "disk_size_gb": 10,
             "timeout_minutes": 60,
             "environment_vars": {"ENABLE_WEB_INTERFACE": "false"},
         }
-        if start_command is not None:
-            params["start_command"] = start_command
-        try:
-            return CreateSandboxRequest(**cast(Any, params))
-        except TypeError:
-            if "start_command" not in params:
-                params["start_command"] = "tail -f /dev/null"
-                return CreateSandboxRequest(**cast(Any, params))
-            raise
+        return CreateSandboxRequest(**cast(Any, params))
 
-    async def _wait_for_ready(self, base_url: str, timeout_s: int = 120) -> None:
-        def _check() -> bool:
+    async def _wait_for_ready(
+        self, base_url: str, timeout_s: int | None = None
+    ) -> None:
+        timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
+        parsed = urlparse(base_url)
+        hostname = parsed.hostname or ""
+
+        def _check_dns() -> tuple[bool, str]:
+            if not hostname:
+                return False, f"Invalid exposure URL (missing hostname): {base_url}"
             try:
-                resp = requests.get(f"{base_url}/health", timeout=2)
-                return resp.status_code == 200
-            except Exception:
-                return False
+                socket.getaddrinfo(
+                    hostname, parsed.port or 443, type=socket.SOCK_STREAM
+                )
+                return True, "dns-ok"
+            except Exception as e:
+                return False, f"DNS {type(e).__name__}: {e}"
+
+        def _check_health() -> tuple[bool, str]:
+            try:
+                resp = requests.get(
+                    f"{base_url}/health",
+                    timeout=self.health_request_timeout_seconds,
+                )
+                if resp.status_code == 200:
+                    return True, "ok"
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as e:
+                return False, f"{type(e).__name__}: {e}"
 
         loop = asyncio.get_running_loop()
-        start = loop.time()
-        while (loop.time() - start) < timeout_s:
-            ok = await asyncio.to_thread(_check)
+        dns_start = loop.time()
+        last_dns_error = "no attempts"
+        while (loop.time() - dns_start) < self.dns_resolution_timeout_seconds:
+            dns_ok, dns_detail = await asyncio.to_thread(_check_dns)
+            if dns_ok:
+                break
+            last_dns_error = dns_detail
+            await asyncio.sleep(self.startup_poll_interval_seconds)
+        else:
+            raise RuntimeError(
+                "OpenEnv exposure DNS did not resolve after "
+                f"{self.dns_resolution_timeout_seconds}s: {base_url}. "
+                f"Last error: {last_dns_error}"
+            )
+
+        health_start = loop.time()
+        last_health_error = "no attempts"
+        while (loop.time() - health_start) < timeout:
+            ok, detail = await asyncio.to_thread(_check_health)
             if ok:
                 return
-            await asyncio.sleep(1)
-        raise RuntimeError(f"OpenEnv server not ready after {timeout_s}s: {base_url}")
+            last_health_error = detail
+            await asyncio.sleep(self.startup_poll_interval_seconds)
+        raise RuntimeError(
+            "OpenEnv server not ready after DNS resolution. "
+            f"Health check timeout={timeout}s, url={base_url}, "
+            f"last error: {last_health_error}"
+        )
 
-    async def _ensure_mode_and_schema(
-        self, base_url: str
-    ) -> tuple[str, dict[str, Any]]:
-        if self._mode is not None and self._action_schema is not None:
-            return self._mode, self._action_schema
+    def _wait_for_ready_sync(self, base_url: str, timeout_s: int | None = None) -> None:
+        timeout = timeout_s if timeout_s is not None else self.startup_timeout_seconds
+        parsed = urlparse(base_url)
+        hostname = parsed.hostname or ""
 
+        def _check_dns() -> tuple[bool, str]:
+            if not hostname:
+                return False, f"Invalid exposure URL (missing hostname): {base_url}"
+            try:
+                socket.getaddrinfo(
+                    hostname, parsed.port or 443, type=socket.SOCK_STREAM
+                )
+                return True, "dns-ok"
+            except Exception as e:
+                return False, f"DNS {type(e).__name__}: {e}"
+
+        def _check_health() -> tuple[bool, str]:
+            try:
+                resp = requests.get(
+                    f"{base_url}/health",
+                    timeout=self.health_request_timeout_seconds,
+                )
+                if resp.status_code == 200:
+                    return True, "ok"
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as e:
+                return False, f"{type(e).__name__}: {e}"
+
+        dns_start = time.monotonic()
+        last_dns_error = "no attempts"
+        while (time.monotonic() - dns_start) < self.dns_resolution_timeout_seconds:
+            dns_ok, dns_detail = _check_dns()
+            if dns_ok:
+                break
+            last_dns_error = dns_detail
+            time.sleep(self.startup_poll_interval_seconds)
+        else:
+            raise RuntimeError(
+                "OpenEnv exposure DNS did not resolve after "
+                f"{self.dns_resolution_timeout_seconds}s: {base_url}. "
+                f"Last error: {last_dns_error}"
+            )
+
+        health_start = time.monotonic()
+        last_health_error = "no attempts"
+        while (time.monotonic() - health_start) < timeout:
+            ok, detail = _check_health()
+            if ok:
+                return
+            last_health_error = detail
+            time.sleep(self.startup_poll_interval_seconds)
+        raise RuntimeError(
+            "OpenEnv server not ready after DNS resolution. "
+            f"Health check timeout={timeout}s, url={base_url}, "
+            f"last error: {last_health_error}"
+        )
+
+    def _try_get_logs_sync(
+        self, sandboxes: SandboxClient, sandbox_id: str
+    ) -> str | None:
+        try:
+            logs = sandboxes.get_logs(sandbox_id)
+        except Exception:
+            return None
+        if not logs:
+            return None
+        logs_str = str(logs)
+        if len(logs_str) > 4000:
+            return logs_str[-4000:]
+        return logs_str
+
+    def _cleanup_server_sync(self, server: _OpenEnvServer) -> None:
+        sandboxes = SandboxClient(APIClient())
+        try:
+            sandboxes.unexpose(server.sandbox_id, server.exposure_id)
+        except Exception:
+            pass
+        try:
+            sandboxes.delete(server.sandbox_id)
+        except Exception:
+            pass
+        self._active_servers.pop(server.sandbox_id, None)
+
+    async def _fetch_action_schema(self, base_url: str) -> dict[str, Any]:
+        if self._action_schema is not None:
+            return self._action_schema
         schema = await self._fetch_schema(base_url)
         action_schema = schema.get("action", {}) if isinstance(schema, dict) else {}
-        mode = "mcp" if self._looks_like_mcp_schema(action_schema) else "sim"
-        self._mode = mode
         self._action_schema = action_schema
-        return mode, action_schema
+        return action_schema
+
+    def _assert_contract_matches_schema(
+        self, contract: str, action_schema: dict[str, Any]
+    ) -> None:
+        looks_mcp = self._looks_like_mcp_schema(action_schema)
+        if contract == "mcp" and not looks_mcp:
+            raise RuntimeError(
+                "OpenEnv contract mismatch: manifest contract is 'mcp' but action schema "
+                "does not match MCP tool action shape."
+            )
+        if contract == "gym" and looks_mcp:
+            raise RuntimeError(
+                "OpenEnv contract mismatch: manifest contract is 'gym' but action schema "
+                "looks like MCP."
+            )
 
     async def _fetch_schema(self, base_url: str) -> dict[str, Any]:
         def _get() -> dict[str, Any]:
-            resp = requests.get(f"{base_url}/schema", timeout=5)
+            resp = requests.get(
+                f"{base_url}/schema",
+                timeout=self.schema_request_timeout_seconds,
+            )
             resp.raise_for_status()
             return resp.json()
 
-        return await asyncio.to_thread(_get)
+        async def _run_once() -> dict[str, Any]:
+            return await asyncio.to_thread(_get)
+
+        return await self._with_retry(_run_once)()
 
     def _looks_like_mcp_schema(self, schema: dict[str, Any]) -> bool:
         if not isinstance(schema, dict):
@@ -576,32 +1111,83 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         props = schema.get("properties")
         if not isinstance(props, dict):
             return None
-        if len(props) != 1:
-            return None
-        field_name, spec = next(iter(props.items()))
-        if isinstance(spec, dict) and spec.get("type") == "string":
-            return field_name
+        required = schema.get("required")
+        if isinstance(required, list):
+            required_str = [name for name in required if isinstance(name, str)]
+            if len(required_str) == 1:
+                required_name = required_str[0]
+                required_spec = props.get(required_name)
+                if (
+                    isinstance(required_spec, dict)
+                    and required_spec.get("type") == "string"
+                ):
+                    return required_name
+        if len(props) == 1:
+            field_name, spec = next(iter(props.items()))
+            if isinstance(spec, dict) and spec.get("type") == "string":
+                return field_name
         return None
 
-    def _obs_to_messages(self, obs: Any) -> ChatMessages:
+    def _normalize_observation(self, obs: Any) -> Any:
         if hasattr(obs, "model_dump"):
             try:
-                obs = obs.model_dump()
+                return obs.model_dump()
             except Exception:
-                pass
-        if isinstance(obs, dict):
-            if "messages" in obs and self._looks_like_messages(obs["messages"]):
-                return cast(ChatMessages, list(obs["messages"]))
-            for key in ("prompt", "content", "message"):
-                if key in obs and isinstance(obs[key], str):
-                    return [self._make_user_message(obs[key])]
-            metadata = obs.get("metadata")
-            if isinstance(metadata, dict):
-                for key in ("prompt", "content", "message"):
-                    if key in metadata and isinstance(metadata[key], str):
-                        return [self._make_user_message(metadata[key])]
-            return [self._make_user_message(json.dumps(obs, ensure_ascii=True))]
-        return [self._make_user_message(str(obs))]
+                return obs
+        return obs
+
+    def _render_observation_messages(
+        self,
+        obs: Any,
+        *,
+        context: str,
+        action_schema: dict[str, Any] | None = None,
+        contract: str | None = None,
+        seed: int | None = None,
+    ) -> ChatMessages:
+        normalized_obs = self._normalize_observation(obs)
+        renderer_kwargs = {
+            "context": context,
+            "action_schema": action_schema,
+            "contract": contract,
+            "seed": seed,
+        }
+        renderer = self.prompt_renderer
+        renderer_any = cast(Any, renderer)
+        try:
+            sig = inspect.signature(renderer)
+        except (TypeError, ValueError):
+            sig = None
+
+        if sig is None:
+            rendered = renderer_any(normalized_obs, **renderer_kwargs)
+        else:
+            has_var_kwargs = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            valid_kwargs: dict[str, Any] = {}
+            for key, value in renderer_kwargs.items():
+                if has_var_kwargs or key in sig.parameters:
+                    valid_kwargs[key] = value
+            rendered = renderer_any(normalized_obs, **valid_kwargs)
+
+        if not self._looks_like_messages(rendered):
+            raise RuntimeError(
+                f"OpenEnv prompt_renderer returned invalid output for {context}: "
+                "expected a non-empty chat messages list."
+            )
+        messages = list(cast(list[dict[str, Any]], rendered))
+        if not messages:
+            raise RuntimeError(
+                f"OpenEnv prompt_renderer returned an empty messages list for {context}."
+            )
+        for idx, msg in enumerate(messages):
+            if msg.get("content") is None:
+                raise RuntimeError(
+                    "OpenEnv prompt_renderer returned a message with null content "
+                    f"for {context} at index {idx}."
+                )
+        return cast(ChatMessages, messages)
 
     def _looks_like_messages(self, value: Any) -> bool:
         if not isinstance(value, list):
@@ -612,6 +1198,17 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             if "role" not in item or "content" not in item:
                 return False
         return True
+
+    def _require_prompt_messages(self, state: vf.State) -> ChatMessages:
+        current_prompt = state.get("prompt")
+        if self._looks_like_messages(current_prompt) and cast(
+            list[Any], current_prompt
+        ):
+            return cast(ChatMessages, list(cast(list[Any], current_prompt)))
+        raise RuntimeError(
+            "OpenEnv dataset must include a non-empty `prompt`. "
+            "No prompt fallback is supported."
+        )
 
     def _convert_mcp_tools(self, tools: Iterable[Any]) -> list[dict[str, Any]]:
         oai_tools = []
@@ -638,6 +1235,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                         "name": tool_dict.get("name", ""),
                         "description": tool_dict.get("description", ""),
                         "parameters": tool_dict.get("input_schema")
+                        or tool_dict.get("inputSchema")
                         or {"type": "object", "properties": {}},
                     },
                 }

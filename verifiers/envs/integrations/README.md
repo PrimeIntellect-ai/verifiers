@@ -135,34 +135,66 @@ OPENAI_API_KEY              # For LLM judge evaluation
 
 Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.
 
+Current verifiers integration targets the released `openenv-core==0.2.1` contract.
+
 ### Quick Start
 
-```python
-from verifiers.envs.integrations.openenv_env import OpenEnvEnv
-
-# Local OpenEnv project (with prebuilt build manifest at /path/to/proj/.build.json)
-env = OpenEnvEnv(openenv_project="/path/to/proj")
-```
-
-### Bundling an OpenEnv Project
-
-If you want to ship the OpenEnv project inside your verifiers environment module:
-
-```python
-from pathlib import Path
-from verifiers.envs.integrations.openenv_env import OpenEnvEnv
-
-env = OpenEnvEnv(openenv_project=Path(__file__).parent / "proj")
-```
-
-### Build Once, Run Everywhere
-
-For local development, build and register the image once:
+Initialize an OpenEnv environment with the template:
 
 ```bash
-vf-build <env-id>
+prime env init my-openenv --openenv
 ```
 
-By default this resolves to `./environments/<env_id_underscore>/proj` and writes `.build.json` there. Override the environments root with `-p /path/to/environments`.
+The template creates this structure:
 
-For environment modules pushed to the PI Environments Hub, include the OpenEnv project directory and `.build.json` in the package so installs run without extra setup.
+```text
+environments/my_openenv/
+├── my_openenv.py
+└── proj/    # copy your full OpenEnv project here
+```
+
+Copy your full OpenEnv project into `proj/`, then build the image:
+
+```bash
+uv run vf-build my-openenv
+```
+
+```python
+# environments/my_openenv/my_openenv.py
+from pathlib import Path
+from typing import Any
+import verifiers as vf
+from verifiers.envs.integrations.openenv_env import OpenEnvEnv
+
+def render_prompt(observation: Any, **kwargs: Any) -> list[dict[str, str]]:
+    del kwargs
+    if not isinstance(observation, dict):
+        raise RuntimeError("Expected dict observation")
+    prompt = observation.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return [{"role": "user", "content": prompt}]
+    raise RuntimeError("Observation did not include a renderable prompt")
+
+def load_environment(
+    num_train_examples: int = 100,
+    num_eval_examples: int = 50,
+    seed: int = 0,
+) -> vf.Environment:
+    return OpenEnvEnv(
+        openenv_project=Path(__file__).parent / "proj",
+        prompt_renderer=render_prompt,
+        num_train_examples=num_train_examples,
+        num_eval_examples=num_eval_examples,
+        seed=seed,
+    )
+```
+
+Define a `prompt_renderer` function that converts each OpenEnv observation into a non-empty chat message list for the model prompt.
+
+### Upstream-Matching Examples
+
+- `environments/openenv_echo/proj`: verbatim copy of OpenEnv `envs/echo_env` (MCP contract).
+- `environments/openenv_textarena/proj`: verbatim copy of OpenEnv `envs/textarena_env` (gym contract, default `Wordle-v0`).
+
+Include both `proj/` and `.build.json` in your environment package so installs
+from the Environments Hub work without extra setup.

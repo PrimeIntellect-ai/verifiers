@@ -17,58 +17,47 @@ A simple test environment that echoes back messages. Perfect for testing the env
 
 ## Quick Start
 
-The simplest way to use the Echo environment is through the `EchoEnv` class. The client is **async by default**:
+The simplest way to use the Echo environment is through the `EchoEnv` class:
 
 ```python
-import asyncio
-from echo_env import EchoAction, EchoEnv
+from envs.echo_env import EchoAction, EchoEnv
 
-async def main():
+try:
     # Create environment from Docker image
-    client = await EchoEnv.from_docker_image("echo-env:latest")
+    echo_env = EchoEnv.from_docker_image("echo-env:latest")
 
-    async with client:
-        # Reset
-        result = await client.reset()
-        print(f"Reset: {result.observation.echoed_message}")
+    # Reset
+    result = echo_env.reset()
+    print(f"Reset: {result.observation.echoed_message}")
 
-        # Send multiple messages
-        messages = ["Hello, World!", "Testing echo", "Final message"]
+    # Send multiple messages
+    messages = ["Hello, World!", "Testing echo", "Final message"]
 
-        for msg in messages:
-            result = await client.step(EchoAction(message=msg))
-            print(f"Sent: '{msg}'")
-            print(f"  → Echoed: '{result.observation.echoed_message}'")
-            print(f"  → Length: {result.observation.message_length}")
-            print(f"  → Reward: {result.reward}")
+    for msg in messages:
+        result = echo_env.step(EchoAction(message=msg))
+        print(f"Sent: '{msg}'")
+        print(f"  → Echoed: '{result.observation.echoed_message}'")
+        print(f"  → Length: {result.observation.message_length}")
+        print(f"  → Reward: {result.reward}")
 
-asyncio.run(main())
+finally:
+    # Always clean up
+    echo_env.close()
 ```
 
-For **synchronous usage**, use the `.sync()` wrapper:
-
-```python
-from echo_env import EchoAction, EchoEnv
-
-with EchoEnv(base_url="http://localhost:8000").sync() as client:
-    result = client.reset()
-    result = client.step(EchoAction(message="Hello!"))
-    print(result.observation.echoed_message)
-```
-
-The `EchoEnv.from_docker_image()` method handles:
+That's it! The `EchoEnv.from_docker_image()` method handles:
 - Starting the Docker container
 - Waiting for the server to be ready
 - Connecting to the environment
-- Container cleanup when the context manager exits
+- Container cleanup when you call `close()`
 
 ## Building the Docker Image
 
 Before using the environment, you need to build the Docker image:
 
 ```bash
-# From repository root
-uv run vf-build openenv-echo
+# From project root
+docker build -t echo-env:latest -f envs/echo_env/server/Dockerfile .
 ```
 
 ## Environment Details
@@ -98,20 +87,17 @@ The reward is calculated as: `message_length × 0.1`
 If you already have an Echo environment server running, you can connect directly:
 
 ```python
-from echo_env import EchoAction, EchoEnv
+from envs.echo_env import EchoEnv
 
-# Async usage
-async with EchoEnv(base_url="http://localhost:8000") as client:
-    result = await client.reset()
-    result = await client.step(EchoAction(message="Hello!"))
+# Connect to existing server
+echo_env = EchoEnv(base_url="<ENV_HTTP_URL_HERE>")
 
-# Sync usage
-with EchoEnv(base_url="http://localhost:8000").sync() as client:
-    result = client.reset()
-    result = client.step(EchoAction(message="Hello!"))
+# Use as normal
+result = echo_env.reset()
+result = echo_env.step(EchoAction(message="Hello!"))
 ```
 
-Note: When connecting to an existing server, closing the client will NOT stop the server.
+Note: When connecting to an existing server, `echo_env.close()` will NOT stop the server.
 
 ## Development & Testing
 

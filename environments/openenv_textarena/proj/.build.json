@@ -1,8 +1,8 @@
 {
   "app": "server.app:app",
-  "contract": "mcp",
-  "environment_id": "openenv-echo",
-  "image": "cmaeni8ji0001ql2z5gw8204f/openenv-echo:latest",
+  "contract": "gym",
+  "environment_id": "openenv-textarena",
+  "image": "cmaeni8ji0001ql2z5gw8204f/openenv-textarena:latest",
   "image_status": "COMPLETED",
   "port": 8000,
   "schema_version": 1,

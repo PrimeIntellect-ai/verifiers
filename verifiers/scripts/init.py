@@ -152,13 +152,29 @@ def load_environment(**kwargs) -> vf.Environment:
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 from pathlib import Path
+from typing import Any
 
 import verifiers as vf
 
 
+def render_prompt(observation: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    del kwargs
+    if isinstance(observation, dict):
+        messages = observation.get("messages")
+        if isinstance(messages, list) and messages:
+            return messages
+        prompt = observation.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return [{"role": "user", "content": prompt}]
+    raise RuntimeError(
+        "OpenEnv observation did not include a renderable prompt. "
+        "Update render_prompt() for your project's observation schema."
+    )
+
+
 def load_environment(
-    num_train_examples: int = 1000,
-    num_eval_examples: int = 100,
+    num_train_examples: int = 100,
+    num_eval_examples: int = 50,
     seed: int = 0,
 ):
     return vf.OpenEnvEnv(
@@ -166,6 +182,7 @@ def load_environment(
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,
+        prompt_renderer=render_prompt,
     )
 """
 
@@ -207,7 +224,7 @@ version = "0.1.0"
 description = "OpenEnv project bundled with a verifiers environment"
 requires-python = ">=3.10"
 dependencies = [
-    "openenv-core>=0.2.0",
+    "openenv-core[core]==0.2.1",
     "fastapi>=0.115.0",
     "uvicorn>=0.24.0",
 ]

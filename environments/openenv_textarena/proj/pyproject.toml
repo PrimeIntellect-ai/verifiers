@@ -9,9 +9,9 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-echo-env"
+name = "openenv-textarena"
 version = "0.1.0"
-description = "Echo Environment for OpenEnv - simple test environment that echoes back messages"
+description = "TextArena environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     # Core OpenEnv dependencies (required for server functionality)
@@ -20,7 +20,16 @@ dependencies = [
     "pydantic>=2.0.0",
     "uvicorn>=0.24.0",
     "requests>=2.31.0",
-    # No additional environment-specific dependencies needed for echo_env
+    # Environment-specific dependencies
+    # Add all dependencies needed for your environment here
+    # Examples:
+    # "numpy>=1.19.0",
+    # "torch>=2.0.0",
+    # "gymnasium>=0.29.0",
+    # "openspiel>=1.0.0",
+    # "smolagents>=1.22.0,<2",
+    "textarena>=0.6.1",
+    "nltk>=3.9.2",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +40,11 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m echo_env.server.app
-server = "echo_env.server.app:main"
+# or: python -m textarena_env.server.app
+server = "textarena_env.server.app:main"
 
 [tool.setuptools]
-include-package-data = true
-packages = ["echo_env", "echo_env.server"]
-package-dir = { "echo_env" = ".", "echo_env.server" = "server" }
+# Explicitly list packages - "textarena_env" maps to current dir
+packages = ["textarena_env", "textarena_env.server"]
+package-dir = {"textarena_env" = ".", "textarena_env.server" = "server"}
+

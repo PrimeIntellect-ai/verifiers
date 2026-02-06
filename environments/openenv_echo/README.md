@@ -14,7 +14,7 @@
 
 - **Primary dataset(s)**: Seed-generated episodes (one seed per rollout).
 - **Source links**: Bundled OpenEnv Echo project in `proj/` (copied from OpenEnv).
-- **Split sizes**: 1000 train / 100 eval by default (configurable).
+- **Split sizes**: 100 train / 50 eval by default (configurable).
 
 ### Task
 
@@ -56,6 +56,8 @@ Notes:
 - If your environments directory is not `./environments`, run:
 `uv run vf-build openenv-echo -p /path/to/environments`
 - If you customize the bundled OpenEnv project, rerun `uv run vf-build openenv-echo` (the `proj/.build.json` manifest is updated).
+- `openenv_echo.py` defines `render_echo_prompt()` and passes it via `prompt_renderer`
+to keep the initial MCP prompt concise.
 
 ### Troubleshooting
 
@@ -73,8 +75,8 @@ If `prime images list` shows **Ready** but the sandbox still cannot pull the ima
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `num_train_examples` | int | `1000` | Number of training seeds to generate. |
-| `num_eval_examples` | int | `100` | Number of eval seeds to generate. |
+| `num_train_examples` | int | `100` | Number of training seeds to generate. |
+| `num_eval_examples` | int | `50` | Number of eval seeds to generate. |
 | `seed` | int | `0` | Base seed for episode generation. |
 
 ### Metrics
