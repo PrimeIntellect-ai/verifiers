@@ -1043,7 +1043,7 @@ class Environment(ABC):
                 # incrementally save outputs
                 if save_results:
                     save_new_outputs(new_outputs, builder.results_path)
-                    save_metadata(builder.build_metadata(), builder.results_path)
+                    save_metadata(metadata, builder.results_path)
         finally:
             # cancel all outstanding tasks and await their completion
             pending = [task for task in tasks.keys() if not task.done()]
