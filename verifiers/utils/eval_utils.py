@@ -154,6 +154,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # saving
         "state_columns",
         "save_results",
+        "resume",
         "resume_path",
         "save_to_hf_hub",
         "hf_hub_dataset_name",

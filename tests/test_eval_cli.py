@@ -42,6 +42,7 @@ def run_cli(make_metadata, make_state, make_input):
             "no_interleave_scoring": False,
             "state_columns": [],
             "save_results": False,
+            "resume": None,
             "save_every": -1,
             "save_to_hf_hub": False,
             "hf_hub_dataset_name": "",
@@ -459,3 +460,62 @@ def test_load_toml_config_invalid_global_field():
         f.flush()
         with pytest.raises(ValueError):
             load_toml_config(Path(f.name))
+
+
+def test_cli_resume_explicit_path(monkeypatch, run_cli, tmp_path: Path):
+    """--resume with explicit path sets resume_path."""
+    resume_dir = tmp_path / "resume"
+    resume_dir.mkdir(parents=True)
+    (resume_dir / "results.jsonl").write_text("", encoding="utf-8")
+    (resume_dir / "metadata.json").write_text("{}", encoding="utf-8")
+
+    captured = run_cli(
+        monkeypatch,
+        {
+            "resume": str(resume_dir),
+        },
+    )
+
+    assert captured["configs"][0].resume_path == resume_dir
+
+
+def test_cli_resume_auto_detects_latest_incomplete(monkeypatch, run_cli, tmp_path: Path):
+    """--resume with no path auto-detects latest matching incomplete run."""
+    env_id = "dummy-env"
+    model = "gpt-4.1-mini"
+    run_base = (
+        tmp_path
+        / "outputs"
+        / "evals"
+        / f"{env_id}--{model.replace('/', '--')}"
+    )
+    old_run = run_base / "oldrun"
+    new_run = run_base / "newrun"
+    old_run.mkdir(parents=True)
+    new_run.mkdir(parents=True)
+
+    metadata = (
+        '{"env_id":"dummy-env","model":"gpt-4.1-mini",'
+        '"num_examples":4,"rollouts_per_example":1}'
+    )
+    (old_run / "metadata.json").write_text(metadata, encoding="utf-8")
+    (new_run / "metadata.json").write_text(metadata, encoding="utf-8")
+
+    (old_run / "results.jsonl").write_text('{"example_id":0}\n', encoding="utf-8")
+    (new_run / "results.jsonl").write_text(
+        '{"example_id":0}\n{"example_id":1}\n', encoding="utf-8"
+    )
+
+    monkeypatch.chdir(tmp_path)
+    captured = run_cli(
+        monkeypatch,
+        {
+            "resume": True,
+            "num_examples": 4,
+            "rollouts_per_example": 1,
+            "env_dir_path": str(tmp_path / "environments"),
+        },
+    )
+
+    assert captured["configs"][0].resume_path is not None
+    assert captured["configs"][0].resume_path.resolve() == new_run.resolve()
