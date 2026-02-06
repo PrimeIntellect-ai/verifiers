@@ -1,6 +1,9 @@
 import os
 
-from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.path_utils import (
+    find_latest_incomplete_eval_results_path,
+    is_valid_eval_results_path,
+)
 
 # Suppress tokenizers parallelism warning (only prints when env var is unset)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
@@ -214,10 +217,15 @@ def main():
         help="Save results to disk",
     )
     parser.add_argument(
-        "--resume-path",
-        type=str,
+        "--resume",
+        nargs="?",
+        const=True,
         default=None,
-        help="Resume from a previous run.",
+        metavar="PATH",
+        help=(
+            "Resume from a previous run. Optionally provide a PATH; "
+            "if omitted, auto-detect the latest incomplete matching run."
+        ),
     )
     parser.add_argument(
         "--independent-scoring",
@@ -389,15 +397,39 @@ def main():
             extra_headers=merged_headers,
         )
 
+        # Backward-compatible TOML field: resume_path
+        if raw.get("resume") is None and raw.get("resume_path") is not None:
+            raw["resume"] = raw["resume_path"]
+
         # handle resume path resolution
-        resume_path = raw.get("resume_path")
-        if resume_path is not None:
-            resume_path = Path(resume_path)
+        resume_arg = raw.get("resume")
+        resume_path: Path | None = None
+        if isinstance(resume_arg, str):
+            resume_path = Path(resume_arg)
             if not is_valid_eval_results_path(resume_path):
                 raise ValueError(
                     f"Resume path {resume_path} is not a valid evaluation results path"
                 )
-            logger.info(f"Resuming from: {resume_path}")
+            logger.info(f"Resuming from explicit path: {resume_path}")
+        elif resume_arg is True:
+            auto_resume_path = find_latest_incomplete_eval_results_path(
+                env_id=env_id,
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            )
+            if auto_resume_path is not None:
+                resume_path = auto_resume_path
+                logger.info(f"Auto-resuming from: {resume_path}")
+            else:
+                logger.info(
+                    "No matching incomplete run found for --resume; starting a new run"
+                )
+        elif resume_arg in (None, False):
+            pass
+        else:
+            raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
         return EvalConfig(
             env_id=env_id,

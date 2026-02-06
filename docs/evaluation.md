@@ -139,7 +139,7 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--save-results` | `-s` | false | Save results to disk |
-| `--resume-path` | — | — | Resume from a previous run |
+| `--resume [PATH]` | — | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
@@ -151,7 +151,7 @@ Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
 
 ### Resuming Evaluations
 
-Long-running evaluations can be interrupted and resumed using checkpointing. When `--save-results` is enabled, results are saved incrementally after each completed group of rollouts. Use `--resume-path` to continue from where you left off.
+Long-running evaluations can be interrupted and resumed using checkpointing. When `--save-results` is enabled, results are saved incrementally after each completed group of rollouts. Use `--resume` to continue from where you left off. Pass a path to resume a specific run, or omit the path to auto-detect the latest incomplete matching run.
 
 **Running with checkpoints:**
 
@@ -164,10 +164,10 @@ With `-s` (save results) enabled, partial results are written to disk after each
 **Resuming from a checkpoint:**
 
 ```bash
-prime eval run my-env -n 1000 -s --resume-path ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
+prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
-The resume path must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. When resuming:
+When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, and `rollouts_per_example` where saved `num_examples` is less than or equal to the current run. When resuming:
 
 1. Existing completed rollouts are loaded from the checkpoint
 2. Remaining rollouts are computed based on the example ids and group size
@@ -191,7 +191,7 @@ ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
 
 # Resume from the checkpoint
 prime eval run math-python -n 500 -r 3 -s \
-  --resume-path ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
+  --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
 ```
 
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
