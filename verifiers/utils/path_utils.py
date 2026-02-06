@@ -43,11 +43,15 @@ def get_eval_runs_dir(env_id: str, model: str, env_dir_path: str = "./environmen
 
 def is_valid_eval_results_path(path: Path) -> bool:
     """Checks if a path is a valid evaluation results path."""
+    results_file = path / "results.jsonl"
+    metadata_file = path / "metadata.json"
     return (
         path.exists()
         and path.is_dir()
-        and Path(path / "results.jsonl").exists()
-        and Path(path / "metadata.json").exists()
+        and results_file.exists()
+        and results_file.is_file()
+        and metadata_file.exists()
+        and metadata_file.is_file()
     )
 
 

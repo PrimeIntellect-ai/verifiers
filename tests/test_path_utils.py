@@ -1,7 +1,10 @@
 import os
 from pathlib import Path
 
-from verifiers.utils.path_utils import find_latest_incomplete_eval_results_path
+from verifiers.utils.path_utils import (
+    find_latest_incomplete_eval_results_path,
+    is_valid_eval_results_path,
+)
 
 
 def test_find_latest_incomplete_eval_results_path_picks_newest_matching(
@@ -69,3 +72,23 @@ def test_find_latest_incomplete_eval_results_path_returns_none_when_no_match(
         env_dir_path=str(tmp_path / "environments"),
     )
     assert result is None
+
+
+def test_is_valid_eval_results_path_requires_files(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    (run_dir / "results.jsonl").mkdir()
+    (run_dir / "metadata.json").mkdir()
+
+    assert not is_valid_eval_results_path(run_dir)
+
+
+def test_is_valid_eval_results_path_accepts_expected_layout(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    (run_dir / "results.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
+
+    assert is_valid_eval_results_path(run_dir)
