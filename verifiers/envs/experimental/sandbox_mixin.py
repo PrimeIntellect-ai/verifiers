@@ -35,25 +35,13 @@ if _httpx_log_level:
     httpcore_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
 
 
-class SandboxCreationError(vf.SandboxError):
-    """Raised when sandbox creation fails."""
-
-    pass
+class SandboxCreationError(vf.SandboxError): ...
 
 
-class SandboxNotReadyError(vf.SandboxError):
-    """Raised when sandbox fails to become ready."""
-
-    pass
+class SandboxNotReadyError(vf.SandboxError): ...
 
 
-class SandboxSetupError(vf.SandboxError):
-    """Raised when post-sandbox setup fails."""
-
-    pass
-
-
-logger = logging.getLogger(__name__)
+class SandboxSetupError(vf.SandboxError): ...
 
 
 class ThreadedAsyncSandboxClient:
@@ -66,6 +54,7 @@ class ThreadedAsyncSandboxClient:
         max_keepalive_connections: int = 50,
         **client_kwargs,
     ):
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="sandbox-client-executor"
         )
@@ -122,6 +111,9 @@ class SandboxMixin:
         sandbox_client_max_keepalive_connections: int = 50,
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
+        self.logger = logging.getLogger(
+            f"{self.__class__.__module__}.{self.__class__.__name__}"
+        )
         self.active_sandboxes = set()
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
@@ -136,7 +128,7 @@ class SandboxMixin:
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
             reraise=True,
         ).wraps
 
@@ -155,7 +147,7 @@ class SandboxMixin:
 
         self.active_sandboxes.add(sandbox.id)
         state["sandbox_id"] = sandbox.id
-        logger.debug(f"Created sandbox {sandbox.id}")
+        self.logger.debug(f"Created sandbox {sandbox.id}")
 
         try:
             await self.sandbox_client.wait_for_creation(sandbox.id)
@@ -185,21 +177,21 @@ class SandboxMixin:
         async def _delete(sid: str):
             await self.sandbox_client.delete(sid)
             self.active_sandboxes.discard(sid)
-            logger.debug(f"Deleted sandbox {sid}")
+            self.logger.debug(f"Deleted sandbox {sid}")
 
         try:
             await self.with_retry(_delete)(sandbox_id)
         except Exception as e:
-            logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+            self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def bulk_delete_sandboxes(self, sandbox_ids: list[str]) -> None:
         """Delete multiple sandboxes by their IDs."""
         try:
             await self.with_retry(self.sandbox_client.bulk_delete)(sandbox_ids)
-            logger.debug(f"Bulk deleted sandboxes: {sandbox_ids}")
+            self.logger.debug(f"Bulk deleted sandboxes: {sandbox_ids}")
             self.active_sandboxes.difference_update(sandbox_ids)
         except Exception as e:
-            logger.error(f"Failed to bulk delete sandboxes {sandbox_ids}: {e}")
+            self.logger.error(f"Failed to bulk delete sandboxes {sandbox_ids}: {e}")
 
     async def run_background_job(
         self,
@@ -219,15 +211,15 @@ class SandboxMixin:
                 sandbox_id=sandbox_id, command=command, working_dir=working_dir
             )
         except (CommandTimeoutError, httpx.ReadTimeout) as e:
-            logger.error(f"Failed to start background job: {repr(e)}")
+            self.logger.error(f"Failed to start background job: {repr(e)}")
             raise vf.SandboxError() from e
         except SandboxOOMError as e:
             state["sandbox_oom"] = True
-            logger.error(f"Sandbox OOM during background job: {repr(e)}")
+            self.logger.error(f"Sandbox OOM during background job: {repr(e)}")
             raise vf.SandboxError() from e
         except SandboxTimeoutError as e:
             state["sandbox_timeout"] = True
-            logger.error(f"Sandbox timeout during background job: {repr(e)}")
+            self.logger.error(f"Sandbox timeout during background job: {repr(e)}")
             raise vf.SandboxError() from e
 
         try:
@@ -235,17 +227,17 @@ class SandboxMixin:
                 results = await get_job(sandbox_id, job)
                 if results.completed:
                     return results
-                logger.debug(
+                self.logger.debug(
                     f"{sandbox_id=}: Polling job... {elapsed} / {timeout} seconds elapsed"
                 )
                 await asyncio.sleep(poll_interval)
         except SandboxOOMError as e:
             state["sandbox_oom"] = True
-            logger.error(f"Sandbox OOM during polling: {repr(e)}")
+            self.logger.error(f"Sandbox OOM during polling: {repr(e)}")
             raise vf.SandboxError() from e
         except SandboxTimeoutError as e:
             state["sandbox_timeout"] = True
-            logger.error(f"Sandbox timeout during polling: {repr(e)}")
+            self.logger.error(f"Sandbox timeout during polling: {repr(e)}")
             raise vf.SandboxError() from e
 
         raise CommandTimeoutError(
@@ -256,7 +248,7 @@ class SandboxMixin:
         """Bulk delete remaining sandboxes. Uses sync client for signal handling."""
         if not self.active_sandboxes:
             return
-        logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
+        self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
         sync_client = SandboxClient(APIClient())
         sandbox_ids = list(self.active_sandboxes)
         batch_size = 100
@@ -266,9 +258,9 @@ class SandboxMixin:
                 sync_client.bulk_delete(sandbox_ids=batch)
                 for sid in batch:
                     self.active_sandboxes.discard(sid)
-                logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
+                self.logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
             except Exception as e:
-                logger.warning(f"Bulk delete failed for batch: {e}")
+                self.logger.warning(f"Bulk delete failed for batch: {e}")
 
     def teardown_sandbox_client(self):
         """Teardown the threaded sandbox client."""
