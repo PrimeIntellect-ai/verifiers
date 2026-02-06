@@ -1,10 +1,11 @@
 import logging
 import sys
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import tenacity as tc
-from tenacity._utils import LoggerProtocol
 from prime_sandboxes import CommandTimeoutError
+
+
 
 from verifiers.envs.sandbox_env import (
     CreateSandboxRequest,
@@ -12,6 +13,9 @@ from verifiers.envs.sandbox_env import (
     SandboxNotReadyError,
     ThreadedAsyncSandboxClient,
 )
+
+class LoggerProtocol(Protocol):
+    def log(self, level: int, msg: str, /, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class SandboxExecutorMixin:

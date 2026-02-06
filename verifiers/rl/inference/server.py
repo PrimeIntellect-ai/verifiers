@@ -66,7 +66,9 @@ class WeightSyncWorkerExtension:
 
         torch_dtype = getattr(torch, dtype.split(".")[-1])
         weight = torch.empty(shape, dtype=torch_dtype, device=self.device)
-        self.pynccl_comm.broadcast(weight, src=self.client_rank)
+        client_rank = self.client_rank
+        assert client_rank is not None
+        self.pynccl_comm.broadcast(weight, src=client_rank)
         self.pynccl_comm.group.barrier()
         cast(Any, self).model_runner.model.load_weights(weights=[(name, weight)])
 
