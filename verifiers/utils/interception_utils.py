@@ -70,7 +70,8 @@ class InterceptionServer:
 
             # OS-assigned port if port=0
             if self.port == 0:
-                sockets = site._server.sockets if site._server else None
+                server = getattr(site, "_server", None)
+                sockets = getattr(server, "sockets", None) if server else None
                 if sockets:
                     self.port = sockets[0].getsockname()[1]
 
