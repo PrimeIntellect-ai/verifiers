@@ -62,16 +62,28 @@ def get_server_url(server_config: MCPServerConfig, http_urls: dict) -> str:
             f"Provide either 'url' in server config or add to 'http_urls' dict."
         )
 
-def validate_config(transport_type: str, servers: list[MCPServerConfig], connection_scope: str) -> None:
+def validate_config(
+    transport_type: str,
+    servers: list[MCPServerConfig],
+    connection_scope: str,
+    http_urls: Optional[dict[str, str]] = None,
+) -> None:
     if transport_type == "stdio":
         missing = [s.name for s in servers if not s.command]
         if missing:
             raise ValueError(f"'command' required for stdio. Missing: {missing}")
 
     elif transport_type == "http":
-        missing = [s.name for s in servers if not s.url]
+        urls = http_urls or {}
+        missing = [
+            s.name
+            for s in servers
+            if not s.url and s.name not in urls
+        ]
         if missing:
-            raise ValueError(f"'url' required for http. Missing: {missing}")
+            raise ValueError(
+                f"URL required for http (per-server 'url' or entry in 'http_urls'). Missing: {missing}"
+            )
 
     elif transport_type == "sandbox":
         missing = [s.name for s in servers if not s.command]

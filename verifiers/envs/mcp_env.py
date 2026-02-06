@@ -54,7 +54,12 @@ class MCPEnv(vf.StatefulToolEnv):
         self.sandbox_environment_vars = sandbox_environment_vars or {}
         self.sandbox_port_to_expose = sandbox_port_to_expose
 
-        validate_config(transport_type, self.mcp_servers, self.connection_scope)
+        validate_config(
+            transport_type,
+            self.mcp_servers,
+            self.connection_scope,
+            http_urls=self.http_urls,
+        )
 
         self.session_transports: Dict[str, MCPTransport] = {}
 
