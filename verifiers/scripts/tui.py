@@ -269,26 +269,15 @@ def _coerce_info_value(info: Any) -> Any:
         return info
 
 
-def format_info_for_details(
-    info: Any,
-    *,
-    max_chars: int = 4000,
-) -> str:
+def format_info_for_details(info: Any) -> str:
     """Format record info for the details panel in rollout view."""
     info_value = _coerce_info_value(info)
     if isinstance(info_value, (dict, list)):
         try:
-            rendered = json.dumps(info_value, ensure_ascii=False, indent=2)
+            return json.dumps(info_value, ensure_ascii=False, indent=2)
         except (TypeError, ValueError):
-            rendered = str(info_value)
-    else:
-        rendered = str(info_value)
-
-    if len(rendered) <= max_chars:
-        return rendered
-
-    preview = rendered[:max_chars].rstrip()
-    return f"{preview}\n… (truncated; {len(rendered):,} chars total)"
+            return str(info_value)
+    return str(info_value)
 
 
 # ----------------------------
@@ -845,8 +834,6 @@ class ViewRunScreen(Screen):
         if info not in (None, {}):
             details_lines.append("Info: ", style="bold")
             details_lines.append(format_info_for_details(info))
-            details_lines.append("\n", style="dim")
-            details_lines.append("(full info available in results.jsonl)", style="dim")
 
         task = record.get("task", None)
         if task not in (None, ""):

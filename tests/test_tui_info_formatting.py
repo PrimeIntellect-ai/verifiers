@@ -23,13 +23,13 @@ def test_format_info_for_details_parses_json_string() -> None:
     )
 
 
-def test_format_info_for_details_truncates_large_content() -> None:
+def test_format_info_for_details_preserves_large_content() -> None:
     info = {"payload": [f"line-{i}" for i in range(200)]}
 
-    rendered = format_info_for_details(info, max_chars=80)
+    rendered = format_info_for_details(info)
 
-    assert rendered.endswith("chars total)")
-    assert "(truncated;" in rendered
+    assert "line-199" in rendered
+    assert "(truncated;" not in rendered
 
 
 def test_format_info_for_details_handles_non_serializable_data() -> None:
