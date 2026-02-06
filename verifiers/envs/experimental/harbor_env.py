@@ -9,6 +9,7 @@ from datasets import Dataset
 
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
+from verifiers.envs.experimental.sandbox_mixin import ThreadedAsyncSandboxClient
 
 logger = logging.getLogger(__name__)
 
