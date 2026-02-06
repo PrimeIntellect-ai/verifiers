@@ -1088,29 +1088,30 @@ class Environment(ABC):
 
                 builder.add_outputs(new_outputs)
 
-                # emit progress event
-                await self._emit_event(
-                    ProgressEvent(
-                        type="progress",
-                        all_outputs=list(builder.outputs),  # Copy to avoid mutation
-                        new_outputs=list(new_outputs),  # Copy for consistency
-                        completed_count=len(builder.outputs),
-                        total_count=total_rollouts,
-                    ),
-                    on_event,
-                )
-
-                # Emit GroupCompleteEvent for non-independent scoring (PR #632)
-                if states is not None and example_id is not None:
+                # emit progress event (only construct if handler exists)
+                if on_event is not None:
                     await self._emit_event(
-                        GroupCompleteEvent(
-                            type="group_complete",
-                            example_id=example_id,
-                            states=list(states),  # Copy to avoid mutation
-                            outputs=list(new_outputs),  # Copy to avoid mutation
+                        ProgressEvent(
+                            type="progress",
+                            all_outputs=list(builder.outputs),  # Copy to avoid mutation
+                            new_outputs=list(new_outputs),  # Copy for consistency
+                            completed_count=len(builder.outputs),
+                            total_count=total_rollouts,
                         ),
                         on_event,
                     )
+
+                    # Emit GroupCompleteEvent for non-independent scoring (PR #632)
+                    if states is not None and example_id is not None:
+                        await self._emit_event(
+                            GroupCompleteEvent(
+                                type="group_complete",
+                                example_id=example_id,
+                                states=list(states),  # Copy to avoid mutation
+                                outputs=list(new_outputs),  # Copy to avoid mutation
+                            ),
+                            on_event,
+                        )
 
                 # incrementally save outputs
                 if save_results:
