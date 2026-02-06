@@ -2088,8 +2088,30 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         packages.extend(extras)
         if not packages:
             return
-        pkg_list = " ".join(packages)
-        cmd = f"bash -lc 'pip install -q {pkg_list}'"
+        # Check each package with a quick import and only
+        # install the ones that are missing. This avoids failures when pip is
+        # unavailable on PATH but the package is already present in the image.
+        # For example, in mini-swe-agent-plus-rlm
+        missing: list[str] = []
+        for pkg in packages:
+            module = pkg.split("[", 1)[0].split("==", 1)[0].strip()
+            check_cmd = f"bash -lc 'python -c \"import {module}\"'"
+            try:
+                result = await self._execute_sandbox_command(
+                    sandbox_id,
+                    check_cmd,
+                    timeout=self.env.max_startup_wait_seconds,
+                )
+            except Exception:
+                missing.append(pkg)
+                continue
+            exit_code = getattr(result, "exit_code", 0)
+            if exit_code not in (0, None):
+                missing.append(pkg)
+        if not missing:
+            return
+        pkg_list = " ".join(missing)
+        cmd = f"bash -lc 'python -m pip install -q {pkg_list}'"
         result = await self._execute_sandbox_command(
             sandbox_id,
             cmd,
