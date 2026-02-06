@@ -30,14 +30,14 @@ class BaseResponse(BaseModel):
 
 
 class HealthRequest(BaseRequest):
-    request_type: Literal["health"] = "health"  # type: ignore[override]
+    request_type: Literal["health"] = "health"
 
 
 class HealthResponse(BaseResponse): ...
 
 
 class RunRolloutRequest(BaseRequest):
-    request_type: Literal["run_rollout"] = "run_rollout"  # type: ignore[override]
+    request_type: Literal["run_rollout"] = "run_rollout"
 
     # skip validation because multi-modal content type + tool calls validate weirdly
     # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
@@ -54,7 +54,7 @@ class RunRolloutResponse(BaseResponse):
 
 
 class RunGroupRequest(BaseRequest):
-    request_type: Literal["run_group"] = "run_group"  # type: ignore[override]
+    request_type: Literal["run_group"] = "run_group"
 
     # skip validation because multi-modal content type + tool calls validate weirdly
     # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
