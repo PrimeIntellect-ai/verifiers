@@ -174,7 +174,9 @@ class Environment(ABC):
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
             # merge extra_body if provided
-            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))
+            cast(dict[str, Any], self.sampling_args["extra_body"]).update(
+                cast(dict[str, Any], sampling_args.get("extra_body", {}))
+            )
             # copy other keys
             for key, value in sampling_args.items():
                 if key != "extra_body":
@@ -679,12 +681,12 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
-        state_input = deepcopy(input)
+        state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))
+        state = State(input=state_input)
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
