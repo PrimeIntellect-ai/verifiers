@@ -68,6 +68,10 @@ class InterceptionServer:
             site = web.TCPSite(runner, "0.0.0.0", self.port)
             await site.start()
 
+            self._app = app
+            self._runner = runner
+            self._site = site
+
             # OS-assigned port if port=0
             if self.port == 0:
                 server = getattr(site, "_server", None)
