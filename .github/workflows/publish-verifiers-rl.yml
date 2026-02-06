@@ -73,5 +73,5 @@ jobs:
 
       - name: Publish to PyPI
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN_VERIFIERS_RL }}
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: uv publish --token "$PYPI_TOKEN" packages/verifiers-rl/dist/*

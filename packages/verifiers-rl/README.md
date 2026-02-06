@@ -22,12 +22,12 @@ This package provides:
 The easiest path is to use the same token-based `uv publish` flow used by core `verifiers`:
 
 1. Create a PyPI API token with permission to publish `verifiers-rl`.
-2. Add it as a GitHub secret (for example: `PYPI_TOKEN_VERIFIERS_RL`).
+2. Add it as a GitHub secret (you can reuse the existing `PYPI_TOKEN` used for core releases).
 3. Build + publish this package from the subdirectory:
 
 ```bash
 uv build packages/verifiers-rl
-uv publish --token "$PYPI_TOKEN_VERIFIERS_RL" packages/verifiers-rl/dist/*
+uv publish --token "$PYPI_TOKEN" packages/verifiers-rl/dist/*
 ```
 
 The first successful upload registers the `verifiers-rl` project name on PyPI (if available).
