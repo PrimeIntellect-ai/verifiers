@@ -6,7 +6,7 @@ import verifiers as vf
 from verifiers.types import ChatMessages
 
 
-_TEXTARENA_ENV_ID_RE = re.compile(r"^[A-Za-z0-9_-]+-v\\d+$")
+_TEXTARENA_ENV_ID_RE = re.compile(r"^[A-Za-z0-9_-]+-v\d+$")
 
 
 def _message_text_from_observation(observation: dict[str, Any]) -> str | None:

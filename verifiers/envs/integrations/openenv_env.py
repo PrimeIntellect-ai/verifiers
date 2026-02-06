@@ -1095,7 +1095,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
         single_field = self._single_string_field(schema)
         if single_field:
-            return {single_field: text}
+            return {single_field: cleaned}
         raise ValueError(
             "Failed to parse action JSON. Provide a JSON object matching the action schema."
         )
