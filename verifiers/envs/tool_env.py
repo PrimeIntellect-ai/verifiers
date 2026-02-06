@@ -44,7 +44,7 @@ class ToolMonitorRubric(vf.Rubric):
         assert isinstance(completion, list)
         for msg in completion:
             if msg["role"] == "assistant" and "tool_calls" in msg:
-                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
                 tool_calls = assistant_msg.get("tool_calls", [])
                 if isinstance(tool_calls, list):
                     total += len(tool_calls)
@@ -60,7 +60,7 @@ class ToolMonitorRubric(vf.Rubric):
             assert isinstance(completion, list)
             for msg in completion:
                 if msg["role"] == "assistant" and "tool_calls" in msg:
-                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
                     tool_calls = assistant_msg.get("tool_calls", [])
                     for tool_call in tool_calls:
                         if tool_call.get("function", {}).get("name") == tool_name:

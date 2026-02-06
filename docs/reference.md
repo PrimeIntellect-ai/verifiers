@@ -399,6 +399,25 @@ Sandboxed container execution using `prime` sandboxes.
 
 Persistent Python REPL in sandbox. Extends `SandboxEnv`.
 
+#### OpenEnvEnv
+
+```python
+class OpenEnvEnv(MultiTurnEnv):
+    def __init__(
+        self,
+        openenv_project: str | Path,
+        num_train_examples: int = 100,
+        num_eval_examples: int = 50,
+        seed: int = 0,
+        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        max_turns: int = -1,
+        rubric: Rubric | None = None,
+        **kwargs,
+    ): ...
+```
+
+OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
+
 #### EnvGroup
 
 ```python

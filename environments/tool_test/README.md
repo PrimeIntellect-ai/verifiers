@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: tool use (single-turn ToolEnv)
-- **Parser**: default `Parser`
 - **Rubric overview**: ToolRubric checks tool execution and adds exact match on the required tool set
 
 ### Quickstart

@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
-from math_verify import parse, verify  # type: ignore[unresolved-import]
+from math_verify import parse, verify
 
 from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
@@ -55,10 +55,10 @@ class MathRubric(Rubric):
                     return 0.0
 
                 parsed_answer = await self.run_in_executor(
-                    lambda: parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore
+                    lambda: parse(f"\\boxed{{{answer}}}", parsing_timeout=cast(int, None))
                 )
                 parsed_response = await self.run_in_executor(
-                    lambda: parse(f"\\boxed{{{response}}}", parsing_timeout=None)  # type: ignore
+                    lambda: parse(f"\\boxed{{{response}}}", parsing_timeout=cast(int, None))
                 )
                 result = await self.run_in_executor(
                     lambda: verify(parsed_answer, parsed_response, timeout_seconds=None)

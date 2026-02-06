@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: multi-turn (gym environment interaction)
-- **Parser**: Identity (GEM environment parses `\boxed{GUESS}` internally via regex; the env passes raw model text through so format/validity penalties remain part of the training signal)
 - **Rubric overview**: Sum of per-step rewards returned by GEM (includes shaping + terminal success reward, plus small negative penalties for format/invalid actions; commonly `-0.1`)
 
 ### Quickstart
