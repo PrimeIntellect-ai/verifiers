@@ -3677,12 +3677,10 @@ class RLMEnv(vf.StatefulToolEnv):
         state["rlm_root_tools"] = [_tool_display_name(tool) for tool in self.root_tools]
         state["rlm_sub_tools"] = [_tool_display_name(tool) for tool in self.sub_tools]
 
-        # 4. Prepare backend and start worker (defer for sandbox to allow env setup)
-        if self.execution_backend != "sandbox":
-            await self._executor.setup(state)
-            state["rlm_worker_ready"] = True
-        else:
-            state["rlm_worker_ready"] = False
+        # 4. Prepare backend and start worker (always eager)
+        await self._executor.prepare_filesystem(state)
+        await self._executor.setup(state)
+        state["rlm_worker_ready"] = True
 
         # Initialize context warning flag (feature enabled if max_seq_len is set)
         state["context_warning_sent"] = False
