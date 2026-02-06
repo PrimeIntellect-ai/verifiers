@@ -10,12 +10,14 @@ from prime_sandboxes import (
     BackgroundJob,
     BackgroundJobStatus,
     CreateSandboxRequest,
-    SandboxClient,
 )
-from prime_sandboxes.core import APIClient
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.envs.experimental.sandbox_mixin import (
+    SandboxMixin,
+    ThreadedAsyncSandboxClient,
+)
 from verifiers.types import (
     ChatCompletionToolParam,
     Messages,
@@ -34,7 +36,7 @@ from verifiers.utils.interception_utils import (
 logger = logging.getLogger(__name__)
 
 
-class CliAgentEnv(vf.MultiTurnEnv):
+class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     """
     Environment for running full agent code inside sandboxes.
     Extends MultiTurnEnv to reuse rollout loop, but intercepts agent's
@@ -61,9 +63,27 @@ class CliAgentEnv(vf.MultiTurnEnv):
         team_id: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         labels: list[str] | None = None,
+        max_retries: int = 5,
+        base_delay: float = 0.5,
+        backoff_factor: float = 2.0,
+        max_backoff_seconds: float = 30.0,
+        jitter: float = 1e-3,
+        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_connections: int = 100,
+        sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
+        self.init_sandbox_client(
+            max_retries=max_retries,
+            base_delay=base_delay,
+            backoff_factor=backoff_factor,
+            max_backoff_seconds=max_backoff_seconds,
+            jitter=jitter,
+            sandbox_client_max_workers=sandbox_client_max_workers,
+            sandbox_client_max_connections=sandbox_client_max_connections,
+            sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
+        )
         self.run_command = run_command
         self.poll_interval = poll_interval
         self.interception_port = interception_port
@@ -80,7 +100,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self.team_id = team_id
         self.advanced_configs = advanced_configs
         self.labels = labels
-        self.active_sandboxes: set[str] = set()
 
         # Tunnel and interception server
         self._tunnel: Tunnel | None = None
@@ -125,10 +144,6 @@ class CliAgentEnv(vf.MultiTurnEnv):
         env_vars = await self.build_env_vars(state)
         docker_image = await self.get_docker_image(state)
 
-        sandbox_client = AsyncSandboxClient(
-            max_connections=100,
-            max_keepalive_connections=50,
-        )
         sandbox_request = CreateSandboxRequest(
             name=rollout_id,
             docker_image=docker_image,
@@ -147,20 +162,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
             f"Creating sandbox with OPENAI_BASE_URL={env_vars.get('OPENAI_BASE_URL')} "
             f"docker_image={docker_image}"
         )
-        sandbox = await sandbox_client.create(sandbox_request)
-        state["sandbox_id"] = sandbox.id
-        self.active_sandboxes.add(sandbox.id)
-        logger.debug(f"Created sandbox {sandbox.id}")
-        await sandbox_client.wait_for_creation(sandbox.id, max_attempts=120)
-
-        await self.post_sandbox_setup(state, sandbox_client)
+        await self.create_sandbox(state, sandbox_request)
 
         # Register rollout for interception
         request_id_queue = self._interception_server.register_rollout(rollout_id)
         state["request_id_queue"] = request_id_queue
         state["agent_completed"] = False
 
-        await self.start_agent(state, sandbox_client)
+        await self.start_agent(state, self.sandbox_client)
 
         return state
 
@@ -181,18 +190,21 @@ class CliAgentEnv(vf.MultiTurnEnv):
         return env_vars
 
     async def post_sandbox_setup(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self,
+        state: State,
+        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
     ) -> None:
         """Hook for post-sandbox setup. Override to upload files, run commands, etc."""
         pass
 
     async def start_agent(
-        self, state: State, sandbox_client: AsyncSandboxClient
+        self,
+        state: State,
+        sandbox_client: "AsyncSandboxClient | ThreadedAsyncSandboxClient",
     ) -> None:
         """Start the agent command using background job."""
         sandbox_id = state["sandbox_id"]
 
-        # Start the agent as a background job
         background_job: BackgroundJob = await sandbox_client.start_background_job(
             sandbox_id,
             self.run_command,
@@ -200,14 +212,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
         state["background_job"] = background_job
         state["agent_start_time"] = time.time()
 
-        # Start the polling task
         state["completion_wait_task"] = asyncio.create_task(
-            self.wait_for_completion(state, sandbox_client)
+            self.wait_for_completion(state)
         )
 
-    async def wait_for_completion(
-        self, state: State, sandbox_client: AsyncSandboxClient
-    ) -> None:
+    async def wait_for_completion(self, state: State) -> None:
         """Poll for agent completion using background job API."""
         sandbox_id = state.get("sandbox_id")
         background_job: BackgroundJob | None = state.get("background_job")
@@ -236,12 +245,8 @@ class CliAgentEnv(vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
-        sandbox_client = AsyncSandboxClient(
-            max_connections=100,
-            max_keepalive_connections=50,
-        )
         while True:
-            status: BackgroundJobStatus = await sandbox_client.get_background_job(
+            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
                 sandbox_id, background_job
             )
             if status.completed:
@@ -372,29 +377,14 @@ class CliAgentEnv(vf.MultiTurnEnv):
         await self._interception_server.stop()
 
     @vf.teardown
-    async def teardown_sandboxes(self):
-        """Delete all active sandboxes on teardown.
+    async def teardown_remaining_sandboxes(self):
+        """Bulk delete any sandboxes left over on shutdown."""
+        self.teardown_sandboxes()
 
-        Uses the synchronous SandboxClient for teardown to avoid event loop issues
-        during signal handling and interpreter shutdown.
-        """
-        if len(self.active_sandboxes) == 0:
-            return
-        logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
-
-        sync_client = SandboxClient(APIClient())
-        sandbox_ids = list(self.active_sandboxes)
-
-        batch_size = 100
-        for i in range(0, len(sandbox_ids), batch_size):
-            batch = sandbox_ids[i : i + batch_size]
-            try:
-                sync_client.bulk_delete(sandbox_ids=batch)
-                for sandbox_id in batch:
-                    self.active_sandboxes.discard(sandbox_id)
-                logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
-            except Exception as e:
-                logger.warning(f"Bulk delete failed for batch: {e}")
+    @vf.teardown
+    async def teardown_client(self):
+        """Teardown sandbox client threadpool."""
+        self.teardown_sandbox_client()
 
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
@@ -434,20 +424,11 @@ class CliAgentEnv(vf.MultiTurnEnv):
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
-        """Cleanup sandbox after rollout"""
+        """Cleanup sandbox after rollout."""
         await self.post_rollout(state)
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            try:
-                sandbox_client = AsyncSandboxClient(
-                    max_connections=100,
-                    max_keepalive_connections=50,
-                )
-                await sandbox_client.delete(sandbox_id)
-                self.active_sandboxes.discard(sandbox_id)
-                logger.debug(f"Deleted sandbox {sandbox_id}")
-            except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+            await self.delete_sandbox(sandbox_id)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
