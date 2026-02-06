@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import tomllib  # type: ignore[unresolved-import]
+    import tomllib
 except ImportError:
-    import tomli as tomllib  # type: ignore[unresolved-import]
+    import tomli as tomllib
 
 from verifiers import setup_logging
 from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig

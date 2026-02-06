@@ -165,7 +165,7 @@ class Environment(ABC):
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
             # merge extra_body if provided
-            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))  # type: ignore[union-attr]
+            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))
             # copy other keys
             for key, value in sampling_args.items():
                 if key != "extra_body":
@@ -244,7 +244,7 @@ class Environment(ABC):
         ):
             dataset = dataset.rename_column("example_id", "src_id")
         if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore (weird datasets thing)
+            dataset = dataset.add_column("example_id", range(len(dataset)))
         return dataset
 
     def _ensure_prompt(
@@ -675,7 +675,7 @@ class Environment(ABC):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+        state = State(input=RolloutInput(**state_input))
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
@@ -1022,7 +1022,7 @@ class Environment(ABC):
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()
-            import nest_asyncio  # type: ignore
+            import nest_asyncio
 
             nest_asyncio.apply()
             return loop.run_until_complete(coro)

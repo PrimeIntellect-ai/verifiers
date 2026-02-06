@@ -165,10 +165,16 @@ class MCPToolWrapper:
 
 
 class MCPEnv(vf.ToolEnv):
-    """Environment for MCP-based tools using the official MCP SDK."""
+    """Environment for MCP-based tools using the official MCP SDK.
+
+    MCPEnv is intended for globally available, read-only MCP servers where the
+    same toolset can be shared across all rollouts.
+    """
 
     def __init__(
         self,
+        # MCPEnv is designed for global server processes, not per-rollout,
+        # stateful server instances with mutable task-specific data.
         mcp_servers: List[MCPServerConfig | dict] = [],
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"Error: {str(e)}",

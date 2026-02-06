@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 try:
-    import tomllib  # type: ignore[unresolved-import]
+    import tomllib
 except ImportError:
-    import tomli as tomllib  # type: ignore[unresolved-import]
+    import tomli as tomllib
 
 
 def run(cmd: list[str]) -> None:

@@ -2,8 +2,9 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 
-from math_verify import parse, verify  # type: ignore[unresolved-import]
+from math_verify import parse, verify
 
 from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.parsers.parser import Parser
@@ -55,8 +56,12 @@ class MathRubric(Rubric):
                 return 0.0, elapsed
 
             try:
-                parsed_answer = parse(f"\\boxed{{{answer}}}", parsing_timeout=None)  # type: ignore[arg-type]
-                parsed_response = parse(f"\\boxed{{{response}}}", parsing_timeout=None)  # type: ignore[arg-type]
+                parsed_answer = parse(
+                    f"\\boxed{{{answer}}}", parsing_timeout=cast(int, None)
+                )
+                parsed_response = parse(
+                    f"\\boxed{{{response}}}", parsing_timeout=cast(int, None)
+                )
                 is_correct = verify(
                     parsed_answer, parsed_response, timeout_seconds=None
                 )

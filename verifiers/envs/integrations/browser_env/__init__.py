@@ -38,8 +38,6 @@ from typing import TYPE_CHECKING
 _LAZY_IMPORTS = {
     "BrowserEnv": ".browser_env:BrowserEnv",
     "ModeType": ".browser_env:ModeType",
-    "DOM_DEFAULT_PROMPT": ".browser_env:DOM_DEFAULT_PROMPT",
-    "CUA_DEFAULT_PROMPT": ".browser_env:CUA_DEFAULT_PROMPT",
 }
 
 
@@ -62,14 +60,10 @@ def __getattr__(name: str):
 __all__ = [
     "BrowserEnv",
     "ModeType",
-    "DOM_DEFAULT_PROMPT",
-    "CUA_DEFAULT_PROMPT",
 ]
 
 if TYPE_CHECKING:
     from .browser_env import (
         BrowserEnv,
         ModeType,
-        DOM_DEFAULT_PROMPT,
-        CUA_DEFAULT_PROMPT,
     )
