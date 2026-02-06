@@ -68,6 +68,10 @@ class InterceptionServer:
             site = web.TCPSite(runner, "0.0.0.0", self.port)
             await site.start()
 
+            self._app = app
+            self._runner = runner
+            self._site = site
+
             # OS-assigned port if port=0
             if self.port == 0:
                 server = getattr(site, "_server", None)
@@ -76,10 +80,6 @@ class InterceptionServer:
                     self.port = sockets[0].getsockname()[1]
             if self.port == 0:
                 raise RuntimeError("Failed to resolve OS-assigned port")
-
-            self._app = app
-            self._runner = runner
-            self._site = site
 
             logger.debug(f"Started interception server on port {self.port}")
 
