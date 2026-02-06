@@ -106,13 +106,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         """Get tunnel URL, starting the tunnel if needed."""
         async with self._tunnel_lock:
             if self._tunnel is None:
+                port = self._interception_server.port
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
-                        local_port=self.interception_port,
+                        local_port=port,
                         log_level="debug",
                     )
                 else:
-                    self._tunnel = Tunnel(local_port=self.interception_port)
+                    self._tunnel = Tunnel(local_port=port)
                 url = await self._tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
                 return url
