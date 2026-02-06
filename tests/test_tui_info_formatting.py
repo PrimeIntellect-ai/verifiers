@@ -1,3 +1,5 @@
+import json
+
 from verifiers.scripts.tui import format_info_for_details
 
 
@@ -6,7 +8,7 @@ def test_format_info_for_details_handles_dict() -> None:
 
     rendered = format_info_for_details(info)
 
-    assert rendered == '{"status": "ok","attempt": 2}'
+    assert rendered == json.dumps(info, ensure_ascii=False, indent=2)
 
 
 def test_format_info_for_details_parses_json_string() -> None:
@@ -14,14 +16,17 @@ def test_format_info_for_details_parses_json_string() -> None:
 
     rendered = format_info_for_details(info)
 
-    assert rendered == '{"status": "ok","nested": {"value": 1}}'
+    assert rendered == json.dumps(
+        {"status": "ok", "nested": {"value": 1}},
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def test_format_info_for_details_truncates_large_content() -> None:
-    info = {"payload": [f"line-{i}" for i in range(50)]}
+    info = {"payload": [f"line-{i}" for i in range(200)]}
 
-    rendered = format_info_for_details(info, max_chars=80, max_lines=1)
+    rendered = format_info_for_details(info, max_chars=80)
 
-    assert rendered.endswith("lines total)")
+    assert rendered.endswith("chars total)")
     assert "(truncated;" in rendered
-    assert "\n" not in rendered

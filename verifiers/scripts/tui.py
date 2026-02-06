@@ -272,27 +272,20 @@ def _coerce_info_value(info: Any) -> Any:
 def format_info_for_details(
     info: Any,
     *,
-    max_chars: int = 280,
-    max_lines: int = 3,
+    max_chars: int = 4000,
 ) -> str:
-    """Format record info for the compact details panel in rollout view."""
+    """Format record info for the details panel in rollout view."""
     info_value = _coerce_info_value(info)
     if isinstance(info_value, (dict, list)):
-        rendered = json.dumps(info_value, ensure_ascii=False, separators=(",", ": "))
+        rendered = json.dumps(info_value, ensure_ascii=False, indent=2)
     else:
         rendered = str(info_value)
 
-    normalized = " ".join(rendered.split())
-    if len(normalized) <= max_chars and rendered.count("\n") + 1 <= max_lines:
-        return normalized
+    if len(rendered) <= max_chars:
+        return rendered
 
-    preview_len = max(1, max_chars - 1)
-    preview = normalized[:preview_len].rstrip()
-    original_lines = rendered.count("\n") + 1
-    return (
-        f"{preview}… "
-        f"(truncated; {len(rendered):,} chars, {original_lines:,} lines total)"
-    )
+    preview = rendered[:max_chars].rstrip()
+    return f"{preview}\n… (truncated; {len(rendered):,} chars total)"
 
 
 # ----------------------------
@@ -691,8 +684,12 @@ class ViewRunScreen(Screen):
                         id="completion-scroll",
                     )
 
-            # Details section (horizontal scroll)
-            yield Panel(Static("", id="details", markup=False), classes="details-panel")
+            # Details section
+            with Panel(classes="details-panel"):
+                yield VerticalScroll(
+                    Static("", id="details", markup=False),
+                    id="details-scroll",
+                )
 
         yield Footer()
 
@@ -877,6 +874,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_next_record(self) -> None:
         if self.records:
@@ -885,6 +883,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_search(self) -> None:
         if not self.records:
@@ -1118,6 +1117,15 @@ class VerifiersTUI(App):
         height: auto;
         min-height: 3;
         max-height: 6;
+    }
+
+    #details-scroll {
+        height: 1fr;
+        background: $surface;
+        padding: 0 1;
+        scrollbar-color: $secondary;
+        scrollbar-background: $panel;
+        scrollbar-corner-color: $panel;
     }
     
     .run-list-panel {
