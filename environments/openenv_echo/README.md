@@ -1,32 +1,38 @@
 # openenv-echo
 
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/openenv_echo">
+<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+</a>
+
 ### Overview
+
 - **Environment ID**: `openenv-echo`
 - **Short description**: OpenEnv Echo environment via `OpenEnvEnv`, demonstrating MCP tool-calling in Prime Sandboxes.
 - **Tags**: openenv, mcp, tools, example
 
 ### Datasets
+
 - **Primary dataset(s)**: Seed-generated episodes (one seed per rollout).
-- **Source links**: Bundled OpenEnv Echo project in `openenv_project/` (copied from OpenEnv).
+- **Source links**: Bundled OpenEnv Echo project in `proj/` (copied from OpenEnv).
 - **Split sizes**: 1000 train / 100 eval by default (configurable).
 
 ### Task
+
 - **Type**: Tool use, multi-turn.
 - **Parser**: Default `Parser` (no special formatting).
 - **Rubric overview**: `OpenEnvEpisodicSumRubric` sums per-step rewards; `MultiTurnMonitorRubric` tracks turn count.
 
 ### Quickstart
+
 Build and register the bundled OpenEnv Docker image in the Prime registry:
 
 ```bash
-vf-openenv-build \
-  --path environments/openenv_echo/openenv_project \
-  --image openenv-echo:latest
+uv run vf-build openenv-echo
 ```
 
-This writes `environments/openenv_echo/openenv_project/.openenv_image` with the fully qualified image reference from `prime images list`.
+This writes `environments/openenv_echo/proj/.build.json` with the fully qualified image reference and runtime metadata.
 
-Verify the image is ready (status **Ready**):
+Verify the image is ready (status **Ready** or **Completed**):
 
 ```bash
 prime images list
@@ -43,19 +49,19 @@ Configure model and sampling:
 ```bash
 prime eval run openenv-echo \
   -m gpt-4.1-mini \
-  -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{"openenv_project": "environments/openenv_echo/openenv_project"}'
+  -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
-- If you customize the bundled OpenEnv project, rebuild the image with the same `--image` value (the `.openenv_image` marker is updated for you).
+- If your environments directory is not `./environments`, run:
+`uv run vf-build openenv-echo -p /path/to/environments`
+- If you customize the bundled OpenEnv project, rerun `uv run vf-build openenv-echo` (the `proj/.build.json` manifest is updated).
 
 ### Troubleshooting
 
 If you see errors like `waiting to start: trying and failing to pull image`, it means the image is not available to the sandbox. Common causes:
-- The image build is still running or failed (`prime images list` should show **Ready**).
-- The image reference in `.openenv_image` is not the fully qualified image from `prime images list`.
+- The image build is still running or failed (`prime images list` should show **Ready** or **Completed**).
+- The image reference in `proj/.build.json` is stale or invalid.
 - The image is private or not accessible to your team.
 
 If `prime images list` shows **Ready** but the sandbox still cannot pull the image, escalate to the platform team with:
@@ -67,11 +73,9 @@ If `prime images list` shows **Ready** but the sandbox still cannot pull the ima
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `openenv_project` | str | `"environments/openenv_echo/openenv_project"` | OpenEnv project path, git URL, or Hugging Face space. |
 | `num_train_examples` | int | `1000` | Number of training seeds to generate. |
 | `num_eval_examples` | int | `100` | Number of eval seeds to generate. |
 | `seed` | int | `0` | Base seed for episode generation. |
-| `max_turns` | int | `-1` | Max turns per rollout (`-1` = no limit). |
 
 ### Metrics
 

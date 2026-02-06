@@ -140,14 +140,8 @@ Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environme
 ```python
 from verifiers.envs.integrations.openenv_env import OpenEnvEnv
 
-# Local OpenEnv project
-env = OpenEnvEnv(openenv_project="/path/to/openenv_project")
-
-# Hugging Face Space (uses registry.hf.space image)
-env = OpenEnvEnv(openenv_project="openenv/echo-env")
-
-# Git URL (cloned to temp)
-env = OpenEnvEnv(openenv_project="https://github.com/you/my-openenv.git")
+# Local OpenEnv project (with prebuilt build manifest at /path/to/proj/.build.json)
+env = OpenEnvEnv(openenv_project="/path/to/proj")
 ```
 
 ### Bundling an OpenEnv Project
@@ -158,15 +152,17 @@ If you want to ship the OpenEnv project inside your verifiers environment module
 from pathlib import Path
 from verifiers.envs.integrations.openenv_env import OpenEnvEnv
 
-env = OpenEnvEnv(openenv_project=Path(__file__).parent / "openenv_project")
+env = OpenEnvEnv(openenv_project=Path(__file__).parent / "proj")
 ```
 
-### Dockerfile Support
+### Build Once, Run Everywhere
 
-If the OpenEnv project includes a Dockerfile (common for environments), build and register the image once:
+For local development, build and register the image once:
 
 ```bash
-vf-openenv-build --path /path/to/openenv_project
+vf-build <env-id>
 ```
 
-This writes a `.openenv_image` marker in the project directory. `OpenEnvEnv` will use that image when creating Prime sandboxes.
+By default this resolves to `./environments/<env_id_underscore>/proj` and writes `.build.json` there. Override the environments root with `-p /path/to/environments`.
+
+For environment modules pushed to the PI Environments Hub, include the OpenEnv project directory and `.build.json` in the package so installs run without extra setup.

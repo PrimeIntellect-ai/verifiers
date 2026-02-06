@@ -3,13 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
-import subprocess
-import tarfile
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, cast, overload
+from typing import Any, Iterable, cast
 
 import requests
 import tenacity as tc
@@ -35,14 +31,6 @@ except ImportError as e:
         "OpenEnvEnv requires prime-sandboxes. Install with: uv add prime-sandboxes"
     ) from e
 
-yaml: Any | None
-try:
-    import yaml as _yaml  # type: ignore
-except ImportError:
-    yaml = None
-else:
-    yaml = _yaml
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +42,6 @@ class _OpenEnvServer:
     port: int
     background_job: Any | None = None
     needs_manual_start: bool = False
-    temp_dir: Path | None = None
 
 
 class OpenEnvEpisodicSumRubric(vf.Rubric):
@@ -75,6 +62,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     Drop-in OpenEnv integration for Verifiers.
 
     - Always runs inside Prime Sandboxes.
+    - Uses prebuilt container images at runtime (from `.build.json`).
     - Uses seeds as the generic dataset mechanism.
     - Supports both simulation (step/reset) and MCP tool environments.
     """
@@ -344,8 +332,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             except Exception:
                 pass
         self._active_servers.pop(server.sandbox_id, None)
-        if server.temp_dir is not None:
-            shutil.rmtree(server.temp_dir, ignore_errors=True)
 
     async def _try_get_logs(
         self, sandboxes: AsyncSandboxClient, sandbox_id: str
@@ -394,99 +380,55 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 pass
 
     async def _create_server(self) -> _OpenEnvServer:
-        project_path, source_type, temp_dir = self._resolve_project_path()
-        try:
-            if source_type == "hf":
-                repo_id = cast(str, project_path)
-                image = f"registry.hf.space/{repo_id.replace('/', '-')}:latest"
-                server = await self._launch_image_server(image, 8000)
-            else:
-                assert isinstance(project_path, Path)
-                dockerfile = self._find_dockerfile(project_path)
-                if dockerfile is not None:
-                    image = self._read_image_marker(project_path)
-                    if image is None:
-                        raise RuntimeError(
-                            "OpenEnv project contains a Dockerfile but no .openenv_image marker. "
-                            "Run: vf-openenv-build --path <openenv_project> to build and register the image."
-                        )
-                    port = self._read_project_port(project_path)
-                    server = await self._launch_image_server(image, port)
-                else:
-                    port = self._read_project_port(project_path)
-                    server = await self._launch_source_server(project_path, port)
-        except Exception:
-            if temp_dir is not None:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            raise
-
-        server.temp_dir = temp_dir
+        project_path = self._resolve_project_path()
+        image, port = self._resolve_runtime_config(project_path)
+        server = await self._launch_image_server(image, port)
         self._active_servers[server.sandbox_id] = server
         return server
 
-    @overload
-    def _resolve_project_path(self) -> tuple[Path, Literal["local"], Path | None]: ...
+    def _resolve_project_path(self) -> Path:
+        path = Path(self.openenv_project).expanduser().resolve()
+        if path.exists() and path.is_dir():
+            return path
+        raise ValueError(
+            "OpenEnvEnv requires a local OpenEnv project directory. "
+            f"Got: {self.openenv_project}"
+        )
 
-    @overload
-    def _resolve_project_path(self) -> tuple[str, Literal["hf"], None]: ...
-
-    def _resolve_project_path(self) -> tuple[str | Path, str, Path | None]:
-        path = Path(self.openenv_project)
-        if path.exists():
-            return path.resolve(), "local", None
-        if "://" in self.openenv_project or self.openenv_project.endswith(".git"):
-            tmpdir = Path(tempfile.mkdtemp(prefix="openenv_git_"))
-            cmd = ["git", "clone", self.openenv_project, str(tmpdir)]
-            try:
-                subprocess.run(
-                    cmd,
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            except FileNotFoundError as e:
-                raise RuntimeError("git is required to clone OpenEnv projects.") from e
-            except subprocess.CalledProcessError as e:
-                details = (e.stderr or e.stdout or "").strip()
-                suffix = f" ({details})" if details else ""
-                raise RuntimeError(
-                    f"Failed to clone OpenEnv project: {self.openenv_project}{suffix}"
-                ) from e
-            return tmpdir.resolve(), "local", tmpdir
-        if "/" in self.openenv_project:
-            return self.openenv_project, "hf", None
-        raise ValueError(f"Unsupported openenv_project: {self.openenv_project}")
-
-    def _find_dockerfile(self, project_path: Path) -> Path | None:
-        dockerfile = project_path / "server" / "Dockerfile"
-        if dockerfile.exists():
-            return dockerfile
-        fallback = project_path / "Dockerfile"
-        if fallback.exists():
-            return fallback
-        return None
-
-    def _read_image_marker(self, project_path: Path) -> str | None:
-        marker = project_path / ".openenv_image"
-        if not marker.exists():
-            return None
-        return marker.read_text().strip()
-
-    def _read_project_port(self, project_path: Path) -> int:
-        openenv_yaml = project_path / "openenv.yaml"
-        if not openenv_yaml.exists() or yaml is None:
-            return 8000
+    def _resolve_runtime_config(self, project_path: Path) -> tuple[str, int]:
+        manifest = self._read_build_manifest(project_path)
+        image = manifest.get("image")
+        port = manifest.get("port", 8000)
+        if not isinstance(image, str) or not image.strip():
+            raise RuntimeError(
+                "Invalid .build.json: `image` must be a non-empty string. "
+                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+            )
         try:
-            data = yaml.safe_load(openenv_yaml.read_text())
-        except Exception:
-            return 8000
-        if isinstance(data, dict) and "port" in data:
-            try:
-                return int(data["port"])
-            except Exception:
-                return 8000
-        return 8000
+            port_num = int(port)
+        except Exception as e:
+            raise RuntimeError("Invalid .build.json: `port` must be an integer.") from e
+        return image.strip(), port_num
+
+    def _read_build_manifest(self, project_path: Path) -> dict[str, Any]:
+        manifest_path = project_path / ".build.json"
+        if not manifest_path.exists():
+            raise RuntimeError(
+                "OpenEnv project is missing .build.json. "
+                "Run: vf-build <env-id> (optionally with -p <environments-path>) to build and register the image."
+            )
+        try:
+            data = json.loads(manifest_path.read_text())
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to parse OpenEnv build manifest at "
+                f"{manifest_path}. Re-run vf-build <env-id>."
+            ) from e
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Invalid OpenEnv build manifest at {manifest_path}: expected a JSON object."
+            )
+        return data
 
     async def _launch_image_server(self, image: str, port: int) -> _OpenEnvServer:
         async with AsyncSandboxClient() as sandboxes:
@@ -527,59 +469,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                     sandbox.id, "startup", e, image=image, logs=logs
                 ) from e
 
-    async def _launch_source_server(
-        self, project_path: Path, port: int
-    ) -> _OpenEnvServer:
-        async with AsyncSandboxClient() as sandboxes:
-            req = self._build_sandbox_request(
-                "python:3.11-slim", start_command="tail -f /dev/null"
-            )
-            try:
-                sandbox = await self._with_retry(sandboxes.create)(req)
-            except Exception as e:
-                raise vf.SandboxError("Failed to create OpenEnv sandbox.") from e
-            exposure = None
-            try:
-                await self._with_retry(sandboxes.wait_for_creation)(sandbox.id)
-
-                await self._upload_project(sandboxes, sandbox.id, project_path)
-                await self._with_retry(sandboxes.execute_command)(
-                    sandbox.id,
-                    "python -m pip install -e /workspace/openenv_project",
-                    working_dir="/workspace/openenv_project",
-                )
-                await self._with_retry(sandboxes.start_background_job)(
-                    sandbox.id,
-                    "bash -lc 'cd /workspace/openenv_project && server'",
-                )
-
-                exposure = await self._with_retry(sandboxes.expose)(
-                    sandbox.id, port=port, name="openenv-env"
-                )
-                server = _OpenEnvServer(
-                    sandbox_id=sandbox.id,
-                    exposure_id=exposure.exposure_id,
-                    base_url=exposure.url.rstrip("/"),
-                    port=port,
-                    needs_manual_start=True,
-                )
-                await self._wait_for_ready(server.base_url)
-                return server
-            except Exception as e:
-                logs = await self._try_get_logs(sandboxes, sandbox.id)
-                if exposure is not None:
-                    try:
-                        await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
-                    except Exception:
-                        pass
-                try:
-                    await sandboxes.delete(sandbox.id)
-                except Exception:
-                    pass
-                raise self._format_sandbox_error(
-                    sandbox.id, "startup", e, logs=logs
-                ) from e
-
     def _build_sandbox_request(
         self, image: str, start_command: str | None
     ) -> CreateSandboxRequest:
@@ -601,26 +490,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 params["start_command"] = "tail -f /dev/null"
                 return CreateSandboxRequest(**cast(Any, params))
             raise
-
-    async def _upload_project(
-        self, sandboxes: AsyncSandboxClient, sandbox_id: str, project_path: Path
-    ) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
-            tar_path = Path(tmp_file.name)
-        try:
-            with tarfile.open(tar_path, "w:gz") as tar:
-                tar.add(project_path, arcname="openenv_project")
-            remote_tar = "/tmp/openenv_project.tar.gz"
-            await self._with_retry(sandboxes.upload_file)(
-                sandbox_id, remote_tar, str(tar_path)
-            )
-            await self._with_retry(sandboxes.execute_command)(
-                sandbox_id,
-                "mkdir -p /workspace && tar -xzf /tmp/openenv_project.tar.gz -C /workspace",
-                working_dir="/",
-            )
-        finally:
-            tar_path.unlink(missing_ok=True)
 
     async def _wait_for_ready(self, base_url: str, timeout_s: int = 120) -> None:
         def _check() -> bool:

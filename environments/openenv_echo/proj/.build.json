@@ -1,0 +1,7 @@
+{
+  "environment_id": "openenv-echo",
+  "image": "cmaeni8ji0001ql2z5gw8204f/openenv-echo:latest",
+  "image_status": "COMPLETED",
+  "port": 8000,
+  "schema_version": 1
+}

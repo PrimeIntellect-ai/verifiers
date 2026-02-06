@@ -67,8 +67,8 @@ The `EchoEnv.from_docker_image()` method handles:
 Before using the environment, you need to build the Docker image:
 
 ```bash
-# From project root
-docker build -t echo-env:latest -f envs/echo_env/server/Dockerfile .
+# From repository root
+uv run vf-build openenv-echo
 ```
 
 ## Environment Details
