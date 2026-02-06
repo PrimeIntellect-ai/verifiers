@@ -356,7 +356,10 @@ class TestToolEnv:
         def mixed_tool() -> list:
             return [
                 {"type": "text", "text": "Here's the screenshot"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
             ]
 
         env = vf.ToolEnv(

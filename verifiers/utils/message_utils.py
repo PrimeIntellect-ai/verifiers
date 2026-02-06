@@ -96,7 +96,6 @@ def format_messages(messages: Any) -> Text:
             return obj.get(key, default)
         return default
 
-
     def _normalize_tool_call(tc: Any) -> dict[str, str]:
         if isinstance(tc, str):
             tc = json.loads(tc)
