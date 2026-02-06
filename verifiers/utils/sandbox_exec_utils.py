@@ -1,8 +1,9 @@
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import tenacity as tc
+from tenacity._utils import LoggerProtocol
 from prime_sandboxes import CommandTimeoutError
 
 from verifiers.envs.sandbox_env import (
@@ -44,7 +45,10 @@ class SandboxExecutorMixin:
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self._sandbox_logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(
+                cast(LoggerProtocol, self._sandbox_logger),
+                logging.WARNING,
+            ),
             reraise=True,
         ).wraps
 
