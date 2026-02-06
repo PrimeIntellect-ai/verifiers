@@ -11,12 +11,9 @@ from prime_sandboxes import (
     AsyncSandboxClient,
     CommandTimeoutError,
     CreateSandboxRequest,
-    DownloadTimeoutError,
     SandboxClient,
-    SandboxNotRunningError,
     SandboxOOMError,
     SandboxTimeoutError,
-    UploadTimeoutError,
 )
 from prime_sandboxes.core import APIClient
 
@@ -45,7 +42,11 @@ class SandboxSetupError(vf.SandboxError): ...
 
 
 class ThreadedAsyncSandboxClient:
-    """Mirrors AsyncSandboxClient but dispatches to ThreadPoolExecutor with thread-local clients."""
+    """
+    Mirrors AsyncSandboxClient's interface but dispatches each method call to a
+    ThreadPoolExecutor where each thread maintains its own client via
+    thread-local storage.
+    """
 
     def __init__(
         self,
@@ -54,6 +55,7 @@ class ThreadedAsyncSandboxClient:
         max_keepalive_connections: int = 50,
         **client_kwargs,
     ):
+        """Initialize the threaded sandbox client."""
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="sandbox-client-executor"
@@ -65,23 +67,17 @@ class ThreadedAsyncSandboxClient:
         }
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
+        """Dynamically proxy attribute access to dispatch method calls to the thread pool."""
+
         @functools.wraps(getattr(AsyncSandboxClient, name, lambda: None))
         async def wrapper(*args, **kwargs):
             def run_in_thread():
-                try:
-                    loop = get_or_create_thread_loop()
-                    sandbox_client = get_or_create_thread_attr(
-                        "sandbox_client", AsyncSandboxClient, **self.client_kwargs
-                    )
-                    method = getattr(sandbox_client, name)
-                    return loop.run_until_complete(method(*args, **kwargs))
-                except (
-                    SandboxNotRunningError,
-                    CommandTimeoutError,
-                    UploadTimeoutError,
-                    DownloadTimeoutError,
-                ) as e:
-                    raise vf.SandboxError(f"{type(e).__name__}: {e}") from e
+                loop = get_or_create_thread_loop()
+                sandbox_client = get_or_create_thread_attr(
+                    "sandbox_client", AsyncSandboxClient, **self.client_kwargs
+                )
+                method = getattr(sandbox_client, name)
+                return loop.run_until_complete(method(*args, **kwargs))
 
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(self.executor, run_in_thread)
@@ -89,6 +85,7 @@ class ThreadedAsyncSandboxClient:
         return wrapper
 
     def teardown(self, wait: bool = True) -> None:
+        """Teardown the thread pool executor."""
         self.executor.shutdown(wait=wait)
 
 
@@ -245,7 +242,11 @@ class SandboxMixin:
         )
 
     def teardown_sandboxes(self):
-        """Bulk delete remaining sandboxes. Uses sync client for signal handling."""
+        """Delete all active sandboxes using sync client.
+
+        Uses the synchronous SandboxClient for teardown to avoid event loop issues
+        during signal handling and interpreter shutdown.
+        """
         if not self.active_sandboxes:
             return
         self.logger.info(f"Deleting {len(self.active_sandboxes)} remaining sandboxes")
