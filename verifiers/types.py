@@ -68,6 +68,11 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
 
 
+class TokenUsage(TypedDict):
+    input_tokens: float
+    output_tokens: float
+
+
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -90,7 +95,7 @@ class RolloutInput(BaseRolloutInput, total=False):
     # required: prompt, example_id, task
     # optional: answer, info
     answer: str
-    info: Info
+    info: Info | str
 
 
 class RolloutTiming(TypedDict, total=False):
@@ -115,7 +120,8 @@ class RolloutOutput(dict):
 
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools
+    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools,
+                     token_usage
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -136,6 +142,7 @@ class RolloutOutput(dict):
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     oai_tools: list["ChatCompletionToolParam"]
+    token_usage: TokenUsage
 
 
 class State(dict):
@@ -186,10 +193,12 @@ class State(dict):
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 # callbacks
-StartCallback = Callable[[int], None]  # total rollouts
+StartCallback = Callable[
+    [list[RolloutInput], list[RolloutInput] | list[list[RolloutInput]]], None
+]
 ProgressCallback = Callable[
-    [list[RolloutOutput], list[RolloutOutput]], None
-]  # all_outputs, new_outputs
+    [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
+]  # all_outputs, new_outputs, new_metadata
 LogCallback = Callable[[str], None]  # log messages
 
 
@@ -207,6 +216,8 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    avg_error: float
+    usage: TokenUsage | None
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None
@@ -273,11 +284,10 @@ class EvalConfig(BaseModel):
     max_retries: int = 0
     # logging
     verbose: bool = False
-    use_tqdm: bool = True
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
-    save_every: int = -1
+    resume_path: Path | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
 

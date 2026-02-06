@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Callable
 
 import pytest
@@ -23,6 +24,7 @@ from verifiers.envs.environment import Environment
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
+    ClientConfig,
     GenerateOutputs,
     RolloutInput,
     SamplingArgs,
@@ -195,6 +197,73 @@ async def test_generate_inside_running_loop(
     assert states[0].get("completion") is not None
 
 
+@pytest.mark.asyncio
+async def test_generate_grouped_scoring_distributes_per_group(
+    mock_openai_client, make_dummy_env, make_input
+):
+    class StubEnvClient:
+        def __init__(self):
+            self.client_urls_per_group: list[str] = []
+
+        async def run_group(
+            self,
+            group_inputs,
+            client_config,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+        ):
+            assert isinstance(client_config, ClientConfig)
+            self.client_urls_per_group.append(str(client_config.api_base_url))
+            return [
+                {
+                    "example_id": input_item["example_id"],
+                    "task": "dummy",
+                    "prompt": "p",
+                    "completion": "c",
+                    "answer": "a",
+                    "reward": 1.0,
+                    "metrics": {},
+                    "info": {},
+                    "timing": {},
+                    "timestamp": "",
+                    "token_usage": None,
+                    "error": None,
+                    "oai_tools": None,
+                }
+                for input_item in group_inputs
+            ]
+
+    env = make_dummy_env(mock_openai_client)
+    env.env_client = StubEnvClient()
+
+    inputs = [
+        make_input(example_id=0),
+        make_input(example_id=0),
+        make_input(example_id=1),
+        make_input(example_id=1),
+    ]
+    client_config = ClientConfig(
+        api_base_url=["http://localhost:8000/v1", "http://localhost:8001/v1"]
+    )
+
+    no_op = lambda *args, **kwargs: None
+    await env.generate(
+        inputs=inputs,
+        client=client_config,
+        model="test-model",
+        independent_scoring=False,
+        on_start=no_op,
+        on_progress=no_op,
+        on_log=no_op,
+    )
+
+    assert len(env.env_client.client_urls_per_group) == 2
+    assert env.env_client.client_urls_per_group.count("http://localhost:8000/v1") == 1
+    assert env.env_client.client_urls_per_group.count("http://localhost:8001/v1") == 1
+
+
 def test_sanitize_tool_calls_outputs_strings():
     # Use a lightweight object with model_dump to mimic OAI tool call
     class ToolCall:
@@ -222,3 +291,34 @@ def test_make_dataset_basic_without_tools(make_metadata, make_output):
     results = GenerateOutputs(outputs=[make_output()], metadata=make_metadata())
     ds = build_dataset(results)
     assert len(ds) == 1 and "foo" in ds.column_names
+
+
+@pytest.mark.asyncio
+async def test_generate_resume_raises_on_metadata_mismatch(
+    tmp_path, mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+
+    results_path = tmp_path / "resume"
+    results_path.mkdir()
+    (results_path / "results.jsonl").write_text("", encoding="utf-8")
+    (results_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "env_id": env.env_id,
+                "model": "test-model",
+                "num_examples": 2,
+                "rollouts_per_example": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs = [make_input(example_id=0)]
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        await env.generate(
+            inputs=inputs,
+            client=mock_openai_client,
+            model="test-model",
+            results_path=results_path,
+        )

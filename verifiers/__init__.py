@@ -1,4 +1,4 @@
-__version__ = "0.1.10.dev0"
+__version__ = "0.1.10.dev2"
 
 import importlib
 import os
@@ -28,13 +28,13 @@ from .parsers.think_parser import ThinkParser
 from .parsers.xml_parser import XMLParser
 from .rubrics.judge_rubric import JudgeRubric
 from .rubrics.rubric_group import RubricGroup
+from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.data_utils import (
     extract_boxed_answer,
     extract_hash_answer,
     load_example_dataset,
 )
 from .utils.client_utils import ClientPool
-from .utils.config_utils import MissingKeyError, ensure_keys
 from .utils.env_utils import load_environment
 from .utils.logging_utils import (
     log_level,
@@ -64,6 +64,7 @@ __all__ = [
     "HarborEnv",
     "MCPEnv",
     "BrowserEnv",
+    "OpenEnvEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -114,6 +115,7 @@ _LAZY_IMPORTS = {
     "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
+    "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
 }
 
 
@@ -136,6 +138,7 @@ if TYPE_CHECKING:
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
     from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
     from .envs.integrations.browser_env import BrowserEnv  # noqa: F401
+    from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401

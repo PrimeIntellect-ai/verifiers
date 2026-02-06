@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: multi-turn (game interaction)
-- **Parser**: `XMLParser` with `think`/`guess`
 - **Rubric overview**: Exact guess match, partial credit from feedback, length bonus, and format check
 
 ### Quickstart

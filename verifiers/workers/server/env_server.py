@@ -115,7 +115,12 @@ class EnvServer(ABC):
         return RunRolloutResponse(output=output)
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
-        client = await self._resolve_client(request.client_config)
+        if isinstance(request.client_config, list):
+            client = await asyncio.gather(
+                *[self._resolve_client(config) for config in request.client_config]
+            )
+        else:
+            client = await self._resolve_client(request.client_config)
         outputs = await self.env.run_group(
             group_inputs=request.group_inputs,
             client=client,

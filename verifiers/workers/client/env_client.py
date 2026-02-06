@@ -24,6 +24,12 @@ class EnvClient(ABC):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
 
+    @staticmethod
+    def _request_timeout(client_config: ClientConfig | list[ClientConfig]) -> float:
+        if isinstance(client_config, list):
+            return max(1.0, max(config.timeout for config in client_config))
+        return max(1.0, client_config.timeout)
+
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
         response = await self.handle_health_request(request, timeout=timeout)
@@ -46,14 +52,17 @@ class EnvClient(ABC):
             max_retries=max_retries,
             state_columns=state_columns,
         )
-        response = await self.handle_run_rollout_request(request, timeout=None)
+        response = await self.handle_run_rollout_request(
+            request,
+            timeout=self._request_timeout(client_config),
+        )
         assert response.output is not None
         return response.output
 
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client_config: ClientConfig,
+        client_config: ClientConfig | list[ClientConfig],
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -67,7 +76,10 @@ class EnvClient(ABC):
             max_retries=max_retries,
             state_columns=state_columns,
         )
-        response = await self.handle_run_group_request(request, timeout=None)
+        response = await self.handle_run_group_request(
+            request,
+            timeout=self._request_timeout(client_config),
+        )
         assert response.outputs is not None
         return response.outputs
 

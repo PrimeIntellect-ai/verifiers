@@ -1,5 +1,10 @@
 import os
 
+from verifiers.utils.path_utils import (
+    find_latest_incomplete_eval_results_path,
+    is_valid_eval_results_path,
+)
+
 # Suppress tokenizers parallelism warning (only prints when env var is unset)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -11,11 +16,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib  # type: ignore[unresolved-import]
-except ImportError:
-    import tomli as tomllib  # type: ignore[unresolved-import]
-
 from verifiers import setup_logging
 from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
@@ -24,6 +24,7 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,6 @@ DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.py"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_SAVE_EVERY = -1
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
@@ -58,7 +58,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
             return defaults
 
         with pyproject_file.open("rb") as f:
-            pyproject_data = tomllib.load(f)
+            pyproject_data = load_toml(f)
 
         # Extract [tool.verifiers.eval] section
         eval_config = (
@@ -212,15 +212,20 @@ def main():
         help="Save results to disk",
     )
     parser.add_argument(
-        "--save-every",
-        "-f",
-        type=int,
-        default=DEFAULT_SAVE_EVERY,
-        help="Save dataset every n rollouts (-1 to disable)",
+        "--resume",
+        "-R",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Resume from a previous run. Optionally provide a PATH; "
+            "if omitted, auto-detect the latest incomplete matching run."
+        ),
     )
     parser.add_argument(
         "--independent-scoring",
-        "-R",
+        "-i",
         default=False,
         action="store_true",
         help="Score each rollout individually instead of scoring by group",
@@ -369,7 +374,6 @@ def main():
         raw_temp = raw.get("temperature")
         if raw_temp is not None and "temperature" not in merged_sampling_args:
             merged_sampling_args["temperature"] = raw_temp
-
         # Build headers
         merged_headers: dict[str, str] = {}
         for h in raw.get("header") or []:
@@ -389,6 +393,40 @@ def main():
             extra_headers=merged_headers,
         )
 
+        # Backward-compatible TOML field: resume_path
+        if raw.get("resume") is None and raw.get("resume_path") is not None:
+            raw["resume"] = raw["resume_path"]
+
+        # handle resume path resolution
+        resume_arg = raw.get("resume")
+        resume_path: Path | None = None
+        if isinstance(resume_arg, str):
+            resume_path = Path(resume_arg)
+            if not is_valid_eval_results_path(resume_path):
+                raise ValueError(
+                    f"Resume path {resume_path} is not a valid evaluation results path"
+                )
+            logger.info(f"Resuming from explicit path: {resume_path}")
+        elif resume_arg is True:
+            auto_resume_path = find_latest_incomplete_eval_results_path(
+                env_id=env_id,
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            )
+            if auto_resume_path is not None:
+                resume_path = auto_resume_path
+                logger.info(f"Auto-resuming from: {resume_path}")
+            else:
+                logger.info(
+                    "No matching incomplete run found for --resume; starting a new run"
+                )
+        elif resume_arg in (None, False):
+            pass
+        else:
+            raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
+
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
@@ -404,7 +442,7 @@ def main():
             verbose=raw.get("verbose", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
-            save_every=raw.get("save_every", DEFAULT_SAVE_EVERY),
+            resume_path=resume_path,
             independent_scoring=raw.get("independent_scoring", False),
             save_to_hf_hub=raw.get("save_to_hf_hub", False),
             hf_hub_dataset_name=raw.get("hf_hub_dataset_name", ""),

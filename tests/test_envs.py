@@ -21,6 +21,15 @@ SKIPPED_ENVS = [
     "browser_dom_example",
     # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
     "browser_cua_example",
+    # Uses prime-tunnel which is still experimental and has low usage limits
+    "terminus_harbor",
+]
+
+SKIPPED_ENV_LOADING_ENVS = [
+    # OpenEnv datasets are built by resetting seeds in sandbox-backed env servers.
+    # Skip generic load checks here and cover via dedicated OpenEnv tests.
+    "openenv_echo",
+    "openenv_textarena",
 ]
 
 
@@ -80,6 +89,8 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     """Test environment in a fresh venv with local verifiers installed first."""
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
+    if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
+        pytest.skip(f"Skipping slow OpenEnv smoke test for {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
     cmd = (

@@ -37,7 +37,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel",
-    "prime-sandboxes>=0.2.9",
+    "prime-sandboxes>=0.2.14",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -64,6 +64,10 @@ dev = [
     "ipywidgets",
     "reasoning-gym",
     "textarena",
+    "openenv-core[core]==0.2.1",
+    "stagehand>=3.0.0",
+    "aiohttp>=3.9.0",
+    "python-dotenv>=1.0.0",
     "nltk",
 ]
 
@@ -74,6 +78,9 @@ rg = [
 ta = [
     "textarena",
     "nltk",
+]
+openenv = [
+    "openenv-core[core]==0.2.1",
 ]
 browser = [
     "stagehand>=3.0.0",
@@ -105,6 +112,7 @@ vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
+vf-build = "verifiers.scripts.build:main"
 vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
@@ -174,6 +182,7 @@ norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]
 [tool.ty.rules]
 unresolved-import = "warn"
 unknown-argument = "warn"
+redundant-cast = "ignore"
 
 [tool.ty.src]
 exclude = ["environments"]
