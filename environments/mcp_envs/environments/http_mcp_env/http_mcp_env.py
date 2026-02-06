@@ -47,7 +47,6 @@ def load_environment(**kwargs):
         http_urls={
             "fetch-mcp-server-http": remote_url
         },
-        connection_scope="session",  # Reuse connection across rollouts
         http_timeout=60.0,
         http_max_retries=3,
         dataset=ds,

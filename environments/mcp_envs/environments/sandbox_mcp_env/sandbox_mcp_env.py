@@ -44,8 +44,6 @@ def load_environment(**kwargs):
             )
         ],
         transport_type="sandbox",
-        connection_scope="rollout",  # Each rollout gets its own sandbox
-        # Sandbox configuration
         sandbox_image="python:3.11-slim",
         sandbox_start_command="tail -f /dev/null",
         sandbox_cpu_cores=1,

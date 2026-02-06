@@ -8,19 +8,15 @@ from verifiers.utils.mcp_utils.mcp_env_utils import validate_config, create_tran
 import verifiers as vf
 from verifiers import Messages, State
 
+
 class MCPEnv(vf.StatefulToolEnv):
     def __init__(
         self,
         mcp_servers: List[MCPServerConfig | dict],
-        # transport configuration
         transport_type: Literal["stdio", "http", "sandbox"] = "stdio",
-        # use new connections for each rollout or keep connections alive for the entire session
-        connection_scope: Literal["rollout", "session"] = "rollout",
-        # http specific
         http_urls: Optional[Dict[str, str]] = None,
         http_timeout: float = 30.0,
         http_max_retries: int = 3,
-        # sandbox specific
         sandbox_image: str = "python:3.11-slim",
         sandbox_start_command: str = "tail -f /dev/null",
         sandbox_cpu_cores: int = 1,
@@ -29,7 +25,6 @@ class MCPEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: Optional[Dict[str, str]] = None,
         sandbox_port_to_expose: Optional[int] = None,
-        # standard options
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"Error: {str(e)}",
         **kwargs
@@ -40,7 +35,6 @@ class MCPEnv(vf.StatefulToolEnv):
         ]
 
         self.transport_type = transport_type
-        self.connection_scope = connection_scope
         self.http_urls = http_urls or {}
         self.http_timeout = http_timeout
         self.http_max_retries = http_max_retries
@@ -57,7 +51,6 @@ class MCPEnv(vf.StatefulToolEnv):
         validate_config(
             transport_type,
             self.mcp_servers,
-            self.connection_scope,
             http_urls=self.http_urls,
         )
 
@@ -73,8 +66,8 @@ class MCPEnv(vf.StatefulToolEnv):
     async def register_tools_from_transport(
         self,
         server_name: str,
-        transport: MCPTransport
-    ):
+        transport: MCPTransport,
+    ) -> None:
         for tool in transport.tools.values():
             wrapper = MCPToolWrapper(server_name, tool, transport)
             self.tools.append(wrapper)
@@ -84,11 +77,11 @@ class MCPEnv(vf.StatefulToolEnv):
             self.oai_tools.append(oai_tool)
             tool_name = wrapper.__name__
             self.tool_map[tool_name] = wrapper
-            if not hasattr(self, 'skipped_args'):
+            if not hasattr(self, "skipped_args"):
                 self.skipped_args = {}
             self.skipped_args[tool_name] = []
 
-    async def setup_session_connections(self):
+    async def setup_session_connections(self) -> None:
         for server_config in self.mcp_servers:
             transport_config = MCPTransportConfig(
                 server_config=server_config,
@@ -119,42 +112,8 @@ class MCPEnv(vf.StatefulToolEnv):
     async def setup_state(self, state: State, **kwargs) -> State:
         state = await super().setup_state(state, **kwargs)
 
-        if self.connection_scope == "session":
-            if not self.session_transports:
-                await self.setup_session_connections()
-
-        elif self.connection_scope == "rollout":
-            rollout_transports = {}
-
-            for server_config in self.mcp_servers:
-                transport_config = MCPTransportConfig(
-                    server_config=server_config,
-                    transport_type=self.transport_type,
-                    http_urls=self.http_urls,
-                    http_timeout=self.http_timeout,
-                    http_max_retries=self.http_max_retries,
-                    sandbox_image=self.sandbox_image,
-                    sandbox_start_command=self.sandbox_start_command,
-                    sandbox_cpu_cores=self.sandbox_cpu_cores,
-                    sandbox_memory_gb=self.sandbox_memory_gb,
-                    sandbox_disk_size_gb=self.sandbox_disk_size_gb,
-                    sandbox_timeout_minutes=self.sandbox_timeout_minutes,
-                    sandbox_environment_vars=self.sandbox_environment_vars,
-                    sandbox_port_to_expose=self.sandbox_port_to_expose,
-                )
-                transport = await create_transport(transport_config)
-
-                if self.transport_type == "sandbox":
-                    await transport.create_sandbox()
-                    await transport.run_setup_commands()
-                    await transport.start_mcp_server()
-                    await transport.expose_port()
-
-                await transport.connect()
-                rollout_transports[server_config.name] = transport
-                await self.register_tools_from_transport(server_config.name, transport)
-
-            state["mcp_transports"] = rollout_transports
+        if not self.session_transports:
+            await self.setup_session_connections()
 
         if self.oai_tools:
             state["info"]["oai_tools"] = self.oai_tools
@@ -171,25 +130,7 @@ class MCPEnv(vf.StatefulToolEnv):
     ) -> dict:
         return tool_args
 
-    async def is_completed(
-        self,
-        messages: Messages,
-        state: State,
-        **kwargs
-    ) -> bool:
-        completed = await super().is_completed(messages, state, **kwargs)
-        if completed and self.connection_scope == "rollout":
-            await self._cleanup_rollout_transports(state)
-
-        return completed
-
-    async def _cleanup_rollout_transports(self, state: State):
-        rollout_transports = state.get("mcp_transports", {})
-        for transport in rollout_transports.values():
-            await transport.disconnect()
-        state.pop("mcp_transports", None)
-    
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         for transport in self.session_transports.values():
             await transport.disconnect()
         self.session_transports.clear()

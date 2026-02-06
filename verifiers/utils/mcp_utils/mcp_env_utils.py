@@ -65,7 +65,6 @@ def get_server_url(server_config: MCPServerConfig, http_urls: dict) -> str:
 def validate_config(
     transport_type: str,
     servers: list[MCPServerConfig],
-    connection_scope: str,
     http_urls: Optional[dict[str, str]] = None,
 ) -> None:
     if transport_type == "stdio":

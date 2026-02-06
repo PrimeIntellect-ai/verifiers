@@ -24,10 +24,9 @@ def load_environment(**kwargs):
             {"name": "fetch", "command": "uvx", "args": ["mcp-server-fetch"]}
         ],
         transport_type="stdio",
-        connection_scope="rollout",
         dataset=ds,
         rubric=rub,
-        max_turns=10
+        max_turns=10,
     )
 
     return env
