@@ -97,7 +97,7 @@ Standalone executable script with realistic integration scenarios:
 
 ### Integration Testing
 - [x] All existing tests pass when running `uv run pytest` locally (514 tests pass, 4 skipped external env tests)
-- [x] New tests have been added to cover the changes (10 unit + 4 e2e scenarios)
+- [x] New tests have been added to cover the changes (10 unit + 4 e2e + 5 bugfix = 19 event system tests)
 - [x] Verified with real `vf-eval` command - progress bar and TUI work correctly
 
 ### Manual Testing
@@ -118,6 +118,27 @@ Evaluation completed in 1.94 seconds
 - [x] I have made corresponding changes to the documentation (MEMORY.md added)
 - [x] My changes generate no new warnings (only pre-existing experimental uv warnings)
 - [x] Any dependent changes have been merged and published (N/A)
+
+## Bug Fixes (Post-Review)
+
+Three issues were identified during code review and have been fixed:
+
+### 1. Server Mode Bypass (HIGH Priority)
+**Problem:** When `independent_scoring=False`, grouped scoring bypassed the server mode dispatch in `run_group()`, causing failures in server mode.
+
+**Fix:** Added server mode detection. In server mode, properly routes through `run_group()`. In local mode, uses `_run_group_with_states()` to get State objects for GroupCompleteEvent.
+
+### 2. Incorrect num_examples Calculation (MEDIUM Priority)
+**Problem:** When `independent_scoring=True` with `rollouts_per_example > 1`, StartEvent reported incorrect `num_examples` (total rollouts instead of unique examples).
+
+**Fix:** Added `configured_rollouts_per_example` parameter to `generate()`. Now correctly calculates: `num_examples = total_rollouts // rollouts_per_example`.
+
+### 3. Missing Documentation (LOW Priority)
+**Problem:** Changes to core user-facing methods weren't documented.
+
+**Fix:** Added comprehensive event type documentation to `docs/reference.md` and usage examples to `docs/evaluation.md`.
+
+**Test Coverage:** Added `tests/test_bugfix_event_system.py` with 5 tests covering all three fixes.
 
 ## Additional Notes
 
