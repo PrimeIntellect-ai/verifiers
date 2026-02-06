@@ -74,6 +74,8 @@ class InterceptionServer:
                 sockets = getattr(server, "sockets", None) if server else None
                 if sockets:
                     self.port = sockets[0].getsockname()[1]
+            if self.port == 0:
+                raise RuntimeError("Failed to resolve OS-assigned port")
 
             self._app = app
             self._runner = runner
