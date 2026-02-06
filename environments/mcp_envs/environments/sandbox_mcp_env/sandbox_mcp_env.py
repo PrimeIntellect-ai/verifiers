@@ -1,5 +1,5 @@
 import verifiers as vf
-from verifiers.envs.mcp.mcp_utils.models import MCPServerConfig
+from verifiers.utils.mcp_utils.models import MCPServerConfig
 from datasets import Dataset
 
 

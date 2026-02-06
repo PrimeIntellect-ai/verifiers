@@ -1,8 +1,8 @@
 from typing import Optional, Union
-from verifiers.envs.mcp.mcp_utils.models import MCPServerConfig, MCPTransportConfig
-from verifiers.envs.mcp.transports.stdio import StdioTransport
-from verifiers.envs.mcp.transports.streaming_http import StreamingHTTPTransport
-from verifiers.envs.mcp.transports.sandbox import SandboxTransport
+from verifiers.utils.mcp_utils.models import MCPServerConfig, MCPTransportConfig
+from verifiers.utils.mcp_utils.transports.stdio import StdioTransport
+from verifiers.utils.mcp_utils.transports.streaming_http import StreamingHTTPTransport
+from verifiers.utils.mcp_utils.transports.sandbox import SandboxTransport
 
 async def create_transport(
     transport_config: MCPTransportConfig, 

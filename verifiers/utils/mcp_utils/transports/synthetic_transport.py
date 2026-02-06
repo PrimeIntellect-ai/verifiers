@@ -10,11 +10,7 @@ from typing import Dict, Callable, Any, Optional
 from dataclasses import dataclass, field
 from mcp.types import Tool
 
-# Import the base transport interface
-import sys
-sys.path.insert(0, '/mnt/user-data/uploads')
-
-from verifiers.envs.mcp.transports.base import MCPTransport
+from verifiers.utils.mcp_utils.transports.base import MCPTransport
 
 
 class SyntheticTransport(MCPTransport):
