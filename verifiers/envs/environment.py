@@ -970,7 +970,7 @@ class Environment(ABC):
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
             )
-            on_log(f"Resuming evaluaton from {results_path}")
+            on_log(f"Resuming evaluation from {results_path}")
             outputs = load_outputs(results_path)
             builder.add_outputs(outputs)
             filtered_inputs = filter_inputs(raw_inputs, outputs, rollouts_per_example)
