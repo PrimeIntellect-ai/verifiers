@@ -362,7 +362,10 @@ def validate_resume_metadata(
     num_examples: int,
     rollouts_per_example: int,
 ) -> None:
-    """Validate saved metadata matches the current resume configuration."""
+    """Validate saved metadata matches the current resume configuration.
+
+    `num_examples` may increase between runs to request additional rollouts.
+    """
     metadata_path = results_path / "metadata.json"
 
     try:
@@ -382,7 +385,6 @@ def validate_resume_metadata(
     expected = {
         "env_id": env_id,
         "model": model,
-        "num_examples": num_examples,
         "rollouts_per_example": rollouts_per_example,
     }
 
@@ -393,6 +395,16 @@ def validate_resume_metadata(
             mismatches.append(
                 f"{field}: saved={saved_value!r}, current={expected_value!r}"
             )
+
+    saved_num_examples = saved_metadata.get("num_examples", "<missing>")
+    if not isinstance(saved_num_examples, int):
+        mismatches.append(
+            f"num_examples: saved={saved_num_examples!r}, current={num_examples!r}"
+        )
+    elif num_examples < saved_num_examples:
+        mismatches.append(
+            f"num_examples: saved={saved_num_examples!r}, current={num_examples!r} (current must be >= saved)"
+        )
 
     if mismatches:
         mismatch_text = "; ".join(mismatches)

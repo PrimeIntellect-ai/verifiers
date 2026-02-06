@@ -262,6 +262,32 @@ class TestResumeMetadataValidation:
             rollouts_per_example=2,
         )
 
+    def test_validate_resume_metadata_accepts_increased_num_examples(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=5,
+            rollouts_per_example=2,
+        )
+
     def test_validate_resume_metadata_raises_on_mismatch(self, tmp_path: Path):
         results_path = tmp_path / "results"
         results_path.mkdir()
