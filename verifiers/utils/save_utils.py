@@ -210,7 +210,6 @@ class GenerateOutputsBuilder:
         sampling_args: SamplingArgs,
         results_path: Path | None,
     ):
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.env_id = env_id
         self.env_args = env_args
         self.model = model
