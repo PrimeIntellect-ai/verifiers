@@ -72,6 +72,15 @@ class InterceptionServer:
             self._runner = runner
             self._site = site
 
+            # OS-assigned port if port=0
+            if self.port == 0:
+                server = getattr(site, "_server", None)
+                sockets = getattr(server, "sockets", None) if server else None
+                if sockets:
+                    self.port = sockets[0].getsockname()[1]
+            if self.port == 0:
+                raise RuntimeError("Failed to resolve OS-assigned port")
+
             logger.debug(f"Started interception server on port {self.port}")
 
     async def stop(self) -> None:
