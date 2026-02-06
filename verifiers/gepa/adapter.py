@@ -48,8 +48,10 @@ def make_reflection_lm(
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
-        content = response.choices[0].message.content
-        return content or ""
+        message = response.choices[0].message
+        # Also check reasoning field (for vLLM --reasoning-parser)
+        content = message.content or getattr(message, "reasoning", None) or ""
+        return content
 
     return reflection_lm
 

@@ -104,7 +104,9 @@ async def parse_response_messages(
     if message_type == "chat":
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
-            response_text = response.choices[0].message.content or ""
+            message = response.choices[0].message
+            # Also check reasoning field (for vLLM --reasoning-parser)
+            response_text = message.content or getattr(message, "reasoning", None) or ""
         response_message: dict[str, object] = {
             "role": "assistant",
             "content": response_text,

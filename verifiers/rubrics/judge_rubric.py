@@ -95,7 +95,9 @@ class JudgeRubric(Rubric):
                 messages=[{"role": "user", "content": judge_prompt}],
                 **judge_args,
             )
-            judge_response = str(judge_response.choices[0].message.content)
+            message = judge_response.choices[0].message
+            # Also check reasoning field (for vLLM --reasoning-parser)
+            judge_response = str(message.content or getattr(message, "reasoning", None) or "")
         except RateLimitError as e:
             self.logger.warning(
                 f"Rate limit exceeded when calling judge model '{self.judge_model}'. "

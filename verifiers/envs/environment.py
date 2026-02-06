@@ -642,10 +642,14 @@ class Environment(ABC):
                 f"Model returned {len(response.choices)} choices, expected 1"
             )
         if isinstance(response.choices[0], Choice):
-            if not (
-                response.choices[0].message.content
-                or response.choices[0].message.tool_calls
-            ):
+            message = response.choices[0].message
+            # Check content, tool_calls, and reasoning (for vLLM --reasoning-parser)
+            has_content = bool(
+                message.content
+                or message.tool_calls
+                or getattr(message, "reasoning", None)
+            )
+            if not has_content:
                 raise vf.EmptyModelResponseError(
                     "Model returned no content and did not call any tools"
                 )

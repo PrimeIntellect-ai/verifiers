@@ -2965,8 +2965,11 @@ class RLMEnv(vf.StatefulToolEnv):
                 return self._make_timeout_result([], 0, 0, 0, 0)
 
             prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
+            message = response.choices[0].message
+            # Also check reasoning field (for vLLM --reasoning-parser)
+            final_content = message.content or getattr(message, "reasoning", None) or ""
             return SubLLMResult(
-                final_content=response.choices[0].message.content or "",
+                final_content=final_content,
                 turns=[
                     SubLLMTurn(
                         prompt_messages=[cast(ChatMessage, dict(m)) for m in messages],
@@ -3028,8 +3031,10 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
             if not tool_calls:
+                # Also check reasoning field (for vLLM --reasoning-parser)
+                final_content = assistant_message.content or getattr(assistant_message, "reasoning", None) or ""
                 return SubLLMResult(
-                    final_content=assistant_message.content or "",
+                    final_content=final_content,
                     turns=turns,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
@@ -3086,9 +3091,12 @@ class RLMEnv(vf.StatefulToolEnv):
             )
         )
         prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
+        # Also check reasoning field (for vLLM --reasoning-parser)
+        message = response.choices[0].message
+        final_content = message.content or getattr(message, "reasoning", None) or ""
 
         return SubLLMResult(
-            final_content=response.choices[0].message.content or "",
+            final_content=final_content,
             turns=turns,
             total_prompt_tokens=total_prompt_tokens + prompt_tokens,
             total_completion_tokens=total_completion_tokens + completion_tokens,
