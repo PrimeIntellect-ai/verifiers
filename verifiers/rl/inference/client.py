@@ -3,15 +3,15 @@ import logging
 import time
 
 import requests
-import torch  # type: ignore
+import torch
 from openai import AsyncOpenAI
 from requests import ConnectionError
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException, Timeout
-from vllm.distributed.device_communicators.pynccl import (  # type: ignore
+from vllm.distributed.device_communicators.pynccl import (
     PyNcclCommunicator,
 )
-from vllm.distributed.utils import StatelessProcessGroup  # type: ignore
+from vllm.distributed.utils import StatelessProcessGroup
 
 logger = logging.getLogger(__name__)
 

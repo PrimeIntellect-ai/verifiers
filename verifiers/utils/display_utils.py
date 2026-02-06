@@ -313,10 +313,10 @@ class BaseDisplay:
 
         # Restore stdout/stderr
         if self._old_stdout is not None:
-            sys.stdout = self._old_stdout  # type: ignore[assignment]
+            sys.stdout = self._old_stdout
             self._old_stdout = None
         if self._old_stderr is not None:
-            sys.stderr = self._old_stderr  # type: ignore[assignment]
+            sys.stderr = self._old_stderr
             self._old_stderr = None
         if self._console_file is not None:
             # Redirect console back to original stdout before closing temp stream

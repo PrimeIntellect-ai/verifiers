@@ -11,13 +11,17 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
 from verifiers.utils.save_utils import (
     extract_usage_tokens,
+    load_outputs,
     make_serializable,
+    save_new_outputs,
     states_to_outputs,
+    validate_resume_metadata,
 )
 
 
@@ -194,3 +198,154 @@ class TestSavingResults:
         ]
         with pytest.raises(ValueError, match="not JSON-serializable"):
             states_to_outputs(states, state_columns=["client"])
+
+
+class TestLoadOutputs:
+    def test_ignores_malformed_trailing_line(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        valid_outputs = [
+            {"example_id": 0, "task": "task-0"},
+            {"example_id": 1, "task": "task-1"},
+        ]
+        partial_trailing_line = '{"example_id": 2, "task": "task-2"'
+        lines = [json.dumps(output) for output in valid_outputs]
+        outputs_path.write_text(
+            "\n".join(lines + [partial_trailing_line]) + "\n", encoding="utf-8"
+        )
+
+        outputs = load_outputs(results_path)
+
+        assert len(outputs) == 2
+        assert outputs[0]["example_id"] == 0
+        assert outputs[1]["example_id"] == 1
+
+    def test_raises_for_malformed_non_trailing_line(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        malformed_non_trailing_line = '{"example_id": 0, "task": "broken"'
+        valid_line = json.dumps({"example_id": 1, "task": "task-1"})
+        outputs_path.write_text(
+            "\n".join([malformed_non_trailing_line, valid_line]) + "\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(json.JSONDecodeError):
+            load_outputs(results_path)
+
+
+class TestSaveNewOutputs:
+    def test_truncates_malformed_trailing_line_before_append(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        outputs_path = results_path / "results.jsonl"
+
+        existing_outputs = [
+            {"example_id": 0, "task": "task-0"},
+            {"example_id": 1, "task": "task-1"},
+        ]
+        malformed_trailing_line = '{"example_id": 2, "task": "task-2"'
+        lines = [json.dumps(output) for output in existing_outputs]
+        outputs_path.write_text(
+            "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
+        )
+
+        save_new_outputs(
+            [{"example_id": 3, "task": "task-3"}],
+            results_path,
+        )
+
+        persisted_lines = [
+            line
+            for line in outputs_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        parsed_outputs = [json.loads(line) for line in persisted_lines]
+
+        assert [output["example_id"] for output in parsed_outputs] == [0, 1, 3]
+        assert [output["example_id"] for output in load_outputs(results_path)] == [
+            0,
+            1,
+            3,
+        ]
+
+
+class TestResumeMetadataValidation:
+    def test_validate_resume_metadata_accepts_matching_config(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=3,
+            rollouts_per_example=2,
+        )
+
+    def test_validate_resume_metadata_accepts_increased_num_examples(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=5,
+            rollouts_per_example=2,
+        )
+
+    def test_validate_resume_metadata_raises_on_mismatch(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 8,
+                    "rollouts_per_example": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="metadata mismatch"):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id="math-env",
+                model="test-model",
+                num_examples=3,
+                rollouts_per_example=2,
+            )

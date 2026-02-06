@@ -6,13 +6,10 @@ tags = ["eval", "cli_agent"]
 version = "0.1.1"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers",
+    "verifiers>=0.1.10.dev2",
     "prime-sandboxes>=0.2.10",
     "tomli>=2.3.0",
 ]
-
-[tool.uv.sources]
-verifiers = { git = "https://github.com/primeintellect-ai/verifiers", branch = "cooper/terminus" }
 
 [build-system]
 requires = ["hatchling"]

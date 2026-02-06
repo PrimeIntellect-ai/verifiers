@@ -10,6 +10,7 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import Process
@@ -28,6 +29,8 @@ from typing import (
 
 from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
 
+from verifiers.utils.eval_utils import filter_inputs
+from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.worker_utils import get_free_port
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
@@ -46,6 +49,7 @@ from verifiers.types import (
     ChatMessage,
     ClientConfig,
     DatasetBuilder,
+    GenerateMetadata,
     GenerateOutputs,
     LogCallback,
     Messages,
@@ -70,9 +74,14 @@ from verifiers.utils.message_utils import (
 )
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
+    load_outputs,
     make_dataset,
-    save_generate_outputs,
+    push_results_to_hf_hub,
+    save_metadata,
+    save_new_outputs,
+    save_outputs,
     state_to_output,
+    validate_resume_metadata,
 )
 from verifiers.utils.token_utils import (
     get_prompt_ids,
@@ -165,7 +174,9 @@ class Environment(ABC):
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
             # merge extra_body if provided
-            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))  # type: ignore[union-attr]
+            cast(dict[str, Any], self.sampling_args["extra_body"]).update(
+                cast(dict[str, Any], sampling_args.get("extra_body", {}))
+            )
             # copy other keys
             for key, value in sampling_args.items():
                 if key != "extra_body":
@@ -244,7 +255,7 @@ class Environment(ABC):
         ):
             dataset = dataset.rename_column("example_id", "src_id")
         if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore (weird datasets thing)
+            dataset = dataset.add_column("example_id", range(len(dataset)))
         return dataset
 
     def _ensure_prompt(
@@ -670,12 +681,12 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
-        state_input = deepcopy(input)
+        state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+        state = State(input=state_input)
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
@@ -847,10 +858,8 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
-        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -861,15 +870,73 @@ class Environment(ABC):
         Generate rollouts for a set of inputs.
         """
         from datasets import Dataset
+        from tqdm import tqdm
+
+        pbar: tqdm | None = None
+
+        def default_on_start(
+            raw_inputs: list[RolloutInput],
+            filtered_inputs: list[RolloutInput] | list[list[RolloutInput]],
+        ) -> None:
+            """Initializes the progress bar from the raw inputs."""
+            nonlocal pbar
+
+            total_rollouts = len(raw_inputs)
+            total_groups = len(set([i["example_id"] for i in raw_inputs]))
+            rollouts_per_example = (
+                total_rollouts // total_groups if total_groups > 0 else 0
+            )
+
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining_rollouts = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining_rollouts = len(filtered_inputs)
+            saved_rollouts = total_rollouts - remaining_rollouts
+
+            if filtered_inputs:
+                if isinstance(filtered_inputs[0], list):
+                    pbar_total = total_groups
+                    pbar_initial = saved_rollouts // rollouts_per_example
+                    pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
+                else:
+                    pbar_total = total_rollouts
+                    pbar_initial = saved_rollouts
+                    pbar_desc = f"Processing {total_rollouts} rollouts"
+
+                pbar = tqdm(
+                    total=pbar_total,
+                    initial=pbar_initial,
+                    desc=pbar_desc,
+                    postfix=dict(reward="?"),
+                )
+
+        def default_on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            new_metadata: GenerateMetadata,
+        ) -> None:
+            """Updates the progress bar from the new outputs."""
+            nonlocal pbar
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
+
+        def default_on_log(message: str) -> None:
+            """Logs using the environment logger."""
+            self.logger.info(message)
+
+        on_start = on_start or cast(StartCallback, default_on_start)
+        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        on_log = on_log or cast(LogCallback, default_on_log)
 
         if isinstance(inputs, Dataset):
-            inputs_list = inputs.to_list()
+            raw_inputs = cast(list[RolloutInput], inputs.to_list())
         elif isinstance(inputs, list):
-            inputs_list = inputs
-
-        # notify caller of actual total count (useful when num_examples=-1)
-        if on_start is not None:
-            on_start(len(inputs_list))
+            raw_inputs = inputs
 
         # set up semaphores
         sem = await maybe_semaphore(max_concurrent)
@@ -880,26 +947,57 @@ class Environment(ABC):
             default_sampling_args.update(sampling_args)
         sampling_args = default_sampling_args
 
-        # Initialize builder for incremental serialization
+        # initialize outputs builder
+        total_rollouts = len(raw_inputs)
+        num_examples = len(set([i["example_id"] for i in raw_inputs]))
+        rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
             model=model,
             client=client,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
             state_columns=state_columns,
             sampling_args=sampling_args,
             results_path=results_path,
         )
 
+        # load existing results if available
+        if results_path is not None and is_valid_eval_results_path(results_path):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id=self.env_id,
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+            )
+            on_log(f"Resuming evaluation from {results_path}")
+            outputs = load_outputs(results_path)
+            builder.add_outputs(outputs)
+            filtered_inputs = filter_inputs(raw_inputs, outputs, rollouts_per_example)
+            if not filtered_inputs:
+                on_log("No remaining rollouts to evaluate, returning completed outputs")
+                return builder.build(sort_by_example_id=True)
+            on_log(
+                f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
+            )
+        else:
+            filtered_inputs = raw_inputs
+
+        if save_results:
+            on_log(f"Saving results to {builder.results_path}")
+
         # create tasks based on mode
         tasks: dict[asyncio.Task, int] = {}
         if independent_scoring:
-            for i, input_item in enumerate(inputs_list):
+            on_start(raw_inputs, filtered_inputs)
+            for i, rollout_input in enumerate(filtered_inputs):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
                         self.run_rollout(
-                            input_item,
+                            rollout_input,
                             client,
                             model,
                             sampling_args,
@@ -909,23 +1007,20 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = len(inputs_list)
-            pbar_desc = f"Processing {len(inputs_list)} rollouts"
         else:
-            input_groups: dict[int, list[RolloutInput]] = {}
-            for input_item in inputs_list:
-                example_id = input_item["example_id"]
-                if example_id not in input_groups:
-                    input_groups[example_id] = []
-                input_groups[example_id].append(input_item)
-            group_list = list(input_groups.values())
+            group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+            for rollout_input in filtered_inputs:
+                example_id = rollout_input["example_id"]
+                group_inputs[example_id].append(rollout_input)
+            filtered_group_inputs = list(group_inputs.values())
+            on_start(raw_inputs, filtered_group_inputs)
 
-            for i, group in enumerate(group_list):
+            for i, group_input in enumerate(filtered_group_inputs):
                 task = asyncio.create_task(
                     with_sem(
                         sem,
                         self.run_group(
-                            group,
+                            group_input,
                             client,
                             model,
                             sampling_args,
@@ -935,56 +1030,22 @@ class Environment(ABC):
                     ),
                 )
                 tasks[task] = i
-            pbar_total = len(group_list)
-            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
 
-        # set up progress bar (only when use_tqdm=True and no external progress callback)
-        pbar = None
-        if use_tqdm and on_progress is None:
-            from tqdm import tqdm
-
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
-
-        # process tasks as they complete
-        reward_sum, reward_count = 0, 0
-        groups_or_rollouts_completed = 0
         try:
             for coro in asyncio.as_completed(tasks.keys()):
                 result = await coro
 
                 # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
-                outputs = [result] if independent_scoring else result
+                new_outputs = [result] if independent_scoring else result
+                builder.add_outputs(new_outputs)
+                metadata = builder.build_metadata()
 
-                # Serialize states to outputs immediately (serialization happens once here)
-                new_outputs = builder.add_outputs(outputs)
-                groups_or_rollouts_completed += 1
+                on_progress(builder.outputs, new_outputs, metadata)
 
-                # track reward for rolling average (from outputs)
-                for o in new_outputs:
-                    r = o.get("reward")
-                    if r is not None:
-                        reward_sum += r
-                        reward_count += 1
-
-                # update progress bar or call callback
-                if pbar is not None:
-                    pbar.update(1)
-                    if reward_count > 0:
-                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
-                elif on_progress is not None:
-                    on_progress(builder.outputs, new_outputs)
-
-                # save intermediate results (outputs already serialized, no redundant work)
-                if (
-                    save_results
-                    and save_every > 0
-                    and groups_or_rollouts_completed % save_every == 0
-                ):
-                    intermediate_results = builder.build()
-                    self.logger.debug(
-                        f"Saving intermediate results to {intermediate_results['metadata']['path_to_save']}"
-                    )
-                    save_generate_outputs(intermediate_results)
+                # incrementally save outputs
+                if save_results:
+                    save_new_outputs(new_outputs, builder.results_path)
+                    save_metadata(metadata, builder.results_path)
         finally:
             # cancel all outstanding tasks and await their completion
             pending = [task for task in tasks.keys() if not task.done()]
@@ -995,14 +1056,17 @@ class Environment(ABC):
             if pbar is not None:
                 pbar.close()
 
-        # Build final results (sorted by example_id for deterministic ordering)
+        # build final results (sorted by example_id for deterministic ordering)
         results = builder.build(sort_by_example_id=True)
 
         # save if requested
         if save_results:
-            save_generate_outputs(results, push_to_hf_hub, hf_hub_dataset_name)
+            save_outputs(results["outputs"], builder.results_path)
+            save_metadata(results["metadata"], builder.results_path)
+            if push_to_hf_hub:
+                push_results_to_hf_hub(results, hf_hub_dataset_name)
             if on_log is not None:
-                on_log(f"Saved final outputs to {results['metadata']['path_to_save']}")
+                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
 
         return results
 
@@ -1022,7 +1086,7 @@ class Environment(ABC):
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()
-            import nest_asyncio  # type: ignore
+            import nest_asyncio
 
             nest_asyncio.apply()
             return loop.run_until_complete(coro)
@@ -1064,10 +1128,8 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
-        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -1088,10 +1150,8 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
-            use_tqdm=use_tqdm,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_start=on_start,
@@ -1111,7 +1171,6 @@ class Environment(ABC):
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -1130,7 +1189,6 @@ class Environment(ABC):
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,

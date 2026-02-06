@@ -196,13 +196,7 @@ def states_to_outputs(
 
 
 class GenerateOutputsBuilder:
-    """Incrementally builds GenerateOutputs, serializing states exactly once.
-
-    This builder accumulates outputs as rollouts complete, avoiding redundant
-    serialization for intermediate saves. Each state is serialized once via
-    add_states(), and the accumulated outputs can be retrieved at any time
-    via build().
-    """
+    """Incrementally builds GenerateOutputs."""
 
     def __init__(
         self,
@@ -210,6 +204,8 @@ class GenerateOutputsBuilder:
         env_args: dict,
         model: str,
         client: AsyncOpenAI | ClientConfig,
+        num_examples: int,
+        rollouts_per_example: int,
         state_columns: list[str] | None,
         sampling_args: SamplingArgs,
         results_path: Path | None,
@@ -218,47 +214,38 @@ class GenerateOutputsBuilder:
         self.env_args = env_args
         self.model = model
         self.client = client
+        self.num_examples = num_examples
+        self.rollouts_per_example = rollouts_per_example
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
         self.start_time = time.time()
+        if isinstance(self.client, ClientConfig):
+            self.base_url = self.client.api_base_url
+        else:
+            self.base_url = (
+                str(self.client.base_url) if hasattr(self.client, "base_url") else ""
+            )
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
-        # Track tools from states for metadata
-        self._tools_list: list[list[ChatCompletionToolParam] | None] = []
+        self.tools_list: list[list[ChatCompletionToolParam] | None] = []
 
-    def add_outputs(self, new_outputs: list[RolloutOutput]) -> list[RolloutOutput]:
-        """Convert new outputs to outputs and accumulate. Returns the new outputs."""
+    def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
+        """Accumulate new outputs."""
         self.outputs.extend(new_outputs)
-        # Track tools for metadata computation
         for output in new_outputs:
-            self._tools_list.append(output.get("oai_tools"))
-        return new_outputs
+            self.tools_list.append(output.get("oai_tools"))
 
-    def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
-        """Build GenerateOutputs from accumulated outputs."""
-        outputs = self.outputs
-        if sort_by_example_id:
-            outputs = sorted(outputs, key=lambda o: o.get("example_id", 0))
-        metadata = self._compute_metadata(outputs)
-        return GenerateOutputs(outputs=outputs, metadata=metadata)
-
-    def _compute_metadata(self, outputs: list[RolloutOutput]) -> GenerateMetadata:
-        """Compute metadata from accumulated outputs."""
-        if isinstance(self.client, ClientConfig):
-            base_url = self.client.api_base_url
-        else:
-            base_url = (
-                str(self.client.base_url) if hasattr(self.client, "base_url") else ""
-            )
-        # Compute reward stats from outputs
-        rewards = [o.get("reward", 0.0) for o in outputs]
+    def build_metadata(self) -> GenerateMetadata:
+        """Build metadata from accumulated outputs."""
+        # compute reward stats from accumulated outputs
+        rewards = [o.get("reward", 0.0) for o in self.outputs]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
 
-        # Compute metrics stats from outputs
+        # compute metrics stats from accumulated outputs
         metrics: dict[str, list[float]] = defaultdict(list)
-        for output in outputs:
+        for output in self.outputs:
             output_metrics = output.get("metrics", {})
             if output_metrics:
                 for metric_name, metric_value in output_metrics.items():
@@ -266,11 +253,16 @@ class GenerateOutputsBuilder:
                         metrics[metric_name].append(metric_value)
         avg_metrics = {k: sum(v) / len(v) if v else 0.0 for k, v in metrics.items()}
 
+        # compute error rate from accumulated outputs
+        errors = [o.get("error") for o in self.outputs]
+        has_errors = [e is not None for e in errors]
+        avg_error = sum(has_errors) / len(has_errors) if has_errors else 0.0
+
         input_tokens_total = 0.0
         output_tokens_total = 0.0
         usage_seen = False
         usage_count = 0
-        for output in outputs:
+        for output in self.outputs:
             token_usage = output.get("token_usage")
             if not isinstance(token_usage, dict):
                 continue
@@ -285,20 +277,15 @@ class GenerateOutputsBuilder:
                 "output_tokens": output_tokens_total / usage_count,
             }
 
-        # Compute example counts
-        example_ids = [o.get("example_id", 0) for o in outputs]
-        num_examples = len(set(example_ids)) if example_ids else 0
-        rollouts_per_example = len(outputs) // num_examples if num_examples > 0 else 1
-
         # Determine tools (use first non-None if all same)
         def tools_key(tools: list | None) -> str:
             if not tools:
                 return ""
             return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
 
-        unique_tools = set(tools_key(t) for t in self._tools_list)
+        unique_tools = set(tools_key(t) for t in self.tools_list)
         tools = (
-            next((t for t in self._tools_list if t), None)
+            next((t for t in self.tools_list if t), None)
             if len(unique_tools) == 1
             else None
         )
@@ -307,79 +294,233 @@ class GenerateOutputsBuilder:
             env_id=self.env_id,
             env_args=self.env_args,
             model=self.model,
-            base_url=base_url,
-            num_examples=num_examples,
-            rollouts_per_example=rollouts_per_example,
+            base_url=self.base_url,
+            num_examples=self.num_examples,
+            rollouts_per_example=self.rollouts_per_example,
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
             time_ms=(time.time() - self.start_time) * 1000.0,
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
+            avg_error=avg_error,
             usage=usage,
             state_columns=self.state_columns,
             path_to_save=self.results_path,
             tools=tools,
         )
 
+    def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:
+        """Return (sorted) accumulated outputs"""
+        if sort_by_example_id:
+            return sorted(self.outputs, key=lambda o: o.get("example_id", 0))
+        return self.outputs
 
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    """Sanitizes metadata before saving to disk."""
-
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
+    def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
+        """Build GenerateOutputs from accumulated outputs."""
+        return GenerateOutputs(
+            outputs=self.build_outputs(sort_by_example_id),
+            metadata=self.build_metadata(),
+        )
 
 
-def save_to_disk(outputs: list[RolloutOutput], metadata: dict, path: Path):
-    """Saves rollout outputs and metadata to disk."""
-    path.mkdir(parents=True, exist_ok=True)
+def load_outputs(results_path: Path) -> list[RolloutOutput]:
+    """Load outputs from disk."""
+    outputs_path = results_path / "results.jsonl"
+    outputs: list[RolloutOutput] = []
 
-    def save_outputs(outputs: list[RolloutOutput], results_path: Path):
-        with open(results_path, "w") as f:
-            for idx, output in enumerate(outputs):
-                example_id = output.get("example_id") or "unknown"
-                try:
-                    json.dump(output, f, default=make_serializable)
-                    f.write("\n")
-                except Exception as e:
-                    logger.error(
-                        f"Failed to save result with index {idx} ({example_id=}): {e}"
-                    )
+    with open(outputs_path, "r") as f:
+        lines = f.readlines()
 
-    def save_metadata(metadata: dict, metadata_path: Path):
-        with open(metadata_path, "w") as f:
+    for line_idx, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+
+        try:
+            outputs.append(RolloutOutput(**json.loads(line)))
+        except json.JSONDecodeError:
+            # A crash during append can leave the final JSONL line partially written.
+            # Recover completed records, but keep raising for malformed non-trailing rows.
+            has_nonempty_lines_after = any(
+                remaining.strip() for remaining in lines[line_idx:]
+            )
+            if has_nonempty_lines_after:
+                raise
+
+            logger.warning(
+                f"Ignoring malformed trailing line in {outputs_path} at line {line_idx}"
+            )
+            break
+
+    return outputs
+
+
+def validate_resume_metadata(
+    results_path: Path,
+    env_id: str,
+    model: str,
+    num_examples: int,
+    rollouts_per_example: int,
+) -> None:
+    """Validate saved metadata matches the current resume configuration.
+
+    `num_examples` may increase between runs to request additional rollouts.
+    """
+    metadata_path = results_path / "metadata.json"
+
+    try:
+        with open(metadata_path, "r") as f:
+            saved_metadata_raw = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata at {metadata_path} is not valid JSON."
+        ) from e
+
+    if not isinstance(saved_metadata_raw, dict):
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata at {metadata_path} must be a JSON object."
+        )
+
+    saved_metadata = cast(dict[str, Any], saved_metadata_raw)
+    expected = {
+        "env_id": env_id,
+        "model": model,
+        "rollouts_per_example": rollouts_per_example,
+    }
+
+    mismatches: list[str] = []
+    for field, expected_value in expected.items():
+        saved_value = saved_metadata.get(field, "<missing>")
+        if saved_value != expected_value:
+            mismatches.append(
+                f"{field}: saved={saved_value!r}, current={expected_value!r}"
+            )
+
+    saved_num_examples = saved_metadata.get("num_examples", "<missing>")
+    if not isinstance(saved_num_examples, int):
+        mismatches.append(
+            f"num_examples: saved={saved_num_examples!r}, current={num_examples!r}"
+        )
+    elif num_examples < saved_num_examples:
+        mismatches.append(
+            f"num_examples: saved={saved_num_examples!r}, current={num_examples!r} (current must be >= saved)"
+        )
+
+    if mismatches:
+        mismatch_text = "; ".join(mismatches)
+        raise ValueError(
+            f"Cannot resume from {results_path}: metadata mismatch ({mismatch_text}). "
+            "Use matching evaluation settings or provide a new results path."
+        )
+
+
+def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):
+    """Save outputs to disk."""
+    results_path.mkdir(parents=True, exist_ok=True)
+    outputs_path = results_path / "results.jsonl"
+    with open(outputs_path, mode) as f:
+        for idx, output in enumerate(outputs):
+            example_id = output.get("example_id") or "unknown"
             try:
-                json.dump(metadata, f, default=make_serializable)
+                json.dump(output, f, default=make_serializable)
+                f.write("\n")
             except Exception as e:
-                logger.error(f"Failed to save metadata: {e}")
+                logger.error(
+                    f"Failed to save result with index {idx} ({example_id=}): {e}"
+                )
 
-    save_metadata(metadata, path / "metadata.json")
-    save_outputs(outputs, path / "results.jsonl")
+
+def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:
+    """Return byte offset + contents for the last non-empty line in a file."""
+    file_obj.seek(0, 2)
+    file_size = file_obj.tell()
+    if file_size == 0:
+        return None
+
+    cursor = file_size
+
+    # Skip trailing whitespace/newlines to locate the real end of the last row.
+    while cursor > 0:
+        cursor -= 1
+        file_obj.seek(cursor)
+        if file_obj.read(1) not in b" \t\r\n":
+            break
+    else:
+        return None
+
+    line_end = cursor + 1
+    line_start = cursor
+    while line_start > 0:
+        file_obj.seek(line_start - 1)
+        if file_obj.read(1) == b"\n":
+            break
+        line_start -= 1
+
+    file_obj.seek(line_start)
+    return line_start, file_obj.read(line_end - line_start)
+
+
+def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
+    """Drop a malformed trailing JSONL row so future appends stay valid."""
+    if not outputs_path.exists() or not outputs_path.is_file():
+        return
+
+    with open(outputs_path, "rb+") as f:
+        last_line_info = _get_last_nonempty_line_bounds(f)
+        if last_line_info is None:
+            return
+
+        line_start, line_bytes = last_line_info
+        try:
+            json.loads(line_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning(
+                "Removing malformed trailing line in %s at byte offset %s",
+                outputs_path,
+                line_start,
+            )
+            f.truncate(line_start)
+
+
+def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
+    """Saves new rollout outputs to disk (in append mode)."""
+    outputs_path = results_path / "results.jsonl"
+    _truncate_malformed_trailing_line(outputs_path)
+    save_outputs(new_outputs, results_path, mode="a")
+
+
+def save_metadata(metadata: GenerateMetadata, result_path: Path):
+    """Saves metadata to disk."""
+
+    def sanitize_metadata(metadata: GenerateMetadata) -> dict:
+        """Sanitizes metadata before saving to disk."""
+
+        metadata_dict = dict(metadata)
+        metadata_dict.pop("path_to_save")
+        metadata_dict.pop("date")
+
+        return metadata_dict
+
+    result_path.mkdir(parents=True, exist_ok=True)
+    metadata_path = result_path / "metadata.json"
+    metadata_dict = sanitize_metadata(metadata)
+    with open(metadata_path, "w") as f:
+        try:
+            json.dump(metadata_dict, f, default=make_serializable)
+        except Exception as e:
+            logger.error(f"Failed to save metadata: {e}")
 
 
 def make_dataset(results: GenerateOutputs) -> Dataset:
     """Create a Dataset from GenerateOutputs (outputs are already serialized)."""
-    # RolloutOutput is a dict subclass, so this is type-safe at runtime
     return Dataset.from_list(list(results["outputs"]))
 
 
-def save_generate_outputs(
-    results: GenerateOutputs,
-    push_to_hf_hub: bool = False,
-    hf_hub_dataset_name: str | None = None,
-):
-    """Save GenerateOutputs to disk. Outputs are already serialized."""
-    path_to_save = results["metadata"]["path_to_save"]
-    sanitized_metadata = sanitize_metadata(results["metadata"])
-    save_to_disk(results["outputs"], sanitized_metadata, path_to_save)
-    logger.info(f"Results saved to {path_to_save}")
-    if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
-        try:
-            dataset = make_dataset(results)
-            dataset.push_to_hub(dataset_name)
-            logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")
-        except Exception as e:
-            logger.error(f"Error pushing dataset to Hugging Face Hub: {e}")
+def push_results_to_hf_hub(results: GenerateOutputs, dataset_name: str | None = None):
+    """Push results to Hugging Face Hub."""
+    dataset_name = dataset_name or get_hf_hub_dataset_name(results)
+    try:
+        dataset = make_dataset(results)
+        dataset.push_to_hub(dataset_name)
+        logger.info(f"Results pushed to Hugging Face Hub: {dataset_name}")
+    except Exception as e:
+        logger.error(f"Error pushing results to Hugging Face Hub: {e}")

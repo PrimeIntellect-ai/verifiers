@@ -1,0 +1,40 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-echo-env"
+version = "0.1.0"
+description = "Echo Environment for OpenEnv - simple test environment that echoes back messages"
+requires-python = ">=3.10"
+dependencies = [
+    # Core OpenEnv dependencies (required for server functionality)
+    "openenv-core[core]==0.2.1",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.31.0",
+    # No additional environment-specific dependencies needed for echo_env
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+# Server entry point - enables running via: uv run --project . server
+# or: python -m echo_env.server.app
+server = "echo_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["echo_env", "echo_env.server"]
+package-dir = { "echo_env" = ".", "echo_env.server" = "server" }

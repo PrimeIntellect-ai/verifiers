@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Callable
 
 import pytest
@@ -222,3 +223,34 @@ def test_make_dataset_basic_without_tools(make_metadata, make_output):
     results = GenerateOutputs(outputs=[make_output()], metadata=make_metadata())
     ds = build_dataset(results)
     assert len(ds) == 1 and "foo" in ds.column_names
+
+
+@pytest.mark.asyncio
+async def test_generate_resume_raises_on_metadata_mismatch(
+    tmp_path, mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+
+    results_path = tmp_path / "resume"
+    results_path.mkdir()
+    (results_path / "results.jsonl").write_text("", encoding="utf-8")
+    (results_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "env_id": env.env_id,
+                "model": "test-model",
+                "num_examples": 2,
+                "rollouts_per_example": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs = [make_input(example_id=0)]
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        await env.generate(
+            inputs=inputs,
+            client=mock_openai_client,
+            model="test-model",
+            results_path=results_path,
+        )

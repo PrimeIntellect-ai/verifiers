@@ -6,6 +6,7 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +19,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs
+from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
@@ -39,7 +40,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
-    usage: dict[str, float] | None = None
+    usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -166,6 +167,27 @@ class EvalDisplay(BaseDisplay):
                 rollouts_per_example=config.rollouts_per_example,
             )
 
+    @staticmethod
+    def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
+
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
+
+        return display_rollout_concurrency
+
     def update_env_state(
         self,
         env_idx: int,
@@ -175,7 +197,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
-        usage: dict[str, float] | None = None,
+        usage: TokenUsage | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -267,7 +289,7 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_tokens_row(self, usage: dict[str, float]) -> Table | None:
+    def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
         tokens_text = Text()
         tokens_text.append("╰─ ", style="dim")
@@ -303,8 +325,9 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
-        config_line.append(fmt_concurrency(config.max_concurrent), style="white")
+        config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
@@ -318,10 +341,6 @@ class EvalDisplay(BaseDisplay):
         if config.save_results:
             config_line.append("  |  ", style="dim")
             config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
 
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback

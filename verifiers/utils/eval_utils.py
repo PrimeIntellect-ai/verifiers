@@ -14,14 +14,10 @@ from typing import TYPE_CHECKING, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ImportError:
-    import tomli as tomllib  # type: ignore[import-not-found]
-
 import numpy as np
 
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
 
 if TYPE_CHECKING:
     pass
@@ -29,9 +25,11 @@ from verifiers.types import (
     Endpoints,
     EvalConfig,
     EvalRunConfig,
+    GenerateMetadata,
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
+    RolloutInput,
     RolloutOutput,
     StartCallback,
 )
@@ -103,7 +101,7 @@ def load_toml_config(path: Path) -> list[dict]:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "rb") as f:
-        raw_config = tomllib.load(f)
+        raw_config = load_toml(f)
 
     # validate schema
     eval_list = raw_config.get("eval", [])
@@ -152,7 +150,8 @@ def load_toml_config(path: Path) -> list[dict]:
         # saving
         "state_columns",
         "save_results",
-        "save_every",
+        "resume",
+        "resume_path",
         "save_to_hf_hub",
         "hf_hub_dataset_name",
     }
@@ -180,6 +179,27 @@ def load_toml_config(path: Path) -> list[dict]:
         merged_eval_list.append(merged)
 
     return merged_eval_list
+
+
+def filter_inputs(
+    inputs: list[RolloutInput], outputs: list[RolloutOutput], rollouts_per_example: int
+) -> list[RolloutInput]:
+    """Filter inputs based on the number of rollouts per example."""
+    inputs_by_example_id, outputs_by_example_id = defaultdict(list), defaultdict(list)
+    for input in inputs:
+        inputs_by_example_id[input["example_id"]].append(input)
+    for output in outputs:
+        outputs_by_example_id[output["example_id"]].append(output)
+
+    filtered_inputs: list[RolloutInput] = []
+    for example_id in inputs_by_example_id.keys():
+        example_inputs = inputs_by_example_id[example_id]
+        example_outputs = outputs_by_example_id[example_id]
+        rollouts_left = rollouts_per_example - len(example_outputs)
+        if rollouts_left > 0:
+            filtered_inputs.extend(example_inputs[:rollouts_left])
+
+    return filtered_inputs
 
 
 def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
@@ -340,22 +360,26 @@ async def run_evaluation(
         await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
 
         # run evaluation
-        results_path = get_eval_results_path(config)
+        results_path = config.resume_path or get_eval_results_path(config)
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
-        # disable tqdm when callbacks are provided (TUI handles progress display)
-        use_tqdm = config.use_tqdm and on_progress is None
-        effective_max_concurrent = config.max_concurrent
+        effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
             and config.max_concurrent > 0
             and config.rollouts_per_example > 1
         ):
-            effective_max_concurrent = math.ceil(
+            # Grouped scoring applies the semaphore at group level. Convert
+            # rollout-level concurrency to group-level slots.
+            effective_group_max_concurrent = math.ceil(
                 config.max_concurrent / config.rollouts_per_example
             )
+            if config.num_examples > 0:
+                effective_group_max_concurrent = min(
+                    effective_group_max_concurrent, config.num_examples
+                )
 
         outputs = await vf_env.evaluate(
             client=config.client_config,
@@ -363,14 +387,12 @@ async def run_evaluation(
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_max_concurrent,
+            max_concurrent=effective_group_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
-            save_every=config.save_every,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,
-            use_tqdm=use_tqdm,
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
             on_start=on_start,
@@ -433,64 +455,35 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         env_config: EvalConfig, env_idx: int
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
-        reward_accum = 0
-        metrics_accum = defaultdict(float)
-        error_accum = 0
-        input_tokens_accum = 0.0
-        output_tokens_accum = 0.0
-        usage_count = 0
-        usage_seen = False
 
-        def on_start(total: int) -> None:
-            # total is num_examples * rollouts_per_example
-            # compute actual num_examples (resolves -1 to actual count)
+        def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
+            total = len(raw_inputs)
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining = len(filtered_inputs) if filtered_inputs else 0
+            resumed = total - remaining
             num_examples = total // env_config.rollouts_per_example
-            display.update_env_state(env_idx, total=total, num_examples=num_examples)
+            display.update_env_state(
+                env_idx, total=total, num_examples=num_examples, progress=resumed
+            )
 
         def on_progress(
-            all_outputs: list[RolloutOutput], new_outputs: list[RolloutOutput]
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            metadata: GenerateMetadata,
         ) -> None:
-            nonlocal error_accum, reward_accum, metrics_accum
-            nonlocal input_tokens_accum, output_tokens_accum, usage_seen, usage_count
-
-            # Progress is always rollout-based
-            completed = len(all_outputs)
-
-            for o in new_outputs:
-                if o.get("error") is not None:
-                    error_accum += 1
-                reward = o.get("reward")
-                if reward is not None:
-                    reward_accum += reward
-                output_metrics = o.get("metrics") or {}
-                for name, value in output_metrics.items():
-                    if value is not None:
-                        metrics_accum[name] += value
-                token_usage = o.get("token_usage")
-                if isinstance(token_usage, dict):
-                    usage_seen = True
-                    usage_count += 1
-                    input_tokens_accum += float(token_usage.get("input_tokens", 0.0))
-                    output_tokens_accum += float(token_usage.get("output_tokens", 0.0))
-
-            # Compute averages over completed rollouts
-            reward = reward_accum / completed
-            metrics = {name: metrics_accum[name] / completed for name in metrics_accum}
-            error_rate = error_accum / completed
-            usage = None
-            if usage_seen and usage_count > 0:
-                usage = {
-                    "input_tokens": input_tokens_accum / usage_count,
-                    "output_tokens": output_tokens_accum / usage_count,
-                }
-
             display.update_env_state(
                 env_idx,
-                progress=completed,
-                reward=reward,
-                metrics=metrics,
-                usage=usage,
-                error_rate=error_rate,
+                progress=len(all_outputs),
+                reward=metadata.get("avg_reward"),
+                metrics=metadata.get("avg_metrics"),
+                error_rate=metadata.get("avg_error"),
+                usage=metadata.get("usage"),
             )
 
         def on_log(message: str) -> None:
