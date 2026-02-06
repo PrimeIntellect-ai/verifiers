@@ -165,7 +165,7 @@ class ZMQEnvClient(EnvClient):
         response = response_type.model_validate(raw_response)
 
         if not response.success:
-            raise RuntimeError(f"Server error: {response.error}")
+            raise RuntimeError(response.error)
 
         return response
 

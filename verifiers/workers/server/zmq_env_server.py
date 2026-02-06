@@ -126,7 +126,7 @@ class ZMQEnvServer(EnvServer):
             self.logger.error(f"Error processing request: {e}", exc_info=True)
             response = BaseResponse(
                 success=False,
-                error=str(e),
+                error=repr(e),
             )
 
         # serialize response using Pydantic
