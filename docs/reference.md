@@ -4,6 +4,7 @@
 
 - [Type Aliases](#type-aliases)
 - [Data Types](#data-types)
+  - [Event Types](#event-types)
 - [Classes](#classes)
   - [Environment Classes](#environment-classes)
   - [Parser Classes](#parser-classes)
@@ -223,6 +224,143 @@ class RolloutScore(TypedDict):
 class RolloutScores(TypedDict):
     reward: list[float]
     metrics: dict[str, list[float]]
+```
+
+### Event Types
+
+Event types for monitoring generation progress via the `on_event` parameter in `Environment.generate()` and `Environment.evaluate()`.
+
+#### EventHandler
+
+```python
+EventHandler = Callable[[EvalEvent], None] | Callable[[EvalEvent], Awaitable[None]]
+```
+
+Event handler callback type. Accepts both synchronous and asynchronous handlers.
+
+#### EvalEvent
+
+```python
+EvalEvent = Union[
+    StartEvent,
+    ProgressEvent,
+    GroupCompleteEvent,
+    LogEvent,
+    LogStreamEvent,
+    SaveEvent,
+    CompleteEvent,
+]
+```
+
+Union of all event types that can be emitted during generation/evaluation.
+
+#### StartEvent
+
+```python
+class StartEvent(TypedDict):
+    type: Literal["start"]
+    total_rollouts: int
+    num_examples: int
+    rollouts_per_example: int
+```
+
+Emitted once at the start of generation with resolved counts.
+
+#### ProgressEvent
+
+```python
+class ProgressEvent(TypedDict):
+    type: Literal["progress"]
+    all_outputs: list[RolloutOutput]
+    new_outputs: list[RolloutOutput]
+    completed_count: int
+    total_count: int
+```
+
+Emitted after each rollout or group completes.
+
+#### GroupCompleteEvent
+
+```python
+class GroupCompleteEvent(TypedDict):
+    type: Literal["group_complete"]
+    example_id: int
+    states: list[State]
+    outputs: list[RolloutOutput]
+```
+
+Emitted when a group of rollouts for one example completes (only in non-independent scoring mode).
+
+#### LogEvent
+
+```python
+class LogEvent(TypedDict):
+    type: Literal["log"]
+    message: str
+    level: Literal["debug", "info", "warning", "error"]
+    source: str
+    timestamp: float
+```
+
+Emitted for log messages from various sources.
+
+#### LogStreamEvent
+
+```python
+class LogStreamEvent(TypedDict):
+    type: Literal["log_stream"]
+    stream_id: str
+    source: str
+    data: str
+    is_stderr: bool
+    file_path: Path | None
+```
+
+Emitted for streaming log data.
+
+#### SaveEvent
+
+```python
+class SaveEvent(TypedDict):
+    type: Literal["save"]
+    path: Path
+    is_intermediate: bool
+    output_count: int
+```
+
+Emitted when results are saved to disk.
+
+#### CompleteEvent
+
+```python
+class CompleteEvent(TypedDict):
+    type: Literal["complete"]
+    total_outputs: int
+    avg_reward: float
+    total_time_ms: float
+```
+
+Emitted when generation finishes.
+
+**Example usage:**
+
+```python
+def handle_event(event: EvalEvent):
+    if event["type"] == "start":
+        print(f"Starting {event['total_rollouts']} rollouts...")
+    elif event["type"] == "progress":
+        print(f"Completed {event['completed_count']}/{event['total_count']}")
+    elif event["type"] == "group_complete":
+        print(f"Group {event['example_id']} complete with {len(event['states'])} rollouts")
+    elif event["type"] == "complete":
+        print(f"Done! Average reward: {event['avg_reward']:.3f}")
+
+outputs = await env.generate(
+    inputs,
+    client=client,
+    model=model,
+    on_event=handle_event,
+)
 ```
 
 ---

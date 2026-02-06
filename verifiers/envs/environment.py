@@ -896,6 +896,7 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_event: EventHandler | None = None,
+        configured_rollouts_per_example: int | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -1017,19 +1018,38 @@ class Environment(ABC):
             filtered_group_inputs = list(group_inputs.values())
 
             for i, group_input in enumerate(filtered_group_inputs):
-                task = asyncio.create_task(
-                    with_sem(
-                        sem,
-                        self._run_group_with_states(
-                            group_input,
-                            cast(AsyncOpenAI, client),
-                            model,
-                            sampling_args,
-                            max_retries=max_retries,
-                            state_columns=state_columns,
+                # Check if in server mode - if so, use run_group() which handles server routing
+                # If not in server mode, use _run_group_with_states() to get states for GroupCompleteEvent
+                if self.env_client is not None:
+                    # Server mode: use run_group() (no states, no GroupCompleteEvent)
+                    task = asyncio.create_task(
+                        with_sem(
+                            sem,
+                            self.run_group(
+                                group_input,
+                                client,
+                                model,
+                                sampling_args,
+                                max_retries=max_retries,
+                                state_columns=state_columns,
+                            ),
                         ),
-                    ),
-                )
+                    )
+                else:
+                    # Local mode: use _run_group_with_states() to get states for GroupCompleteEvent
+                    task = asyncio.create_task(
+                        with_sem(
+                            sem,
+                            self._run_group_with_states(
+                                group_input,
+                                cast(AsyncOpenAI, client),
+                                model,
+                                sampling_args,
+                                max_retries=max_retries,
+                                state_columns=state_columns,
+                            ),
+                        ),
+                    )
                 tasks[task] = i
 
         # Emit start event with resolved counts
@@ -1053,10 +1073,18 @@ class Environment(ABC):
                     states = None
                     example_id = None
                 else:
-                    # result is tuple[list[State], list[RolloutOutput]]
-                    states, new_outputs = result
-                    # Get example_id from first state in group
-                    example_id = states[0]["input"]["example_id"] if states else None
+                    # result is tuple[list[State], list[RolloutOutput]] from _run_group_with_states()
+                    # OR list[RolloutOutput] from run_group() in server mode
+                    if isinstance(result, tuple):
+                        # Local mode: _run_group_with_states() returned (states, outputs)
+                        states, new_outputs = result
+                        # Get example_id from first state in group
+                        example_id = states[0]["input"]["example_id"] if states else None
+                    else:
+                        # Server mode: run_group() returned just outputs
+                        new_outputs = result
+                        states = None
+                        example_id = None
 
                 builder.add_outputs(new_outputs)
 
@@ -1222,6 +1250,7 @@ class Environment(ABC):
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_event=on_event,
+            configured_rollouts_per_example=rollouts_per_example,
             **kwargs,
         )
 

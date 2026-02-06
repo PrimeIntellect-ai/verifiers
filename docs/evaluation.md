@@ -13,6 +13,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Output and Saving](#output-and-saving)
   - [Resuming Evaluations](#resuming-evaluations)
 - [Environment Defaults](#environment-defaults)
+- [Programmatic Usage with Event Handlers](#programmatic-usage-with-event-handlers)
 - [Multi-Environment Evaluation](#multi-environment-evaluation)
   - [TOML Configuration](#toml-configuration)
   - [Configuration Precedence](#configuration-precedence)
@@ -219,6 +220,37 @@ These defaults are used when higher-priority sources don't specify a value. The 
 4. Global defaults
 
 See [Configuration Precedence](#configuration-precedence) for more details on multi-environment evaluation.
+
+## Programmatic Usage with Event Handlers
+
+When using environments programmatically (not via the CLI), you can monitor generation progress by passing an `on_event` callback to `Environment.generate()` or `Environment.evaluate()`:
+
+```python
+import verifiers as vf
+
+def handle_event(event):
+    if event["type"] == "start":
+        print(f"Starting {event['total_rollouts']} rollouts...")
+    elif event["type"] == "progress":
+        print(f"Progress: {event['completed_count']}/{event['total_count']}")
+    elif event["type"] == "group_complete":
+        # Access states for custom analysis
+        avg_reward = sum(s["reward"] for s in event["states"]) / len(event["states"])
+        print(f"Example {event['example_id']}: avg reward = {avg_reward:.3f}")
+    elif event["type"] == "complete":
+        print(f"Complete! Average reward: {event['avg_reward']:.3f}")
+
+env = vf.load_environment("my-env")
+outputs = await env.evaluate(
+    client=client,
+    model="gpt-4.1-mini",
+    num_examples=10,
+    rollouts_per_example=4,
+    on_event=handle_event,
+)
+```
+
+The `on_event` parameter accepts both synchronous and asynchronous handlers. See the [Event Types](reference.md#event-types) reference for all available event types and their fields.
 
 ## Multi-Environment Evaluation
 
