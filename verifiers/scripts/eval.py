@@ -11,11 +11,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
 from verifiers import setup_logging
 from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
@@ -25,6 +20,7 @@ from verifiers.utils.eval_utils import (
     run_evaluations_tui,
 )
 from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.utils.import_utils import load_toml
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +54,7 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
             return defaults
 
         with pyproject_file.open("rb") as f:
-            pyproject_data = tomllib.load(f)
+            pyproject_data = load_toml(f)
 
         # Extract [tool.verifiers.eval] section
         eval_config = (

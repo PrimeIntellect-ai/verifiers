@@ -184,7 +184,7 @@ class SandboxEnv(vf.StatefulToolEnv):
                 jitter=jitter,
             ),
             before_sleep=tc.before_sleep_log(
-                cast(LoggerProtocol, self.logger),
+                cast(logging.Logger, self.logger),
                 logging.WARNING,
             ),
             reraise=True,

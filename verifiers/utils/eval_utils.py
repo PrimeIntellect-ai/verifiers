@@ -14,14 +14,10 @@ from typing import TYPE_CHECKING, cast
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
 import numpy as np
 
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
 
 if TYPE_CHECKING:
     pass
@@ -103,7 +99,7 @@ def load_toml_config(path: Path) -> list[dict]:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "rb") as f:
-        raw_config = tomllib.load(f)
+        raw_config = load_toml(f)
 
     # validate schema
     eval_list = raw_config.get("eval", [])

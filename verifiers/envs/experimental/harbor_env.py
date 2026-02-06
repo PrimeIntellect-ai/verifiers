@@ -5,14 +5,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
 from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +62,7 @@ class HarborEnv(vf.CliAgentEnv):
                 continue
 
             with open(task_toml, "rb") as f:
-                config = tomllib.load(f)
+                config = load_toml(f)
 
             instruction = instruction_md.read_text().strip()
 

@@ -13,7 +13,7 @@ from typing import Any
 
 yaml: Any | None
 try:
-    import yaml as _yaml  # type: ignore
+    import yaml as _yaml
 except ImportError:
     yaml = None
 else:

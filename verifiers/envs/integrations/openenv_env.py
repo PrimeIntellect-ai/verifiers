@@ -144,7 +144,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(cast(Any, logger), logging.WARNING),
             reraise=True,
         ).wraps
 

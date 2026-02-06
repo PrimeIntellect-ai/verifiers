@@ -1,12 +1,8 @@
 import argparse
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
 
 
 def main():
@@ -25,7 +21,7 @@ def main():
         raise SystemExit(f"TOML config not found: {config_path}")
 
     with config_path.open("rb") as f:
-        config = tomllib.load(f)
+        config = load_toml(f)
 
     model = config["model"]
     env_id = config["env"]["id"]

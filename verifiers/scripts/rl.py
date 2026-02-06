@@ -4,10 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+from verifiers.utils.import_utils import load_toml as load_toml_file
 
 
 def run(cmd: list[str]) -> None:
@@ -102,7 +99,7 @@ def create_tmux_with_commands(
 
 def load_toml(path: Path) -> dict:
     with path.open("rb") as f:
-        return tomllib.load(f)
+        return load_toml_file(f)
 
 
 def to_kebab_case(name: str) -> str:
