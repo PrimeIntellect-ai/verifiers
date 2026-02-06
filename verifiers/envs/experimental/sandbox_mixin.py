@@ -174,10 +174,10 @@ class SandboxMixin:
     async def delete_sandbox(self, sandbox_id: str):
         """Delete sandbox with retry and tracking."""
 
-        async def _delete(sid: str):
-            await self.sandbox_client.delete(sid)
-            self.active_sandboxes.discard(sid)
-            self.logger.debug(f"Deleted sandbox {sid}")
+        async def _delete(sandbox_id: str):
+            await self.sandbox_client.delete(sandbox_id)
+            self.active_sandboxes.discard(sandbox_id)
+            self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
         try:
             await self.with_retry(_delete)(sandbox_id)
@@ -256,8 +256,8 @@ class SandboxMixin:
             batch = sandbox_ids[i : i + batch_size]
             try:
                 sync_client.bulk_delete(sandbox_ids=batch)
-                for sid in batch:
-                    self.active_sandboxes.discard(sid)
+                for sandbox_id in batch:
+                    self.active_sandboxes.discard(sandbox_id)
                 self.logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
             except Exception as e:
                 self.logger.warning(f"Bulk delete failed for batch: {e}")
