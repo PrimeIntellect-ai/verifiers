@@ -267,3 +267,21 @@ class SandboxMixin:
     def teardown_sandbox_client(self):
         """Teardown the threaded sandbox client."""
         self.sandbox_client.teardown()
+
+    @vf.teardown(priority=-10)
+    async def teardown_mixin_sandboxes(self) -> None:
+        """Default teardown handler for deleting tracked sandboxes.
+
+        Override ``teardown_sandboxes`` in subclasses to customize behavior while
+        keeping this auto-registered handler.
+        """
+        self.teardown_sandboxes()
+
+    @vf.teardown(priority=-20)
+    async def teardown_mixin_sandbox_client(self) -> None:
+        """Default teardown handler for threaded sandbox client shutdown.
+
+        Override ``teardown_sandbox_client`` in subclasses to customize behavior
+        while keeping this auto-registered handler.
+        """
+        self.teardown_sandbox_client()

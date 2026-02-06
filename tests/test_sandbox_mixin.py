@@ -300,3 +300,31 @@ def test_teardown_sandbox_client(mixin):
     mixin.teardown_sandbox_client()
 
     mixin.sandbox_client.teardown.assert_called_once()
+
+
+def test_teardown_mixin_sandboxes_handler_calls_helper(mixin):
+    mixin.teardown_sandboxes = MagicMock()
+
+    asyncio.run(mixin.teardown_mixin_sandboxes())
+
+    mixin.teardown_sandboxes.assert_called_once()
+
+
+def test_teardown_mixin_sandbox_client_handler_calls_helper(mixin):
+    mixin.teardown_sandbox_client = MagicMock()
+
+    asyncio.run(mixin.teardown_mixin_sandbox_client())
+
+    mixin.teardown_sandbox_client.assert_called_once()
+
+
+def test_mixin_teardown_handlers_are_decorated():
+    assert getattr(ConcreteMixin.teardown_mixin_sandboxes, "teardown", False) is True
+    assert getattr(ConcreteMixin.teardown_mixin_sandboxes, "teardown_priority") == -10
+
+    assert (
+        getattr(ConcreteMixin.teardown_mixin_sandbox_client, "teardown", False) is True
+    )
+    assert (
+        getattr(ConcreteMixin.teardown_mixin_sandbox_client, "teardown_priority") == -20
+    )

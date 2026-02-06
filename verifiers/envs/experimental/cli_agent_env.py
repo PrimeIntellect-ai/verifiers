@@ -364,16 +364,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     self._tunnel = None
         await self._interception_server.stop()
 
-    @vf.teardown
-    async def teardown_remaining_sandboxes(self):
-        """Bulk delete any sandboxes left over on shutdown."""
-        self.teardown_sandboxes()
-
-    @vf.teardown
-    async def teardown_client(self):
-        """Teardown sandbox client threadpool."""
-        self.teardown_sandbox_client()
-
     @vf.cleanup
     async def cleanup_interception_context(self, state: State):
         """Cleanup interception context for rollout"""
