@@ -463,15 +463,24 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
         if client is not None:
-            await self._invoke(cast(Any, client).close)
+            try:
+                await self._invoke(cast(Any, client).close)
+            except Exception:
+                pass
 
         mcp_client = state.pop("openenv_mcp_client", None)
         if mcp_client is not None:
-            await self._invoke(cast(Any, mcp_client).close)
+            try:
+                await self._invoke(cast(Any, mcp_client).close)
+            except Exception:
+                pass
 
         server = state.pop("openenv_server", None)
         if server is not None:
-            await self._cleanup_server(server)
+            try:
+                await self._cleanup_server(server)
+            except Exception:
+                pass
 
     @vf.cleanup
     async def cleanup_openenv(self, state: vf.State) -> None:
