@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import tomllib  # type: ignore[unresolved-import]
+    import tomllib
 except ImportError:
-    import tomli as tomllib  # type: ignore[unresolved-import]
+    import tomli as tomllib
 from datasets import Dataset
 from prime_sandboxes import AsyncSandboxClient
 

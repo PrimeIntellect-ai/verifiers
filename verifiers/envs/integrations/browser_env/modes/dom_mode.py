@@ -91,7 +91,7 @@ class DOMMode:
             }
         browserbase_params = browserbase_params or None
 
-        session = await self.stagehand_client.sessions.create(  # type: ignore[attr-defined]
+        session = await self.stagehand_client.sessions.create(
             model_name=self.stagehand_model,
             browserbase_session_create_params=browserbase_params,
         )

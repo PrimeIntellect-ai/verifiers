@@ -66,7 +66,9 @@ class RLTrainer(Trainer):
         assert isinstance(model, PreTrainedModel)
         if args.use_lora and isinstance(args.lora_config, PeftConfig):
             model = prepare_peft_model(model, args.lora_config, args)
-        model.warnings_issued["estimate_tokens"] = True  # suppress warning
+        warnings_issued = getattr(model, "warnings_issued", None)
+        if isinstance(warnings_issued, dict):
+            warnings_issued["estimate_tokens"] = True  # suppress warning
 
         super().__init__(
             model=model,
@@ -179,7 +181,7 @@ class RLTrainer(Trainer):
         for microbatch in local_microbatches:
             input_ids = pad(
                 [torch.tensor(x, device=device) for x in microbatch.input_ids],
-                padding_value=pad_token_id,  # type: ignore :(
+                padding_value=pad_token_id,
                 padding_side="right",
             )
             loss_mask = pad(
@@ -353,23 +355,23 @@ class RLTrainer(Trainer):
             if is_peft_model(self.model):
                 # PEFT: gather + merge, then update each parameter
                 with gather_if_zero3(list(self.model.parameters())):
-                    self.model.merge_adapter()  # type: ignore :(
+                    self.model.merge_adapter()
                     for name, param in self.model.named_parameters():
                         # recover original parameter names
                         name = name.removeprefix("base_model.model.").replace(
                             ".base_layer", ""
                         )
-                        if self.model.prefix in name:  # type: ignore :(
+                        if self.model.prefix in name:
                             continue  # discard some parameters
                         if "original_module" in name:  # from modules_to_save
                             continue
                         name = name.replace("modules_to_save.default.", "")
                         if self.client:
                             self.client.update_named_param(name, param.data)
-                    self.model.unmerge_adapter()  # type: ignore :(
+                    self.model.unmerge_adapter()
             else:
                 # non-PEFT models: gather + update each parameter individually
-                for name, param in self.model.named_parameters():  # type: ignore :(
+                for name, param in self.model.named_parameters():
                     with gather_if_zero3([param]):
                         if self.client:
                             self.client.update_named_param(name, param.data)
@@ -391,7 +393,7 @@ class RLTrainer(Trainer):
             def __len__(self):
                 return self.n
 
-            def __getitem__(self, idx):  # type: ignore[override]
+            def __getitem__(self, idx):
                 return {"labels": 0}
 
         return DataLoader(StepsDataset(self.max_steps))
@@ -417,10 +419,10 @@ class RLTrainer(Trainer):
 
         if self.accelerator.is_main_process:
             print_prompt_completions_sample(
-                list(self._textual_logs["prompt"]),  # type: ignore[arg-type]
-                list(self._textual_logs["completion"]),  # type: ignore[arg-type]
-                list(self._textual_logs["error"]),  # type: ignore[arg-type]
-                list(self._textual_logs["rewards"]["reward"]),  # type: ignore[arg-type]
+                list(self._textual_logs["prompt"]),
+                list(self._textual_logs["completion"]),
+                list(self._textual_logs["error"]),
+                list(self._textual_logs["rewards"]["reward"]),
                 self.state.global_step,
             )
 
@@ -455,7 +457,7 @@ class RLTrainer(Trainer):
                     * len(self._textual_logs["prompt"]),
                     "prompt": prompts_clean,
                     "completion": completions_clean,
-                    **{k: list(v) for k, v in self._textual_logs["rewards"].items()},  # type: ignore[union-attr]
+                    **{k: list(v) for k, v in self._textual_logs["rewards"].items()},
                 }
                 df = pd.DataFrame(table)
                 wandb.log({"completions": wandb.Table(dataframe=df)})
@@ -474,14 +476,14 @@ class RLTrainer(Trainer):
         errors: List[Error | None],
         rewards_dict: Dict[str, Any],
     ) -> None:
-        self._textual_logs["prompt"].extend(prompts)  # type: ignore[union-attr]
-        self._textual_logs["completion"].extend(completions)  # type: ignore[union-attr]
-        self._textual_logs["error"].extend(errors)  # type: ignore[union-attr]
+        self._textual_logs["prompt"].extend(prompts)
+        self._textual_logs["completion"].extend(completions)
+        self._textual_logs["error"].extend(errors)
         for reward_key in rewards_dict:
             reward_values = rewards_dict[reward_key]
-            self._textual_logs["rewards"][reward_key].extend(reward_values)  # type: ignore[union-attr]
+            self._textual_logs["rewards"][reward_key].extend(reward_values)
 
-    def log_metrics(  # type: ignore[override]
+    def log_metrics(
         self,
         mode: str,
         batch_metrics: Dict[str, float],
