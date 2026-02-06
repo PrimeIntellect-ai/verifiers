@@ -24,7 +24,7 @@ class EnvClient(ABC):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
 
-    async def health(self, timeout: float | None = 10) -> bool:
+    async def health(self, timeout: float | None = None) -> bool:
         request = HealthRequest()
         response = await self.handle_health_request(request, timeout=timeout)
         return response.success

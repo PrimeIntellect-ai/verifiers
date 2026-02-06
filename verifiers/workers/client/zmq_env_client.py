@@ -153,13 +153,16 @@ class ZMQEnvClient(EnvClient):
 
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
-        try:
-            raw_response = await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            self.pending.pop(request_id, None)
-            raise TimeoutError(
-                f"Environment timeout for {request.request_type} request after {timeout}s"
-            )
+        if timeout is not None:
+            try:
+                raw_response = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                self.pending.pop(request_id, None)
+                raise TimeoutError(
+                    f"Environment timeout for {request.request_type} request after {timeout}s"
+                )
+        else:
+            raw_response = await future
 
         # validate response with Pydantic
         response = response_type.model_validate(raw_response)
