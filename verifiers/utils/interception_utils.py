@@ -68,6 +68,12 @@ class InterceptionServer:
             site = web.TCPSite(runner, "0.0.0.0", self.port)
             await site.start()
 
+            # OS-assigned port if port=0
+            if self.port == 0:
+                sockets = site._server.sockets if site._server else None
+                if sockets:
+                    self.port = sockets[0].getsockname()[1]
+
             self._app = app
             self._runner = runner
             self._site = site
