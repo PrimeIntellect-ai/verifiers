@@ -97,7 +97,7 @@ Standalone executable script with realistic integration scenarios:
 
 ### Integration Testing
 - [x] All existing tests pass when running `uv run pytest` locally (514 tests pass, 4 skipped external env tests)
-- [x] New tests have been added to cover the changes (10 unit + 4 e2e + 5 bugfix = 19 event system tests)
+- [x] New tests have been added to cover the changes (10 unit + 4 e2e + 5 bugfix + 2 immutability = 21 event system tests)
 - [x] Verified with real `vf-eval` command - progress bar and TUI work correctly
 
 ### Manual Testing
@@ -139,6 +139,13 @@ Three issues were identified during code review and have been fixed:
 **Fix:** Added comprehensive event type documentation to `docs/reference.md` and usage examples to `docs/evaluation.md`.
 
 **Test Coverage:** Added `tests/test_bugfix_event_system.py` with 5 tests covering all three fixes.
+
+### 4. Mutable Reference in Events (MEDIUM Priority)
+**Problem:** ProgressEvent and GroupCompleteEvent stored direct references to mutable lists (`builder.outputs`, `states`, `new_outputs`). When events were stored (e.g., in EventCollector), the lists would silently grow as more results were added, making `all_outputs` misleading.
+
+**Fix:** Copy all list references when creating events: `list(builder.outputs)`, `list(states)`, `list(new_outputs)`.
+
+**Test Coverage:** Added `tests/test_event_immutability.py` with 2 tests verifying events don't mutate after emission.
 
 ## Additional Notes
 
