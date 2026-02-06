@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: `XMLParser(["answer"])`
 - **Rubric overview**: Score computed via `reasoning_gym` task-specific scorer; optional format component
 
 ### Quickstart

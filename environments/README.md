@@ -10,16 +10,16 @@ This folder contains installable example environments that showcase common usage
 ## Common usage patterns and examples
 
 ### SingleTurnEnv (prompt → single response)
-- **gsm8k**: Classic QA with exact-match reward; toggles `ThinkParser` vs `Parser` and format reward.
+- **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 
 ### SingleTurnEnv subclass (custom dataset/scoring wrappers)
-- **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, uses `XMLParser` and task-specific scoring.
+- **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, and applies task-specific scoring.
 
 ### MultiTurnEnv (custom interaction protocols)
-- **alphabet_sort**: Multi-turn task requiring the model to maintain and update an alphabetically sorted list of names across turns; uses `XMLParser` with per-turn sequence similarity rewards.
+- **alphabet_sort**: Multi-turn task requiring the model to maintain and update an alphabetically sorted list of names across turns; uses per-turn sequence similarity rewards.
 - **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
@@ -59,10 +59,6 @@ This folder contains installable example environments that showcase common usage
 - **continuation_quality**: Judge rubric extracts `<grade>` and maps A–F to a continuous score.
 - **toxicity_explanation**: Judge rubric returns 0–10 normalized score for both classification correctness and explanation quality.
 - **self_reward**: Pattern for `SingleTurnEnv` with only a `JudgeRubric` over a dataset that supplies `question`/`answer`; intended for online RL where model acts as its own judge.
-
-### Parsers and formatting
-- **ThinkParser**: Used in `gsm8k`, `wiki_search` to separate reasoning from final answers.
-- **XMLParser**: Used in `reverse_text`, `wordle`, `alphabet_sort`, `reasoning_gym_env` to enforce structured outputs and enable format rewards.
 
 ### Multimodal inputs
 - **mmmu**: Demonstrates passing images via chat `content` items with `{type: "image_url", image_url: {url: ...}}` and standard answer parsing.
