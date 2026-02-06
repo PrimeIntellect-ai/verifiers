@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, cast
 import os
 import signal
 from argparse import Namespace
@@ -64,10 +65,12 @@ class WeightSyncWorkerExtension:
             )
 
         torch_dtype = getattr(torch, dtype.split(".")[-1])
-        weight = torch.empty(shape, dtype=torch_dtype, device=self.device)  # type: ignore
-        self.pynccl_comm.broadcast(weight, src=self.client_rank)  # type: ignore
+        weight = torch.empty(shape, dtype=torch_dtype, device=self.device)
+        client_rank = self.client_rank
+        assert client_rank is not None
+        self.pynccl_comm.broadcast(weight, src=client_rank)
         self.pynccl_comm.group.barrier()
-        self.model_runner.model.load_weights(weights=[(name, weight)])  # type: ignore
+        cast(Any, self).model_runner.model.load_weights(weights=[(name, weight)])
 
     def close_communicator(self) -> None:
         if self.pynccl_comm is not None:

@@ -15,9 +15,9 @@ from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 try:
-    import tomllib  # type: ignore[import-not-found]
+    import tomllib
 except ImportError:
-    import tomli as tomllib  # type: ignore[import-not-found]
+    import tomli as tomllib
 
 import numpy as np
 

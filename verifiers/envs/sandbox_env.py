@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Protocol, cast
 
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
@@ -21,6 +21,11 @@ import tenacity as tc
 from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
+
+
+class LoggerProtocol(Protocol):
+    def log(self, level: int, msg: str, /, *args: Any, **kwargs: Any) -> Any: ...
+
 
 try:
     from prime_sandboxes import (
@@ -178,7 +183,10 @@ class SandboxEnv(vf.StatefulToolEnv):
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(
+                cast(LoggerProtocol, self.logger),
+                logging.WARNING,
+            ),
             reraise=True,
         ).wraps
         self.add_tool(

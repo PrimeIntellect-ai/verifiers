@@ -20,7 +20,7 @@ README_TEMPLATE = """\
 
 ### Task
 - **Type**: <single-turn | multi-turn | tool use>
-- **Parser**: <e.g., ThinkParser, XMLParser, custom>
+- **Output format expectations (optional)**: <e.g., plain text, XML tags, JSON schema>
 - **Rubric overview**: <briefly list reward functions and key metrics>
 
 ### Quickstart
