@@ -3,7 +3,7 @@ import functools
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import httpx
 import tenacity as tc
@@ -125,7 +125,10 @@ class SandboxMixin:
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self.logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(
+                cast(Any, self.logger),
+                logging.WARNING,
+            ),
             reraise=True,
         ).wraps
 
