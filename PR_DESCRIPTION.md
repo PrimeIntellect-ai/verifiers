@@ -147,6 +147,11 @@ Three issues were identified during code review and have been fixed:
 
 **Test Coverage:** Added `tests/test_event_immutability.py` with 2 tests verifying events don't mutate after emission.
 
+### 5. Unnecessary O(N²) Event Construction (MEDIUM Priority)
+**Problem:** Changed `elif on_progress is not None:` to bare `else:`, which unconditionally creates ProgressEvent objects (including expensive list copies) even when `on_event=None`. This causes O(N²) allocations affecting production code like GEPA.
+
+**Fix:** Use `elif on_event is not None:` to skip event construction when no handler is registered, matching the original callback pattern's performance characteristics.
+
 ## Additional Notes
 
 ### Design Decisions
