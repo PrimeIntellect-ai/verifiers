@@ -277,7 +277,10 @@ def format_info_for_details(
     """Format record info for the details panel in rollout view."""
     info_value = _coerce_info_value(info)
     if isinstance(info_value, (dict, list)):
-        rendered = json.dumps(info_value, ensure_ascii=False, indent=2)
+        try:
+            rendered = json.dumps(info_value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            rendered = str(info_value)
     else:
         rendered = str(info_value)
 
@@ -1104,7 +1107,7 @@ class VerifiersTUI(App):
         text-style: bold;
     }
     
-    #prompt-scroll, #completion-scroll {
+    #prompt-scroll, #completion-scroll, #details-scroll {
         height: 1fr;
         background: $surface;
         padding: 0 1;
@@ -1119,14 +1122,6 @@ class VerifiersTUI(App):
         max-height: 6;
     }
 
-    #details-scroll {
-        height: 1fr;
-        background: $surface;
-        padding: 0 1;
-        scrollbar-color: $secondary;
-        scrollbar-background: $panel;
-        scrollbar-corner-color: $panel;
-    }
     
     .run-list-panel {
         height: 1fr;

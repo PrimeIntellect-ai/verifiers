@@ -30,3 +30,12 @@ def test_format_info_for_details_truncates_large_content() -> None:
 
     assert rendered.endswith("chars total)")
     assert "(truncated;" in rendered
+
+
+def test_format_info_for_details_handles_non_serializable_data() -> None:
+    info: dict[str, object] = {"callback": lambda: "x"}
+
+    rendered = format_info_for_details(info)
+
+    assert "callback" in rendered
+    assert "function" in rendered
