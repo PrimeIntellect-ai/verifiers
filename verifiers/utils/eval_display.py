@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs
+from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
@@ -40,7 +40,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
-    usage: dict[str, float] | None = None
+    usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -197,7 +197,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
-        usage: dict[str, float] | None = None,
+        usage: TokenUsage | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -289,7 +289,7 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_tokens_row(self, usage: dict[str, float]) -> Table | None:
+    def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
         tokens_text = Text()
         tokens_text.append("╰─ ", style="dim")
