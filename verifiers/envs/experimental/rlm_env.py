@@ -2094,7 +2094,14 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         # For example, in mini-swe-agent-plus-rlm
         missing: list[str] = []
         for pkg in packages:
-            module = pkg.split("[", 1)[0].split("==", 1)[0].strip()
+            name = pkg.strip()
+            name = name.split("@", 1)[0].strip()
+            name = name.split("[", 1)[0].strip()
+            for token in ("==", "~=", ">=", "<=", "!=", "<", ">"):
+                if token in name:
+                    name = name.split(token, 1)[0].strip()
+                    break
+            module = name.replace("-", "_")
             check_cmd = f"bash -lc 'python -c \"import {module}\"'"
             try:
                 result = await self._execute_sandbox_command(
