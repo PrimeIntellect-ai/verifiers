@@ -11,8 +11,6 @@ dependencies = [
     "tomli>=2.3.0",
 ]
 
-[tool.uv.sources]
-verifiers = { git = "https://github.com/primeintellect-ai/verifiers", branch = "cooper/terminus" }
 
 [build-system]
 requires = ["hatchling"]
