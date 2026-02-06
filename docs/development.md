@@ -16,7 +16,6 @@ This guide covers setup, testing, and contributing to the verifiers package.
 ## Setup
 
 ### Prerequisites
-
 - Python 3.10, 3.11, 3.12, or 3.13
 - [uv](https://docs.astral.sh/uv/) package manager
 
@@ -45,7 +44,7 @@ verifiers/
 │   ├── envs/           # Environment classes
 │   │   ├── integrations/   # Third-party wrappers (TextArena, ReasoningGym)
 │   │   └── experimental/   # Newer environments (MCP, Harbor, etc.)
-│   ├── parsers/        # Parser classes
+│   ├── parsers/        # Parser classes  
 │   ├── rubrics/        # Rubric classes
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
@@ -95,18 +94,18 @@ The test suite includes 380+ tests covering parsers, rubrics, environments, and 
 ```python
 class TestFeature:
     """Test the feature functionality."""
-
+    
     def test_basic_functionality(self):
         """Test normal operation."""
         # Arrange
         feature = Feature()
-
+        
         # Act
         result = feature.process("input")
-
+        
         # Assert
         assert result == "expected"
-
+    
     def test_error_handling(self):
         """Test error cases."""
         with pytest.raises(ValueError):
@@ -165,14 +164,12 @@ def test_with_mock(mock_client):
 ## Common Issues
 
 ### Import Errors
-
 ```bash
 # Ensure package is installed in development mode
 uv sync
 ```
 
 ### Integration Tests
-
 ```bash
 # Install optional dependencies for specific integrations
 uv sync --extra ta   # for TextArenaEnv
@@ -180,7 +177,6 @@ uv sync --extra rg   # for ReasoningGymEnv
 ```
 
 ### Test Failures
-
 ```bash
 # Debug specific test
 uv run pytest tests/test_file.py::test_name -vvs --pdb
@@ -211,16 +207,16 @@ def load_environment(**kwargs):
     """Load the environment."""
     dataset = vf.load_example_dataset("dataset_name")
     parser = vf.XMLParser(fields=["reasoning", "answer"])
-
+    
     def reward_func(parser, completion, answer, **kwargs):
         return 1.0 if parser.parse_answer(completion) == answer else 0.0
-
+    
     rubric = vf.Rubric(
         funcs=[reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.2],
         parser=parser
     )
-
+    
     return vf.SingleTurnEnv(
         dataset=dataset,
         parser=parser,
@@ -247,11 +243,9 @@ uv run pytest tests/ --cov=verifiers  # With coverage
 uv run pytest tests/test_envs.py -vv              # All environments
 uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
-# Linting & type checking
+# Linting
 uv run ruff check --fix .             # Fix lint errors
 uv run pre-commit run --all-files     # Run all pre-commit hooks
-uv run ty check verifiers/            # Type check (needs all deps)
-uv run ty check verifiers/ --ignore unresolved-import  # Type check (CPU-only)
 
 # Environment tools
 prime env init new-env                       # Create environment
@@ -262,15 +256,15 @@ prime eval tui                               # Browse eval results
 
 ### CLI Tools
 
-| Command             | Description                              |
-| ------------------- | ---------------------------------------- |
-| `prime eval run`    | Run evaluations on environments          |
-| `prime env init`    | Initialize new environment from template |
-| `prime env install` | Install environment module               |
-| `prime lab setup`   | Set up training workspace                |
-| `prime eval tui`    | Terminal UI for browsing eval results    |
-| `prime rl run`      | Launch Hosted Training                   |
-| `uv run prime-rl`   | Launch prime-rl training                 |
+ | Command | Description |
+|---------|-------------|
+| `prime eval run` | Run evaluations on environments |
+| `prime env init` | Initialize new environment from template |
+| `prime env install` | Install environment module |
+| `prime lab setup` | Set up training workspace |
+| `prime eval tui` | Terminal UI for browsing eval results |
+| `prime rl run` | Launch Hosted Training |
+| `uv run prime-rl` | Launch prime-rl training |
 
 ### Project Guidelines
 
