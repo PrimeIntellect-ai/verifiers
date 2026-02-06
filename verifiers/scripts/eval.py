@@ -404,31 +404,32 @@ def main():
         # handle resume path resolution
         resume_arg = raw.get("resume")
         resume_path: Path | None = None
-        if resume_arg is not None:
-            if isinstance(resume_arg, str):
-                resume_path = Path(resume_arg)
-                if not is_valid_eval_results_path(resume_path):
-                    raise ValueError(
-                        f"Resume path {resume_path} is not a valid evaluation results path"
-                    )
-                logger.info(f"Resuming from explicit path: {resume_path}")
-            elif resume_arg is True:
-                auto_resume_path = find_latest_incomplete_eval_results_path(
-                    env_id=env_id,
-                    model=model,
-                    num_examples=num_examples,
-                    rollouts_per_example=rollouts_per_example,
-                    env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+        if isinstance(resume_arg, str):
+            resume_path = Path(resume_arg)
+            if not is_valid_eval_results_path(resume_path):
+                raise ValueError(
+                    f"Resume path {resume_path} is not a valid evaluation results path"
                 )
-                if auto_resume_path is not None:
-                    resume_path = auto_resume_path
-                    logger.info(f"Auto-resuming from: {resume_path}")
-                else:
-                    logger.info(
-                        "No matching incomplete run found for --resume; starting a new run"
-                    )
+            logger.info(f"Resuming from explicit path: {resume_path}")
+        elif resume_arg is True:
+            auto_resume_path = find_latest_incomplete_eval_results_path(
+                env_id=env_id,
+                model=model,
+                num_examples=num_examples,
+                rollouts_per_example=rollouts_per_example,
+                env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
+            )
+            if auto_resume_path is not None:
+                resume_path = auto_resume_path
+                logger.info(f"Auto-resuming from: {resume_path}")
             else:
-                raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
+                logger.info(
+                    "No matching incomplete run found for --resume; starting a new run"
+                )
+        elif resume_arg in (None, False):
+            pass
+        else:
+            raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
         return EvalConfig(
             env_id=env_id,

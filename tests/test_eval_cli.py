@@ -519,3 +519,35 @@ def test_cli_resume_auto_detects_latest_incomplete(monkeypatch, run_cli, tmp_pat
 
     assert captured["configs"][0].resume_path is not None
     assert captured["configs"][0].resume_path.resolve() == new_run.resolve()
+
+
+def test_cli_toml_resume_false_disables_global_resume(monkeypatch, run_cli):
+    """Per-eval resume=false overrides global resume=true in TOML configs."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'resume = true\n'
+            '\n'
+            '[[eval]]\n'
+            'env_id = "env-a"\n'
+            '\n'
+            '[[eval]]\n'
+            'env_id = "env-b"\n'
+            'resume = false\n'
+        )
+        f.flush()
+        captured = run_cli(
+            monkeypatch,
+            {
+                "env_id_or_config": f.name,
+                "num_examples": 1,
+                "rollouts_per_example": 1,
+                "env_dir_path": "./environments",
+            },
+        )
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    assert configs[0].env_id == "env-a"
+    assert configs[0].resume_path is None
+    assert configs[1].env_id == "env-b"
+    assert configs[1].resume_path is None

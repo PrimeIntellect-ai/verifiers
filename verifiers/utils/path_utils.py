@@ -1,11 +1,21 @@
-import logging
 import json
+import logging
 import uuid
 from pathlib import Path
 
 from verifiers.types import EvalConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _get_outputs_base_path(env_id: str, env_dir_path: str = "./environments") -> Path:
+    """Resolve where outputs should be stored for an environment."""
+    module_name = env_id.replace("-", "_")
+    local_env_dir = Path(env_dir_path) / module_name
+
+    if local_env_dir.exists():
+        return local_env_dir / "outputs"
+    return Path("./outputs")
 
 
 def get_results_path(
@@ -20,28 +30,13 @@ def get_results_path(
 
 
 def get_eval_results_path(config: EvalConfig) -> Path:
-    module_name = config.env_id.replace("-", "_")
-    local_env_dir = Path(config.env_dir_path) / module_name
-
-    if local_env_dir.exists():
-        base_path = local_env_dir / "outputs"
-        results_path = get_results_path(config.env_id, config.model, base_path)
-    else:
-        base_path = Path("./outputs")
-        results_path = get_results_path(config.env_id, config.model, base_path)
-    return results_path
+    base_path = _get_outputs_base_path(config.env_id, config.env_dir_path)
+    return get_results_path(config.env_id, config.model, base_path)
 
 
 def get_eval_runs_dir(env_id: str, model: str, env_dir_path: str = "./environments") -> Path:
     """Return directory containing all eval run directories for env/model."""
-    module_name = env_id.replace("-", "_")
-    local_env_dir = Path(env_dir_path) / module_name
-
-    if local_env_dir.exists():
-        base_path = local_env_dir / "outputs"
-    else:
-        base_path = Path("./outputs")
-
+    base_path = _get_outputs_base_path(env_id, env_dir_path)
     env_model_str = f"{env_id}--{model.replace('/', '--')}"
     return base_path / "evals" / env_model_str
 
@@ -138,12 +133,5 @@ def get_gepa_results_path(
     Otherwise saves to:
         ./outputs/gepa/{env_id}--{model}/{uuid8}/
     """
-    module_name = env_id.replace("-", "_")
-    local_env_dir = Path(env_dir_path) / module_name
-
-    if local_env_dir.exists():
-        base_path = local_env_dir / "outputs"
-    else:
-        base_path = Path("./outputs")
-
+    base_path = _get_outputs_base_path(env_id, env_dir_path)
     return get_results_path(env_id, model, base_path, subdir="gepa")
