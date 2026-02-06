@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Tests for bug fixes in the unified event system.
 
-Tests for three specific bugs:
+Tests for two specific bugs:
 1. Server mode bypass in grouped scoring path
-2. Incorrect num_examples calculation with duplicates
-3. Missing documentation (tested manually)
+2. Missing documentation (tested manually)
+
+Also includes coverage tests for correct num_examples calculation.
 """
 
 import asyncio
@@ -138,11 +139,11 @@ class TestBugFix1ServerModeBypass:
             assert len(ge["states"]) == 2, "Each group should have 2 states"
 
 
-class TestBugFix2NumExamplesCalculation:
-    """Test for Bug 2: Incorrect num_examples calculation with duplicates.
+class TestNumExamplesCalculation:
+    """Test coverage for correct num_examples calculation.
 
-    When independent_scoring=True and rollouts_per_example > 1, the inputs_list
-    contains duplicates, so num_examples = len(inputs_list) was wrong.
+    Verifies that num_examples is correctly calculated using len(set([example_id]))
+    which properly handles duplicate example_ids when rollouts_per_example > 1.
     """
 
     @pytest.mark.asyncio

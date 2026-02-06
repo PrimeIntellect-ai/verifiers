@@ -896,7 +896,6 @@ class Environment(ABC):
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_event: EventHandler | None = None,
-        configured_rollouts_per_example: int | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -1251,7 +1250,6 @@ class Environment(ABC):
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_event=on_event,
-            configured_rollouts_per_example=rollouts_per_example,
             **kwargs,
         )
 

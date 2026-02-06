@@ -121,36 +121,36 @@ Evaluation completed in 1.94 seconds
 
 ## Bug Fixes (Post-Review)
 
-Three issues were identified during code review and have been fixed:
+Five issues were identified during code review and have been fixed:
 
 ### 1. Server Mode Bypass (HIGH Priority)
 **Problem:** When `independent_scoring=False`, grouped scoring bypassed the server mode dispatch in `run_group()`, causing failures in server mode.
 
 **Fix:** Added server mode detection. In server mode, properly routes through `run_group()`. In local mode, uses `_run_group_with_states()` to get State objects for GroupCompleteEvent.
 
-### 2. Incorrect num_examples Calculation (MEDIUM Priority)
-**Problem:** When `independent_scoring=True` with `rollouts_per_example > 1`, StartEvent reported incorrect `num_examples` (total rollouts instead of unique examples).
-
-**Fix:** Added `configured_rollouts_per_example` parameter to `generate()`. Now correctly calculates: `num_examples = total_rollouts // rollouts_per_example`.
-
-### 3. Missing Documentation (LOW Priority)
+### 2. Missing Documentation (LOW Priority)
 **Problem:** Changes to core user-facing methods weren't documented.
 
 **Fix:** Added comprehensive event type documentation to `docs/reference.md` and usage examples to `docs/evaluation.md`.
 
-**Test Coverage:** Added `tests/test_bugfix_event_system.py` with 5 tests covering all three fixes.
+**Test Coverage:** Added `tests/test_bugfix_event_system.py` with 5 tests covering server mode handling and num_examples calculation (the existing `len(set([example_id]))` logic was already correct).
 
-### 4. Mutable Reference in Events (MEDIUM Priority)
+### 3. Mutable Reference in Events (MEDIUM Priority)
 **Problem:** ProgressEvent and GroupCompleteEvent stored direct references to mutable lists (`builder.outputs`, `states`, `new_outputs`). When events were stored (e.g., in EventCollector), the lists would silently grow as more results were added, making `all_outputs` misleading.
 
 **Fix:** Copy all list references when creating events: `list(builder.outputs)`, `list(states)`, `list(new_outputs)`.
 
 **Test Coverage:** Added `tests/test_event_immutability.py` with 2 tests verifying events don't mutate after emission.
 
-### 5. Unnecessary O(N²) Event Construction (MEDIUM Priority)
+### 4. Unnecessary O(N²) Event Construction (MEDIUM Priority)
 **Problem:** Changed `elif on_progress is not None:` to bare `else:`, which unconditionally creates ProgressEvent objects (including expensive list copies) even when `on_event=None`. This causes O(N²) allocations affecting production code like GEPA.
 
 **Fix:** Use `elif on_event is not None:` to skip event construction when no handler is registered, matching the original callback pattern's performance characteristics.
+
+### 5. Unused Parameter (LOW Priority)
+**Problem:** `configured_rollouts_per_example` parameter was added to `generate()` but never used. The existing `len(set([example_id]))` logic already correctly calculates num_examples.
+
+**Fix:** Removed the unused parameter. The existing implementation is correct.
 
 ## Additional Notes
 
