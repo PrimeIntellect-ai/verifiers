@@ -176,6 +176,12 @@ uv sync --extra ta   # for TextArenaEnv
 uv sync --extra rg   # for ReasoningGymEnv
 ```
 
+### Type Checking on CPU-Only Machines
+If you're on a CPU-only machine and can't install all dependencies (e.g. `torch`, `vllm`), `ty` will report unresolved-import warnings for those packages. You can suppress these and still check the rest of the codebase:
+```bash
+uv run ty check verifiers/ --ignore unresolved-import
+```
+
 ### Test Failures
 ```bash
 # Debug specific test
@@ -243,9 +249,11 @@ uv run pytest tests/ --cov=verifiers  # With coverage
 uv run pytest tests/test_envs.py -vv              # All environments
 uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
-# Linting
+# Linting & type checking
 uv run ruff check --fix .             # Fix lint errors
 uv run pre-commit run --all-files     # Run all pre-commit hooks
+uv run ty check verifiers/            # Type check (needs all deps)
+uv run ty check verifiers/ --ignore unresolved-import  # Type check (CPU-only)
 
 # Environment tools
 prime env init new-env                       # Create environment
