@@ -488,17 +488,18 @@ def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     save_outputs(new_outputs, results_path, mode="a")
 
 
+def sanitize_metadata(metadata: GenerateMetadata) -> dict:
+    """Sanitizes metadata before saving to disk."""
+
+    metadata_dict = dict(metadata)
+    metadata_dict.pop("path_to_save")
+    metadata_dict.pop("date")
+
+    return metadata_dict
+
+
 def save_metadata(metadata: GenerateMetadata, result_path: Path):
     """Saves metadata to disk."""
-
-    def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-        """Sanitizes metadata before saving to disk."""
-
-        metadata_dict = dict(metadata)
-        metadata_dict.pop("path_to_save")
-        metadata_dict.pop("date")
-
-        return metadata_dict
 
     result_path.mkdir(parents=True, exist_ok=True)
     metadata_path = result_path / "metadata.json"
