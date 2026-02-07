@@ -70,6 +70,7 @@ from verifiers.utils.response_utils import (
     parse_is_truncated,
     parse_response_messages,
     parse_response_tokens,
+    parse_tool_calls_from_content,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
@@ -3019,6 +3020,16 @@ class RLMEnv(vf.StatefulToolEnv):
 
             assistant_message = response.choices[0].message
             tool_calls = getattr(assistant_message, "tool_calls", None)
+            content_or_reasoning = (
+                assistant_message.content
+                or getattr(assistant_message, "reasoning", None)
+                or ""
+            )
+            # Parse tool calls from reasoning/content when API did not set tool_calls (e.g. GLM 4.7)
+            if not tool_calls and content_or_reasoning:
+                parsed_tool_calls = parse_tool_calls_from_content(content_or_reasoning)
+                if parsed_tool_calls:
+                    tool_calls = parsed_tool_calls
             turn_tool_count = len(tool_calls) if tool_calls else 0
             tool_call_count += turn_tool_count
 
@@ -3031,8 +3042,7 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
             if not tool_calls:
-                # Also check reasoning field (for vLLM --reasoning-parser)
-                final_content = assistant_message.content or getattr(assistant_message, "reasoning", None) or ""
+                final_content = content_or_reasoning
                 return SubLLMResult(
                     final_content=final_content,
                     turns=turns,
@@ -3043,16 +3053,35 @@ class RLMEnv(vf.StatefulToolEnv):
                     max_turns_reached=False,
                 )
 
-            current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
+            # Normalize to dict for both API and parsed tool_calls
+            assistant_msg_dict: ChatMessage = cast(
+                ChatMessage,
+                assistant_message.model_dump()
+                if hasattr(assistant_message, "model_dump")
+                else dict(assistant_message),
+            )
+            if tool_calls and not getattr(assistant_message, "tool_calls", None):
+                assistant_msg_dict["tool_calls"] = tool_calls
+            current_messages.append(assistant_msg_dict)
 
             for tool_call in tool_calls:
-                tool_name = tool_call.function.name
+                if hasattr(tool_call, "function"):
+                    tc_id = getattr(tool_call, "id", "")
+                    fn = tool_call.function
+                    tool_name = fn.name
+                    tool_args_str = fn.arguments
+                else:
+                    tc = cast(dict, tool_call)
+                    tc_id = tc.get("id", "")
+                    fn = tc.get("function") or {}
+                    tool_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    tool_args_str = fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
                 try:
-                    tool_args = json.loads(tool_call.function.arguments)
+                    tool_args = json.loads(tool_args_str)
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
-                    tool_name, tool_args, tool_call.id
+                    tool_name, tool_args, tc_id
                 )
                 current_messages.append(cast(ChatMessage, tool_result))
 
@@ -3506,18 +3535,26 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_interception_server(self):
         """Stop the interception server if it was started."""
-        async with self._server_lock:
-            if self._server_site is not None:
-                try:
-                    await self._server_site.stop()
-                finally:
-                    self._server_site = None
-            if self._server_runner is not None:
-                try:
-                    await self._server_runner.cleanup()
-                finally:
-                    self._server_runner = None
-                    self._interception_server = None
+        try:
+            async with asyncio.timeout(10):  # 10 second timeout
+                async with self._server_lock:
+                    if self._server_site is not None:
+                        try:
+                            await self._server_site.stop()
+                        finally:
+                            self._server_site = None
+                    if self._server_runner is not None:
+                        try:
+                            await self._server_runner.cleanup()
+                        finally:
+                            self._server_runner = None
+                            self._interception_server = None
+        except asyncio.TimeoutError:
+            logger.warning("Timeout while stopping interception server")
+            # Force cleanup of references even on timeout
+            self._server_site = None
+            self._server_runner = None
+            self._interception_server = None
 
     @vf.teardown
     async def teardown_interception_server(self):
@@ -3526,15 +3563,20 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _teardown_tunnel(self) -> None:
         """Stop Prime Tunnel if it was started."""
-        async with self._tunnel_lock:
-            if self._tunnel is not None:
-                try:
-                    await self._tunnel.stop()
-                    logger.debug("Prime Tunnel stopped")
-                except Exception as e:
-                    logger.warning(f"Error stopping Prime Tunnel: {e}")
-                finally:
-                    self._tunnel = None
+        try:
+            async with asyncio.timeout(10):  # 10 second timeout
+                async with self._tunnel_lock:
+                    if self._tunnel is not None:
+                        try:
+                            await self._tunnel.stop()
+                            logger.debug("Prime Tunnel stopped")
+                        except Exception as e:
+                            logger.warning(f"Error stopping Prime Tunnel: {e}")
+                        finally:
+                            self._tunnel = None
+        except asyncio.TimeoutError:
+            logger.warning("Timeout while stopping Prime Tunnel")
+            self._tunnel = None
 
     @vf.teardown
     async def teardown_tunnel(self):

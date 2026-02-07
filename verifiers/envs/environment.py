@@ -219,13 +219,40 @@ class Environment(ABC):
 
         def _sync_teardown():
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                try:
+                    loop = asyncio.get_running_loop()
+                    # If we're in a running loop, schedule teardown but don't block
+                    # (this shouldn't normally happen at exit time)
                     asyncio.create_task(self._teardown())
-                else:
-                    loop.run_until_complete(self._teardown())
-            except RuntimeError:
-                asyncio.run(self._teardown())
+                    return
+                except RuntimeError:
+                    pass  # No running loop, continue below
+                
+                # Try to get or create an event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                # Run teardown with a timeout to prevent hanging
+                try:
+                    loop.run_until_complete(
+                        asyncio.wait_for(self._teardown(), timeout=30.0)
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("Teardown timed out after 30 seconds")
+                except Exception as e:
+                    self.logger.warning(f"Error during teardown: {e}")
+            except Exception as e:
+                # Last resort: just log and continue
+                try:
+                    self.logger.warning(f"Failed to run teardown: {e}")
+                except Exception:
+                    pass
 
         atexit.register(_sync_teardown)
         signal.signal(
@@ -644,10 +671,11 @@ class Environment(ABC):
         if isinstance(response.choices[0], Choice):
             message = response.choices[0].message
             # Check content, tool_calls, and reasoning (for vLLM --reasoning-parser)
+            reasoning = getattr(message, "reasoning", None)
             has_content = bool(
                 message.content
                 or message.tool_calls
-                or getattr(message, "reasoning", None)
+                or (reasoning if isinstance(reasoning, str) and reasoning.strip() else None)
             )
             if not has_content:
                 raise vf.EmptyModelResponseError(
@@ -954,7 +982,16 @@ class Environment(ABC):
         groups_or_rollouts_completed = 0
         try:
             for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
+                try:
+                    result = await coro
+                except Exception:
+                    # cancel all outstanding tasks on error
+                    for task in tasks.keys():
+                        if not task.done():
+                            task.cancel()
+                    # drain cancellations
+                    await asyncio.gather(*tasks.keys(), return_exceptions=True)
+                    raise
 
                 # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                 outputs = [result] if independent_scoring else result
@@ -990,12 +1027,6 @@ class Environment(ABC):
                     )
                     save_generate_outputs(intermediate_results)
         finally:
-            # cancel all outstanding tasks and await their completion
-            pending = [task for task in tasks.keys() if not task.done()]
-            if pending:
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
             if pbar is not None:
                 pbar.close()
 

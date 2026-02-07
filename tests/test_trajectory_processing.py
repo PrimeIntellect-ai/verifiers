@@ -11,7 +11,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from verifiers.types import State, TrajectoryStep, TrajectoryStepTokens
-from verifiers.utils.response_utils import parse_response_tokens
+from verifiers.utils.response_utils import (
+    parse_response_tokens,
+    parse_tool_calls_from_content,
+)
 
 
 @pytest.mark.asyncio
@@ -88,6 +91,70 @@ async def test_parse_response_tokens_completion_without_tokens():
     tokens = await parse_response_tokens(mock_response, "completion")
 
     assert tokens is None
+
+
+def test_parse_tool_calls_from_content_empty():
+    """parse_tool_calls_from_content returns [] for empty or non-string."""
+    assert parse_tool_calls_from_content("") == []
+    assert parse_tool_calls_from_content(None) == []  # type: ignore[arg-type]
+
+
+def test_parse_tool_calls_from_content_hermes_style():
+    """parse_tool_calls_from_content extracts Hermes-style JSON tool calls."""
+    text = 'I will call the tool. {"name": "get_weather", "arguments": {"city": "Boston"}} done.'
+    out = parse_tool_calls_from_content(text)
+    assert len(out) == 1
+    assert out[0]["type"] == "function"
+    assert out[0]["function"]["name"] == "get_weather"
+    assert out[0]["function"]["arguments"] == '{"city": "Boston"}'
+    assert out[0]["id"].startswith("call_")
+
+
+def test_parse_tool_calls_from_content_arguments_string():
+    """parse_tool_calls_from_content accepts arguments as JSON string."""
+    text = '{"name": "run_code", "arguments": "{\\"code\\": \\"1+1\\"}"}'
+    out = parse_tool_calls_from_content(text)
+    assert len(out) == 1
+    assert out[0]["function"]["name"] == "run_code"
+    assert out[0]["function"]["arguments"] == '{"code": "1+1"}'
+
+
+def test_parse_tool_calls_from_content_parameters_key():
+    """parse_tool_calls_from_content accepts 'parameters' as well as 'arguments'."""
+    text = '{"name": "search", "parameters": {"q": "test"}}'
+    out = parse_tool_calls_from_content(text)
+    assert len(out) == 1
+    assert out[0]["function"]["name"] == "search"
+    assert out[0]["function"]["arguments"] == '{"q": "test"}'
+
+
+@pytest.mark.asyncio
+async def test_parse_response_messages_tool_calls_from_reasoning():
+    """parse_response_messages populates tool_calls from reasoning when API omits them."""
+    from unittest.mock import MagicMock
+
+    from verifiers.types import ChatCompletion
+
+    from verifiers.utils.response_utils import parse_response_messages
+
+    mock_message = MagicMock()
+    mock_message.content = None
+    mock_message.tool_calls = None
+    mock_message.reasoning = 'Think step by step. {"name": "call_python_repl", "arguments": {"code": "1+1"}}'
+    mock_choice = MagicMock()
+    mock_choice.message = mock_message
+    mock_response = MagicMock(spec=ChatCompletion)
+    mock_response.choices = [mock_choice]
+
+    messages = await parse_response_messages(mock_response, "chat")
+    assert isinstance(messages, list)
+    assert len(messages) == 1
+    msg = messages[0]
+    assert msg["role"] == "assistant"
+    assert "tool_calls" in msg
+    assert len(msg["tool_calls"]) == 1
+    assert msg["tool_calls"][0]["function"]["name"] == "call_python_repl"
+    assert msg["tool_calls"][0]["function"]["arguments"] == '{"code": "1+1"}'
 
 
 def test_process_trajectory_steps_for_training(make_input):
