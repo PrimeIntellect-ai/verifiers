@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Literal,
     TypeAlias,
+    Union,
 )
 
 from verifiers.errors import Error
@@ -192,14 +193,89 @@ class State(dict):
 # oai tools
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
-# callbacks
-StartCallback = Callable[
-    [list[RolloutInput], list[RolloutInput] | list[list[RolloutInput]]], None
+# evaluation events
+
+
+class StartEvent(TypedDict):
+    """Emitted once at start with resolved counts."""
+
+    type: Literal["start"]
+    total_rollouts: int
+    num_examples: int
+    rollouts_per_example: int
+
+
+class ProgressEvent(TypedDict):
+    """Emitted after each rollout/group completes."""
+
+    type: Literal["progress"]
+    all_outputs: list[RolloutOutput]
+    new_outputs: list[RolloutOutput]
+    completed_count: int
+    total_count: int
+
+
+class GroupCompleteEvent(TypedDict):
+    """Emitted when a group of rollouts for one example completes (PR #632)."""
+
+    type: Literal["group_complete"]
+    example_id: int
+    states: list[State]
+    outputs: list[RolloutOutput]
+
+
+class LogEvent(TypedDict):
+    """Emitted for log messages."""
+
+    type: Literal["log"]
+    message: str
+    level: Literal["debug", "info", "warning", "error"]
+    source: str  # e.g., "environment", "sandbox", "rubric"
+    timestamp: float
+
+
+class LogStreamEvent(TypedDict):
+    """Emitted for streaming log data (#753)."""
+
+    type: Literal["log_stream"]
+    stream_id: str
+    source: str
+    data: str
+    is_stderr: bool
+    file_path: Path | None  # if writing to file
+
+
+class SaveEvent(TypedDict):
+    """Emitted when results are saved."""
+
+    type: Literal["save"]
+    path: Path
+    is_intermediate: bool
+    output_count: int
+
+
+class CompleteEvent(TypedDict):
+    """Emitted when generation finishes."""
+
+    type: Literal["complete"]
+    total_outputs: int
+    avg_reward: float
+    total_time_ms: float
+
+
+# Union of all events
+EvalEvent = Union[
+    StartEvent,
+    ProgressEvent,
+    GroupCompleteEvent,
+    LogEvent,
+    LogStreamEvent,
+    SaveEvent,
+    CompleteEvent,
 ]
-ProgressCallback = Callable[
-    [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
-]  # all_outputs, new_outputs, new_metadata
-LogCallback = Callable[[str], None]  # log messages
+
+# Callback type (supports sync and async handlers)
+EventHandler = Callable[[EvalEvent], None] | Callable[[EvalEvent], Awaitable[None]]
 
 
 class GenerateMetadata(TypedDict):

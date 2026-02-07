@@ -24,14 +24,12 @@ if TYPE_CHECKING:
 from verifiers.types import (
     Endpoints,
     EvalConfig,
+    EvalEvent,
     EvalRunConfig,
-    GenerateMetadata,
+    EventHandler,
     GenerateOutputs,
-    LogCallback,
-    ProgressCallback,
     RolloutInput,
     RolloutOutput,
-    StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
@@ -343,9 +341,7 @@ def quiet_datasets():
 
 async def run_evaluation(
     config: EvalConfig,
-    on_start: StartCallback | None = None,
-    on_progress: ProgressCallback | None = None,
-    on_log: LogCallback | None = None,
+    on_event: EventHandler | None = None,
 ) -> GenerateOutputs:
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
@@ -395,9 +391,7 @@ async def run_evaluation(
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
-            on_start=on_start,
-            on_progress=on_progress,
-            on_log=on_log,
+            on_event=on_event,
         )
     finally:
         await vf_env.stop_server()
@@ -456,47 +450,93 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
 
-        def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
-            total = len(raw_inputs)
-            if (
-                isinstance(filtered_inputs, list)
-                and filtered_inputs
-                and isinstance(filtered_inputs[0], list)
-            ):
-                remaining = sum(len(g) for g in filtered_inputs)
-            else:
-                remaining = len(filtered_inputs) if filtered_inputs else 0
-            resumed = total - remaining
-            num_examples = total // env_config.rollouts_per_example
-            display.update_env_state(
-                env_idx, total=total, num_examples=num_examples, progress=resumed
-            )
+        # Initialize rolling accumulators for display
+        error_accum = 0
+        reward_accum = 0.0
+        metrics_accum: defaultdict[str, float] = defaultdict(float)
+        input_tokens_accum = 0.0
+        output_tokens_accum = 0.0
+        usage_seen = False
+        usage_count = 0
 
-        def on_progress(
-            all_outputs: list[RolloutOutput],
-            new_outputs: list[RolloutOutput],
-            metadata: GenerateMetadata,
-        ) -> None:
-            display.update_env_state(
-                env_idx,
-                progress=len(all_outputs),
-                reward=metadata.get("avg_reward"),
-                metrics=metadata.get("avg_metrics"),
-                error_rate=metadata.get("avg_error"),
-                usage=metadata.get("usage"),
-            )
+        async def on_event(event: EvalEvent) -> None:
+            """Handle evaluation events for display updates."""
+            nonlocal error_accum, reward_accum, metrics_accum
+            nonlocal input_tokens_accum, output_tokens_accum, usage_seen, usage_count
 
-        def on_log(message: str) -> None:
-            display.update_env_state(env_idx, log_message=message)
+            match event["type"]:
+                case "start":
+                    display.update_env_state(
+                        env_idx,
+                        total=event["total_rollouts"],
+                        num_examples=event["num_examples"],
+                    )
+
+                case "progress":
+                    # Progress is always rollout-based
+                    completed = event["completed_count"]
+
+                    for o in event["new_outputs"]:
+                        if o.get("error") is not None:
+                            error_accum += 1
+                        reward = o.get("reward")
+                        if reward is not None:
+                            reward_accum += reward
+                        output_metrics = o.get("metrics") or {}
+                        for name, value in output_metrics.items():
+                            if value is not None:
+                                metrics_accum[name] += value
+                        token_usage = o.get("token_usage")
+                        if isinstance(token_usage, dict):
+                            usage_seen = True
+                            usage_count += 1
+                            input_tokens_accum += float(
+                                token_usage.get("input_tokens", 0.0)
+                            )
+                            output_tokens_accum += float(
+                                token_usage.get("output_tokens", 0.0)
+                            )
+
+                    # Compute averages over completed rollouts
+                    reward = reward_accum / completed if completed > 0 else 0
+                    metrics = {
+                        name: metrics_accum[name] / completed
+                        for name in metrics_accum
+                    }
+                    error_rate = error_accum / completed if completed > 0 else 0
+                    usage = None
+                    if usage_seen and usage_count > 0:
+                        usage = {
+                            "input_tokens": input_tokens_accum / usage_count,
+                            "output_tokens": output_tokens_accum / usage_count,
+                        }
+
+                    display.update_env_state(
+                        env_idx,
+                        progress=completed,
+                        reward=reward,
+                        metrics=metrics,
+                        usage=usage,
+                        error_rate=error_rate,
+                    )
+
+                case "log":
+                    display.update_env_state(env_idx, log_message=event["message"])
+
+                case "save":
+                    if event["is_intermediate"]:
+                        display.update_env_state(
+                            env_idx,
+                            log_message=f"Saved checkpoint ({event['output_count']} outputs)",
+                        )
+
+                case "complete":
+                    # Final completion handled below
+                    pass
 
         display.update_env_state(env_idx, status="running")
         try:
-            result = await run_evaluation(
-                env_config,
-                on_start=on_start,
-                on_progress=on_progress,
-                on_log=on_log,
-            )
+            result = await run_evaluation(env_config, on_event=on_event)
 
             # get save path if results were saved
             save_path = (

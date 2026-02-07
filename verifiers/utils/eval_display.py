@@ -33,21 +33,24 @@ class EnvEvalState:
     start_time: float | None = None
     end_time: float | None = None
 
-    # updated by on_progress callback
-    progress: int = 0  # completed rollouts
-    total: int = 0  # total rollouts
-    num_examples: int = -1  # num examples (-1 means "all", updated by on_start)
-    rollouts_per_example: int = 1  # rollouts per example (from config)
-    reward: float = 0.0  # reward (rolling avg)
-    metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
-    usage: TokenUsage | None = None
-    error_rate: float = 0.0  # error rate (rolling avg)
+    # updated by event handler
+    progress: int = 0  # completed rollouts (from ProgressEvent)
+    total: int = 0  # total rollouts (from StartEvent)
+    num_examples: int = -1  # num examples (from StartEvent)
+    rollouts_per_example: int = 1  # rollouts per example (from config/StartEvent)
+    reward: float = 0.0  # reward (rolling avg from ProgressEvent)
+    metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg from ProgressEvent)
+    usage: dict[str, float] | None = None  # token usage (from ProgressEvent)
+    error_rate: float = 0.0  # error rate (rolling avg from ProgressEvent)
 
     # path where results were saved (if save_results=true)
     save_path: Path | None = None
 
-    # log message for special events (updated by on_log callback)
+    # log message for special events (from LogEvent)
     log_message: str | None = None
+
+    # TODO: Add log_streams field for #753 log streaming support
+    # log_streams: dict[str, Path] = field(default_factory=dict)  # stream_id -> file path
 
     # full results (stored after completion for summary)
     results: GenerateOutputs | None = None
