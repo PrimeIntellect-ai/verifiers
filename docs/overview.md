@@ -67,7 +67,7 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     async def correct_answer(completion, answer) -> float:
         completion_ans = completion[-1]['content']
         return 1.0 if completion_ans == answer else 0.0
-    rubric = Rubric(funcs=[correct_answer])
+    rubric = vf.Rubric(funcs=[correct_answer])
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env
 ```
@@ -84,7 +84,7 @@ prime env install primeintellect/math-python
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
-prime eval run my-env -m gpt-5-nano # run and save eval results locally
+prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.py`.
 
