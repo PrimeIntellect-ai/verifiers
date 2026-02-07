@@ -450,6 +450,48 @@ async def test_generate_resume_closes_local_endpoint_clients(
     assert all(client.closed for client in created_clients)
 
 
+@pytest.mark.asyncio
+async def test_generate_closes_partially_created_clients_on_setup_failure(
+    monkeypatch, mock_openai_client, make_dummy_env, make_input
+):
+    class LocalClientStub:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    created_clients: list[LocalClientStub] = []
+    calls = {"count": 0}
+
+    def fake_setup_client(_config):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("setup failed")
+        client = LocalClientStub()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+
+    env = make_dummy_env(mock_openai_client)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        await env.generate(
+            inputs=[make_input(example_id=0)],
+            client=ClientConfig(
+                api_base_url="http://localhost:7000/v1",
+                endpoint_configs=[
+                    ClientConfig(api_base_url="http://localhost:7001/v1"),
+                    ClientConfig(api_base_url="http://localhost:7002/v1"),
+                ],
+            ),
+            model="test-model",
+        )
+
+    assert len(created_clients) == 1
+    assert created_clients[0].closed is True
+
+
 def test_sanitize_tool_calls_outputs_strings():
     # Use a lightweight object with model_dump to mimic OAI tool call
     class ToolCall:

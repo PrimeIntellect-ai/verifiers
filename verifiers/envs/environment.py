@@ -1026,11 +1026,6 @@ class Environment(ABC):
             single_client = client
 
         local_endpoint_clients: list[AsyncOpenAI] = []
-        if self.env_client is None and endpoint_client_configs:
-            local_endpoint_clients = [
-                setup_client(endpoint_config)
-                for endpoint_config in endpoint_client_configs
-            ]
 
         def get_client_for_group() -> AsyncOpenAI | ClientConfig:
             """Get next client in round-robin order or return the single client."""
@@ -1051,6 +1046,10 @@ class Environment(ABC):
             return single_client
 
         try:
+            if self.env_client is None and endpoint_client_configs:
+                for endpoint_config in endpoint_client_configs:
+                    local_endpoint_clients.append(setup_client(endpoint_config))
+
             # load existing results if available
             if results_path is not None and is_valid_eval_results_path(results_path):
                 validate_resume_metadata(

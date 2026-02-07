@@ -595,6 +595,7 @@ class EvalConfig(BaseModel):
     env_id: str
     env_args: dict
     env_dir_path: str
+    endpoint_id: str | None = None
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
