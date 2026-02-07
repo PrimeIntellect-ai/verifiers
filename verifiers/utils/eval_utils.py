@@ -22,6 +22,7 @@ from verifiers.utils.import_utils import load_toml
 if TYPE_CHECKING:
     pass
 from verifiers.types import (
+    Endpoint,
     Endpoints,
     EvalConfig,
     EvalRunConfig,
@@ -40,32 +41,162 @@ from verifiers.utils.path_utils import get_eval_results_path
 logger = logging.getLogger(__name__)
 
 
+def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
+    if not isinstance(raw_endpoint, dict):
+        raise ValueError(f"Endpoint entry must be a table/dict in {source}")
+
+    raw_endpoint_dict = cast(dict[str, object], raw_endpoint)
+    model = raw_endpoint_dict.get("model")
+    url = raw_endpoint_dict.get("url")
+    key = raw_endpoint_dict.get("key")
+
+    missing = [
+        field
+        for field, value in (("model", model), ("url", url), ("key", key))
+        if value is None
+    ]
+    if missing:
+        raise ValueError(f"Missing required field(s) {missing} in {source}")
+
+    if (
+        not isinstance(model, str)
+        or not isinstance(url, str)
+        or not isinstance(key, str)
+    ):
+        raise ValueError(
+            f"Fields 'model', 'url', and 'key' must all be strings in {source}"
+        )
+
+    return Endpoint(model=model, url=url, key=key)
+
+
+def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
+    if not isinstance(raw_endpoints, dict):
+        raise ValueError(f"ENDPOINTS must be a dict in {source}")
+
+    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
+    normalized: Endpoints = {}
+    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
+        if not isinstance(endpoint_id, str):
+            raise ValueError(f"Endpoint ids must be strings in {source}")
+
+        if isinstance(raw_endpoint_group, list):
+            if not raw_endpoint_group:
+                raise ValueError(
+                    f"Endpoint '{endpoint_id}' has an empty endpoint list in {source}"
+                )
+            normalized[endpoint_id] = [
+                _coerce_endpoint(
+                    raw_endpoint,
+                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
+                )
+                for raw_endpoint in raw_endpoint_group
+            ]
+        else:
+            normalized[endpoint_id] = [
+                _coerce_endpoint(
+                    raw_endpoint_group,
+                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
+                )
+            ]
+
+    return normalized
+
+
+def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
+    if not isinstance(raw_toml, dict):
+        raise ValueError(f"Expected top-level TOML table in {source}")
+
+    raw_toml_dict = cast(dict[str, object], raw_toml)
+    raw_endpoint_entries = raw_toml_dict.get("endpoint", [])
+    if not isinstance(raw_endpoint_entries, list):
+        raise ValueError(
+            f"Expected [[endpoint]] array-of-tables in {source}, got {type(raw_endpoint_entries)}"
+        )
+
+    normalized: Endpoints = {}
+    for idx, raw_entry in enumerate(raw_endpoint_entries):
+        entry_source = f"{source} ([[endpoint]] index {idx})"
+        if not isinstance(raw_entry, dict):
+            raise ValueError(
+                f"Each [[endpoint]] entry must be a table in {entry_source}"
+            )
+
+        raw_entry_dict = cast(dict[str, object], raw_entry)
+        endpoint_id = raw_entry_dict.get("endpoint_id")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            raise ValueError(
+                f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
+            )
+
+        endpoint_payload = {
+            k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
+        }
+        endpoint = _coerce_endpoint(
+            endpoint_payload,
+            source=f"{entry_source} (endpoint_id={endpoint_id!r})",
+        )
+        normalized.setdefault(endpoint_id, []).append(endpoint)
+
+    return normalized
+
+
+def resolve_endpoints_file(endpoints_path: str) -> Path | None:
+    endpoints_path_obj = Path(endpoints_path)
+    if endpoints_path_obj.is_dir():
+        toml_file = endpoints_path_obj / "endpoints.toml"
+        python_file = endpoints_path_obj / "endpoints.py"
+        if toml_file.exists():
+            return toml_file
+        if python_file.exists():
+            return python_file
+        return None
+    return endpoints_path_obj
+
+
 def load_endpoints(endpoints_path: str):
     try:
-        endpoints_path_obj = Path(endpoints_path)
-        if endpoints_path_obj.is_dir():
-            endpoints_file = endpoints_path_obj / "endpoints.py"
-        else:
-            endpoints_file = endpoints_path_obj
+        endpoints_file = resolve_endpoints_file(endpoints_path)
+        if endpoints_file is None:
+            raise ImportError(
+                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
+            )
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            spec = importlib.util.spec_from_file_location("endpoints", endpoints_file)
-            assert spec and spec.loader
-            endpoints_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(endpoints_module)
-            # check that module exposes ENDPOINTS
-            if not hasattr(endpoints_module, "ENDPOINTS"):
-                raise AttributeError(
-                    f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
+            if endpoints_file.suffix == ".py":
+                spec = importlib.util.spec_from_file_location(
+                    "endpoints", endpoints_file
                 )
-            endpoints = cast(Endpoints, endpoints_module.ENDPOINTS)
+                assert spec and spec.loader
+                endpoints_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(endpoints_module)
+                # check that module exposes ENDPOINTS
+                if not hasattr(endpoints_module, "ENDPOINTS"):
+                    raise AttributeError(
+                        f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
+                    )
+                endpoints = _normalize_python_endpoints(
+                    cast(object, endpoints_module.ENDPOINTS),
+                    source=endpoints_file,
+                )
+            elif endpoints_file.suffix == ".toml":
+                with open(endpoints_file, "rb") as f:
+                    raw_toml = load_toml(f)
+                endpoints = _normalize_toml_endpoints(raw_toml, source=endpoints_file)
+            else:
+                raise ImportError(
+                    f"Unsupported endpoints file extension '{endpoints_file.suffix}' at {endpoints_file}"
+                )
+            num_endpoint_variants = sum(len(group) for group in endpoints.values())
             logger.debug(
-                f"Successfully loaded {len(endpoints)} endpoints from registry"
+                "Successfully loaded %d endpoint ids (%d endpoint variant(s)) from registry",
+                len(endpoints),
+                num_endpoint_variants,
             )
         else:
-            raise ImportError(f"endpoints.py not found at {endpoints_file}")
-    except (ImportError, AttributeError) as e:
+            raise ImportError(f"Endpoint registry file not found at {endpoints_file}")
+    except (ImportError, AttributeError, ValueError) as e:
         logger.warning(
             f"No local endpoint registry found at {endpoints_path}. "
             f"Please specify the model name (-m), API host base URL (-b), and API key variable name (-k). "
@@ -131,6 +262,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "endpoints_path",
         "extra_env_kwargs",
         # model/client
+        "endpoint_id",
         "model",
         "api_key_var",
         "api_base_url",
@@ -176,6 +308,14 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
+        # Resolve endpoints_path relative to the config file location.
+        endpoints_path = merged.get("endpoints_path")
+        if isinstance(endpoints_path, str):
+            endpoints_path_obj = Path(endpoints_path)
+            if not endpoints_path_obj.is_absolute():
+                merged["endpoints_path"] = str(
+                    (path.parent / endpoints_path_obj).resolve()
+                )
         merged_eval_list.append(merged)
 
     return merged_eval_list

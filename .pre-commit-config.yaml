@@ -1,15 +1,16 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.3
-    hooks:
-      # Run the linter.
-      - id: ruff
-        args: [--fix, --config=pyproject.toml]
-      # Run the formatter.
-      - id: ruff-format
-        args: [--config=pyproject.toml]
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
       - id: sync-agents-md
         name: Sync AGENTS.md from docs
         entry: uv run python scripts/sync_agents_md.py

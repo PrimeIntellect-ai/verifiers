@@ -203,7 +203,7 @@ class GenerateOutputsBuilder:
         env_id: str,
         env_args: dict,
         model: str,
-        client: AsyncOpenAI | ClientConfig,
+        client: AsyncOpenAI | ClientConfig | object,
         num_examples: int,
         rollouts_per_example: int,
         state_columns: list[str] | None,
@@ -220,16 +220,27 @@ class GenerateOutputsBuilder:
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
         self.start_time = time.time()
-        if isinstance(self.client, ClientConfig):
-            self.base_url = self.client.api_base_url
-        else:
-            self.base_url = (
-                str(self.client.base_url) if hasattr(self.client, "base_url") else ""
-            )
+        self.base_url = self._compute_base_url(self.client)
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
         self.tools_list: list[list[ChatCompletionToolParam] | None] = []
+
+    @staticmethod
+    def _format_base_url(url: str) -> str:
+        return url
+
+    def _compute_base_url(self, client: AsyncOpenAI | ClientConfig | object) -> str:
+        if isinstance(client, ClientConfig):
+            if client.endpoint_configs:
+                endpoint_urls = [cfg.api_base_url for cfg in client.endpoint_configs]
+                if endpoint_urls:
+                    return ",".join(endpoint_urls)
+            return self._format_base_url(client.api_base_url)
+
+        if hasattr(client, "base_url"):
+            return str(getattr(client, "base_url"))
+        return ""
 
     def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
         """Accumulate new outputs."""
