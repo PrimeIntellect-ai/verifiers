@@ -4124,8 +4124,21 @@ class RLMEnv(vf.StatefulToolEnv):
 
     @vf.stop
     async def no_tools_called(self, state: State) -> bool:
-        """Disabled for RLMEnv - we only stop on answer_ready or max_turns."""
-        return False
+        """Stop when last assistant message has no reasoning, content, or tool calls."""
+        if len(state["trajectory"]) == 0:
+            return False
+        last_message = state["trajectory"][-1]["completion"][-1]
+        if not isinstance(last_message, dict) or last_message.get("role") != "assistant":
+            return False
+        content = last_message.get("content")
+        has_content = (
+            content is not None
+            and isinstance(content, str)
+            and bool(content.strip())
+        )
+        tool_calls = last_message.get("tool_calls")
+        has_tool_calls = bool(tool_calls)
+        return not has_content and not has_tool_calls
 
     # =========================================================================
     # Cleanup

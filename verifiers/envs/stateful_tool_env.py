@@ -140,9 +140,12 @@ class StatefulToolEnv(vf.ToolEnv):
         self, messages: vf.Messages, state: vf.State, **kwargs
     ) -> vf.Messages:
         assert isinstance(messages, list)
-        assert "tool_calls" in messages[-1]
-        tool_messages = []
+        if not messages:
+            return []
         last_msg = cast(ChatCompletionAssistantMessageParam, messages[-1])
+        if not last_msg.get("tool_calls"):
+            return []
+        tool_messages = []
         for tool_call in last_msg.get("tool_calls", []):
             tool_call_id: str = tool_call.get("id", "")
             try:
