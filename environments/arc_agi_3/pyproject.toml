@@ -1,0 +1,18 @@
+[project]
+name = "arc-agi-3"
+description = "ARC-AGI-3 environment using verifiers ArcAgi3Env"
+tags = ["train", "eval", "arc", "tools", "multiturn"]
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers",
+    "arc-agi>=0.9.1",
+    "arcengine>=0.9.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["arc_agi_3.py"]

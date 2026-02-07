@@ -37,3 +37,18 @@ Tool split:
 - `sub_tools`: tools exposed to sub-LLMs
 
 `llm_batch` is a fixed root tool and always available (callable as a shell command in Bash mode, or a Python function in Python mode).
+
+## ArcAgi3Env
+
+ARC-AGI-3-focused `SandboxEnv` subclass for context-window rewriting experiments with a bash tool.
+
+Behavior:
+- Model has `bash` plus ARC tools (`arc_step`, `arc_reset`, `stop_episode`).
+- ARC lifecycle is environment-managed: create Arcade, open scorecard, make/reset game in setup, close scorecard in cleanup.
+- Sandbox ensures configured working dir exists and seeds `MEMORY.md` in that directory.
+- Prompt is rebuilt each turn from:
+  - current `MEMORY.md` content
+  - initial ARC observation (`arc_last_frame`) before first action
+  - last `N` tool-execution turn records (`history_window_turns`, default `3`)
+- Tool calls are logged to a JSONL file (`tool_calls_log_path`, default `arc_tool_calls.jsonl`), including truncated response previews.
+- Rollout stops when ARC reaches `WIN` or the model calls `stop_episode`.
