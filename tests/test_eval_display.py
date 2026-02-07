@@ -7,13 +7,16 @@ def make_config(
     max_concurrent: int,
     rollouts_per_example: int = 1,
     independent_scoring: bool = False,
+    endpoint_id: str | None = None,
+    client_config: ClientConfig | None = None,
 ) -> EvalConfig:
     return EvalConfig(
         env_id="dummy-env",
         env_args={},
         env_dir_path="./environments",
+        endpoint_id=endpoint_id,
         model="gpt-4.1-mini",
-        client_config=ClientConfig(),
+        client_config=client_config or ClientConfig(),
         sampling_args={},
         num_examples=5,
         rollouts_per_example=rollouts_per_example,
@@ -43,3 +46,35 @@ def test_display_max_concurrent_does_not_scale_independent_scoring() -> None:
     )
 
     assert EvalDisplay._display_max_concurrent(config, total_rollouts=10) == 9
+
+
+def test_format_client_target_uses_endpoint_id_summary_for_multi_endpoint() -> None:
+    config = make_config(
+        max_concurrent=1,
+        endpoint_id="gpt-5-mini",
+        client_config=ClientConfig(
+            api_base_url="http://localhost:8000/v1",
+            endpoint_configs=[
+                ClientConfig(api_base_url="http://localhost:8000/v1"),
+                ClientConfig(api_base_url="http://localhost:8001/v1"),
+            ],
+        ),
+    )
+
+    assert (
+        EvalDisplay._format_client_target(config)
+        == "endpoint_id=gpt-5-mini (2 endpoints)"
+    )
+
+
+def test_format_client_target_uses_single_resolved_base_url() -> None:
+    config = make_config(
+        max_concurrent=1,
+        endpoint_id="gpt-5-mini",
+        client_config=ClientConfig(
+            api_base_url="http://localhost:8000/v1",
+            endpoint_configs=[ClientConfig(api_base_url="http://localhost:8001/v1")],
+        ),
+    )
+
+    assert EvalDisplay._format_client_target(config) == "http://localhost:8001/v1"

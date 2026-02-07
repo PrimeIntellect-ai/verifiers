@@ -59,7 +59,7 @@ class RunGroupRequest(BaseRequest):
     # skip validation because multi-modal content type + tool calls validate weirdly
     # (https://github.com/PrimeIntellect-ai/prime-rl/pull/1249)
     group_inputs: SkipValidation[list[RolloutInput]]
-    client_config: ClientConfig | list[ClientConfig]
+    client_config: ClientConfig
     model: str
     sampling_args: SamplingArgs
     max_retries: int

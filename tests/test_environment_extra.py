@@ -270,6 +270,186 @@ async def test_generate_grouped_scoring_distributes_per_group(
     assert env.env_client.client_urls_per_group.count("http://localhost:8001/v1") == 1
 
 
+@pytest.mark.asyncio
+async def test_run_group_server_mode_rejects_non_client_config_client(
+    mock_openai_client, make_dummy_env, make_input
+):
+    class StubEnvClient:
+        async def run_group(self, *args, **kwargs):
+            raise AssertionError(
+                "run_group should not be called for invalid client type"
+            )
+
+    env = make_dummy_env(mock_openai_client)
+    env.env_client = StubEnvClient()
+
+    with pytest.raises(ValueError, match="client must be have type ClientConfig"):
+        await env.run_group(
+            group_inputs=[make_input(example_id=0)],
+            client=[],
+            model="test-model",
+            sampling_args={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_group_server_mode_resolves_endpoint_config(
+    mock_openai_client, make_dummy_env, make_input
+):
+    class StubEnvClient:
+        def __init__(self):
+            self.client_url: str | None = None
+
+        async def run_group(
+            self,
+            group_inputs,
+            client_config,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+        ):
+            assert isinstance(client_config, ClientConfig)
+            self.client_url = str(client_config.api_base_url)
+            return [
+                {
+                    "example_id": input_item["example_id"],
+                    "task": "dummy",
+                    "prompt": "p",
+                    "completion": "c",
+                    "answer": "a",
+                    "reward": 1.0,
+                    "metrics": {},
+                    "info": {},
+                    "timing": {},
+                    "timestamp": "",
+                    "token_usage": None,
+                    "error": None,
+                    "oai_tools": None,
+                }
+                for input_item in group_inputs
+            ]
+
+    env = make_dummy_env(mock_openai_client)
+    stub_client = StubEnvClient()
+    env.env_client = stub_client
+
+    await env.run_group(
+        group_inputs=[make_input(example_id=0)],
+        client=ClientConfig(
+            api_base_url="http://localhost:7000/v1",
+            client_idx=1,
+            endpoint_configs=[
+                ClientConfig(api_base_url="http://localhost:7001/v1"),
+                ClientConfig(api_base_url="http://localhost:7002/v1"),
+            ],
+        ),
+        model="test-model",
+        sampling_args={},
+    )
+
+    assert stub_client.client_url == "http://localhost:7002/v1"
+
+
+@pytest.mark.asyncio
+async def test_run_rollout_server_mode_resolves_endpoint_config(
+    mock_openai_client, make_dummy_env, make_input, make_output
+):
+    class StubEnvClient:
+        def __init__(self):
+            self.client_url: str | None = None
+
+        async def run_rollout(
+            self,
+            input,
+            client_config,
+            model,
+            sampling_args,
+            max_retries,
+            state_columns,
+        ):
+            assert isinstance(client_config, ClientConfig)
+            self.client_url = str(client_config.api_base_url)
+            return make_output(example_id=input["example_id"])
+
+    env = make_dummy_env(mock_openai_client)
+    stub_client = StubEnvClient()
+    env.env_client = stub_client
+
+    await env.run_rollout(
+        input=make_input(example_id=0),
+        client=ClientConfig(
+            api_base_url="http://localhost:7000/v1",
+            client_idx=1,
+            endpoint_configs=[
+                ClientConfig(api_base_url="http://localhost:7001/v1"),
+                ClientConfig(api_base_url="http://localhost:7002/v1"),
+            ],
+        ),
+        model="test-model",
+        sampling_args={},
+    )
+
+    assert stub_client.client_url == "http://localhost:7002/v1"
+
+
+@pytest.mark.asyncio
+async def test_generate_resume_closes_local_endpoint_clients(
+    tmp_path, monkeypatch, mock_openai_client, make_dummy_env, make_input, make_output
+):
+    class LocalClientStub:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    created_clients: list[LocalClientStub] = []
+
+    def fake_setup_client(_config):
+        client = LocalClientStub()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+
+    env = make_dummy_env(mock_openai_client)
+    results_path = tmp_path / "resume-complete"
+    results_path.mkdir()
+    (results_path / "results.jsonl").write_text(
+        json.dumps(make_output(example_id=0)) + "\n",
+        encoding="utf-8",
+    )
+    (results_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "env_id": env.env_id,
+                "model": "test-model",
+                "num_examples": 1,
+                "rollouts_per_example": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    outputs = await env.generate(
+        inputs=[make_input(example_id=0)],
+        client=ClientConfig(
+            api_base_url="http://localhost:7000/v1",
+            endpoint_configs=[
+                ClientConfig(api_base_url="http://localhost:7001/v1"),
+                ClientConfig(api_base_url="http://localhost:7002/v1"),
+            ],
+        ),
+        model="test-model",
+        results_path=results_path,
+    )
+
+    assert len(outputs["outputs"]) == 1
+    assert len(created_clients) == 2
+    assert all(client.closed for client in created_clients)
+
+
 def test_sanitize_tool_calls_outputs_strings():
     # Use a lightweight object with model_dump to mimic OAI tool call
     class ToolCall:

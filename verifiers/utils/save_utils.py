@@ -231,11 +231,6 @@ class GenerateOutputsBuilder:
         return url
 
     def _compute_base_url(self, client: AsyncOpenAI | ClientConfig | object) -> str:
-        if isinstance(client, list):
-            urls = [c.api_base_url for c in client if isinstance(c, ClientConfig)]
-            if urls:
-                return ",".join(urls)
-
         if isinstance(client, ClientConfig):
             if client.endpoint_configs:
                 endpoint_urls = [cfg.api_base_url for cfg in client.endpoint_configs]

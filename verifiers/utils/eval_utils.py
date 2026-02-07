@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 from verifiers.types import (
     Endpoint,
     Endpoints,
-    ClientConfig,
     EvalConfig,
     EvalRunConfig,
     GenerateMetadata,
@@ -142,22 +141,26 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
     return normalized
 
 
+def resolve_endpoints_file(endpoints_path: str) -> Path | None:
+    endpoints_path_obj = Path(endpoints_path)
+    if endpoints_path_obj.is_dir():
+        toml_file = endpoints_path_obj / "endpoints.toml"
+        python_file = endpoints_path_obj / "endpoints.py"
+        if toml_file.exists():
+            return toml_file
+        if python_file.exists():
+            return python_file
+        return None
+    return endpoints_path_obj
+
+
 def load_endpoints(endpoints_path: str):
     try:
-        endpoints_path_obj = Path(endpoints_path)
-        if endpoints_path_obj.is_dir():
-            python_file = endpoints_path_obj / "endpoints.py"
-            toml_file = endpoints_path_obj / "endpoints.toml"
-            if toml_file.exists():
-                endpoints_file = toml_file
-            elif python_file.exists():
-                endpoints_file = python_file
-            else:
-                raise ImportError(
-                    f"Neither endpoints.py nor endpoints.toml found at {endpoints_path_obj}"
-                )
-        else:
-            endpoints_file = endpoints_path_obj
+        endpoints_file = resolve_endpoints_file(endpoints_path)
+        if endpoints_file is None:
+            raise ImportError(
+                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
+            )
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
@@ -492,12 +495,6 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    client: ClientConfig | list[ClientConfig]
-    if config.client_config.endpoint_configs:
-        client = config.client_config.endpoint_configs
-    else:
-        client = config.client_config
-
     # start env server as sidecar process
     try:
         await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
@@ -525,7 +522,7 @@ async def run_evaluation(
                 )
 
         outputs = await vf_env.evaluate(
-            client=client,
+            client=config.client_config,
             model=config.model,
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,

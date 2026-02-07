@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import ClientConfig
-from verifiers.utils.client_utils import setup_client
+from verifiers.utils.client_utils import resolve_client_config, setup_client
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -115,12 +115,7 @@ class EnvServer(ABC):
         return RunRolloutResponse(output=output)
 
     async def _handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
-        if isinstance(request.client_config, list):
-            client = await asyncio.gather(
-                *[self._resolve_client(config) for config in request.client_config]
-            )
-        else:
-            client = await self._resolve_client(request.client_config)
+        client = await self._resolve_client(request.client_config)
         outputs = await self.env.run_group(
             group_inputs=request.group_inputs,
             client=client,
@@ -132,9 +127,15 @@ class EnvServer(ABC):
         return RunGroupResponse(outputs=outputs)
 
     async def _resolve_client(self, client_config: ClientConfig) -> AsyncOpenAI:
-        client_key = client_config.model_dump_json()
+        resolved_client_config = resolve_client_config(client_config)
+        client_key = resolved_client_config.model_dump_json()
         if client_key in self.clients:
             return self.clients[client_key]
-        client = setup_client(client_config)
+        client = setup_client(resolved_client_config)
         self.clients[client_key] = client
         return client
+
+    async def _close_cached_clients(self) -> None:
+        for client in self.clients.values():
+            await client.close()
+        self.clients.clear()

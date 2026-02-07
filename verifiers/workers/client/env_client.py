@@ -7,6 +7,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -25,10 +26,9 @@ class EnvClient(ABC):
         self.address = address
 
     @staticmethod
-    def _request_timeout(client_config: ClientConfig | list[ClientConfig]) -> float:
-        if isinstance(client_config, list):
-            return max(1.0, max(config.timeout for config in client_config))
-        return max(1.0, client_config.timeout)
+    def _request_timeout(client_config: ClientConfig) -> float:
+        resolved_client_config = resolve_client_config(client_config)
+        return max(1.0, resolved_client_config.timeout)
 
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
@@ -44,9 +44,10 @@ class EnvClient(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
     ) -> RolloutOutput:
+        resolved_client_config = resolve_client_config(client_config)
         request = RunRolloutRequest(
             input=input,
-            client_config=client_config,
+            client_config=resolved_client_config,
             model=model,
             sampling_args=sampling_args,
             max_retries=max_retries,
@@ -54,7 +55,7 @@ class EnvClient(ABC):
         )
         response = await self.handle_run_rollout_request(
             request,
-            timeout=self._request_timeout(client_config),
+            timeout=self._request_timeout(resolved_client_config),
         )
         assert response.output is not None
         return response.output
@@ -62,15 +63,16 @@ class EnvClient(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client_config: ClientConfig | list[ClientConfig],
+        client_config: ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
     ) -> list[RolloutOutput]:
+        resolved_client_config = resolve_client_config(client_config)
         request = RunGroupRequest(
             group_inputs=group_inputs,
-            client_config=client_config,
+            client_config=resolved_client_config,
             model=model,
             sampling_args=sampling_args,
             max_retries=max_retries,
@@ -78,7 +80,7 @@ class EnvClient(ABC):
         )
         response = await self.handle_run_group_request(
             request,
-            timeout=self._request_timeout(client_config),
+            timeout=self._request_timeout(resolved_client_config),
         )
         assert response.outputs is not None
         return response.outputs

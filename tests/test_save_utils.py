@@ -158,28 +158,6 @@ class TestSavingMetadata:
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
         )
 
-    def test_generate_outputs_builder_serializes_client_config_list_base_url(self):
-        clients = [
-            ClientConfig(api_base_url="http://localhost:8000/v1"),
-            ClientConfig(api_base_url="http://localhost:8001/v1"),
-        ]
-        builder = GenerateOutputsBuilder(
-            env_id="test-env",
-            env_args={},
-            model="test-model",
-            client=clients,
-            num_examples=1,
-            rollouts_per_example=1,
-            state_columns=[],
-            sampling_args={},
-            results_path=Path("/tmp/test-results"),
-        )
-        metadata = builder.build_metadata()
-        assert isinstance(metadata["base_url"], str)
-        assert (
-            metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
-        )
-
 
 class TestSavingResults:
     def test_extract_usage_tokens_prompt_completion(self):

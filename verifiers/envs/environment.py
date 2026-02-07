@@ -29,7 +29,11 @@ from typing import (
 
 from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
 
-from verifiers.utils.client_utils import setup_client
+from verifiers.utils.client_utils import (
+    resolve_client_config,
+    resolve_client_configs,
+    setup_client,
+)
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.worker_utils import get_free_port
@@ -148,7 +152,6 @@ class Environment(ABC):
 
         self.env_client: EnvClient | None = None
         self.env_server_process: Process | None = None
-        self._local_clients: dict[str, AsyncOpenAI] = {}
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -765,14 +768,6 @@ class Environment(ABC):
         state["timing"]["generation_ms"] = (end_time - start_time) * 1000
         state["timing"]["total_ms"] = (end_time - start_time) * 1000
 
-    def _resolve_local_client(self, client: AsyncOpenAI | ClientConfig) -> AsyncOpenAI:
-        if not isinstance(client, ClientConfig):
-            return cast(AsyncOpenAI, client)
-        client_key = client.model_dump_json()
-        if client_key not in self._local_clients:
-            self._local_clients[client_key] = setup_client(client)
-        return self._local_clients[client_key]
-
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
         """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
@@ -795,17 +790,33 @@ class Environment(ABC):
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
         if self.env_client is not None:  # in server mode
-            if not isinstance(client, ClientConfig):
+            if resolved_client_config is None:
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
             return await self.env_client.run_rollout(
-                input, client, model, sampling_args, max_retries, state_columns
+                input,
+                resolved_client_config,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
             )
 
+        local_client: AsyncOpenAI
+        owned_local_client: AsyncOpenAI | None = None
+        if resolved_client_config is not None:
+            owned_local_client = setup_client(resolved_client_config)
+            local_client = owned_local_client
+        else:
+            local_client = cast(AsyncOpenAI, client)
+
         async def run_rollout_attempt() -> State:
-            local_client = self._resolve_local_client(client)
             state = await self.rollout(input, local_client, model, sampling_args)
 
             if self.score_rollouts:
@@ -815,7 +826,11 @@ class Environment(ABC):
 
             return state
 
-        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        try:
+            state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        finally:
+            if owned_local_client is not None:
+                await owned_local_client.close()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -823,7 +838,7 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI | ClientConfig | list[AsyncOpenAI] | list[ClientConfig],
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -832,46 +847,36 @@ class Environment(ABC):
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
 
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
         if self.env_client is not None:  # in server mode
-            server_client: ClientConfig | list[ClientConfig]
-            if isinstance(client, list):
-                if not all(isinstance(c, ClientConfig) for c in client):
-                    raise ValueError(
-                        "client list must contain only ClientConfig in server mode"
-                    )
-                server_client = cast(list[ClientConfig], client)
-            elif not isinstance(client, ClientConfig):
+            if resolved_client_config is None:
                 raise ValueError(
-                    f"client must be have type ClientConfig or list[ClientConfig] in server mode, got {type(client)}"
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            else:
-                server_client = client
             return await self.env_client.run_group(
                 group_inputs,
-                server_client,
+                resolved_client_config,
                 model,
                 sampling_args,
                 max_retries,
                 state_columns,
             )
 
-        async def run_group_attempt() -> list[State]:
-            if isinstance(client, list):
-                local_client_inputs = cast(list[AsyncOpenAI | ClientConfig], client)
-                if len(client) != len(group_inputs):
-                    raise ValueError(
-                        "client list length must match group_inputs length in local mode"
-                    )
-                local_clients = [
-                    self._resolve_local_client(c) for c in local_client_inputs
-                ]
-            else:
-                local_client = self._resolve_local_client(client)
-                local_clients = [local_client] * len(group_inputs)
+        local_client: AsyncOpenAI
+        owned_local_client: AsyncOpenAI | None = None
+        if resolved_client_config is not None:
+            owned_local_client = setup_client(resolved_client_config)
+            local_client = owned_local_client
+        else:
+            local_client = cast(AsyncOpenAI, client)
 
+        async def run_group_attempt() -> list[State]:
             rollout_tasks = [
                 self.rollout(input, local_client, model, sampling_args)
-                for input, local_client in zip(group_inputs, local_clients)
+                for input in group_inputs
             ]
             group_states = await asyncio.gather(*rollout_tasks)
 
@@ -881,7 +886,13 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
             return group_states
 
-        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        try:
+            group_states = await maybe_retry(
+                run_group_attempt, max_retries=max_retries
+            )()
+        finally:
+            if owned_local_client is not None:
+                await owned_local_client.close()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -890,7 +901,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | ClientConfig | list[ClientConfig],
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -909,8 +920,7 @@ class Environment(ABC):
         Generate rollouts for a set of inputs.
 
         Args:
-            client: Can be a single AsyncOpenAI client, a ClientConfig, or
-                list[ClientConfig] for round-robin distribution across endpoints.
+            client: Can be a single AsyncOpenAI client or a ClientConfig.
         """
         from datasets import Dataset
         from tqdm import tqdm
@@ -1007,152 +1017,168 @@ class Environment(ABC):
         )
 
         single_client: AsyncOpenAI | None = None
-        endpoint_clients: list[ClientConfig] = []
+        endpoint_client_configs: list[ClientConfig] = []
         endpoint_client_idx = 0
-        if isinstance(client, list):
-            if not client:
-                raise ValueError("client list cannot be empty")
-            if not all(isinstance(c, ClientConfig) for c in client):
-                raise ValueError("client list must contain only ClientConfig")
-            endpoint_clients = cast(list[ClientConfig], client)
-        elif isinstance(client, ClientConfig):
-            endpoint_clients = (
-                client.endpoint_configs if client.endpoint_configs else [client]
-            )
-            if not all(isinstance(c, ClientConfig) for c in endpoint_clients):
-                raise ValueError(
-                    "client.endpoint_configs must contain only ClientConfig"
-                )
+        if isinstance(client, ClientConfig):
+            endpoint_client_configs = resolve_client_configs(client)
         else:
             # AsyncOpenAI path
             single_client = client
 
+        local_endpoint_clients: list[AsyncOpenAI] = []
+        if self.env_client is None and endpoint_client_configs:
+            local_endpoint_clients = [
+                setup_client(endpoint_config)
+                for endpoint_config in endpoint_client_configs
+            ]
+
         def get_client_for_group() -> AsyncOpenAI | ClientConfig:
-            """Get next client config in round-robin order or return single client."""
+            """Get next client in round-robin order or return the single client."""
             nonlocal endpoint_client_idx
-            if endpoint_clients:
-                config = endpoint_clients[endpoint_client_idx % len(endpoint_clients)]
+            if self.env_client is not None and endpoint_client_configs:
+                config = endpoint_client_configs[
+                    endpoint_client_idx % len(endpoint_client_configs)
+                ]
                 endpoint_client_idx += 1
                 return config
+            if local_endpoint_clients:
+                local_client = local_endpoint_clients[
+                    endpoint_client_idx % len(local_endpoint_clients)
+                ]
+                endpoint_client_idx += 1
+                return local_client
             assert single_client is not None
             return single_client
 
-        # load existing results if available
-        if results_path is not None and is_valid_eval_results_path(results_path):
-            validate_resume_metadata(
-                results_path=results_path,
-                env_id=self.env_id,
-                model=model,
-                num_examples=num_examples,
-                rollouts_per_example=rollouts_per_example,
-            )
-            on_log(f"Resuming evaluation from {results_path}")
-            outputs = load_outputs(results_path)
-            builder.add_outputs(outputs)
-            filtered_inputs = filter_inputs(raw_inputs, outputs, rollouts_per_example)
-            if not filtered_inputs:
-                on_log("No remaining rollouts to evaluate, returning completed outputs")
-                return builder.build(sort_by_example_id=True)
-            on_log(
-                f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
-            )
-        else:
-            filtered_inputs = raw_inputs
-
-        if save_results:
-            on_log(f"Saving results to {builder.results_path}")
-
-        # create tasks based on mode
-        tasks: dict[asyncio.Task, int] = {}
-        if independent_scoring:
-            on_start(raw_inputs, filtered_inputs)
-            for i, rollout_input in enumerate(filtered_inputs):
-                task = asyncio.create_task(
-                    with_sem(
-                        sem,
-                        self.run_rollout(
-                            rollout_input,
-                            get_client_for_group(),
-                            model,
-                            sampling_args,
-                            max_retries=max_retries,
-                            state_columns=state_columns,
-                        ),
-                    ),
-                )
-                tasks[task] = i
-        else:
-            group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
-            for rollout_input in filtered_inputs:
-                example_id = rollout_input["example_id"]
-                group_inputs[example_id].append(rollout_input)
-            filtered_group_inputs = list(group_inputs.values())
-            on_start(raw_inputs, filtered_group_inputs)
-
-            for i, group_input in enumerate(filtered_group_inputs):
-                # For grouped scoring, keep each group on one endpoint so
-                # rollouts in the same group can benefit from shared KV cache.
-                group_client: (
-                    AsyncOpenAI | ClientConfig | list[AsyncOpenAI] | list[ClientConfig]
-                ) = get_client_for_group()
-                task = asyncio.create_task(
-                    with_sem(
-                        sem,
-                        self.run_group(
-                            group_input,
-                            group_client,
-                            model,
-                            sampling_args,
-                            max_retries=max_retries,
-                            state_columns=state_columns,
-                        ),
-                    ),
-                )
-                tasks[task] = i
-
         try:
-            for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
+            # load existing results if available
+            if results_path is not None and is_valid_eval_results_path(results_path):
+                validate_resume_metadata(
+                    results_path=results_path,
+                    env_id=self.env_id,
+                    model=model,
+                    num_examples=num_examples,
+                    rollouts_per_example=rollouts_per_example,
+                )
+                on_log(f"Resuming evaluation from {results_path}")
+                outputs = load_outputs(results_path)
+                builder.add_outputs(outputs)
+                filtered_inputs = filter_inputs(
+                    raw_inputs, outputs, rollouts_per_example
+                )
+                if not filtered_inputs:
+                    on_log(
+                        "No remaining rollouts to evaluate, returning completed outputs"
+                    )
+                    return builder.build(sort_by_example_id=True)
+                on_log(
+                    f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
+                )
+            else:
+                filtered_inputs = raw_inputs
 
-                # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
-                new_outputs = [result] if independent_scoring else result
-                builder.add_outputs(new_outputs)
-                metadata = builder.build_metadata()
+            if save_results:
+                on_log(f"Saving results to {builder.results_path}")
 
-                on_progress(builder.outputs, new_outputs, metadata)
+            tasks: dict[asyncio.Task, int] = {}
+            try:
+                # create tasks based on mode
+                if independent_scoring:
+                    on_start(raw_inputs, filtered_inputs)
+                    for i, rollout_input in enumerate(filtered_inputs):
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_rollout(
+                                    rollout_input,
+                                    get_client_for_group(),
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+                else:
+                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+                    for rollout_input in filtered_inputs:
+                        example_id = rollout_input["example_id"]
+                        group_inputs[example_id].append(rollout_input)
+                    filtered_group_inputs = list(group_inputs.values())
+                    on_start(raw_inputs, filtered_group_inputs)
 
-                # incrementally save outputs
-                if save_results:
-                    save_new_outputs(new_outputs, builder.results_path)
-                    save_metadata(metadata, builder.results_path)
+                    for i, group_input in enumerate(filtered_group_inputs):
+                        # For grouped scoring, keep each group on one endpoint so
+                        # rollouts in the same group can benefit from shared KV cache.
+                        group_client: AsyncOpenAI | ClientConfig = (
+                            get_client_for_group()
+                        )
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_group(
+                                    group_input,
+                                    group_client,
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+
+                for coro in asyncio.as_completed(tasks.keys()):
+                    result = await coro
+
+                    # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
+                    new_outputs = [result] if independent_scoring else result
+                    builder.add_outputs(new_outputs)
+                    metadata = builder.build_metadata()
+
+                    on_progress(builder.outputs, new_outputs, metadata)
+
+                    # incrementally save outputs
+                    if save_results:
+                        save_new_outputs(new_outputs, builder.results_path)
+                        save_metadata(metadata, builder.results_path)
+            finally:
+                # cancel all outstanding tasks and await their completion
+                pending = [task for task in tasks.keys() if not task.done()]
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            # build final results (sorted by example_id for deterministic ordering)
+            results = builder.build(sort_by_example_id=True)
+
+            # save if requested
+            if save_results:
+                save_outputs(results["outputs"], builder.results_path)
+                save_metadata(results["metadata"], builder.results_path)
+                if push_to_hf_hub:
+                    push_results_to_hf_hub(results, hf_hub_dataset_name)
+                if on_log is not None:
+                    on_log(
+                        f"Saved final results to {results['metadata']['path_to_save']}"
+                    )
+
+            return results
         finally:
-            # cancel all outstanding tasks and await their completion
-            pending = [task for task in tasks.keys() if not task.done()]
-            if pending:
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
             if pbar is not None:
                 pbar.close()
-
-        # build final results (sorted by example_id for deterministic ordering)
-        results = builder.build(sort_by_example_id=True)
-
-        # save if requested
-        if save_results:
-            save_outputs(results["outputs"], builder.results_path)
-            save_metadata(results["metadata"], builder.results_path)
-            if push_to_hf_hub:
-                push_results_to_hf_hub(results, hf_hub_dataset_name)
-            if on_log is not None:
-                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
-
-        return results
+            if local_endpoint_clients:
+                await asyncio.gather(
+                    *(client.close() for client in local_endpoint_clients),
+                    return_exceptions=True,
+                )
 
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI | ClientConfig | list[ClientConfig],
+        client: AsyncOpenAI | OpenAI | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1198,7 +1224,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI | ClientConfig | list[ClientConfig],
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1241,7 +1267,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI | ClientConfig | list[ClientConfig],
+        client: OpenAI | AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,

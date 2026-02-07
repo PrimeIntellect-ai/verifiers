@@ -21,6 +21,7 @@ from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
+    resolve_endpoints_file,
     run_evaluations,
     run_evaluations_tui,
 )
@@ -338,7 +339,10 @@ def main():
             raise ValueError("'endpoint_id' must be a string when provided.")
         if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
             raise ValueError("'endpoint_id' must be a non-empty string when provided.")
-        if raw_endpoint_id is not None and not str(endpoints_path).endswith(".toml"):
+        resolved_endpoints_file = resolve_endpoints_file(str(endpoints_path))
+        if raw_endpoint_id is not None and (
+            resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml"
+        ):
             raise ValueError(
                 "'endpoint_id' is only supported with TOML endpoint registries. "
                 "Set endpoints_path to an endpoints.toml file."
@@ -359,9 +363,11 @@ def main():
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         endpoint_group: list[dict[str, str]] | None = None
+        resolved_endpoint_id: str | None = None
 
         if endpoint_lookup_id in endpoints:
             endpoint_group = endpoints[endpoint_lookup_id]
+            resolved_endpoint_id = endpoint_lookup_id
             endpoint = endpoint_group[0]
 
             if api_key_override:
@@ -499,6 +505,7 @@ def main():
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             extra_env_kwargs=raw.get("extra_env_kwargs", {}),
+            endpoint_id=resolved_endpoint_id,
             model=model,
             client_config=client_config,
             sampling_args=merged_sampling_args,

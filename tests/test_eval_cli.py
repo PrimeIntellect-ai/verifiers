@@ -239,6 +239,7 @@ def test_cli_model_flag_resolves_endpoint_alias_when_registry_present(
     )
 
     config = captured["configs"][0]
+    assert config.endpoint_id == "gpt-4.1-mini"
     assert config.model == "openai/gpt-4.1-mini"
     assert config.client_config.api_key_var == "ALIAS_API_KEY"
     assert config.client_config.api_base_url == "https://alias.example/v1"
@@ -256,6 +257,7 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     )
 
     config = captured["configs"][0]
+    assert config.endpoint_id is None
     assert config.model == "my/custom-model"
     assert config.client_config.api_key_var == "CUSTOM_API_KEY"
     assert config.client_config.api_base_url == "https://custom.example/v1"
@@ -319,6 +321,7 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
         )
 
     config = captured["configs"][0]
+    assert config.endpoint_id == "gpt-5-mini"
     assert config.model == "gpt-5-mini"
     assert config.client_config.api_key_var == "OPENAI_API_KEY"
     assert config.client_config.api_base_url == "https://a.example/v1"
@@ -326,6 +329,46 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
         "https://a.example/v1",
         "https://b.example/v1",
     ]
+
+
+def test_cli_endpoint_id_accepts_directory_endpoints_path(monkeypatch, run_cli):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        endpoints_file = Path(tmp_dir) / "endpoints.toml"
+        endpoints_file.write_text(
+            (
+                "[[endpoint]]\n"
+                'endpoint_id = "gpt-5-mini"\n'
+                'model = "gpt-5-mini"\n'
+                'url = "https://a.example/v1"\n'
+                'key = "OPENAI_API_KEY"\n'
+            ),
+            encoding="utf-8",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+            f.write(
+                f'endpoints_path = "{tmp_dir}"\n\n'
+                '[[eval]]\nenv_id = "env1"\nendpoint_id = "gpt-5-mini"\n'
+            )
+            f.flush()
+            captured = run_cli(
+                monkeypatch,
+                {
+                    "env_id_or_config": f.name,
+                },
+                endpoints={
+                    "gpt-5-mini": [
+                        {
+                            "model": "gpt-5-mini",
+                            "url": "https://a.example/v1",
+                            "key": "OPENAI_API_KEY",
+                        }
+                    ]
+                },
+            )
+
+    config = captured["configs"][0]
+    assert config.model == "gpt-5-mini"
+    assert config.client_config.api_base_url == "https://a.example/v1"
 
 
 def test_cli_endpoint_id_not_found_raises(monkeypatch, run_cli):
