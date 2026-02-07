@@ -151,7 +151,9 @@ class TestSavingMetadata:
         )
         metadata = builder.build_metadata()
         assert isinstance(metadata["base_url"], str)
-        assert metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        assert (
+            metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        )
 
     def test_generate_outputs_builder_serializes_client_pool_base_url(self):
         pool = ClientPool.from_urls(
@@ -170,7 +172,9 @@ class TestSavingMetadata:
         )
         metadata = builder.build_metadata()
         assert isinstance(metadata["base_url"], str)
-        assert metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        assert (
+            metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        )
 
 
 class TestSavingResults:

@@ -56,7 +56,9 @@ async def test_run_rollout_uses_client_timeout(make_input, make_output):
 
 
 @pytest.mark.asyncio
-async def test_run_group_uses_max_timeout_across_client_configs(make_input, make_output):
+async def test_run_group_uses_max_timeout_across_client_configs(
+    make_input, make_output
+):
     client = RecordingEnvClient(output=make_output())
     configs = [
         ClientConfig(api_base_url="http://localhost:8000/v1", timeout=8.0),
