@@ -122,7 +122,6 @@ class ZMQEnvClient(EnvClient):
     async def _start(self):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.socket.connect(self.address)
-        self.logger.debug("ZMQ client started")
 
     async def _send_request(
         self,
@@ -154,19 +153,22 @@ class ZMQEnvClient(EnvClient):
 
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
-        try:
-            raw_response = await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            self.pending.pop(request_id, None)
-            raise TimeoutError(
-                f"Environment timeout for {request.request_type} request after {timeout}s"
-            )
+        if timeout is not None:
+            try:
+                raw_response = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                self.pending.pop(request_id, None)
+                raise TimeoutError(
+                    f"Environment timeout for {request.request_type} request after {timeout}s"
+                )
+        else:
+            raw_response = await future
 
         # validate response with Pydantic
         response = response_type.model_validate(raw_response)
 
         if not response.success:
-            raise RuntimeError(f"Server error: {response.error}")
+            raise RuntimeError(response.error)
 
         return response
 
@@ -187,4 +189,3 @@ class ZMQEnvClient(EnvClient):
         # Close socket and terminate context
         self.socket.close()
         self.ctx.term()
-        self.logger.debug("ZMQ client closed")
