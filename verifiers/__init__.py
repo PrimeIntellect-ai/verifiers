@@ -55,8 +55,10 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Actor",
     "Environment",
     "MultiTurnEnv",
+    "MultiAgentEnv",
     "SingleTurnEnv",
     "PythonEnv",
     "SandboxEnv",
@@ -110,6 +112,8 @@ _LAZY_IMPORTS = {
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
     "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
+    "Actor": "verifiers.envs.actor:Actor",
+    "MultiAgentEnv": "verifiers.envs.multiagent_env:MultiAgentEnv",
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
@@ -173,8 +177,10 @@ if TYPE_CHECKING:
         OpenAIChatCompletionsTokenClient,
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .envs.actor import Actor  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
+    from .envs.multiagent_env import MultiAgentEnv  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
