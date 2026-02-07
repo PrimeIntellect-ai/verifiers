@@ -453,8 +453,7 @@ class RLTrainer(Trainer):
                     for c in textual_logs["completion"]
                 ]
                 table = {
-                    "step": [str(self.state.global_step)]
-                    * len(textual_logs["prompt"]),
+                    "step": [str(self.state.global_step)] * len(textual_logs["prompt"]),
                     "prompt": prompts_clean,
                     "completion": completions_clean,
                     **{k: list(v) for k, v in rewards_map.items()},
