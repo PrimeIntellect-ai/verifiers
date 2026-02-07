@@ -1608,6 +1608,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
                     if chunk:
                         chunks.append(chunk)
                         continue
+                    if not chunks:
+                        time.sleep(0.01)
+                        continue
                     break
             finally:
                 os.close(res_fd)
@@ -2387,6 +2390,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             chunk = os.read(res_fd, 4096)
             if chunk:
                 chunks.append(chunk)
+                continue
+            if not chunks:
+                time.sleep(0.01)
                 continue
             break
     finally:
