@@ -35,9 +35,15 @@ def make_reflection_lm(
     """
     import os
 
+    base_url = client_config.api_base_url
+    if isinstance(base_url, list):
+        if not base_url:
+            raise ValueError("client_config.api_base_url must not be an empty list")
+        base_url = base_url[0]
+
     client = OpenAI(
         api_key=os.environ.get(client_config.api_key_var, ""),
-        base_url=client_config.api_base_url,
+        base_url=base_url,
         timeout=client_config.timeout,
         max_retries=client_config.max_retries,
     )

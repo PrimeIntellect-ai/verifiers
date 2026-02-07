@@ -315,7 +315,12 @@ class EvalDisplay(BaseDisplay):
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
-        config_line.append(config.client_config.api_base_url, style="white")
+        api_base_url = config.client_config.api_base_url
+        if isinstance(api_base_url, list):
+            api_base_url_text = ", ".join(api_base_url)
+        else:
+            api_base_url_text = api_base_url
+        config_line.append(api_base_url_text, style="white")
         config_line.append("  |  ", style="dim")
         config_line.append(str(env_state.num_examples), style="white")
         config_line.append("x", style="white")

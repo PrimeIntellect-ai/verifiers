@@ -834,26 +834,38 @@ class Environment(ABC):
         """Generate and, optionally, score one group."""
 
         if self.env_client is not None:  # in server mode
+            server_client: ClientConfig | list[ClientConfig]
             if isinstance(client, list):
                 if not all(isinstance(c, ClientConfig) for c in client):
                     raise ValueError(
                         "client list must contain only ClientConfig in server mode"
                     )
+                server_client = cast(list[ClientConfig], client)
             elif not isinstance(client, ClientConfig):
                 raise ValueError(
                     f"client must be have type ClientConfig or list[ClientConfig] in server mode, got {type(client)}"
                 )
+            else:
+                server_client = client
             return await self.env_client.run_group(
-                group_inputs, client, model, sampling_args, max_retries, state_columns
+                group_inputs,
+                server_client,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
             )
 
         async def run_group_attempt() -> list[State]:
             if isinstance(client, list):
+                local_client_inputs = cast(list[AsyncOpenAI | ClientConfig], client)
                 if len(client) != len(group_inputs):
                     raise ValueError(
                         "client list length must match group_inputs length in local mode"
                     )
-                local_clients = [self._resolve_local_client(c) for c in client]
+                local_clients = [
+                    self._resolve_local_client(c) for c in local_client_inputs
+                ]
             else:
                 local_client = self._resolve_local_client(client)
                 local_clients = [local_client] * len(group_inputs)
@@ -998,19 +1010,22 @@ class Environment(ABC):
 
         # Normalize client to ClientPool for uniform handling
         # This enables round-robin across multiple servers when ClientPool is provided
+        single_client: AsyncOpenAI | None = None
         if isinstance(client, ClientPool):
             client_pool = client
         elif isinstance(client, ClientConfig):
             client_pool = ClientPool.from_config(client)
         else:
-            # AsyncOpenAI - wrap in single-config pool
-            client_pool = None  # Use client directly (legacy path)
+            # AsyncOpenAI path
+            client_pool = None
+            single_client = client
 
         def get_client_for_group() -> AsyncOpenAI | ClientConfig:
             """Get next client config (round-robin) or return single client."""
             if client_pool is not None:
                 return client_pool.get_next_config()
-            return client
+            assert single_client is not None
+            return single_client
 
         # load existing results if available
         if results_path is not None and is_valid_eval_results_path(results_path):
@@ -1068,10 +1083,7 @@ class Environment(ABC):
                 # For grouped scoring, keep each group on one endpoint so
                 # rollouts in the same group can benefit from shared KV cache.
                 group_client: (
-                    AsyncOpenAI
-                    | ClientConfig
-                    | list[AsyncOpenAI]
-                    | list[ClientConfig]
+                    AsyncOpenAI | ClientConfig | list[AsyncOpenAI] | list[ClientConfig]
                 ) = get_client_for_group()
                 task = asyncio.create_task(
                     with_sem(
@@ -1130,7 +1142,7 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI | ClientConfig,
+        client: AsyncOpenAI | OpenAI | ClientConfig | "ClientPool",
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1176,7 +1188,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI | ClientConfig,
+        client: AsyncOpenAI | ClientConfig | "ClientPool",
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1219,7 +1231,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI | ClientConfig,
+        client: OpenAI | AsyncOpenAI | ClientConfig | "ClientPool",
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
