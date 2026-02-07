@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Tests for bug fixes in the unified event system.
 
-Tests for two specific bugs:
+Tests for three specific bugs:
 1. Server mode bypass in grouped scoring path
 2. Missing documentation (tested manually)
+3. Intermediate SaveEvent never emitted
 
 Also includes coverage tests for correct num_examples calculation.
 """
@@ -321,6 +322,92 @@ class TestNumExamplesCalculation:
         assert start_event["num_examples"] == 2
         assert start_event["rollouts_per_example"] == 3
         assert start_event["total_rollouts"] == 6
+
+
+class TestBugFix3IntermediateSaveEvents:
+    """Test for Bug 3: Intermediate SaveEvent never emitted.
+
+    The generate() method performs incremental saves but was not emitting
+    SaveEvent with is_intermediate=True, making the TUI save handler dead code.
+    """
+
+    @pytest.mark.asyncio
+    async def test_intermediate_save_events_emitted(self, tmp_path):
+        """Test that intermediate SaveEvents are emitted during incremental saves."""
+        # Create a dataset with 3 examples
+        dataset = Dataset.from_dict({
+            "prompt": ["Q1?", "Q2?", "Q3?"]
+        })
+
+        # Simple reward function
+        def always_correct(prompt, completion, **kwargs):
+            return 1.0
+
+        rubric = vf.Rubric(funcs=[always_correct])
+        env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
+
+        # Mock client
+        class MockClient:
+            async def chat(self, *args, **kwargs):
+                class MockResponse:
+                    choices = [
+                        type(
+                            "Choice",
+                            (),
+                            {
+                                "message": type(
+                                    "Message", (), {"content": "answer", "role": "assistant"}
+                                )(),
+                                "finish_reason": "stop",
+                            },
+                        )()
+                    ]
+                    usage = type("Usage", (), {"prompt_tokens": 10, "completion_tokens": 5})()
+
+                return MockResponse()
+
+        mock_client = type("MockClient", (), {"chat": MockClient().chat})()
+
+        collector = EventCollector()
+
+        # Run evaluation with save_results=True to trigger incremental saves
+        results_path = tmp_path / "test_results.jsonl"
+        results = await env.evaluate(
+            client=mock_client,
+            model="test-model",
+            num_examples=3,
+            rollouts_per_example=1,
+            save_results=True,
+            results_path=results_path,
+            on_event=collector,
+        )
+
+        # Get all SaveEvents
+        save_events = [e for e in collector.events if e["type"] == "save"]
+
+        # Should have at least 2 save events: intermediate saves + final save
+        assert len(save_events) >= 2, f"Expected at least 2 SaveEvents, got {len(save_events)}"
+
+        # Check that some are intermediate and one is final
+        intermediate_saves = [e for e in save_events if e["is_intermediate"]]
+        final_saves = [e for e in save_events if not e["is_intermediate"]]
+
+        assert len(intermediate_saves) >= 1, "Should have at least 1 intermediate SaveEvent"
+        assert len(final_saves) == 1, "Should have exactly 1 final SaveEvent"
+
+        # Verify intermediate saves have correct structure
+        for event in intermediate_saves:
+            assert event["type"] == "save"
+            assert event["is_intermediate"] is True
+            assert "path" in event
+            assert "output_count" in event
+            assert event["output_count"] > 0
+
+        # Verify final save has correct structure
+        final_event = final_saves[0]
+        assert final_event["type"] == "save"
+        assert final_event["is_intermediate"] is False
+        assert final_event["output_count"] == 3
 
 
 if __name__ == "__main__":

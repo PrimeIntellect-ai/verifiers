@@ -1117,6 +1117,15 @@ class Environment(ABC):
                     save_new_outputs(new_outputs, builder.results_path)
                     metadata = builder.build_metadata()
                     save_metadata(metadata, builder.results_path)
+                    await self._emit_event(
+                        SaveEvent(
+                            type="save",
+                            path=builder.results_path,
+                            is_intermediate=True,
+                            output_count=len(builder.outputs),
+                        ),
+                        on_event,
+                    )
         finally:
             # cancel all outstanding tasks and await their completion
             pending = [task for task in tasks.keys() if not task.done()]

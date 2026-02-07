@@ -97,7 +97,7 @@ Standalone executable script with realistic integration scenarios:
 
 ### Integration Testing
 - [x] All existing tests pass when running `uv run pytest` locally (514 tests pass, 4 skipped external env tests)
-- [x] New tests have been added to cover the changes (10 unit + 4 e2e + 5 bugfix + 2 immutability = 21 event system tests)
+- [x] New tests have been added to cover the changes (10 unit + 4 e2e + 6 bugfix + 2 immutability = 22 event system tests)
 - [x] Verified with real `vf-eval` command - progress bar and TUI work correctly
 
 ### Manual Testing
@@ -121,7 +121,7 @@ Evaluation completed in 1.94 seconds
 
 ## Bug Fixes (Post-Review)
 
-Five issues were identified during code review and have been fixed:
+Six issues were identified during code review and have been fixed:
 
 ### 1. Server Mode Bypass (HIGH Priority)
 **Problem:** When `independent_scoring=False`, grouped scoring bypassed the server mode dispatch in `run_group()`, causing failures in server mode.
@@ -133,21 +133,26 @@ Five issues were identified during code review and have been fixed:
 
 **Fix:** Added comprehensive event type documentation to `docs/reference.md` and usage examples to `docs/evaluation.md`.
 
-**Test Coverage:** Added `tests/test_bugfix_event_system.py` with 5 tests covering server mode handling and num_examples calculation (the existing `len(set([example_id]))` logic was already correct).
+**Test Coverage:** Added `tests/test_bugfix_event_system.py` with 6 tests covering server mode handling, num_examples calculation, and intermediate save events.
 
-### 3. Mutable Reference in Events (MEDIUM Priority)
+### 3. Intermediate SaveEvent Never Emitted (MEDIUM Priority)
+**Problem:** The `generate()` method performed incremental saves after each completed task but never emitted SaveEvent with `is_intermediate=True`. The only SaveEvent emitted was for the final save with `is_intermediate=False`. This made the TUI handler's `case "save"` block dead code, since it only acts when `event["is_intermediate"]` is True.
+
+**Fix:** Emit SaveEvent with `is_intermediate=True` after each incremental save in the main task loop. Now the TUI correctly displays checkpoint messages.
+
+### 4. Mutable Reference in Events (MEDIUM Priority)
 **Problem:** ProgressEvent and GroupCompleteEvent stored direct references to mutable lists (`builder.outputs`, `states`, `new_outputs`). When events were stored (e.g., in EventCollector), the lists would silently grow as more results were added, making `all_outputs` misleading.
 
 **Fix:** Copy all list references when creating events: `list(builder.outputs)`, `list(states)`, `list(new_outputs)`.
 
 **Test Coverage:** Added `tests/test_event_immutability.py` with 2 tests verifying events don't mutate after emission.
 
-### 4. Unnecessary O(N²) Event Construction (MEDIUM Priority)
+### 5. Unnecessary O(N²) Event Construction (MEDIUM Priority)
 **Problem:** Changed `elif on_progress is not None:` to bare `else:`, which unconditionally creates ProgressEvent objects (including expensive list copies) even when `on_event=None`. This causes O(N²) allocations affecting production code like GEPA.
 
 **Fix:** Use `elif on_event is not None:` to skip event construction when no handler is registered, matching the original callback pattern's performance characteristics.
 
-### 5. Unused Parameter (LOW Priority)
+### 6. Unused Parameter (LOW Priority)
 **Problem:** `configured_rollouts_per_example` parameter was added to `generate()` but never used. The existing `len(set([example_id]))` logic already correctly calculates num_examples.
 
 **Fix:** Removed the unused parameter. The existing implementation is correct.
