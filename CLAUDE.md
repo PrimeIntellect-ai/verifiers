@@ -1,3 +1,5 @@
 # CLAUDE.md
 
-Before beginning any user tasks, please refer to `AGENTS.md` and follow all relevant guidelines, and view `environments/AGENTS.md` for information on building environments with `verifiers`. Treat all `AGENTS.md` files as equivalent to `CLAUDE.md` files.
+<!-- Generated for repository development workflows. Do not edit directly. -->
+
+Before beginning work in this repository, read `AGENTS.md` and follow all scoped AGENTS guidance.

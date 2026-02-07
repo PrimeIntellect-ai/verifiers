@@ -21,13 +21,13 @@ ENDPOINTS_DST = "configs/endpoints.py"
 ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
 ZERO3_DST = "configs/zero3.yaml"
 
-AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/AGENTS.md"
+AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/AGENTS.md"
 AGENTS_MD_DST = "AGENTS.md"
 
-CLAUDE_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/CLAUDE.md"
+CLAUDE_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/CLAUDE.md"
 CLAUDE_MD_DST = "CLAUDE.md"
 
-ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/environments/AGENTS.md"
+ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/environments/AGENTS.md"
 ENVS_AGENTS_MD_DST = "environments/AGENTS.md"
 
 VF_RL_CONFIGS = [
