@@ -93,7 +93,11 @@ class Rubric:
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
-        return [getattr(func, "__name__", repr(func)) for func in self.funcs if not self._is_group_func(func)]
+        return [
+            getattr(func, "__name__", repr(func))
+            for func in self.funcs
+            if not self._is_group_func(func)
+        ]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
         return [func for func in self.funcs if not self._is_group_func(func)]
@@ -152,10 +156,17 @@ class Rubric:
 
     # group-level reward helpers
     def _get_group_reward_func_names(self) -> list[str]:
-        return [getattr(func, "__name__", repr(func)) for func in self.funcs if self._is_group_func(func)]
+        return [
+            getattr(func, "__name__", repr(func))
+            for func in self.funcs
+            if self._is_group_func(func)
+        ]
 
     def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
-        return cast(list[GroupRewardFunc], [func for func in self.funcs if self._is_group_func(func)])
+        return cast(
+            list[GroupRewardFunc],
+            [func for func in self.funcs if self._is_group_func(func)],
+        )
 
     def _get_group_reward_weights(self) -> list[float]:
         return [

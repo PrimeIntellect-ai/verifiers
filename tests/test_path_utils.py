@@ -12,12 +12,7 @@ def test_find_latest_incomplete_eval_results_path_picks_newest_matching(
 ):
     env_id = "dummy-env"
     model = "openai/gpt-4.1-mini"
-    runs_dir = (
-        tmp_path
-        / "outputs"
-        / "evals"
-        / f"{env_id}--{model.replace('/', '--')}"
-    )
+    runs_dir = tmp_path / "outputs" / "evals" / f"{env_id}--{model.replace('/', '--')}"
 
     old_run = runs_dir / "11111111"
     new_run = runs_dir / "22222222"

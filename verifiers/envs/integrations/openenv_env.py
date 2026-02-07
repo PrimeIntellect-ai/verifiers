@@ -139,7 +139,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             **kwargs,
         )
 
-
     def _resolve_openenv_project(self, openenv_project: str | Path | None) -> str:
         if openenv_project is not None:
             return str(openenv_project)
