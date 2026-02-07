@@ -67,6 +67,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_client_max_workers: int = 10,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_wait_for_creation_max_attempts: int = 120,
         **kwargs,
     ):
         super().__init__(max_turns=max_turns, message_type="chat", **kwargs)
@@ -79,6 +80,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             sandbox_client_max_workers=sandbox_client_max_workers,
             sandbox_client_max_connections=sandbox_client_max_connections,
             sandbox_client_max_keepalive_connections=sandbox_client_max_keepalive_connections,
+            sandbox_wait_for_creation_max_attempts=sandbox_wait_for_creation_max_attempts,
         )
         self.run_command = run_command
         self.poll_interval = poll_interval

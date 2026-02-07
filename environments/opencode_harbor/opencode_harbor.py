@@ -12,7 +12,7 @@ def _build_opencode_config(
     system_prompt_path: str | None = None,
 ) -> str:
     config: dict = {
-        "\\$schema": "https://opencode.ai/config.json",
+        "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
             "intercepted": {
                 "npm": "@ai-sdk/openai-compatible",
@@ -67,6 +67,10 @@ export PATH="$HOME/.opencode/bin:$PATH"
 
 # Create opencode config directory
 mkdir -p ~/.config/opencode
+
+# Preserve JSON schema key literal in unquoted heredoc while still expanding
+# OPENAI_BASE_URL.
+SCHEMA_DOLLAR='$'
 
 # Create opencode.json config
 cat > ~/.config/opencode/opencode.json << EOFCONFIG

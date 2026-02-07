@@ -25,8 +25,7 @@ class ConcreteMixin(SandboxMixin):
 
 @pytest.fixture
 def mixin():
-    with patch(f"{MODULE}.AsyncSandboxClient"):
-        obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
     obj.logger = MagicMock()
     obj.active_sandboxes = {"sb-existing"}
     return obj
@@ -36,8 +35,7 @@ def mixin():
 
 
 def test_init_creates_client_and_retry():
-    with patch(f"{MODULE}.AsyncSandboxClient"):
-        obj = ConcreteMixin(max_retries=1, base_delay=0.01)
+    obj = ConcreteMixin(max_retries=1, base_delay=0.01)
     assert isinstance(obj.active_sandboxes, set) and len(obj.active_sandboxes) == 0
     assert isinstance(obj.sandbox_client, ThreadedAsyncSandboxClient)
     assert callable(obj.with_retry)
@@ -57,6 +55,10 @@ def test_create_sandbox_success(mixin):
     assert result == "sb-1"
     assert state["sandbox_id"] == "sb-1"
     assert "sb-1" in mixin.active_sandboxes
+    mixin.sandbox_client.wait_for_creation.assert_called_once_with(
+        "sb-1",
+        max_attempts=120,
+    )
 
 
 def test_create_sandbox_creation_fails(mixin):
@@ -78,6 +80,25 @@ def test_create_sandbox_not_ready(mixin):
 
     # Sandbox was added before wait_for_creation, so it should still be tracked.
     assert "sb-2" in mixin.active_sandboxes
+
+
+def test_create_sandbox_wait_for_creation_respects_custom_attempts():
+    obj = ConcreteMixin(
+        max_retries=1,
+        base_delay=0.01,
+        sandbox_wait_for_creation_max_attempts=7,
+    )
+    obj.logger = MagicMock()
+    sandbox_obj = MagicMock(id="sb-custom")
+    obj.sandbox_client.create = AsyncMock(return_value=sandbox_obj)
+    obj.sandbox_client.wait_for_creation = AsyncMock()
+
+    asyncio.run(obj.create_sandbox({}, request=MagicMock()))
+
+    obj.sandbox_client.wait_for_creation.assert_called_once_with(
+        "sb-custom",
+        max_attempts=7,
+    )
 
 
 def test_create_sandbox_setup_fails(mixin):

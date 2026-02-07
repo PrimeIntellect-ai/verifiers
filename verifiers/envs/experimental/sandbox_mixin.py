@@ -1,14 +1,11 @@
 import asyncio
-import functools
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, cast
 
 import httpx
 import tenacity as tc
 from prime_sandboxes import (
-    AsyncSandboxClient,
     CommandTimeoutError,
     CreateSandboxRequest,
     SandboxClient,
@@ -18,10 +15,7 @@ from prime_sandboxes import (
 from prime_sandboxes.core import APIClient
 
 import verifiers as vf
-from verifiers.utils.thread_utils import (
-    get_or_create_thread_attr,
-    get_or_create_thread_loop,
-)
+from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 # Enable httpx debug logging if HTTPX_LOG_LEVEL is set
 _httpx_log_level = os.environ.get("HTTPX_LOG_LEVEL", "").upper()
@@ -41,59 +35,12 @@ class SandboxNotReadyError(vf.SandboxError): ...
 class SandboxSetupError(vf.SandboxError): ...
 
 
-class ThreadedAsyncSandboxClient:
-    """
-    Mirrors AsyncSandboxClient's interface but dispatches each method call to a
-    ThreadPoolExecutor where each thread maintains its own client via
-    thread-local storage.
-    """
-
-    def __init__(
-        self,
-        max_workers: int = 100,
-        max_connections: int = 100,
-        max_keepalive_connections: int = 50,
-        **client_kwargs,
-    ):
-        """Initialize the threaded sandbox client."""
-        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="sandbox-client-executor"
-        )
-        self.client_kwargs = {
-            "max_connections": max_connections,
-            "max_keepalive_connections": max_keepalive_connections,
-            **client_kwargs,
-        }
-
-    def __getattr__(self, name: str) -> Callable[..., Any]:
-        """Dynamically proxy attribute access to dispatch method calls to the thread pool."""
-
-        @functools.wraps(getattr(AsyncSandboxClient, name, lambda: None))
-        async def wrapper(*args, **kwargs):
-            def run_in_thread():
-                loop = get_or_create_thread_loop()
-                sandbox_client = get_or_create_thread_attr(
-                    "sandbox_client", AsyncSandboxClient, **self.client_kwargs
-                )
-                method = getattr(sandbox_client, name)
-                return loop.run_until_complete(method(*args, **kwargs))
-
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(self.executor, run_in_thread)
-
-        return wrapper
-
-    def teardown(self, wait: bool = True) -> None:
-        """Teardown the thread pool executor."""
-        self.executor.shutdown(wait=wait)
-
-
 class SandboxMixin:
     """Mixin providing sandbox lifecycle management with retry, tracking, and cleanup."""
 
     active_sandboxes: set[str]
     sandbox_client: ThreadedAsyncSandboxClient
+    sandbox_wait_for_creation_max_attempts: int
     with_retry: Callable
 
     def init_sandbox_client(
@@ -106,12 +53,16 @@ class SandboxMixin:
         sandbox_client_max_workers: int = 10,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
+        sandbox_wait_for_creation_max_attempts: int = 120,
     ):
         """Initialize sandbox client and retry wrapper. Call from subclass __init__."""
         self.logger = logging.getLogger(
             f"{self.__class__.__module__}.{self.__class__.__name__}"
         )
         self.active_sandboxes = set()
+        self.sandbox_wait_for_creation_max_attempts = (
+            sandbox_wait_for_creation_max_attempts
+        )
         self.sandbox_client = ThreadedAsyncSandboxClient(
             max_workers=sandbox_client_max_workers,
             max_connections=sandbox_client_max_connections,
@@ -150,7 +101,10 @@ class SandboxMixin:
         self.logger.debug(f"Created sandbox {sandbox.id}")
 
         try:
-            await self.sandbox_client.wait_for_creation(sandbox.id)
+            await self.sandbox_client.wait_for_creation(
+                sandbox.id,
+                max_attempts=self.sandbox_wait_for_creation_max_attempts,
+            )
         except Exception as e:
             raise SandboxNotReadyError(
                 f"Sandbox {sandbox.id} failed to become ready: {e}"
