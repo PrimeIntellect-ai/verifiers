@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "openai/gpt-4.1-mini"
 DEFAULT_ENV_DIR_PATH = "./environments"
-DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.py"
+DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
 DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
@@ -111,7 +111,7 @@ def main():
         "-e",
         type=str,
         default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints registry",
+        help="Path to API endpoints registry (.toml preferred, .py supported)",
     )
     parser.add_argument(
         "--model",
@@ -328,19 +328,61 @@ def main():
         endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
         endpoints = load_endpoints(endpoints_path)
 
-        raw_model = raw.get("model", DEFAULT_MODEL)
+        raw_endpoint_id = raw.get("endpoint_id")
+        raw_model_field = raw.get("model")
+        if raw_endpoint_id is not None and raw_model_field is not None:
+            raise ValueError(
+                "Cannot set both 'endpoint_id' and 'model' in eval config; choose one."
+            )
+        if raw_endpoint_id is not None and not isinstance(raw_endpoint_id, str):
+            raise ValueError("'endpoint_id' must be a string when provided.")
+        if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
+            raise ValueError("'endpoint_id' must be a non-empty string when provided.")
+        if raw_endpoint_id is not None and not str(endpoints_path).endswith(".toml"):
+            raise ValueError(
+                "'endpoint_id' is only supported with TOML endpoint registries. "
+                "Set endpoints_path to an endpoints.toml file."
+            )
+
+        raw_model = raw_model_field if raw_model_field is not None else DEFAULT_MODEL
+        endpoint_lookup_id = (
+            raw_endpoint_id if raw_endpoint_id is not None else raw_model
+        )
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
 
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
 
-        if raw_model in endpoints:
-            endpoint = endpoints[raw_model]
-            api_key_var = raw_api_key_var if api_key_override else endpoint["key"]
-            api_base_url = (
-                raw_api_base_url if api_base_url_override else endpoint["url"]
-            )
+        if endpoint_lookup_id in endpoints:
+            endpoint_group = endpoints[endpoint_lookup_id]
+            endpoint = endpoint_group[0]
+
+            if api_key_override:
+                api_key_var = raw_api_key_var
+            else:
+                endpoint_keys = {entry["key"] for entry in endpoint_group}
+                if len(endpoint_keys) > 1:
+                    raise ValueError(
+                        f"Endpoint alias '{endpoint_lookup_id}' maps to multiple API key vars {sorted(endpoint_keys)}, "
+                        "which is not yet supported by EvalConfig. Please set --api-key-var explicitly."
+                    )
+                api_key_var = endpoint["key"]
+
+            if api_base_url_override:
+                api_base_url = raw_api_base_url
+            else:
+                endpoint_urls = [entry["url"] for entry in endpoint_group]
+                api_base_url = (
+                    endpoint_urls[0] if len(endpoint_urls) == 1 else endpoint_urls
+                )
+
+            endpoint_models = {entry["model"] for entry in endpoint_group}
+            if len(endpoint_models) > 1:
+                raise ValueError(
+                    f"Endpoint alias '{endpoint_lookup_id}' maps to multiple model ids {sorted(endpoint_models)}, "
+                    "which is not yet supported by EvalConfig."
+                )
             model = endpoint["model"]
             if api_key_override or api_base_url_override:
                 logger.debug(
@@ -351,10 +393,15 @@ def main():
                 )
             else:
                 logger.debug(
-                    "Using endpoint configuration for model '%s' from registry",
+                    "Using endpoint configuration for model '%s' from registry (%d endpoint variant(s))",
                     model,
+                    len(endpoint_group),
                 )
         else:
+            if raw_endpoint_id is not None:
+                raise ValueError(
+                    f"Endpoint id '{raw_endpoint_id}' not found in endpoint registry at {endpoints_path}"
+                )
             logger.debug(
                 "Model '%s' not found in endpoint registry, using defaults",
                 raw_model,

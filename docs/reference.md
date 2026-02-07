@@ -631,8 +631,10 @@ class EvalConfig(BaseModel):
 
 ```python
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
-Endpoints = dict[str, Endpoint]
+Endpoints = dict[str, list[Endpoint]]
 ```
+
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 
 ---
 

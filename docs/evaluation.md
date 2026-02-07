@@ -66,10 +66,10 @@ prime eval run my-env -x '{"max_turns": 20}'
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--endpoints-path` | `-e` | `./configs/endpoints.py` | Path to endpoints registry |
+| `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to endpoints registry (`.toml` preferred, `.py` supported) |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
-For convenience, define model endpoints in `./configs/endpoints.py` to avoid repeating URL and key flags:
+For convenience, define model endpoints in `./configs/endpoints.toml` (or `./configs/endpoints.py`) to avoid repeating URL and key flags.
 
 ```python
 ENDPOINTS = {
@@ -86,6 +86,18 @@ ENDPOINTS = {
 }
 ```
 
+Equivalent TOML format:
+
+```toml
+[[endpoint]]
+endpoint_id = "gpt-4.1-mini"
+model = "gpt-4.1-mini"
+url = "https://api.openai.com/v1"
+key = "OPENAI_API_KEY"
+```
+
+To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
+
 Then use the alias directly:
 
 ```bash
@@ -93,6 +105,10 @@ prime eval run my-env -m qwen3-235b-i
 ```
 
 If the model name is in the registry, those values are used by default, but you can override them with `--api-base-url` and/or `--api-key-var`. If the model name isn't found, the CLI flags are used (falling back to defaults when omitted).
+
+In other words, `-m/--model` is treated as an endpoint alias lookup when present in the registry, and otherwise treated as a literal model id.
+
+When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections to resolve from the endpoint registry. `endpoint_id` is only supported when `endpoints_path` points to a TOML registry file.
 
 ### Sampling Parameters
 
@@ -273,6 +289,7 @@ Each `[[eval]]` section must contain an `env_id` field. All other fields are opt
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
+| `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
 Example with `env_args`:
 

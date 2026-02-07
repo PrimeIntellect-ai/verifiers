@@ -245,7 +245,7 @@ class RolloutScores(TypedDict):
 
 
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
-Endpoints = dict[str, Endpoint]
+Endpoints = dict[str, list[Endpoint]]
 
 
 class ClientConfig(BaseModel):
