@@ -359,7 +359,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
-                    await self._tunnel.stop()
+                    self._tunnel.sync_stop()
                     logger.debug("Prime Tunnel stopped")
                 except Exception as e:
                     logger.warning(f"Error stopping Prime Tunnel: {e}")
