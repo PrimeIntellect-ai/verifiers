@@ -39,6 +39,6 @@ jobs:
         with:
           version: "latest"
       - name: Install dependencies
-        run: uv sync --extra rl
+        run: uv sync
       - name: Run ty
         run: uv run ty check verifiers
