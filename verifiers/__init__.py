@@ -84,6 +84,14 @@ __all__ = [
     "teardown",
     "ensure_keys",
     "MissingKeyError",
+    "get_model",
+    "get_model_and_tokenizer",
+    "RLConfig",
+    "RLTrainer",
+    "GRPOTrainer",
+    "GRPOConfig",
+    "grpo_defaults",
+    "lora_defaults",
 ]
 
 _LAZY_IMPORTS = {
@@ -147,3 +155,15 @@ if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from verifiers_rl.rl.trainer import (  # noqa: F401
+        GRPOConfig,
+        GRPOTrainer,
+        RLConfig,
+        RLTrainer,
+        grpo_defaults,
+        lora_defaults,
+    )
+    from verifiers_rl.rl.trainer.utils import (  # noqa: F401
+        get_model,
+        get_model_and_tokenizer,
+    )
