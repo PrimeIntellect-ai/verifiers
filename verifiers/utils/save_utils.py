@@ -227,29 +227,21 @@ class GenerateOutputsBuilder:
         self.tools_list: list[list[ChatCompletionToolParam] | None] = []
 
     @staticmethod
-    def _format_base_url(url: str | list[str]) -> str:
-        if isinstance(url, list):
-            return ",".join(url)
+    def _format_base_url(url: str) -> str:
         return url
 
     def _compute_base_url(self, client: AsyncOpenAI | ClientConfig | object) -> str:
-        if isinstance(client, ClientConfig):
-            return self._format_base_url(client.api_base_url)
-
-        # ClientPool case (round-robin over multiple ClientConfig objects)
-        if hasattr(client, "_configs"):
-            configs = getattr(client, "_configs", [])
-            urls: list[str] = []
-            if isinstance(configs, list):
-                for cfg in configs:
-                    if isinstance(cfg, ClientConfig):
-                        url = cfg.api_base_url
-                        if isinstance(url, list):
-                            urls.extend(url)
-                        else:
-                            urls.append(url)
+        if isinstance(client, list):
+            urls = [c.api_base_url for c in client if isinstance(c, ClientConfig)]
             if urls:
                 return ",".join(urls)
+
+        if isinstance(client, ClientConfig):
+            if client.endpoint_configs:
+                endpoint_urls = [cfg.api_base_url for cfg in client.endpoint_configs]
+                if endpoint_urls:
+                    return ",".join(endpoint_urls)
+            return self._format_base_url(client.api_base_url)
 
         if hasattr(client, "base_url"):
             return str(getattr(client, "base_url"))

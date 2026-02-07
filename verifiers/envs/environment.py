@@ -38,7 +38,6 @@ from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
 if TYPE_CHECKING:
     from datasets import Dataset
-    from verifiers.utils.client_utils import ClientPool
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.completion_choice import CompletionChoice
@@ -891,7 +890,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | ClientConfig | "ClientPool",
+        client: AsyncOpenAI | ClientConfig | list[ClientConfig],
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -910,10 +909,9 @@ class Environment(ABC):
         Generate rollouts for a set of inputs.
 
         Args:
-            client: Can be a single AsyncOpenAI client, a ClientConfig, or a ClientPool
-                for round-robin distribution across multiple servers.
+            client: Can be a single AsyncOpenAI client, a ClientConfig, or
+                list[ClientConfig] for round-robin distribution across endpoints.
         """
-        from verifiers.utils.client_utils import ClientPool
         from datasets import Dataset
         from tqdm import tqdm
 
@@ -1008,22 +1006,34 @@ class Environment(ABC):
             results_path=results_path,
         )
 
-        # Normalize client to ClientPool for uniform handling
-        # This enables round-robin across multiple servers when ClientPool is provided
         single_client: AsyncOpenAI | None = None
-        if isinstance(client, ClientPool):
-            client_pool = client
+        endpoint_clients: list[ClientConfig] = []
+        endpoint_client_idx = 0
+        if isinstance(client, list):
+            if not client:
+                raise ValueError("client list cannot be empty")
+            if not all(isinstance(c, ClientConfig) for c in client):
+                raise ValueError("client list must contain only ClientConfig")
+            endpoint_clients = cast(list[ClientConfig], client)
         elif isinstance(client, ClientConfig):
-            client_pool = ClientPool.from_config(client)
+            endpoint_clients = (
+                client.endpoint_configs if client.endpoint_configs else [client]
+            )
+            if not all(isinstance(c, ClientConfig) for c in endpoint_clients):
+                raise ValueError(
+                    "client.endpoint_configs must contain only ClientConfig"
+                )
         else:
             # AsyncOpenAI path
-            client_pool = None
             single_client = client
 
         def get_client_for_group() -> AsyncOpenAI | ClientConfig:
-            """Get next client config (round-robin) or return single client."""
-            if client_pool is not None:
-                return client_pool.get_next_config()
+            """Get next client config in round-robin order or return single client."""
+            nonlocal endpoint_client_idx
+            if endpoint_clients:
+                config = endpoint_clients[endpoint_client_idx % len(endpoint_clients)]
+                endpoint_client_idx += 1
+                return config
             assert single_client is not None
             return single_client
 
@@ -1142,7 +1152,7 @@ class Environment(ABC):
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI | ClientConfig | "ClientPool",
+        client: AsyncOpenAI | OpenAI | ClientConfig | list[ClientConfig],
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1188,7 +1198,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI | ClientConfig | "ClientPool",
+        client: AsyncOpenAI | ClientConfig | list[ClientConfig],
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1231,7 +1241,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI | ClientConfig | "ClientPool",
+        client: OpenAI | AsyncOpenAI | ClientConfig | list[ClientConfig],
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,

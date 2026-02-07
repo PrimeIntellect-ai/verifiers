@@ -213,7 +213,7 @@ class GenerateMetadata(TypedDict):
     tools: list[ChatCompletionToolParam] | None
 ```
 
-`base_url` is always serialized as a string. For multi-endpoint runs (e.g., `ClientPool`), it is stored as a comma-separated list of URLs.
+`base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
 
 ### RolloutScore / RolloutScores
 
@@ -571,7 +571,8 @@ Combines rubrics for `EnvGroup`.
 class ClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
-    api_base_url: str | list[str] = "https://api.pinference.ai/api/v1"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list[ClientConfig] = []
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
@@ -579,23 +580,7 @@ class ClientConfig(BaseModel):
     extra_headers: dict[str, str] = {}
 ```
 
-`api_base_url` accepts either:
-- a single URL string (single endpoint), or
-- a list of URL strings (multi-endpoint round-robin).
-
-### ClientPool
-
-```python
-class ClientPool:
-    def __init__(self, configs: list[ClientConfig]): ...
-    def get_next_config(self) -> ClientConfig: ...
-    @classmethod
-    def from_urls(cls, urls: list[str], api_key_var: str = "PRIME_API_KEY", **kwargs) -> "ClientPool": ...
-    @classmethod
-    def from_config(cls, config: ClientConfig) -> "ClientPool": ...
-```
-
-`ClientPool` is a round-robin pool of client configurations used for multi-server inference. In grouped scoring mode, groups are distributed round-robin across pool members.
+Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`

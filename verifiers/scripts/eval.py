@@ -133,10 +133,10 @@ def main():
     parser.add_argument(
         "--api-base-url",
         "-b",
-        action="append",
+        type=str,
         default=None,
         help=(
-            "Base URL for API. Repeatable for multi-server round-robin. "
+            "Base URL for API. "
             "(defaults to https://api.pinference.ai/api/v1 when not set and not in registry)"
         ),
     )
@@ -350,9 +350,15 @@ def main():
         )
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
+        if isinstance(raw_api_base_url, list):
+            raise ValueError(
+                "api_base_url lists are no longer supported. "
+                "Use endpoint_id + endpoints.toml for multi-endpoint configuration."
+            )
 
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
+        endpoint_group: list[dict[str, str]] | None = None
 
         if endpoint_lookup_id in endpoints:
             endpoint_group = endpoints[endpoint_lookup_id]
@@ -361,21 +367,12 @@ def main():
             if api_key_override:
                 api_key_var = raw_api_key_var
             else:
-                endpoint_keys = {entry["key"] for entry in endpoint_group}
-                if len(endpoint_keys) > 1:
-                    raise ValueError(
-                        f"Endpoint alias '{endpoint_lookup_id}' maps to multiple API key vars {sorted(endpoint_keys)}, "
-                        "which is not yet supported by EvalConfig. Please set --api-key-var explicitly."
-                    )
                 api_key_var = endpoint["key"]
 
             if api_base_url_override:
                 api_base_url = raw_api_base_url
             else:
-                endpoint_urls = [entry["url"] for entry in endpoint_group]
-                api_base_url = (
-                    endpoint_urls[0] if len(endpoint_urls) == 1 else endpoint_urls
-                )
+                api_base_url = endpoint["url"]
 
             endpoint_models = {entry["model"] for entry in endpoint_group}
             if len(endpoint_models) > 1:
@@ -432,11 +429,34 @@ def main():
                 raise ValueError("--header name cannot be empty")
             merged_headers[k] = v
 
+        primary_api_base_url = api_base_url
+        if not isinstance(primary_api_base_url, str):
+            raise ValueError("api_base_url must be a single string URL")
         assert api_key_var is not None
-        assert api_base_url is not None
+        resolved_api_key_var = api_key_var
+
+        endpoint_configs: list[ClientConfig] = []
+        if (
+            endpoint_group is not None
+            and not api_base_url_override
+            and len(endpoint_group) > 1
+        ):
+            endpoint_configs = [
+                ClientConfig(
+                    api_key_var=(
+                        resolved_api_key_var if api_key_override else endpoint["key"]
+                    ),
+                    api_base_url=endpoint["url"],
+                    extra_headers=merged_headers,
+                )
+                for endpoint in endpoint_group
+            ]
+
+        assert primary_api_base_url is not None
         client_config = ClientConfig(
-            api_key_var=api_key_var,
-            api_base_url=api_base_url,
+            api_key_var=resolved_api_key_var,
+            api_base_url=primary_api_base_url,
+            endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
         )
 

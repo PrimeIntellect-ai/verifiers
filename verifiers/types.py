@@ -38,7 +38,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
@@ -249,20 +249,20 @@ Endpoints = dict[str, list[Endpoint]]
 
 
 class ClientConfig(BaseModel):
-    """Pydantic model for OpenAI client configuration.
-
-    For multi-server round-robin, pass a list of URLs to api_base_url:
-        ClientConfig(api_base_url=["http://server1:8000/v1", "http://server2:8000/v1"])
-    """
+    """Pydantic model for OpenAI client configuration."""
 
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
-    api_base_url: str | list[str] = "https://api.pinference.ai/api/v1"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list["ClientConfig"] = Field(default_factory=list)
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] = {}
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+ClientConfig.model_rebuild()
 
 
 class EvalConfig(BaseModel):

@@ -210,7 +210,8 @@ def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_
     config = captured["configs"][0]
     assert config.model == "gpt-5-mini"
     assert config.client_config.api_key_var == "OPENAI_API_KEY"
-    assert config.client_config.api_base_url == [
+    assert config.client_config.api_base_url == "https://a.example/v1"
+    assert [cfg.api_base_url for cfg in config.client_config.endpoint_configs] == [
         "https://a.example/v1",
         "https://b.example/v1",
     ]
@@ -260,32 +261,36 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     assert config.client_config.api_base_url == "https://custom.example/v1"
 
 
-def test_cli_endpoint_alias_multi_variant_mixed_keys_requires_override(
-    monkeypatch, run_cli
-):
-    with pytest.raises(ValueError, match="multiple API key vars"):
-        run_cli(
-            monkeypatch,
-            {
-                "model": "gpt-5-mini",
-                "api_key_var": None,
-                "api_base_url": None,
-            },
-            endpoints={
-                "gpt-5-mini": [
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://a.example/v1",
-                        "key": "PRIME_API_KEY",
-                    },
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://b.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
-                ]
-            },
-        )
+def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "gpt-5-mini",
+            "api_key_var": None,
+            "api_base_url": None,
+        },
+        endpoints={
+            "gpt-5-mini": [
+                {
+                    "model": "gpt-5-mini",
+                    "url": "https://a.example/v1",
+                    "key": "PRIME_API_KEY",
+                },
+                {
+                    "model": "gpt-5-mini",
+                    "url": "https://b.example/v1",
+                    "key": "OPENAI_API_KEY",
+                },
+            ]
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.api_key_var == "PRIME_API_KEY"
+    assert [cfg.api_key_var for cfg in config.client_config.endpoint_configs] == [
+        "PRIME_API_KEY",
+        "OPENAI_API_KEY",
+    ]
 
 
 def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
@@ -316,7 +321,8 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
     config = captured["configs"][0]
     assert config.model == "gpt-5-mini"
     assert config.client_config.api_key_var == "OPENAI_API_KEY"
-    assert config.client_config.api_base_url == [
+    assert config.client_config.api_base_url == "https://a.example/v1"
+    assert [cfg.api_base_url for cfg in config.client_config.endpoint_configs] == [
         "https://a.example/v1",
         "https://b.example/v1",
     ]
@@ -360,6 +366,25 @@ def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
                         }
                     ]
                 },
+            )
+
+
+def test_toml_api_base_url_list_is_not_supported(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            'api_base_url = ["https://a.example/v1", "https://b.example/v1"]\n\n'
+            '[[eval]]\nenv_id = "env1"\n'
+        )
+        f.flush()
+        with pytest.raises(
+            ValueError, match="api_base_url lists are no longer supported"
+        ):
+            run_cli(
+                monkeypatch,
+                {
+                    "env_id_or_config": f.name,
+                },
+                endpoints={},
             )
 
 

@@ -16,7 +16,6 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from verifiers.types import ClientConfig
-from verifiers.utils.client_utils import ClientPool
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     extract_usage_tokens,
@@ -135,13 +134,17 @@ class TestSavingMetadata:
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
         assert result["state_columns"] == []
 
-    def test_generate_outputs_builder_serializes_multi_url_base_url(self):
+    def test_generate_outputs_builder_serializes_endpoint_configs_base_url(self):
         builder = GenerateOutputsBuilder(
             env_id="test-env",
             env_args={},
             model="test-model",
             client=ClientConfig(
-                api_base_url=["http://localhost:8000/v1", "http://localhost:8001/v1"]
+                api_base_url="http://localhost:8000/v1",
+                endpoint_configs=[
+                    ClientConfig(api_base_url="http://localhost:8000/v1"),
+                    ClientConfig(api_base_url="http://localhost:8001/v1"),
+                ],
             ),
             num_examples=1,
             rollouts_per_example=1,
@@ -155,15 +158,16 @@ class TestSavingMetadata:
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
         )
 
-    def test_generate_outputs_builder_serializes_client_pool_base_url(self):
-        pool = ClientPool.from_urls(
-            ["http://localhost:8000/v1", "http://localhost:8001/v1"]
-        )
+    def test_generate_outputs_builder_serializes_client_config_list_base_url(self):
+        clients = [
+            ClientConfig(api_base_url="http://localhost:8000/v1"),
+            ClientConfig(api_base_url="http://localhost:8001/v1"),
+        ]
         builder = GenerateOutputsBuilder(
             env_id="test-env",
             env_args={},
             model="test-model",
-            client=pool,
+            client=clients,
             num_examples=1,
             rollouts_per_example=1,
             state_columns=[],

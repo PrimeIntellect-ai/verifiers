@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from verifiers.types import (
     Endpoint,
     Endpoints,
+    ClientConfig,
     EvalConfig,
     EvalRunConfig,
     GenerateMetadata,
@@ -483,8 +484,6 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
-    from verifiers.utils.client_utils import resolve_client
-
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
@@ -493,8 +492,11 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # Resolve client config to ClientPool if multiple URLs provided
-    client = resolve_client(config.client_config)
+    client: ClientConfig | list[ClientConfig]
+    if config.client_config.endpoint_configs:
+        client = config.client_config.endpoint_configs
+    else:
+        client = config.client_config
 
     # start env server as sidecar process
     try:

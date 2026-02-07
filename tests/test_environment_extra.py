@@ -245,7 +245,11 @@ async def test_generate_grouped_scoring_distributes_per_group(
         make_input(example_id=1),
     ]
     client_config = ClientConfig(
-        api_base_url=["http://localhost:8000/v1", "http://localhost:8001/v1"]
+        api_base_url="http://localhost:8000/v1",
+        endpoint_configs=[
+            ClientConfig(api_base_url="http://localhost:8000/v1"),
+            ClientConfig(api_base_url="http://localhost:8001/v1"),
+        ],
     )
 
     def no_op(*args, **kwargs):
