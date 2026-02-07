@@ -1768,6 +1768,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
         worker_script = _render_worker_script(
             session.paths, repl_language=self.env.repl_language
         )
+        worker_script = self.env.customize_worker_script(worker_script, state)
         Path(session.paths.worker_path).write_text(worker_script, encoding="utf-8")
 
         env_vars = os.environ.copy()
@@ -1866,7 +1867,22 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             session.sandbox_id = sandbox.id
             self._active_sandboxes.add(sandbox.id)
             state["sandbox_id"] = sandbox.id
+            state["sandbox_state"] = {
+                "ready": False,
+                "ready_wait_time": 0.0,
+                "command_execution_times": [],
+            }
+            start_wait = time.time()
             await self._wait_for_sandbox_ready(sandbox.id)
+            state["sandbox_state"]["ready"] = True
+            state["sandbox_state"]["ready_wait_time"] = time.time() - start_wait
+            try:
+                # Allow environments to run repo/tool setup before the worker starts.
+                await self.env.on_sandbox_ready(state, sandbox.id)
+            except Exception as exc:
+                raise vf.SandboxError(
+                    f"Sandbox setup hook failed: {exc}"
+                ) from exc
 
         if not session.sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
@@ -2063,22 +2079,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         return self._sessions[rollout_id]
 
     def _build_sandbox_request(self, state: State) -> CreateSandboxRequest:
-        env = self.env
-        env_vars = dict(env.sandbox_environment_vars or {})
-        return CreateSandboxRequest(
-            name=f"rlm-{state.get('rollout_id', 'unknown')}",
-            docker_image=env.sandbox_docker_image,
-            start_command=env.sandbox_start_command,
-            cpu_cores=env.sandbox_cpu_cores,
-            memory_gb=env.sandbox_memory_gb,
-            disk_size_gb=env.sandbox_disk_size_gb,
-            gpu_count=env.sandbox_gpu_count,
-            timeout_minutes=env.sandbox_timeout_minutes,
-            environment_vars=env_vars,
-            team_id=env.sandbox_team_id,
-            advanced_configs=env.sandbox_advanced_configs,
-            labels=env.sandbox_labels or [],
-        )
+        return self.env.get_sandbox_request(state)
 
     async def _install_packages(self, session: SandboxRLMReplSession) -> None:
         sandbox_id = session.sandbox_id
@@ -2146,6 +2147,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             repl_language=self.env.repl_language,
             sandboxed=True,
         )
+        worker_script = self.env.customize_worker_script(worker_script, state)
         worker_path.write_text(worker_script, encoding="utf-8")
 
         await self._sandbox_client.upload_file(
@@ -2424,6 +2426,10 @@ class RLMEnv(vf.StatefulToolEnv):
     sandbox path can set state["rlm_fs_root_remote"] (and optionally
     state["rlm_control_dir_remote"]) before calling super().setup_state; otherwise
     the default remote paths are /tmp/rlm_<id>/rlm_fs and /tmp/rlm_<id>/rlm_control.
+    Environments can also override get_sandbox_request, on_sandbox_ready, and
+    customize_worker_script to adjust sandbox creation, perform post-create setup
+    (e.g., repo initialization), or tweak the worker script without forking the
+    executor implementation.
 
     Args:
         tools: List of tools shared by both the root REPL and sub-LLMs.
@@ -2672,6 +2678,45 @@ class RLMEnv(vf.StatefulToolEnv):
             self.add_tool(self.call_bash_repl, args_to_skip=["state"])
         else:
             self.add_tool(self.call_python_repl, args_to_skip=["state"])
+
+    def get_sandbox_request(self, state: State) -> CreateSandboxRequest:
+        """Return the sandbox request for this rollout.
+
+        Override this to customize the sandbox image or resources per-state.
+        This is invoked by the sandbox executor when a sandbox needs to be created.
+        """
+        env_vars = dict(self.sandbox_environment_vars or {})
+        return CreateSandboxRequest(
+            name=f"rlm-{state.get('rollout_id', 'unknown')}",
+            docker_image=self.sandbox_docker_image,
+            start_command=self.sandbox_start_command,
+            cpu_cores=self.sandbox_cpu_cores,
+            memory_gb=self.sandbox_memory_gb,
+            disk_size_gb=self.sandbox_disk_size_gb,
+            gpu_count=self.sandbox_gpu_count,
+            timeout_minutes=self.sandbox_timeout_minutes,
+            environment_vars=env_vars,
+            team_id=self.sandbox_team_id,
+            advanced_configs=self.sandbox_advanced_configs,
+            labels=self.sandbox_labels or [],
+        )
+
+    async def on_sandbox_ready(self, state: State, sandbox_id: str) -> None:
+        """Hook for environment-specific sandbox setup.
+
+        Override to perform repo initialization, tool upload, or other sandbox
+        preparation steps after the sandbox is created and ready but before the
+        worker starts. Defaults to a no-op.
+        """
+        return None
+
+    def customize_worker_script(self, script: str, state: State) -> str:
+        """Hook to adjust the generated worker script before it is written.
+
+        Override to inject additional imports or tweaks without replacing the
+        executor implementation. Defaults to returning the script unchanged.
+        """
+        return script
 
     # =========================================================================
     # Sub-Agent Tool Infrastructure

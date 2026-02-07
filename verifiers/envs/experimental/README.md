@@ -26,6 +26,8 @@ Notes:
 - When using the sandbox backend, the sandbox and worker are started eagerly during `setup_state`.
   Environments can pre-set `state["rlm_fs_root_remote"]` (and optionally `state["rlm_control_dir_remote"]`)
   before calling `super().setup_state` to point the worker at an existing filesystem path in the sandbox.
+  You can also override `get_sandbox_request`, `on_sandbox_ready`, and `customize_worker_script` on `RLMEnv`
+  to customize sandbox creation, run setup steps (e.g., repo initialization), or tweak the worker script.
 - Package installation in sandboxes is best-effort: packages are only installed if they are not importable, which avoids unnecessary installs on images that already include them.
 
 Tool split:
