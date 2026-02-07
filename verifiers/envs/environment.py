@@ -38,6 +38,7 @@ from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
 if TYPE_CHECKING:
     from datasets import Dataset
+    from verifiers.utils.client_utils import ClientPool
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.completion_choice import CompletionChoice

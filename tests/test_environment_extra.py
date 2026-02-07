@@ -248,7 +248,7 @@ async def test_generate_grouped_scoring_distributes_per_group(
         api_base_url=["http://localhost:8000/v1", "http://localhost:8001/v1"]
     )
 
-    no_op = lambda *args, **kwargs: None
+    def no_op(*args, **kwargs): None
     await env.generate(
         inputs=inputs,
         client=client_config,
