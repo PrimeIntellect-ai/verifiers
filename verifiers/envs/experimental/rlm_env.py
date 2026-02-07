@@ -1581,8 +1581,17 @@ class LocalRLMExecutor(BaseRLMExecutor):
             try:
                 remaining = payload_bytes
                 while remaining:
-                    written = os.write(cmd_fd, remaining)
-                    remaining = remaining[written:]
+                    try:
+                        written = os.write(cmd_fd, remaining)
+                        remaining = remaining[written:]
+                    except BlockingIOError:
+                        now = time.monotonic()
+                        if now >= deadline:
+                            raise RLMCodeExecutionTimeout
+                        timeout = min(0.05, deadline - now)
+                        _, writable, _ = select.select([], [cmd_fd], [], timeout)
+                        if not writable:
+                            continue
             finally:
                 os.close(cmd_fd)
 
@@ -2363,8 +2372,18 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         payload_bytes = data.encode("utf-8")
         remaining = payload_bytes
         while remaining:
-            written = os.write(cmd_fd, remaining)
-            remaining = remaining[written:]
+            try:
+                written = os.write(cmd_fd, remaining)
+                remaining = remaining[written:]
+            except BlockingIOError:
+                now = time.time()
+                if now >= deadline:
+                    print("WORKER_TIMEOUT")
+                    sys.exit(0)
+                timeout = min(0.05, deadline - now)
+                _, writable, _ = select.select([], [cmd_fd], [], timeout)
+                if not writable:
+                    continue
     finally:
         os.close(cmd_fd)
 
