@@ -1627,7 +1627,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
             )
             self._unblock_response_fifo(session, payload.get("seq", 0))
             raise RLMCodeExecutionTimeout from e
-        except RLMCodeExecutionTimeout as e:
+        except RLMCodeExecutionTimeout:
             logger.warning("RLM worker did not respond in time")
             self._unblock_response_fifo(session, payload.get("seq", 0))
             raise
