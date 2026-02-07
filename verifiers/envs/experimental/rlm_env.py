@@ -2360,6 +2360,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
     command_fifo = '{session.paths.command_fifo}'
     response_fifo = '{session.paths.response_fifo}'
     timeout_seconds = {timeout_seconds}
+    deadline = time.time() + timeout_seconds
 
     try:
         cmd_fd = os.open(command_fifo, os.O_WRONLY | os.O_NONBLOCK)
@@ -2395,7 +2396,6 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             sys.exit(0)
         raise
     chunks = []
-    deadline = time.time() + timeout_seconds
     try:
         while True:
             now = time.time()
