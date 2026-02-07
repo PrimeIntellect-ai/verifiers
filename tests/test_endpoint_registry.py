@@ -92,3 +92,16 @@ def test_load_endpoints_directory_prefers_toml_then_python(tmp_path: Path):
     toml_registry.unlink()
     endpoints = load_endpoints(str(tmp_path))
     assert set(endpoints.keys()) == {"from-py"}
+
+
+def test_qwen3_vl_endpoint_ids_map_to_vl_models():
+    endpoints = load_endpoints("./configs/endpoints.toml")
+
+    assert endpoints["qwen3-vl-30b-i"][0]["model"] == "qwen/qwen3-vl-30b-a3b-instruct"
+    assert endpoints["qwen3-vl-30b-t"][0]["model"] == "qwen/qwen3-vl-30b-a3b-thinking"
+    assert (
+        endpoints["qwen3-vl-235b-i"][0]["model"] == "qwen/qwen3-vl-235b-a22b-instruct"
+    )
+    assert (
+        endpoints["qwen3-vl-235b-t"][0]["model"] == "qwen/qwen3-vl-235b-a22b-thinking"
+    )

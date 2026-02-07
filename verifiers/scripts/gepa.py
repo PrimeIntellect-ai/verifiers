@@ -169,10 +169,10 @@ def main():
         if api_base_url_override:
             api_base_url = args.api_base_url
         else:
-            endpoint_urls = [entry["url"] for entry in endpoint_group]
+            endpoint_urls = {entry["url"] for entry in endpoint_group}
             if len(endpoint_urls) > 1:
                 raise ValueError(
-                    f"Endpoint alias '{args.model}' has multiple URLs and GEPA currently requires a single --api-base-url."
+                    f"Endpoint alias '{args.model}' maps to multiple URLs {sorted(endpoint_urls)} and GEPA currently requires a single --api-base-url."
                 )
             api_base_url = endpoint["url"]
 
@@ -209,10 +209,10 @@ def main():
                 f"Endpoint alias '{args.reflection_model}' maps to multiple API key vars {sorted(reflection_endpoint_keys)}, "
                 "which is not yet supported by GEPA reflection config."
             )
-        reflection_endpoint_urls = [entry["url"] for entry in reflection_endpoint_group]
+        reflection_endpoint_urls = {entry["url"] for entry in reflection_endpoint_group}
         if len(reflection_endpoint_urls) > 1:
             raise ValueError(
-                f"Endpoint alias '{args.reflection_model}' has multiple URLs and GEPA currently requires a single --api-base-url."
+                f"Endpoint alias '{args.reflection_model}' maps to multiple URLs {sorted(reflection_endpoint_urls)} and GEPA currently requires a single --api-base-url."
             )
 
         reflection_model = reflection_endpoint["model"]
