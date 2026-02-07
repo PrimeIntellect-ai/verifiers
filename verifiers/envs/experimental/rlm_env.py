@@ -344,7 +344,8 @@ class RLMMonitorRubric(vf.Rubric):
 
     def _make_state_metric(self, key: str):
         async def metric(state: State):
-            return state[key]
+            value = state.get(key, 0)
+            return 0 if value is None else value
 
         metric.__name__ = key
         return metric
