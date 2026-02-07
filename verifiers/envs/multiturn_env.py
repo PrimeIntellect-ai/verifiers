@@ -78,8 +78,16 @@ class MultiTurnEnv(vf.Environment):
             prev_turn_prompt = state["trajectory"][-1]["prompt"]
             prev_turn_completion = state["trajectory"][-1]["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-            env_response = await self.env_response(messages, state)
-            return concat_messages([messages, env_response])
+            last_msg = messages[-1] if messages else None
+            if (
+                last_msg
+                and isinstance(last_msg, dict)
+                and last_msg.get("role") == "assistant"
+                and last_msg.get("tool_calls")
+            ):
+                env_response = await self.env_response(messages, state)
+                return concat_messages([messages, env_response])
+            return messages
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
