@@ -15,6 +15,13 @@ from openai.types.chat import (
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_chunk import (
+    ChatCompletionChunk,
+    Choice as ChunkChoice,
+    ChoiceDelta,
+    ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
+)
 from openai.types.chat.chat_completion_message_tool_call import Function
 
 from verifiers.types import (
@@ -380,6 +387,94 @@ def deliver_response(
             future.set_exception(error)
         elif response is not None:
             future.set_result(response)
+
+
+async def synthesize_stream(
+    intercept: dict, response: ModelResponse | None, error: BaseException | None = None
+) -> None:
+    """Deliver a complete ChatCompletion as synthetic SSE chunks to the agent.
+
+    Allows the base-class get_model_response (non-streaming, TITO-aware) to be
+    used for the vLLM call while still satisfying agents that request streaming.
+
+    Protocol (must match _handle_streaming_response):
+      put chunk(s) on chunk_queue → put None (EOF) → resolve response_future.
+    """
+    chunk_queue = intercept.get("chunk_queue")
+    future = intercept.get("response_future")
+
+    # Error / no-response: unblock queue reader, fail/resolve future
+    if error is not None or response is None:
+        if chunk_queue is not None:
+            try:
+                chunk_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        if future and not future.done():
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(None)
+        return
+
+    choice = response.choices[0]
+    message = choice.message
+
+    # Chunk 1: content + tool_calls in delta
+    delta_tool_calls = None
+    if message.tool_calls:
+        delta_tool_calls = [
+            ChoiceDeltaToolCall(
+                index=i,
+                id=tc.id,
+                type="function",
+                function=ChoiceDeltaToolCallFunction(
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                ),
+            )
+            for i, tc in enumerate(message.tool_calls)
+        ]
+
+    content_chunk = ChatCompletionChunk(
+        id=response.id,
+        choices=[
+            ChunkChoice(
+                index=0,
+                delta=ChoiceDelta(
+                    role="assistant",
+                    content=message.content,
+                    tool_calls=delta_tool_calls,
+                ),
+                finish_reason=None,
+            )
+        ],
+        created=response.created,
+        model=response.model,
+        object="chat.completion.chunk",
+    )
+    await chunk_queue.put(content_chunk)
+
+    # Chunk 2: finish_reason only
+    finish_chunk = ChatCompletionChunk(
+        id=response.id,
+        choices=[
+            ChunkChoice(
+                index=0,
+                delta=ChoiceDelta(),
+                finish_reason=choice.finish_reason,
+            )
+        ],
+        created=response.created,
+        model=response.model,
+        object="chat.completion.chunk",
+    )
+    await chunk_queue.put(finish_chunk)
+
+    # EOF sentinel + resolve future
+    await chunk_queue.put(None)
+    if future and not future.done():
+        future.set_result(response)
 
 
 def create_empty_completion(model: str) -> ChatCompletion:
