@@ -24,6 +24,8 @@ Environment implementing [Recursive Language Models](https://alexzhang13.github.
 
 Notes:
 - When using the sandbox backend, the sandbox and worker are started eagerly during `setup_state`.
+  Environments can pre-set `state["rlm_fs_root_remote"]` (and optionally `state["rlm_control_dir_remote"]`)
+  before calling `super().setup_state` to point the worker at an existing filesystem path in the sandbox.
 - Package installation in sandboxes is best-effort: packages are only installed if they are not importable, which avoids unnecessary installs on images that already include them.
 
 Tool split:

@@ -2419,6 +2419,11 @@ class RLMEnv(vf.StatefulToolEnv):
     Works with any dataset that has a normal prompt. Input data can optionally
     be provided via info[context_dir_key] (directory path) or info[context_key]
     (legacy builtin data written to a file).
+    When using the sandbox backend, the sandbox and worker are started eagerly
+    during setup_state. Environments that need the worker to start in an existing
+    sandbox path can set state["rlm_fs_root_remote"] (and optionally
+    state["rlm_control_dir_remote"]) before calling super().setup_state; otherwise
+    the default remote paths are /tmp/rlm_<id>/rlm_fs and /tmp/rlm_<id>/rlm_control.
 
     Args:
         tools: List of tools shared by both the root REPL and sub-LLMs.
@@ -3636,8 +3641,10 @@ class RLMEnv(vf.StatefulToolEnv):
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
         if self.execution_backend == "sandbox":
-            state["rlm_fs_root_remote"] = f"/tmp/rlm_{rollout_id}/rlm_fs"
-            state["rlm_control_dir_remote"] = f"/tmp/rlm_{rollout_id}/rlm_control"
+            state.setdefault("rlm_fs_root_remote", f"/tmp/rlm_{rollout_id}/rlm_fs")
+            state.setdefault(
+                "rlm_control_dir_remote", f"/tmp/rlm_{rollout_id}/rlm_control"
+            )
 
         if self.include_sub_llm_in_trajectory and self.interleaved_rollouts:
             raise ValueError(
