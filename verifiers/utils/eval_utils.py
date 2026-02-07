@@ -45,9 +45,10 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
     if not isinstance(raw_endpoint, dict):
         raise ValueError(f"Endpoint entry must be a table/dict in {source}")
 
-    model = raw_endpoint.get("model")
-    url = raw_endpoint.get("url")
-    key = raw_endpoint.get("key")
+    raw_endpoint_dict = cast(dict[str, object], raw_endpoint)
+    model = raw_endpoint_dict.get("model")
+    url = raw_endpoint_dict.get("url")
+    key = raw_endpoint_dict.get("key")
 
     missing = [
         field
@@ -73,8 +74,9 @@ def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoint
     if not isinstance(raw_endpoints, dict):
         raise ValueError(f"ENDPOINTS must be a dict in {source}")
 
+    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
     normalized: Endpoints = {}
-    for endpoint_id, raw_endpoint_group in raw_endpoints.items():
+    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
         if not isinstance(endpoint_id, str):
             raise ValueError(f"Endpoint ids must be strings in {source}")
 
@@ -105,7 +107,8 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
     if not isinstance(raw_toml, dict):
         raise ValueError(f"Expected top-level TOML table in {source}")
 
-    raw_endpoint_entries = raw_toml.get("endpoint", [])
+    raw_toml_dict = cast(dict[str, object], raw_toml)
+    raw_endpoint_entries = raw_toml_dict.get("endpoint", [])
     if not isinstance(raw_endpoint_entries, list):
         raise ValueError(
             f"Expected [[endpoint]] array-of-tables in {source}, got {type(raw_endpoint_entries)}"
@@ -119,13 +122,16 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
                 f"Each [[endpoint]] entry must be a table in {entry_source}"
             )
 
-        endpoint_id = raw_entry.get("endpoint_id")
+        raw_entry_dict = cast(dict[str, object], raw_entry)
+        endpoint_id = raw_entry_dict.get("endpoint_id")
         if not isinstance(endpoint_id, str) or not endpoint_id:
             raise ValueError(
                 f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
             )
 
-        endpoint_payload = {k: v for k, v in raw_entry.items() if k != "endpoint_id"}
+        endpoint_payload = {
+            k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
+        }
         endpoint = _coerce_endpoint(
             endpoint_payload,
             source=f"{entry_source} (endpoint_id={endpoint_id!r})",
