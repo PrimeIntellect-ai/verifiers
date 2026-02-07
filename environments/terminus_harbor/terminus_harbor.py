@@ -84,22 +84,19 @@ class TerminusHarborEnv(HarborEnv):
 
         # Upload the run_agent.py script
         script_content = self._get_run_agent_script()
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(script_content)
             temp_path = f.name
 
         try:
             await sandbox_client.upload_file(
-                sandbox_id,
-                f"{self.agent_workdir}/run_agent.py",
-                temp_path
+                sandbox_id, f"{self.agent_workdir}/run_agent.py", temp_path
             )
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
-
     def _get_run_agent_script(self) -> str:
-        return '''#!/usr/bin/env python3
+        return """#!/usr/bin/env python3
 import sys
 import asyncio
 import os
@@ -255,7 +252,7 @@ if __name__ == "__main__":
     print("Starting asyncio.run(main())...", flush=True)
     asyncio.run(main())
     print("=== run_agent.py finished ===", flush=True)
-'''
+"""
 
 
 def load_environment(

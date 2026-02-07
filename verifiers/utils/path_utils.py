@@ -34,7 +34,9 @@ def get_eval_results_path(config: EvalConfig) -> Path:
     return get_results_path(config.env_id, config.model, base_path)
 
 
-def get_eval_runs_dir(env_id: str, model: str, env_dir_path: str = "./environments") -> Path:
+def get_eval_runs_dir(
+    env_id: str, model: str, env_dir_path: str = "./environments"
+) -> Path:
     """Return directory containing all eval run directories for env/model."""
     base_path = _get_outputs_base_path(env_id, env_dir_path)
     env_model_str = f"{env_id}--{model.replace('/', '--')}"

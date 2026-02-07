@@ -18,8 +18,10 @@ except ImportError as e:
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
 
+
 def _quiet_download(*args: Any, **kwargs: Any) -> Any:
     return _original_nltk_download(*args, **{**kwargs, "quiet": True})
+
 
 cast(Any, nltk).download = _quiet_download
 

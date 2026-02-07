@@ -18,8 +18,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Run ruff
+      - name: Lint
         uses: astral-sh/ruff-action@v3
+      - name: Format
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check"
   ty:
     name: Ty
     runs-on: ubuntu-latest

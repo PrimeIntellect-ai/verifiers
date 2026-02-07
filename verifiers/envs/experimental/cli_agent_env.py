@@ -580,16 +580,12 @@ class CliAgentEnv(vf.MultiTurnEnv):
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
-            return web.json_response(
-                {"error": "Rollout not found"}, status=404
-            )
+            return web.json_response({"error": "Rollout not found"}, status=404)
 
         try:
             request_body = await request.json()
         except Exception as e:
-            return web.json_response(
-                {"error": f"Invalid JSON: {e}"}, status=400
-            )
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
         self.log_request(rollout_id, request_body)
 
@@ -622,14 +618,10 @@ class CliAgentEnv(vf.MultiTurnEnv):
                 )
                 response = await response_future
             except asyncio.CancelledError:
-                return web.json_response(
-                    {"error": "Rollout cancelled"}, status=499
-                )
+                return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
                 logger.error(f"Error processing intercepted request: {e}")
-                return web.json_response(
-                    {"error": str(e)}, status=500
-                )
+                return web.json_response({"error": str(e)}, status=500)
 
             response_dict = (
                 response.model_dump()
