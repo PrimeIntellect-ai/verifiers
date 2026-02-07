@@ -151,14 +151,12 @@ def load_environment(**kwargs) -> vf.Environment:
 '''
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
-from pathlib import Path
 from typing import Any
 
 import verifiers as vf
 
 
-def render_prompt(observation: Any, **kwargs: Any) -> list[dict[str, Any]]:
-    del kwargs
+def render_prompt(observation: Any) -> list[dict[str, Any]]:
     if isinstance(observation, dict):
         messages = observation.get("messages")
         if isinstance(messages, list) and messages:
@@ -178,7 +176,6 @@ def load_environment(
     seed: int = 0,
 ):
     return vf.OpenEnvEnv(
-        openenv_project=Path(__file__).parent / "proj",
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,
