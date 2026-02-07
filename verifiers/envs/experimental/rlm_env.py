@@ -53,6 +53,7 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
+from openai.types.chat import ChatCompletion
 from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 from prime_sandboxes import SandboxClient
@@ -255,6 +256,79 @@ def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
         state["repl_mean_time_seconds"] = (
             state["repl_total_time_seconds"] / state["repl_call_count"]
         )
+
+
+def _serialize_for_prime_rl(value: Any) -> Any:
+    """Recursively serialize values for JSON / prime-rl (dicts, lists, Pydantic)."""
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return {k: _serialize_for_prime_rl(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_for_prime_rl(v) for v in value]
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return value
+
+
+def _root_turn_raw_output_from_response(response: ModelResponse) -> dict[str, Any] | None:
+    """Extract a JSON-serializable assistant output dict from the model response.
+
+    Produces a uniform shape for prime-rl and GLM 4.7 Flash–compatible consumers, e.g.:
+      {"content": str, "reasoning_content": str | None, "role": str, "tool_calls": ..., ...}
+
+    Always includes "reasoning_content" (str or None) so downstream can rely on the key.
+    """
+    if response is None:
+        return None
+    if not isinstance(response, ChatCompletion):
+        return None
+    if not response.choices:
+        return None
+    msg = response.choices[0].message
+    if msg is None:
+        return None
+    out = _serialize_for_prime_rl(msg)
+    if not isinstance(out, dict):
+        return out
+    # Include any extra fields stored by Pydantic when extra='allow' (e.g. reasoning_content)
+    extra = getattr(msg, "__pydantic_extra__", None)
+    if isinstance(extra, dict) and extra:
+        for k, v in extra.items():
+            if k not in out or out[k] is None:
+                out[k] = _serialize_for_prime_rl(v)
+    # Explicitly capture reasoning_content (GLM 4.7 Flash, o1-style, etc.); always set the key
+    reasoning = out.get("reasoning_content")
+    if reasoning is None:
+        reasoning = getattr(msg, "reasoning_content", None)
+    out["reasoning_content"] = _serialize_for_prime_rl(reasoning) if reasoning is not None else None
+    return out
+
+
+def _root_turn_raw_response_meta(response: ModelResponse) -> dict[str, Any] | None:
+    """Extract usage and finish_reason from the raw response for prime-rl."""
+    if response is None:
+        return None
+    if not isinstance(response, ChatCompletion):
+        return None
+    if not response.choices:
+        return None
+    choice = response.choices[0]
+    out: dict[str, Any] = {}
+    if hasattr(choice, "finish_reason") and choice.finish_reason is not None:
+        out["finish_reason"] = choice.finish_reason
+    if getattr(response, "usage", None) is not None:
+        out["usage"] = _serialize_for_prime_rl(response.usage)
+    return out if out else None
+
+
+def _root_turn_raw_input_messages(messages: Messages) -> list[dict[str, Any]]:
+    """Return a JSON-serializable list of message dicts for prime-rl."""
+    if isinstance(messages, str):
+        return [{"role": "user", "content": messages}]
+    return [_serialize_for_prime_rl(cast(dict, m)) for m in messages]
 
 
 def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
@@ -4196,6 +4270,24 @@ class RLMEnv(vf.StatefulToolEnv):
                 state["raw_prompt"] = state["prompt"]
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
+        # Rich per-turn data for prime-rl: raw input and output for the root model
+        trajectory = state.get("trajectory", [])
+        if not trajectory:
+            return
+        last_step = trajectory[-1]
+        extras = last_step.get("extras") or {}
+        if extras.get("is_sub_llm_call"):
+            return
+        extras["root_raw_input_messages"] = _root_turn_raw_input_messages(
+            prompt_messages
+        )
+        raw_output = _root_turn_raw_output_from_response(response)
+        if raw_output is not None:
+            extras["root_raw_output"] = raw_output
+        raw_meta = _root_turn_raw_response_meta(response)
+        if raw_meta is not None:
+            extras["root_raw_response_meta"] = raw_meta
+        last_step["extras"] = extras
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Build prompt messages, adding system prompt with tool docs on first turn."""
@@ -4268,6 +4360,16 @@ class RLMEnv(vf.StatefulToolEnv):
     ) -> Messages:
         """Override to set final_env_response when answer is ready to avoid extra model call"""
         tool_messages = await super().env_response(messages, state, **kwargs)
+        # Attach tool outputs to the last root trajectory step for prime-rl
+        trajectory = state.get("trajectory", [])
+        for step in reversed(trajectory):
+            if not (step.get("extras") or {}).get("is_sub_llm_call"):
+                extras = step.get("extras") or {}
+                extras["root_tool_outputs"] = [
+                    _serialize_for_prime_rl(cast(dict, m)) for m in tool_messages
+                ]
+                step["extras"] = extras
+                break
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
         return tool_messages
