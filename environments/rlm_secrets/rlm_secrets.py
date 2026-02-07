@@ -28,6 +28,7 @@ import os
 import random
 import shutil
 import string
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -284,20 +285,29 @@ class RLMSecretsEnv(RLMEnv):
         """Setup puzzle files in the filesystem."""
         # Extract puzzle from info and store directly in state for easy access
         info = state.get("info", {})
+        if not isinstance(info, dict):
+            info = {}
         puzzle = info.get("puzzle", {})
         state["puzzle"] = puzzle
 
-        # Let RLMEnv do its setup (creates fs_root, starts worker, etc.)
-        state = await super().setup_state(state)
-
-        # Write puzzle files to the filesystem
-        fs_root = state.get("rlm_fs_root")
-        if fs_root and puzzle:
+        temp_dir: str | None = None
+        if puzzle:
+            temp_dir = tempfile.mkdtemp(prefix="rlm_secrets_")
             for filename, content in zip(
                 puzzle.get("filenames", []), puzzle.get("contents", [])
             ):
-                filepath = Path(fs_root) / filename
+                filepath = Path(temp_dir) / filename
                 filepath.write_text(content, encoding="utf-8")
+            info = dict(info)
+            info["context_dir"] = temp_dir
+            state["info"] = info
+
+        try:
+            # Let RLMEnv do its setup (creates fs_root, starts worker, etc.)
+            state = await super().setup_state(state)
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, True)
 
         return state
 

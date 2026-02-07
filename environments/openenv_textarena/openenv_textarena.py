@@ -1,4 +1,3 @@
-from pathlib import Path
 import re
 from typing import Any, cast
 
@@ -39,9 +38,7 @@ def render_textarena_prompt(
     observation: Any,
     *,
     context: str = "reset",
-    **kwargs: Any,
 ) -> ChatMessages:
-    del kwargs
     if not isinstance(observation, dict):
         raise RuntimeError(
             f"openenv-textarena prompt renderer expected dict observation, got {type(observation).__name__}."
@@ -72,7 +69,6 @@ def load_environment(
     seed: int = 0,
 ):
     return vf.OpenEnvEnv(
-        openenv_project=Path(__file__).parent / "proj",
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,

@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Any, cast
 
 import verifiers as vf
@@ -10,9 +9,7 @@ def render_echo_prompt(
     *,
     action_schema: dict[str, Any] | None = None,
     context: str = "reset",
-    **kwargs: Any,
 ) -> ChatMessages:
-    del kwargs
     if not isinstance(observation, dict):
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
@@ -50,7 +47,6 @@ def load_environment(
     seed: int = 0,
 ):
     return vf.OpenEnvEnv(
-        openenv_project=Path(__file__).parent / "proj",
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,

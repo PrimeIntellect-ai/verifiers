@@ -78,8 +78,8 @@ def main():
         "--endpoints-path",
         "-e",
         type=str,
-        default="./configs/endpoints.py",
-        help="Path to API endpoints registry",
+        default="./configs/endpoints.toml",
+        help="Path to API endpoints registry (.toml preferred, .py supported)",
     )
     parser.add_argument("--api-key-var", "-k", type=str, default=None)
     parser.add_argument("--api-base-url", "-b", type=str, default=None)
@@ -152,9 +152,36 @@ def main():
     api_base_url_override = args.api_base_url is not None
 
     if args.model in endpoints:
-        endpoint = endpoints[args.model]
-        api_key_var = args.api_key_var if api_key_override else endpoint["key"]
-        api_base_url = args.api_base_url if api_base_url_override else endpoint["url"]
+        endpoint_group = endpoints[args.model]
+        endpoint = endpoint_group[0]
+
+        if api_key_override:
+            api_key_var = args.api_key_var
+        else:
+            endpoint_keys = {entry["key"] for entry in endpoint_group}
+            if len(endpoint_keys) > 1:
+                raise ValueError(
+                    f"Endpoint alias '{args.model}' maps to multiple API key vars {sorted(endpoint_keys)}, "
+                    "which is not yet supported by GEPA config. Please set --api-key-var explicitly."
+                )
+            api_key_var = endpoint["key"]
+
+        if api_base_url_override:
+            api_base_url = args.api_base_url
+        else:
+            endpoint_urls = {entry["url"] for entry in endpoint_group}
+            if len(endpoint_urls) > 1:
+                raise ValueError(
+                    f"Endpoint alias '{args.model}' maps to multiple URLs {sorted(endpoint_urls)} and GEPA currently requires a single --api-base-url."
+                )
+            api_base_url = endpoint["url"]
+
+        endpoint_models = {entry["model"] for entry in endpoint_group}
+        if len(endpoint_models) > 1:
+            raise ValueError(
+                f"Endpoint alias '{args.model}' maps to multiple model ids {sorted(endpoint_models)}, "
+                "which is not yet supported by GEPA config."
+            )
         model = endpoint["model"]
     else:
         api_key_var = args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
@@ -165,7 +192,29 @@ def main():
 
     # Resolve reflection model and its client config
     if args.reflection_model and args.reflection_model in endpoints:
-        reflection_endpoint = endpoints[args.reflection_model]
+        reflection_endpoint_group = endpoints[args.reflection_model]
+        reflection_endpoint = reflection_endpoint_group[0]
+
+        reflection_endpoint_models = {
+            entry["model"] for entry in reflection_endpoint_group
+        }
+        if len(reflection_endpoint_models) > 1:
+            raise ValueError(
+                f"Endpoint alias '{args.reflection_model}' maps to multiple model ids {sorted(reflection_endpoint_models)}, "
+                "which is not yet supported by GEPA reflection config."
+            )
+        reflection_endpoint_keys = {entry["key"] for entry in reflection_endpoint_group}
+        if len(reflection_endpoint_keys) > 1:
+            raise ValueError(
+                f"Endpoint alias '{args.reflection_model}' maps to multiple API key vars {sorted(reflection_endpoint_keys)}, "
+                "which is not yet supported by GEPA reflection config."
+            )
+        reflection_endpoint_urls = {entry["url"] for entry in reflection_endpoint_group}
+        if len(reflection_endpoint_urls) > 1:
+            raise ValueError(
+                f"Endpoint alias '{args.reflection_model}' maps to multiple URLs {sorted(reflection_endpoint_urls)} and GEPA currently requires a single --api-base-url."
+            )
+
         reflection_model = reflection_endpoint["model"]
         reflection_api_key_var = reflection_endpoint["key"]
         reflection_api_base_url = reflection_endpoint["url"]

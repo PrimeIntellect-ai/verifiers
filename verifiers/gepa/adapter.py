@@ -14,6 +14,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.message_utils import message_to_printable
 from verifiers.utils.save_utils import make_serializable
 
@@ -35,11 +36,13 @@ def make_reflection_lm(
     """
     import os
 
+    resolved_client_config = resolve_client_config(client_config)
+
     client = OpenAI(
-        api_key=os.environ.get(client_config.api_key_var, ""),
-        base_url=client_config.api_base_url,
-        timeout=client_config.timeout,
-        max_retries=client_config.max_retries,
+        api_key=os.environ.get(resolved_client_config.api_key_var, ""),
+        base_url=resolved_client_config.api_base_url,
+        timeout=resolved_client_config.timeout,
+        max_retries=resolved_client_config.max_retries,
     )
 
     def reflection_lm(prompt: str) -> str:
