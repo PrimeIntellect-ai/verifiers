@@ -13,9 +13,9 @@ repos:
         types_or: [python, pyi]
       - id: sync-agents-md
         name: Sync AGENTS.md from docs
-        entry: uv run python scripts/sync_agents_md.py
+        entry: uv run python scripts/sync.py
         language: system
-        files: ^docs/(overview|environments)\.md$
+        files: ^(docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py)$
         pass_filenames: false
       - id: ty
         name: ty
