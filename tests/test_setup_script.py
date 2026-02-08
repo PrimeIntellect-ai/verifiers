@@ -28,7 +28,7 @@ def test_run_setup_downloads_endpoints_toml_and_rl_plus_gepa_configs(
     assert config_batches == [setup.GEPA_CONFIGS, setup.RL_CONFIGS]
 
 
-def test_run_setup_vf_rl_is_deprecated_and_does_not_download_vf_rl_configs(
+def test_run_setup_with_prime_rl_downloads_prime_configs_only(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -44,8 +44,10 @@ def test_run_setup_vf_rl_is_deprecated_and_does_not_download_vf_rl_configs(
         "download_configs",
         lambda configs: config_batches.append(list(configs)),
     )
+    monkeypatch.setattr(setup, "install_prime_rl", lambda: None)
+    monkeypatch.setattr(setup, "install_environments_to_prime_rl", lambda: None)
 
-    setup.run_setup(skip_install=True, skip_agents_md=True, vf_rl=True)
+    setup.run_setup(skip_install=True, skip_agents_md=True, prime_rl=True)
 
     assert downloaded == [(setup.ENDPOINTS_SRC, setup.ENDPOINTS_DST)]
-    assert config_batches == [setup.GEPA_CONFIGS]
+    assert config_batches == [setup.PRIME_RL_CONFIGS, setup.GEPA_CONFIGS]

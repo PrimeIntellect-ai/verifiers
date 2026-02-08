@@ -41,7 +41,13 @@ def _ensure_table(value: object, field_name: str) -> dict[str, Any]:
         return {}
     if not isinstance(value, dict):
         raise ValueError(f"'{field_name}' must be a TOML table.")
-    return dict(value)
+
+    table: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"'{field_name}' must have string keys.")
+        table[key] = item
+    return table
 
 
 def load_gepa_toml_config(path: Path) -> dict[str, Any]:
