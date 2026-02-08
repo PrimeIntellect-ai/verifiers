@@ -441,7 +441,7 @@ def main():
         assert api_key_var is not None
         resolved_api_key_var = api_key_var
 
-        endpoint_configs: list[ClientConfig] = []
+        endpoint_configs = []
         if (
             endpoint_group is not None
             and not api_base_url_override
