@@ -48,7 +48,7 @@ verifiers/
 │   ├── rubrics/        # Rubric classes
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
-│   │   └── trainer/    # RLTrainer implementation
+│   │   └── trainer/    # Trainer implementation
 │   ├── scripts/        # CLI entry points
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
