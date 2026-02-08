@@ -12,7 +12,7 @@ This section covers how to use Verifiers environments for RL training with our H
     - [Setup and Configuration](#setup-and-configuration)
     - [Generation Parameters](#generation-parameters)
     - [Training Schedule](#training-schedule)
-- [Prompt Optimization with `vf-gepa`](#prompt-optimization-with-vf-gepa)
+- [Prompt Optimization with `prime gepa run`](#prompt-optimization-with-prime-gepa-run)
     - [Usage](#usage)
     - [Output](#output)
 - [RL Rules of Thumb](#rl-rules-of-thumb)
@@ -204,15 +204,15 @@ Core fields in `[trainer.args]`:
 
 By default, `vf.RLTrainer` will use Liger Kernel for optimized training. To disable Liger Kernel, set `use_liger = false` in `[trainer.args]`.
 
-## Prompt Optimization with `vf-gepa`
+## Prompt Optimization with `prime gepa run`
 
-`vf-gepa` is a CLI for automatic system prompt optimization using [GEPA](https://github.com/gepa-ai/gepa) (Genetic-Pareto prompt optimization). It iteratively refines your environment's system prompt using a teacher LLM to reflect on evaluation results, without requiring gradient-based training. Current support is for system prompt optimization only.
+`prime gepa run` is the CLI entrypoint for automatic system prompt optimization using [GEPA](https://github.com/gepa-ai/gepa) (Genetic-Pareto prompt optimization). It iteratively refines your environment's system prompt using a teacher LLM to reflect on evaluation results, without requiring gradient-based training. Current support is for system prompt optimization only.
 
 ### Usage
 
-Basic usage mirrors `vf-eval`:
+Basic usage mirrors `prime eval run`:
 ```bash
-vf-gepa wiki-search --model google/gemini-3-flash-preview
+prime gepa run wiki-search --model google/gemini-3-flash-preview
 ```
 
 This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
