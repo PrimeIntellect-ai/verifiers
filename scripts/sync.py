@@ -7,7 +7,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 
-REPO_GENERATED_NOTE = "<!-- Generated for repository development workflows. Do not edit directly. -->"
+REPO_GENERATED_NOTE = (
+    "<!-- Generated for repository development workflows. Do not edit directly. -->"
+)
 LAB_GENERATED_NOTE = "<!-- Generated for lab workspaces. -->"
 
 
@@ -27,7 +29,9 @@ def read_markdown(path: Path) -> str:
 
 def combine_sections(sections: list[str]) -> str:
     """Combine markdown sections with blank lines."""
-    return "\n\n".join(section.strip() for section in sections if section.strip()) + "\n"
+    return (
+        "\n\n".join(section.strip() for section in sections if section.strip()) + "\n"
+    )
 
 
 def write_if_changed(path: Path, content: str) -> None:
@@ -111,7 +115,9 @@ def compile_environment_guides() -> None:
     )
 
     write_if_changed(ROOT / "environments" / "AGENTS.md", repo_envs_agents)
-    write_if_changed(ROOT / "assets" / "lab" / "environments" / "AGENTS.md", lab_envs_agents)
+    write_if_changed(
+        ROOT / "assets" / "lab" / "environments" / "AGENTS.md", lab_envs_agents
+    )
 
 
 def main() -> None:
