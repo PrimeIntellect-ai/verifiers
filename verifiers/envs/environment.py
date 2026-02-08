@@ -87,6 +87,7 @@ from verifiers.utils.save_utils import (
     save_metadata,
     save_new_outputs,
     save_outputs,
+    save_trajectories,
     state_to_output,
     validate_resume_metadata,
 )
@@ -1232,6 +1233,7 @@ class Environment(ABC):
                     if save_results:
                         save_new_outputs(new_outputs, builder.results_path)
                         save_metadata(metadata, builder.results_path)
+                        save_trajectories(builder.outputs, builder.results_path)
             finally:
                 # cancel all outstanding tasks and await their completion
                 pending = [task for task in tasks.keys() if not task.done()]
@@ -1247,6 +1249,7 @@ class Environment(ABC):
             if save_results:
                 save_outputs(results["outputs"], builder.results_path)
                 save_metadata(results["metadata"], builder.results_path)
+                save_trajectories(results["outputs"], builder.results_path)
                 if push_to_hf_hub:
                     push_results_to_hf_hub(results, hf_hub_dataset_name)
                 if on_log is not None:

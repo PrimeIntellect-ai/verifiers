@@ -21,6 +21,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
     TokenUsage,
+    TrajectoryStep,
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -77,6 +78,59 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
     return extract_usage_tokens_from_response(response)
+
+
+def _deep_serializable(value: object) -> object:
+    """Recursively convert to JSON-serializable form, preserving structure (e.g. content parts with reasoning_content)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_deep_serializable(item) for item in value]
+    if isinstance(value, BaseModel):
+        return _deep_serializable(value.model_dump())
+    if isinstance(value, Mapping):
+        return {str(k): _deep_serializable(v) for k, v in value.items()}
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, BaseException):
+        return repr(value)
+    return make_serializable(value)
+
+
+def _messages_to_serializable_raw(messages: object) -> list[dict[str, Any]]:
+    """Convert messages to serializable list of dicts, preserving raw content structure (reasoning_content, content, etc.)."""
+    if not isinstance(messages, list):
+        return []
+    sanitized = sanitize_tool_calls(messages)
+    return cast(list[dict[str, Any]], _deep_serializable(sanitized))
+
+
+def trajectory_to_serializable(trajectory: list[TrajectoryStep]) -> list[dict[str, Any]]:
+    """Convert trajectory to JSON-serializable list of steps with raw prompt/completion per step (preserves reasoning_content, content)."""
+    out: list[dict[str, Any]] = []
+    for step in trajectory:
+        prompt = step.get("prompt")
+        completion = step.get("completion")
+        response = step.get("response")
+        usage: TokenUsage | None = None
+        if response is not None and getattr(response, "usage", None) is not None:
+            inp, out_tok = extract_usage_tokens(response)
+            usage = {"input_tokens": float(inp), "output_tokens": float(out_tok)}
+        step_dict: dict[str, Any] = {
+            "prompt": _messages_to_serializable_raw(prompt) if prompt else [],
+            "completion": _messages_to_serializable_raw(completion) if completion else [],
+            "usage": usage,
+            "tokens": step.get("tokens"),
+            "reward": step.get("reward"),
+            "advantage": step.get("advantage"),
+            "is_truncated": step.get("is_truncated", False),
+            "trajectory_id": step.get("trajectory_id", ""),
+            "extras": step.get("extras") or {},
+        }
+        out.append(step_dict)
+    return out
 
 
 def _coerce_token_usage(value: object) -> TokenUsage | None:
@@ -214,6 +268,10 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         output[k] = v
     # add state columns (must be serializable)
     for col in state_columns:
+        if col == "trajectory":
+            # Serialize step-by-step trajectory with raw prompt/completion per step (preserves reasoning_content, content).
+            output["trajectory"] = trajectory_to_serializable(state.get("trajectory", []))
+            continue
         value = state.get(col)
         if not is_json_serializable(value):
             raise ValueError(
@@ -557,6 +615,49 @@ def save_metadata(metadata: GenerateMetadata, result_path: Path):
             json.dump(metadata_dict, f, default=make_serializable)
         except Exception as e:
             logger.error(f"Failed to save metadata: {e}")
+
+
+def build_trajectories_list(outputs: list[RolloutOutput]) -> list[dict[str, Any]]:
+    """Build list of trajectory records for trajectories.json (HF-style input/output per step, with metadata to map to results.jsonl)."""
+    trajectories: list[dict[str, Any]] = []
+    for results_index, output in enumerate(outputs):
+        raw_trajectory = output.get("trajectory")
+        if not raw_trajectory:
+            continue
+        steps = [
+            {
+                "input": step.get("prompt") or [],
+                "output": step.get("completion") or [],
+            }
+            for step in raw_trajectory
+        ]
+        metadata = {
+            "results_index": results_index,
+            "example_id": output.get("example_id"),
+            "task": output.get("task", "default"),
+            "reward": output.get("reward"),
+            "is_completed": output.get("is_completed"),
+            "is_truncated": output.get("is_truncated"),
+            "stop_condition": output.get("stop_condition"),
+        }
+        if output.get("error") is not None:
+            metadata["error"] = output.get("error")
+        trajectories.append({"metadata": metadata, "steps": steps})
+    return trajectories
+
+
+def save_trajectories(outputs: list[RolloutOutput], results_path: Path) -> None:
+    """Write trajectories.json when any output has trajectory data (HF-style steps: list of {input, output} messages, metadata to map to results.jsonl)."""
+    trajectories = build_trajectories_list(outputs)
+    if not trajectories:
+        return
+    results_path.mkdir(parents=True, exist_ok=True)
+    trajectories_path = results_path / "trajectories.json"
+    with open(trajectories_path, "w") as f:
+        try:
+            json.dump(trajectories, f, default=make_serializable)
+        except Exception as e:
+            logger.error(f"Failed to save trajectories: {e}")
 
 
 def make_dataset(results: GenerateOutputs) -> Dataset:

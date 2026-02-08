@@ -165,6 +165,7 @@ Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
+- `trajectories.json` — (when `--state-columns trajectory`) one JSON list of trajectory records: each record has `metadata` (e.g. `results_index`, `example_id`, `task`, `reward`) to map to `results.jsonl`, and `steps` as a list of `{ "input": messages, "output": messages }` in HF dataset format (raw messages / tool calls per step)
 
 ### Resuming Evaluations
 
@@ -216,6 +217,8 @@ The `--state-columns` flag allows saving environment-specific state fields that 
 ```bash
 prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
+
+Including `trajectory` in state columns (e.g. `-C trajectory`) saves step-by-step trajectories: each rollout’s `trajectory` is written in `results.jsonl` per line, and a separate `trajectories.json` is written with a list of `{ "metadata": {...}, "steps": [ { "input": [...], "output": [...] } ] }` so you can map each trajectory to its row in `results.jsonl` via `metadata.results_index`. **RLMEnv** adds `trajectory` to state columns by default, so RLM tasks get trajectories and `trajectories.json` saved without passing `-C trajectory`.
 
 ## Environment Defaults
 

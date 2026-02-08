@@ -2622,6 +2622,9 @@ class RLMEnv(vf.StatefulToolEnv):
         **kwargs: Additional arguments passed to StatefulToolEnv
     """
 
+    # Save step-by-step trajectories (and trajectories.json) by default for RLM evals.
+    default_state_columns: list[str] = ["trajectory"]
+
     def __init__(
         self,
         tools: list[Callable] | None = None,

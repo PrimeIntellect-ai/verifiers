@@ -537,6 +537,12 @@ async def run_evaluation(
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
+    # Merge env default state_columns (e.g. RLMEnv saves trajectory by default)
+    state_columns = list(config.state_columns)
+    for col in getattr(vf_env, "default_state_columns", []):
+        if col not in state_columns:
+            state_columns.append(col)
+
     # set extra environment kwargs
     if config.extra_env_kwargs:
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
@@ -576,7 +582,7 @@ async def run_evaluation(
             rollouts_per_example=config.rollouts_per_example,
             max_concurrent=effective_group_max_concurrent,
             results_path=results_path,
-            state_columns=config.state_columns,
+            state_columns=state_columns,
             save_results=config.save_results,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,

@@ -18,11 +18,15 @@ from pydantic import BaseModel
 from verifiers.types import ClientConfig
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
+    build_trajectories_list,
     extract_usage_tokens,
     load_outputs,
     make_serializable,
     save_new_outputs,
+    save_trajectories,
+    state_to_output,
     states_to_outputs,
+    trajectory_to_serializable,
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
@@ -247,6 +251,58 @@ class TestSavingResults:
         with pytest.raises(ValueError, match="not JSON-serializable"):
             states_to_outputs(states, state_columns=["client"])
 
+    def test_trajectory_state_column_serializes_step_by_step_raw_content(
+        self, make_state
+    ):
+        """state_columns=['trajectory'] saves step-by-step trajectory with raw prompt/completion (reasoning_content, content)."""
+        # Step with raw content parts (e.g. reasoning_content + content)
+        step_prompt = [{"role": "user", "content": "Solve 2+2"}]
+        step_completion = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "reasoning_content", "text": "Let me add."},
+                    {"type": "content", "text": "4"},
+                ],
+            }
+        ]
+        mock_response = type(
+            "Response",
+            (),
+            {"usage": {"input_tokens": 5, "output_tokens": 10}},
+        )()
+        trajectory = [
+            {
+                "prompt": step_prompt,
+                "completion": step_completion,
+                "response": mock_response,
+                "tokens": None,
+                "reward": None,
+                "advantage": None,
+                "is_truncated": False,
+                "trajectory_id": "tid-1",
+                "extras": {},
+            }
+        ]
+        state = make_state(
+            prompt=[{"role": "user", "content": "What is 2+2?"}],
+            completion=[{"role": "assistant", "content": "4"}],
+            trajectory=trajectory,
+        )
+        output = state_to_output(state, state_columns=["trajectory"])
+        assert "trajectory" in output
+        traj = output["trajectory"]
+        assert len(traj) == 1
+        assert traj[0]["prompt"] == step_prompt
+        assert traj[0]["completion"] == step_completion
+        assert traj[0]["usage"] == {"input_tokens": 5.0, "output_tokens": 10.0}
+        assert traj[0]["trajectory_id"] == "tid-1"
+        # Round-trip JSON (raw content with reasoning_content preserved)
+        dumped = json.dumps(output, default=make_serializable)
+        loaded = json.loads(dumped)
+        assert loaded["trajectory"][0]["completion"][0]["content"][0]["type"] == "reasoning_content"
+        assert loaded["trajectory"][0]["completion"][0]["content"][1]["type"] == "content"
+
 
 class TestLoadOutputs:
     def test_ignores_malformed_trailing_line(self, tmp_path: Path):
@@ -320,6 +376,78 @@ class TestSaveNewOutputs:
             1,
             3,
         ]
+
+
+class TestTrajectoriesFile:
+    def test_build_trajectories_list_shape_and_metadata(self):
+        """trajectories.json shape: list of {metadata, steps}, steps = [{input, output}], metadata maps to results.jsonl."""
+        outputs = [
+            {
+                "example_id": 0,
+                "task": "default",
+                "reward": 0.5,
+                "is_completed": True,
+                "trajectory": [
+                    {
+                        "prompt": [{"role": "user", "content": "Hi"}],
+                        "completion": [{"role": "assistant", "content": "Hello"}],
+                    },
+                    {
+                        "prompt": [{"role": "user", "content": "Bye"}],
+                        "completion": [{"role": "assistant", "content": "Bye"}],
+                    },
+                ],
+            },
+            {"example_id": 1, "task": "other", "reward": 0.0, "trajectory": []},
+            {
+                "example_id": 2,
+                "task": "t2",
+                "reward": 1.0,
+                "trajectory": [
+                    {
+                        "prompt": [{"role": "user", "content": "One"}],
+                        "completion": [{"role": "assistant", "content": "Two"}],
+                    },
+                ],
+            },
+        ]
+        out = build_trajectories_list(outputs)
+        assert len(out) == 2
+        assert out[0]["metadata"]["results_index"] == 0
+        assert out[0]["metadata"]["example_id"] == 0
+        assert out[0]["metadata"]["task"] == "default"
+        assert out[0]["metadata"]["reward"] == 0.5
+        assert len(out[0]["steps"]) == 2
+        assert out[0]["steps"][0]["input"] == [{"role": "user", "content": "Hi"}]
+        assert out[0]["steps"][0]["output"] == [{"role": "assistant", "content": "Hello"}]
+        assert out[1]["metadata"]["results_index"] == 2
+        assert out[1]["steps"][0]["input"] == [{"role": "user", "content": "One"}]
+
+    def test_save_trajectories_writes_json_and_skips_when_empty(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        outputs_with_traj = [
+            {
+                "example_id": 0,
+                "task": "default",
+                "reward": 0.0,
+                "trajectory": [
+                    {"prompt": [{"role": "user", "content": "x"}], "completion": [{"role": "assistant", "content": "y"}]},
+                ],
+            },
+        ]
+        save_trajectories(outputs_with_traj, results_path)
+        assert (results_path / "trajectories.json").exists()
+        data = json.loads((results_path / "trajectories.json").read_text())
+        assert len(data) == 1
+        assert data[0]["metadata"]["results_index"] == 0
+        assert data[0]["steps"][0]["input"][0]["content"] == "x"
+        save_trajectories([], results_path)
+        assert (results_path / "trajectories.json").exists()
+        save_trajectories([{"example_id": 0, "task": "t", "reward": 0.0}], results_path)
+        content_after = (results_path / "trajectories.json").read_text()
+        assert content_after  # file still exists from before; we don't delete it when empty
+        data_after = json.loads(content_after)
+        assert len(data_after) == 1
 
 
 class TestResumeMetadataValidation:
