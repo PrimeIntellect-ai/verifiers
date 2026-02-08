@@ -82,9 +82,12 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
 def _coerce_token_usage(value: object) -> TokenUsage | None:
     if not isinstance(value, Mapping):
         return None
+    mapping_value = cast(Mapping[str, Any], value)
     try:
-        input_tokens = float(value.get("input_tokens", 0.0))
-        output_tokens = float(value.get("output_tokens", 0.0))
+        input_raw = mapping_value.get("input_tokens")
+        output_raw = mapping_value.get("output_tokens")
+        input_tokens = float(0.0 if input_raw is None else input_raw)
+        output_tokens = float(0.0 if output_raw is None else output_raw)
     except (TypeError, ValueError):
         return None
     return {

@@ -161,7 +161,6 @@ asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]
 
 [tool.ty.rules]
-unresolved-import = "warn"
 unknown-argument = "warn"
 redundant-cast = "ignore"
 
