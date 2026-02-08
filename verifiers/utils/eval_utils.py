@@ -129,9 +129,25 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
                 f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
             )
 
+        url = raw_entry_dict.get("url")
+        api_base_url = raw_entry_dict.get("api_base_url")
+        if url is not None and api_base_url is not None and url != api_base_url:
+            raise ValueError(
+                f"Conflicting values for 'url' and 'api_base_url' in {entry_source}"
+            )
+
+        key = raw_entry_dict.get("key")
+        api_key_var = raw_entry_dict.get("api_key_var")
+        if key is not None and api_key_var is not None and key != api_key_var:
+            raise ValueError(
+                f"Conflicting values for 'key' and 'api_key_var' in {entry_source}"
+            )
+
         endpoint_payload = {
             k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
         }
+        endpoint_payload["url"] = url if url is not None else api_base_url
+        endpoint_payload["key"] = key if key is not None else api_key_var
         endpoint = _coerce_endpoint(
             endpoint_payload,
             source=f"{entry_source} (endpoint_id={endpoint_id!r})",
