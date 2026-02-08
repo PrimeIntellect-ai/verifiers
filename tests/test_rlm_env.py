@@ -1380,12 +1380,8 @@ class TestSubLLMTrajectorySteps:
                 new=AsyncMock(return_value=token_payload),
             ),
             patch(
-                "verifiers.envs.experimental.rlm_env.parse_response_messages",
+                "verifiers.envs.experimental.rlm_env.parse_response_message",
                 new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
-            ),
-            patch(
-                "verifiers.envs.experimental.rlm_env.parse_is_truncated",
-                new=AsyncMock(return_value=False),
             ),
         ):
             await rlm_env._run_sub_llm_request(

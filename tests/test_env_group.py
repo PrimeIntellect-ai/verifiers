@@ -90,7 +90,7 @@ class TestEnvGroupRubric:
         }
         state["is_completed"] = False
         state["stop_condition"] = None
-        state["oai_tools"] = []
+        state["tool_defs"] = []
         state["reward"] = None
         state["metrics"] = None
 
@@ -126,7 +126,7 @@ class TestEnvGroupRubric:
         }
         state["is_completed"] = False
         state["stop_condition"] = None
-        state["oai_tools"] = []
+        state["tool_defs"] = []
         state["reward"] = None
         state["metrics"] = None
 

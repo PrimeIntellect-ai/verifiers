@@ -71,11 +71,11 @@ class TestStatefulToolEnv:
 
         schema = next(
             tool
-            for tool in mock_stateful_tool_env.oai_tools
-            if tool["function"]["name"] == "secret_tool"
+            for tool in mock_stateful_tool_env.tool_defs
+            if tool["name"] == "secret_tool"
         )
 
-        assert "secret" not in schema["function"]["parameters"]["properties"]
+        assert "secret" not in schema["parameters"]["properties"]
         assert mock_stateful_tool_env.skipped_args["secret_tool"] == ["secret"]
         assert "secret_tool" in mock_stateful_tool_env.tool_map
 
@@ -87,10 +87,10 @@ class TestStatefulToolEnv:
 
         schema = next(
             t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "tool_with_dict"
+            for t in mock_stateful_tool_env.tool_defs
+            if t["name"] == "tool_with_dict"
         )
-        assert "state" not in schema["function"]["parameters"]["properties"]
+        assert "state" not in schema["parameters"]["properties"]
 
     def test_add_tool_does_not_mutate_original_signature(self, mock_stateful_tool_env):
         """Verify that add_tool with args_to_skip doesn't mutate the original function."""
@@ -113,11 +113,11 @@ class TestStatefulToolEnv:
         # But schema should have hidden removed
         schema = next(
             t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "my_tool"
+            for t in mock_stateful_tool_env.tool_defs
+            if t["name"] == "my_tool"
         )
-        assert "hidden" not in schema["function"]["parameters"]["properties"]
-        assert "command" in schema["function"]["parameters"]["properties"]
+        assert "hidden" not in schema["parameters"]["properties"]
+        assert "command" in schema["parameters"]["properties"]
 
     def test_add_tool_does_not_mutate_bound_method_signature(
         self, mock_stateful_tool_env
@@ -144,11 +144,11 @@ class TestStatefulToolEnv:
         # But schema should have hidden removed
         schema = next(
             t
-            for t in mock_stateful_tool_env.oai_tools
-            if t["function"]["name"] == "my_tool"
+            for t in mock_stateful_tool_env.tool_defs
+            if t["name"] == "my_tool"
         )
-        assert "hidden" not in schema["function"]["parameters"]["properties"]
-        assert "command" in schema["function"]["parameters"]["properties"]
+        assert "hidden" not in schema["parameters"]["properties"]
+        assert "command" in schema["parameters"]["properties"]
 
     @pytest.mark.asyncio
     async def test_tool_env_tool_invalid_json_arguments(

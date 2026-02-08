@@ -11,8 +11,10 @@ from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import (
     GenerateOutputs,
     Messages,
+    Response,
     RolloutInput,
     SamplingArgs,
+    Tool,
 )
 from verifiers.utils.save_utils import make_dataset as build_dataset
 
@@ -40,15 +42,13 @@ class SimpleEnvironment(Environment):
             prompt_messages = state["prompt"]
             response = await self.get_model_response(state, prompt_messages)
 
-            from verifiers.utils.response_utils import parse_response_messages
+            from verifiers.utils.response_utils import parse_response_message
 
-            completion_messages = await parse_response_messages(
-                response, self.message_type
-            )
+            completion_messages = await parse_response_message(response)
             from verifiers.types import TrajectoryStep
             from verifiers.utils.response_utils import parse_response_tokens
 
-            tokens = await parse_response_tokens(response, self.message_type)
+            tokens = await parse_response_tokens(response)
             trajectory_step = TrajectoryStep(
                 prompt=prompt_messages,
                 completion=completion_messages,
@@ -98,6 +98,31 @@ class TestEnvironmentBase:
         )
         assert env.dataset is None
         assert env.eval_dataset is not None
+
+    def test_environment_with_legacy_oai_tools_normalizes_tool_defs(
+        self, sample_dataset
+    ):
+        """Test constructor-time legacy oai_tools normalization."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+            oai_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "description": "Echo text",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+        assert env.tool_defs is not None
+        assert isinstance(env.tool_defs[0], Tool)
+        assert env.tool_defs[0].name == "echo"
+        assert env.oai_tools is not None
+        assert env.oai_tools[0]["function"]["name"] == "echo"
 
     def test_environment_no_datasets_raises_error(self):
         """Test that Environment raises error when no datasets provided."""
@@ -179,16 +204,11 @@ class TestEnvironmentBase:
             prompt,
         )
 
-        # Check response structure
-        assert hasattr(response, "choices")
+        # Check response structure (now returns Response model, not raw ChatCompletion)
         assert response is not None
-        assert response.choices is not None
-        assert len(response.choices) > 0
-        assert response.choices[0] is not None
-        assert isinstance(response.choices[0], Choice)
-        assert hasattr(response.choices[0], "message")
-        assert response.choices[0].message is not None
-        assert hasattr(response.choices[0].message, "content")
+        assert isinstance(response, Response)
+        assert response.message is not None
+        assert response.message.content is not None
         mock_openai_client.chat.completions.create.assert_called_once()
 
     @pytest.mark.asyncio
@@ -214,12 +234,47 @@ class TestEnvironmentBase:
             prompt,
         )
 
-        # Check response structure
-        assert hasattr(response, "choices")
+        # Check response structure (now returns Response model, not raw Completion)
         assert response is not None
-        assert len(response.choices) > 0
-        assert hasattr(response.choices[0], "text")
+        assert isinstance(response, Response)
+        assert response.message is not None
+        assert response.message.content is not None
         mock_openai_client.completions.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_init_state_normalizes_info_oai_tools(
+        self, mock_openai_client, sample_dataset, make_input
+    ):
+        """Test init_state normalizes legacy info.oai_tools into state.tool_defs."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        prompt: Messages = [{"role": "user", "content": "Hello"}]
+        state = await env.init_state(
+            input=make_input(
+                prompt=prompt,
+                info={
+                    "oai_tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "description": "Echo text",
+                                "parameters": {"type": "object", "properties": {}},
+                            },
+                        }
+                    ]
+                },
+            ),
+            client=mock_openai_client,
+            model="test-model",
+        )
+        assert state["tool_defs"]
+        first_tool = state["tool_defs"][0]
+        assert isinstance(first_tool, Tool)
+        assert first_tool.name == "echo"
 
     @pytest.mark.asyncio
     async def test_a_generate_with_score_rollouts(

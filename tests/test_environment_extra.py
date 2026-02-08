@@ -55,12 +55,12 @@ class DummyEnvironment(Environment):
 
         from verifiers.types import TrajectoryStep
         from verifiers.utils.response_utils import (
-            parse_response_messages,
+            parse_response_message,
             parse_response_tokens,
         )
 
-        completion_messages = await parse_response_messages(response, self.message_type)
-        tokens = await parse_response_tokens(response, self.message_type)
+        completion_messages = await parse_response_message(response)
+        tokens = await parse_response_tokens(response)
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
@@ -109,10 +109,11 @@ async def test_get_model_response_chat_with_tools(
 ):
     env = make_dummy_env(mock_openai_client)
     prompt: vf.Messages = [{"role": "user", "content": "Hello"}]
-    tools = [
+    tool_defs = [
         {
-            "type": "function",
-            "function": {"name": "echo", "description": "echo", "parameters": {}},
+            "name": "echo",
+            "description": "echo",
+            "parameters": {},
         }
     ]
     state = await env.init_state(
@@ -120,7 +121,7 @@ async def test_get_model_response_chat_with_tools(
         client=mock_openai_client,
         model="test-model",
     )
-    state["oai_tools"] = tools
+    state["tool_defs"] = tool_defs
     resp = await env.get_model_response(
         state=state,
         prompt=prompt,
@@ -129,7 +130,18 @@ async def test_get_model_response_chat_with_tools(
     assert hasattr(resp, "choices")
     assert mock_openai_client.chat.completions.create.await_count == 1
     kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
-    assert "tools" in kwargs and kwargs["tools"] == tools
+    assert "tools" in kwargs
+    assert kwargs["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "echo",
+                "parameters": {},
+                "strict": True,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -143,7 +155,13 @@ async def test_get_model_response_completion_rejects_tools(
             client=mock_openai_client,
             model="test-model",
         )
-        state["oai_tools"] = [{"type": "function", "function": {"name": "noop"}}]
+        state["tool_defs"] = [
+            {
+                "name": "noop",
+                "description": "",
+                "parameters": {},
+            }
+        ]
         await env.get_model_response(state=state, prompt="Complete this")
 
 
