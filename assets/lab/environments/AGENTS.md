@@ -1,6 +1,6 @@
 # environments/AGENTS.md
 
-<!-- Generated for repository development workflows. Do not edit directly. -->
+<!-- Generated for lab workspaces. -->
 
 This file mirrors the "Environments" documentation page.
 

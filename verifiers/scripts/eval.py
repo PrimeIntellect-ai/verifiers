@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from verifiers import setup_logging
-from verifiers.types import ClientConfig, ClientType, EvalConfig, EvalRunConfig
+from verifiers.types import (
+    ClientConfig,
+    ClientType,
+    EndpointClientConfig,
+    EvalConfig,
+    EvalRunConfig,
+)
 from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
@@ -466,19 +472,14 @@ def main():
         assert api_key_var is not None
         resolved_api_key_var = api_key_var
 
-        endpoint_configs: list[ClientConfig] = []
+        endpoint_configs: list[EndpointClientConfig] = []
         if (
             endpoint_group is not None
             and not api_base_url_override
             and len(endpoint_group) > 1
         ):
             endpoint_configs = [
-                ClientConfig(
-                    client_type=_normalize_client_type(
-                        raw_client_type
-                        if client_type_override
-                        else endpoint.get("client_type", client_type)
-                    ),
+                EndpointClientConfig(
                     api_key_var=(
                         resolved_api_key_var if api_key_override else endpoint["key"]
                     ),

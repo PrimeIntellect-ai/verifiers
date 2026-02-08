@@ -8,11 +8,7 @@ This section covers how to use Verifiers environments for RL training with our H
     - [Configuration](#configuration)
 - [Training with `prime-rl`](#training-with-prime-rl)
     - [Setup and Configuration](#setup-and-configuration)
-- [Training with `vf.RLTrainer`](#training-with-vfrltrainer)
-    - [Setup and Configuration](#setup-and-configuration)
-    - [Generation Parameters](#generation-parameters)
-    - [Training Schedule](#training-schedule)
-- [Prompt Optimization with `vf-gepa`](#prompt-optimization-with-vf-gepa)
+- [Prompt Optimization with `prime gepa run`](#prompt-optimization-with-prime-gepa-run)
     - [Usage](#usage)
     - [Output](#output)
 - [RL Rules of Thumb](#rl-rules-of-thumb)
@@ -37,17 +33,23 @@ Use the `prime lab setup` script to download example configuration files for Hos
 prime lab setup
 ```
 
-This will download example TOML configs for Hosted Training into `configs/lab/`, along with `endpoints.py`:
+This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
 ```
 configs/
-├── endpoints.py
-└── lab/
-    ├── alphabet-sort.toml
-    ├── gsm8k.toml
-    ├── math-python.toml
-    ├── reverse-text.toml
-    ├── wiki-search.toml
+├── endpoints.toml
+├── eval/
+│   ├── minimal.toml
+│   └── multi-env.toml
+├── rl/
+│   ├── alphabet-sort.toml
+│   ├── gsm8k.toml
+│   ├── math-python.toml
+│   ├── reverse-text.toml
+│   ├── wiki-search.toml
+│   └── wordle.toml
+└── gepa/
+    ├── base.toml
     └── wordle.toml
 ```
 
@@ -102,122 +104,15 @@ uv run prime-rl @ configs/prime-rl/wiki-search.toml
 
 This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 
 
-## Training with `vf.RLTrainer`
+## Prompt Optimization with `prime gepa run`
 
-> **Note:** `vf.RLTrainer` is intended for educational/demo purposes only and is not actively maintained. For production RL training, please use [`prime-rl`](#training-with-prime-rl) instead.
-
-If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with a similar core algorithm as `prime-rl`).
-
-The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `packages/verifiers-rl/verifiers_rl/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
-
-The feature set is intentionally kept minimal and focused. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the `prime-rl` trainer. 
-
-### Setup and Configuration
-
-To use `vf.RLTrainer` in your own project, install the optional RL package:
-```bash
-uv add verifiers-rl
-```
-
-Then, use the `vf-setup` script to download example configuration files for `vf.RLTrainer` into your workspace:
-
-```bash
-prime lab setup --vf-rl
-```
-This will download example TOML configs for `vf.RLTrainer` into `configs/vf-rl/`, along with `endpoints.py`:
-
-```
-configs/
-├── endpoints.py
-└── vf-rl/
-    ├── alphabet-sort.toml
-    ├── gsm8k.toml
-    ├── math-python.toml
-    ├── reverse-text.toml
-    ├── wiki-search.toml
-    └── wordle.toml
-```
-
-`vf-rl` can be used with a single TOML file, largely mirroring the configuration options for `prime-rl` but with some key differences in organization and feature sets.
-
-Example configuration file for the `primeintellect/wiki-search` Environment with `Qwen/Qwen3-4B-Instruct-2507`:
-
-```toml
-model = "Qwen/Qwen3-4B-Instruct-2507"
-
-[env]
-id = "primeintellect/wiki-search"
-
-[env.args]
-max_turns = 10
-
-[inference]
-gpus = 1
-
-[inference.args]
-enable_auto_tool_choice = true
-tool_call_parser = "hermes"
-
-[trainer]
-gpus = 1
-
-[trainer.args]
-run_name = "wiki-search"
-micro_batch_size = 4
-rollouts_per_example = 16
-batch_size = 1024
-max_steps = 500
-max_tokens = 512
-max_seq_len = 4096
-```
-
-To start a training run with `vf.RLTrainer`, do:
-
-```bash
-uv run vf-rl @ configs/vf-rl/wiki-search.toml
-```
-
-Key fields in `[trainer.args]`:
-- `rollouts_per_example`: completions per prompt (group size)
-- `micro_batch_size`: rollouts per GPU per step
-- `batch_size`: rollouts per global batch (must be divisible by `micro_batch_size * world_size`)
-
-**How to think about batch settings:**
-- `rollouts_per_example`: Larger groups (16-32) increase reward diversity but increase training time and memory usage
-- `micro_batch_size`: Limited by GPU memory after model weights
-- `batch_size`: Total rollouts per global batch (must be divisible by `micro_batch_size` and `rollouts_per_example`)
-
-### Generation Parameters
-
-Both `prime-rl` and `vf-rl` support configurable generation parameters, including:
-- `max_tokens`: maximum number of tokens to generate per turn
-- `temperature`: temperature for sampling
-- `top_p`: top-p sampling
-- `top_k`: top-k sampling
-- `min_p`: minimum probability for sampling
-- `repetition_penalty`: repetition penalty for sampling
-
-In `prime-rl`, these parameters are configured in the `[orchestrator.sampling]` section, and in `vf-rl`, they are configured in the `[trainer.args]` section.
-
-### Training Schedule
-
-Core fields in `[trainer.args]`:
-- `learning_rate`, `lr_scheduler_type`, `warmup_steps`, `max_steps`
-- `max_grad_norm`, `bf16`, `gradient_checkpointing`
-
-### Model loading
-
-By default, `vf.RLTrainer` will use Liger Kernel for optimized training. To disable Liger Kernel, set `use_liger = false` in `[trainer.args]`.
-
-## Prompt Optimization with `vf-gepa`
-
-`vf-gepa` is a CLI for automatic system prompt optimization using [GEPA](https://github.com/gepa-ai/gepa) (Genetic-Pareto prompt optimization). It iteratively refines your environment's system prompt using a teacher LLM to reflect on evaluation results, without requiring gradient-based training. Current support is for system prompt optimization only.
+`prime gepa run` is the CLI entrypoint for automatic system prompt optimization using [GEPA](https://github.com/gepa-ai/gepa) (Genetic-Pareto prompt optimization). It iteratively refines your environment's system prompt using a teacher LLM to reflect on evaluation results, without requiring gradient-based training. Current support is for system prompt optimization only.
 
 ### Usage
 
-Basic usage mirrors `vf-eval`:
+Basic usage mirrors `prime eval run`:
 ```bash
-vf-gepa wiki-search --model google/gemini-3-flash-preview
+prime gepa run wiki-search --model google/gemini-3-flash-preview
 ```
 
 This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
@@ -287,6 +182,10 @@ The best way to improve training is to ensure appropriate task difficulty for yo
 ## Other Trainers
 
 `verifiers` is intended to be largely trainer-agnostic and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
+
+### `vf.RLTrainer` (Legacy)
+
+The legacy `vf.RLTrainer` still exists for educational and experimental purposes via the optional `verifiers-rl` package and the `vf-rl` entrypoint, but it is not actively maintained. It is a compact single-node async RL trainer with a narrower feature set than production trainers. Its core implementation (`trainer.py` and `orchestrator.py` under `packages/verifiers-rl/verifiers_rl/rl/trainer/`) remains intentionally lightweight for algorithm experimentation. For production training and current guidance, use [`prime-rl`](#training-with-prime-rl).
 
 ### Tinker
 

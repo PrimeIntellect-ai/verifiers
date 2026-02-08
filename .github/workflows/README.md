@@ -4,8 +4,8 @@ This directory contains automated workflows for the verifiers project.
 
 ## Workflows
 
-### 1. Style (`style.yaml`)
-**Purpose**: Code style checking using ruff.
+### 1. Style (`style.yml`)
+**Purpose**: Code style checking using ruff and ty.
 
 **Triggers**:
 - Pull requests (opened, synchronized, reopened)
@@ -13,6 +13,7 @@ This directory contains automated workflows for the verifiers project.
 
 **What it does**:
 - Runs ruff for linting and formatting checks
+- Runs ty type checks with `uv run ty check verifiers`
 - Uses configuration from `pyproject.toml`
 
 ### 2. Test (`test.yml`)
@@ -38,20 +39,23 @@ It's recommended to set up branch protection rules for your main branch:
 3. Enable "Require status checks to pass before merging"
 4. Select the CI jobs you want to require
 
-## Running Tests Locally
+## Running Checks Locally
 
-To run tests locally the same way they run in CI:
+To run checks locally the same way they run in CI:
 
 ```bash
-# Install dependencies
-pip install -e .
-pip install pytest pytest-asyncio pytest-cov
+# Ty parity with CI (Python 3.13 target configured in `pyproject.toml`)
+uv run ty check verifiers
 
-# Run tests
-python -m pytest tests/ -v
+# Tests
+uv sync
+uv run pytest tests/ -v
+uv run pytest tests/ -v --cov=verifiers --cov-report=html
+```
+Tip: install pre-push hooks to block pushes when Ty fails:
 
-# Run tests with coverage
-python -m pytest tests/ -v --cov=verifiers --cov-report=html
+```bash
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 ## Customization

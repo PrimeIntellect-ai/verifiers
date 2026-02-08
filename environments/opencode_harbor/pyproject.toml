@@ -6,7 +6,7 @@ tags = ["eval", "cli_agent"]
 version = "0.1.1"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers>=0.1.10.dev2",
+    "verifiers>=0.1.10.dev3",
     "prime-sandboxes>=0.2.10",
     "tomli>=2.3.0",
 ]
