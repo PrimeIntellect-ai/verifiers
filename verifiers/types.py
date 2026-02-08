@@ -38,7 +38,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
@@ -256,7 +256,61 @@ class ClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
-    endpoint_configs: list["ClientConfig"] = Field(default_factory=list)
+    endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
+    timeout: float = 3600.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("endpoint_configs", mode="before")
+    @classmethod
+    def validate_non_recursive_endpoints(cls, value):
+        if not isinstance(value, list):
+            return value
+
+        normalized_endpoints = []
+        for endpoint in value:
+            if isinstance(endpoint, ClientConfig):
+                if endpoint.endpoint_configs:
+                    raise ValueError(
+                        "ClientConfig.endpoint_configs entries cannot include endpoint_configs"
+                    )
+                normalized_endpoints.append(
+                    endpoint.model_dump(
+                        mode="python",
+                        exclude={"endpoint_configs"},
+                        exclude_unset=True,
+                    )
+                )
+                continue
+
+            if (
+                isinstance(endpoint, dict)
+                and "endpoint_configs" in endpoint
+                and endpoint["endpoint_configs"]
+            ):
+                raise ValueError(
+                    "ClientConfig.endpoint_configs entries cannot include endpoint_configs"
+                )
+
+            nested = getattr(endpoint, "endpoint_configs", None)
+            if nested:
+                raise ValueError(
+                    "ClientConfig.endpoint_configs entries cannot include endpoint_configs"
+                )
+
+            normalized_endpoints.append(endpoint)
+
+        return normalized_endpoints
+
+
+class EndpointClientConfig(BaseModel):
+    """Leaf endpoint config used inside ClientConfig.endpoint_configs."""
+
+    client_idx: int = 0
+    api_key_var: str = "PRIME_API_KEY"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000

@@ -12,33 +12,21 @@ from verifiers.types import ClientConfig
 logger = logging.getLogger(__name__)
 
 
-def _resolve_client_config_impl(
-    config: ClientConfig, ancestors: list[ClientConfig] | None = None
-) -> ClientConfig:
-    """Resolve possibly nested endpoint configs to a single concrete client config."""
-    chain = list(ancestors or [])
-    visited = {id(ancestor) for ancestor in chain}
-    resolved = config
-    while resolved.endpoint_configs:
-        resolved_id = id(resolved)
-        if resolved_id in visited:
-            raise ValueError(
-                "Detected cyclic ClientConfig.endpoint_configs while resolving client"
-            )
-        visited.add(resolved_id)
-        chain.append(resolved)
-        endpoint_idx = resolved.client_idx % len(resolved.endpoint_configs)
-        resolved = resolved.endpoint_configs[endpoint_idx]
+def _resolve_client_config_impl(config: ClientConfig) -> ClientConfig:
+    """Resolve endpoint config overrides onto a concrete client config."""
+    if not config.endpoint_configs:
+        return ClientConfig.model_validate(config.model_dump(mode="python"))
 
-    resolved_data = resolved.model_dump(mode="python")
-    resolved_fields = set(resolved.model_fields_set)
-    for parent in reversed(chain):
-        for field_name in ClientConfig.model_fields:
-            if field_name == "endpoint_configs":
-                continue
-            if field_name not in resolved_fields:
-                resolved_data[field_name] = getattr(parent, field_name)
-                resolved_fields.add(field_name)
+    endpoint_idx = config.client_idx % len(config.endpoint_configs)
+    endpoint_config = config.endpoint_configs[endpoint_idx]
+
+    resolved_data = endpoint_config.model_dump(mode="python")
+    resolved_fields = set(endpoint_config.model_fields_set)
+    for field_name in ClientConfig.model_fields:
+        if field_name == "endpoint_configs":
+            continue
+        if field_name not in resolved_fields:
+            resolved_data[field_name] = getattr(config, field_name)
 
     return ClientConfig.model_validate(resolved_data)
 
@@ -50,10 +38,17 @@ def resolve_client_config(config: ClientConfig) -> ClientConfig:
 def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     """Expand a client config into one or more resolved endpoint configs."""
     if config.endpoint_configs:
-        return [
-            _resolve_client_config_impl(endpoint, ancestors=[config])
-            for endpoint in config.endpoint_configs
-        ]
+        expanded_configs: list[ClientConfig] = []
+        for endpoint_config in config.endpoint_configs:
+            expanded_data = endpoint_config.model_dump(mode="python")
+            expanded_fields = set(endpoint_config.model_fields_set)
+            for field_name in ClientConfig.model_fields:
+                if field_name == "endpoint_configs":
+                    continue
+                if field_name not in expanded_fields:
+                    expanded_data[field_name] = getattr(config, field_name)
+            expanded_configs.append(ClientConfig.model_validate(expanded_data))
+        return expanded_configs
     return [resolve_client_config(config)]
 
 
