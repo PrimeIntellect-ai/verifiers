@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
-    ChatCompletionToolParam,
     ClientConfig,
     ErrorInfo,
     GenerateMetadata,
@@ -19,6 +18,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
     State,
+    Tool,
     TokenUsage,
 )
 from verifiers.utils.error_utils import ErrorChain
@@ -101,7 +101,9 @@ def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     return dataset_name
 
 
-def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutput:
+def state_to_output(
+    state: State, state_columns: list[str] | None = None
+) -> RolloutOutput:
     """Convert a State to a serializable RolloutOutput.
 
     Args:
@@ -129,7 +131,7 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
-        oai_tools=state.get("oai_tools", None),
+        oai_tools=state.get("tool_defs"),
     )
     trajectory = state.get("trajectory", [])
     input_tokens = 0
@@ -176,7 +178,7 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
     for k, v in state_metrics.items():
         output[k] = v
     # add state columns (must be serializable)
-    for col in state_columns:
+    for col in state_columns or []:
         value = state.get(col)
         if not is_json_serializable(value):
             raise ValueError(
@@ -189,7 +191,7 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
 
 
 def states_to_outputs(
-    states: list[State], state_columns: list[str] = []
+    states: list[State], state_columns: list[str] | None = None
 ) -> list[RolloutOutput]:
     """Convert a list of States to serializable RolloutOutputs."""
     return [state_to_output(state, state_columns) for state in states]
@@ -229,7 +231,7 @@ class GenerateOutputsBuilder:
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []
-        self.tools_list: list[list[ChatCompletionToolParam] | None] = []
+        self.tools_list: list[list[Tool] | None] = []
 
     def add_outputs(self, new_outputs: list[RolloutOutput]) -> None:
         """Accumulate new outputs."""
@@ -278,10 +280,21 @@ class GenerateOutputsBuilder:
             }
 
         # Determine tools (use first non-None if all same)
-        def tools_key(tools: list | None) -> str:
+        def tool_name(tool: Tool | dict[str, Any]) -> str:
+            if isinstance(tool, dict):
+                function = tool.get("function")
+                if isinstance(function, dict):
+                    name = function.get("name")
+                    if isinstance(name, str):
+                        return name
+                name = tool.get("name")
+                return name if isinstance(name, str) else ""
+            return tool.name
+
+        def tools_key(tools: list[Tool] | None) -> str:
             if not tools:
                 return ""
-            return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
+            return str(sorted(tool_name(t) for t in tools))
 
         unique_tools = set(tools_key(t) for t in self.tools_list)
         tools = (

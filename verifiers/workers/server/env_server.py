@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 import verifiers as vf
@@ -52,7 +53,7 @@ class EnvServer(ABC):
         self.env_args = env_args or {}
         self.extra_env_kwargs = extra_env_kwargs or {}
 
-        self.clients: dict[str, AsyncOpenAI] = {}
+        self.clients: dict[str, AsyncOpenAI | AsyncAnthropic] = {}
         self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
@@ -126,7 +127,7 @@ class EnvServer(ABC):
         )
         return RunGroupResponse(outputs=outputs)
 
-    async def _resolve_client(self, client_config: ClientConfig) -> AsyncOpenAI:
+    async def _resolve_client(self, client_config: ClientConfig) -> AsyncOpenAI | AsyncAnthropic:
         client_key = client_config.model_dump_json()
         if client_key in self.clients:
             return self.clients[client_key]

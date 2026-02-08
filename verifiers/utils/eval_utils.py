@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
@@ -19,8 +19,6 @@ import numpy as np
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
 
-if TYPE_CHECKING:
-    pass
 from verifiers.types import (
     Endpoints,
     EvalConfig,
