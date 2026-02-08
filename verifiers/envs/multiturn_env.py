@@ -13,6 +13,7 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
+    TextMessage,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import concat_messages
@@ -72,59 +73,37 @@ class MultiTurnEnv(vf.Environment):
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
-        if self.message_type == "completion":
-            if len(state["trajectory"]) == 0:
-                return state["prompt"]
-            prev_turn_prompt = state["trajectory"][-1]["prompt"]
-            prev_turn_completion = state["trajectory"][-1]["completion"]
-            assert isinstance(prev_turn_prompt, str)
-            assert isinstance(prev_turn_completion, str)
-            messages = prev_turn_prompt + prev_turn_completion
-            env_response = await self.env_response(messages, state)
-            assert isinstance(env_response, str)
-            return messages + env_response
+        def as_messages(value: Messages | str) -> Messages:
+            if isinstance(value, str):
+                return [TextMessage(content=value)]
+            return value
 
         if len(state["trajectory"]) == 0:
-            return state["prompt"]
-        else:
-            prev_turn_prompt = state["trajectory"][-1]["prompt"]
-            prev_turn_completion = state["trajectory"][-1]["completion"]
-            messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-            env_response = await self.env_response(messages, state)
-            assert isinstance(env_response, list)
-            return concat_messages([messages, env_response])
+            return as_messages(state["prompt"])
+        prev_turn_prompt = as_messages(state["trajectory"][-1]["prompt"])
+        prev_turn_completion = as_messages(state["trajectory"][-1]["completion"])
+        messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+        env_response = await self.env_response(messages, state)
+        env_response_messages = as_messages(env_response)
+        return concat_messages([messages, env_response_messages])
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
-        if self.message_type == "completion":
-            if len(state["trajectory"]) == 0:
-                state["completion"] = ""
-                return
-            last_prompt = state["trajectory"][-1]["prompt"]
-            last_completion = state["trajectory"][-1]["completion"]
-            assert isinstance(last_prompt, str)
-            assert isinstance(last_completion, str)
-            full_conversation = last_prompt + last_completion
-            if state.get("final_env_response"):
-                final_env_response = state["final_env_response"]
-                assert isinstance(final_env_response, str)
-                full_conversation += final_env_response
-            prompt = state["prompt"]
-            assert isinstance(prompt, str)
-            state["completion"] = full_conversation[len(prompt) :]
-            return
+        def as_messages(value: Messages | str) -> Messages:
+            if isinstance(value, str):
+                return [TextMessage(content=value)]
+            return value
 
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
-        last_prompt = state["trajectory"][-1]["prompt"]
-        last_completion = state["trajectory"][-1]["completion"]
+        last_prompt = as_messages(state["trajectory"][-1]["prompt"])
+        last_completion = as_messages(state["trajectory"][-1]["completion"])
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
-            full_conversation = concat_messages(
-                [full_conversation, state["final_env_response"]]
-            )
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+            full_conversation = concat_messages([full_conversation, as_messages(state["final_env_response"])])
+        prompt_messages = as_messages(state["prompt"])
+        state["completion"] = full_conversation[len(prompt_messages) :]
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
@@ -136,13 +115,7 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages: Messages,
         response: Response,
     ):
-        if self.message_type == "completion":
-            completion_content = response.message.content
-            completion_messages = (
-                completion_content if isinstance(completion_content, str) else ""
-            )
-        else:
-            completion_messages = await parse_response_message(response)
+        completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)
         response_is_truncated = response.message.is_truncated or False
         is_truncated = response_is_truncated or (

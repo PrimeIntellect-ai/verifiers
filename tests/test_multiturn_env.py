@@ -298,6 +298,10 @@ class TestMultiTurnEnv:
             async def done_condition(self, state: State) -> bool:
                 if state["trajectory"]:
                     last_completion = state["trajectory"][-1]["completion"]
+                    if isinstance(last_completion, list):
+                        return "DONE" in "".join(
+                            str(msg.get("content", "")) for msg in last_completion
+                        )
                     if isinstance(last_completion, str):
                         return "DONE" in last_completion
                 return False
@@ -336,9 +340,10 @@ class TestMultiTurnEnv:
         assert state["is_completed"] is True
         assert "completion" in state  # Completion is set when is_completed returns True
         completion = state["completion"]
-        assert isinstance(completion, str)
-        assert "First response" in completion
-        assert "DONE" in completion
+        assert isinstance(completion, list)
+        completion_text = "".join(str(msg.get("content", "")) for msg in completion)
+        assert "First response" in completion_text
+        assert "DONE" in completion_text
 
     @pytest.mark.asyncio
     async def test_environment_response_state_modification(

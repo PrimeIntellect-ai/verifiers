@@ -629,10 +629,7 @@ class Environment(ABC):
         # Convert prompt to Pydantic messages
         raw_prompt = input.get("prompt")
         if isinstance(raw_prompt, str):
-            if self.message_type == "completion":
-                state["prompt"] = raw_prompt
-            else:
-                state["prompt"] = [TextMessage(content=raw_prompt)]
+            state["prompt"] = [TextMessage(content=raw_prompt)]
         elif isinstance(raw_prompt, list):
             state["prompt"] = [from_raw_message(dict(m)) for m in raw_prompt]
 
@@ -642,6 +639,7 @@ class Environment(ABC):
         )
         state["model"] = model
         state["sampling_args"] = sampling_args
+        state["message_type"] = self.message_type
         state["is_completed"] = False
         state["is_truncated"] = False
 
