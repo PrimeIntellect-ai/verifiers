@@ -8,7 +8,7 @@ from datasets import Dataset
 import verifiers as vf
 
 try:
-    import nltk  # type: ignore
+    import nltk
 except ImportError as e:
     raise ImportError(
         "TextArenaEnv requires nltk. Install with: uv add 'verifiers[ta]'"
@@ -17,12 +17,16 @@ except ImportError as e:
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
-nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore[invalid-assignment]
-    *args, **{**kwargs, "quiet": True}
-)
+
+
+def _quiet_download(*args: Any, **kwargs: Any) -> Any:
+    return _original_nltk_download(*args, **{**kwargs, "quiet": True})
+
+
+cast(Any, nltk).download = _quiet_download
 
 try:
-    import textarena as ta  # type: ignore
+    import textarena as ta
 except ImportError as e:
     raise ImportError(
         "TextArenaEnv requires textarena. Install with: uv add 'verifiers[ta]'"

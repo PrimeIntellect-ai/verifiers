@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: default `Parser`
 - **Rubric overview**: `JudgeRubric` uses a judge client/model/prompt to produce a 0–1 score
 
 ### Quickstart

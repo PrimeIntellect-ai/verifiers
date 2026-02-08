@@ -19,6 +19,7 @@ class TestImports:
     def _is_optional_dependency_error(error_msg: str) -> bool:
         """Check if an error indicates missing optional dependencies."""
         optional_dependency_patterns = [
+            "install as `verifiers-rl`",
             "install as `verifiers[all]`",
             "install as `verifiers[math]`",
             "install as `verifiers[",  # catches any [extra] pattern

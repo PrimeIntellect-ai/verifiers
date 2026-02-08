@@ -39,7 +39,7 @@ def format_dataset(
     ):
         dataset = dataset.rename_column("example_id", "src_id")
     if "example_id" not in dataset.column_names:
-        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+        dataset = dataset.add_column("example_id", range(len(dataset)))
 
     # extract format_prompt as a standalone function to avoid capturing self
     def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -273,10 +273,10 @@ def load_example_dataset(
             split = "test"
         aime_i = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        )  # type: ignore[redundant-cast]
+        )
         aime_ii = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
-        )  # type: ignore[redundant-cast]
+        )
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:

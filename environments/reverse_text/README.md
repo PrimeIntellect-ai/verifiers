@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: `XMLParser(["reversed_text"], answer_field="reversed_text")`
 - **Rubric overview**: LCS ratio between parsed answer and target reversed text
 
 ### Quickstart
