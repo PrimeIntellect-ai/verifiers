@@ -99,7 +99,7 @@ class AnthropicMessagesClient(
                 return block.model_dump()
             raise ValueError(f"Invalid content block type: {type(block)}")
 
-        def normalize_anthropic_content(content: Any) -> str | list[dict[str, Any]]:
+        def normalize_anthropic_content(content: Any) -> Any:
             if isinstance(content, str):
                 return content
             if not isinstance(content, list):
@@ -116,9 +116,7 @@ class AnthropicMessagesClient(
                 elif part_type == "image_url":
                     image_url = part.get("image_url", {})
                     url = (
-                        image_url.get("url")
-                        if isinstance(image_url, Mapping)
-                        else None
+                        image_url.get("url") if isinstance(image_url, Mapping) else None
                     )
                     if isinstance(url, str):
                         parsed = parse_data_url(url)
@@ -166,7 +164,7 @@ class AnthropicMessagesClient(
                 except json.JSONDecodeError:
                     return {}
             elif isinstance(tc_args, dict):
-                return tc_args
+                return cast(dict[str, Any], tc_args)
             return {}
 
         def from_legacy_chat_message(message: dict) -> AnthropicMessageParam | None:
@@ -177,7 +175,9 @@ class AnthropicMessagesClient(
             elif role == "user":
                 return AnthropicMessageParam(
                     role="user",
-                    content=normalize_anthropic_content(message.get("content", "")),
+                    content=cast(
+                        Any, normalize_anthropic_content(message.get("content", ""))
+                    ),
                 )
 
             elif role == "assistant":
@@ -232,7 +232,7 @@ class AnthropicMessagesClient(
             elif isinstance(message, UserMessage):
                 return AnthropicMessageParam(
                     role="user",
-                    content=normalize_anthropic_content(message.content),
+                    content=cast(Any, normalize_anthropic_content(message.content)),
                 )
             elif isinstance(message, AssistantMessage):
                 if message.tool_calls:
@@ -254,7 +254,13 @@ class AnthropicMessagesClient(
                         role="assistant", content=content_blocks
                     )
                 return AnthropicMessageParam(
-                    role="assistant", content=message.content or ""
+                    role="assistant",
+                    content=cast(
+                        Any,
+                        message.content
+                        if isinstance(message.content, str)
+                        else " ".join(content_to_text_chunks(message.content)),
+                    ),
                 )
             elif isinstance(message, ToolMessage):
                 return AnthropicMessageParam(
@@ -263,7 +269,12 @@ class AnthropicMessagesClient(
                         ToolResultBlockParam(
                             type="tool_result",
                             tool_use_id=message.tool_call_id,
-                            content=message.content,
+                            content=cast(
+                                Any,
+                                message.content
+                                if isinstance(message.content, str)
+                                else " ".join(content_to_text_chunks(message.content)),
+                            ),
                         )
                     ],
                 )
@@ -279,7 +290,9 @@ class AnthropicMessagesClient(
                     system_contents.append(" ".join(content_to_text_chunks(content)))
                 elif isinstance(msg, Mapping) and msg.get("role") == "system":
                     raw_content = msg["content"]
-                    system_contents.append(" ".join(content_to_text_chunks(raw_content)))
+                    system_contents.append(
+                        " ".join(content_to_text_chunks(raw_content))
+                    )
             return "\n\n".join(system_contents)
 
         system = extract_system_content(messages)
@@ -349,15 +362,24 @@ class AnthropicMessagesClient(
             tool_calls = []
             for content_block in content_blocks:
                 if content_block.type == "text":
-                    content += content_block.text
+                    text_value = getattr(content_block, "text", None)
+                    if isinstance(text_value, str):
+                        content += text_value
                 elif content_block.type == "thinking":
-                    reasoning_content += content_block.thinking
+                    thinking_value = getattr(content_block, "thinking", None)
+                    if isinstance(thinking_value, str):
+                        reasoning_content += thinking_value
                 elif content_block.type == "tool_use":
+                    tool_id = getattr(content_block, "id", None)
+                    tool_name = getattr(content_block, "name", None)
+                    tool_input = getattr(content_block, "input", None)
+                    if not isinstance(tool_id, str) or not isinstance(tool_name, str):
+                        continue
                     tool_calls.append(
                         ToolCall(
-                            id=content_block.id,
-                            name=content_block.name,
-                            arguments=json.dumps(content_block.input),
+                            id=tool_id,
+                            name=tool_name,
+                            arguments=json.dumps(tool_input),
                         )
                     )
                 else:

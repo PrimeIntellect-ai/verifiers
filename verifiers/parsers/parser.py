@@ -25,13 +25,36 @@ class Parser:
             return message.get(field, default)
         return getattr(message, field, default)
 
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            chunks.append(text)
+                    continue
+                text_attr = getattr(part, "text", None)
+                if isinstance(text_attr, str):
+                    chunks.append(text_attr)
+            return " ".join(chunks).strip()
+        return ""
+
     def get_assistant_messages(self, completion: Messages) -> Messages:
         """Helper function to extract assistant messages from a completion."""
-        return [msg for msg in completion if self._message_field(msg, "role") == "assistant"]
+        return [
+            msg for msg in completion if self._message_field(msg, "role") == "assistant"
+        ]
 
     def get_system_messages(self, completion: Messages) -> Messages:
         """Helper function to extract system messages from a completion."""
-        return [msg for msg in completion if self._message_field(msg, "role") == "system"]
+        return [
+            msg for msg in completion if self._message_field(msg, "role") == "system"
+        ]
 
     def get_user_messages(self, completion: Messages) -> Messages:
         """Helper function to extract user messages from a completion."""
@@ -49,7 +72,7 @@ class Parser:
             if not assistant_messages:
                 return None
             ans = self._message_field(assistant_messages[-1], "content", "") or ""
-            return self.parse(ans)
+            return self.parse(self._content_to_text(ans))
 
     def get_format_reward_func(self) -> Callable:
         """

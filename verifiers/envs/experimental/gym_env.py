@@ -145,14 +145,14 @@ class GymEnv(vf.MultiTurnEnv):
             return self.obs_to_text_fn(obs)
         return str(obs)
 
-    def wrap_response(self, text: str) -> vf.Messages:
+    def wrap_response(self, text: str) -> vf.Messages | str:
         if self.message_type == "chat":
             return cast(vf.Messages, [{"role": "user", "content": text}])
         return text
 
     async def env_response(
         self, messages: vf.Messages, state: State, **kwargs: Any
-    ) -> vf.Messages:
+    ) -> vf.Messages | str:
         if "gym_env" not in state:
             env = self.env_cls(**self.env_kwargs)
             seed = int(state["answer"])

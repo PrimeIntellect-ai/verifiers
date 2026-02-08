@@ -383,7 +383,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         last_msg = messages[-1]
         if last_msg.get("role") != "assistant":
-            return [self._make_user_message("Expected assistant response.")]
+            return cast(
+                vf.Messages, [self._make_user_message("Expected assistant response.")]
+            )
 
         raw_text = str(last_msg.get("content", "")).strip()
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
@@ -402,7 +404,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             action_schema=action_schema if isinstance(action_schema, dict) else None,
             contract="gym",
         )
-        return obs_messages
+        return cast(vf.Messages, obs_messages)
 
     async def _mcp_env_response(
         self, messages: vf.Messages, state: vf.State
@@ -413,7 +415,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             last_msg.get("tool_calls", []) if isinstance(last_msg, dict) else []
         )
         if not tool_calls:
-            return cast(ChatMessages, [])
+            return cast(vf.Messages, [])
 
         mcp_client: Any = state["openenv_mcp_client"]
         tool_messages: ChatMessages = []
@@ -445,7 +447,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if state["trajectory"]:
             state["trajectory"][-1]["reward"] = total_reward
         state["openenv_done"] = done
-        return tool_messages
+        return cast(vf.Messages, tool_messages)
 
     def _format_tool_content(self, result: Any) -> Any:
         if is_valid_tool_content_parts(result):

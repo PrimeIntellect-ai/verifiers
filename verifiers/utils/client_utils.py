@@ -70,7 +70,9 @@ def load_prime_config() -> dict:
     return {}
 
 
-def _build_headers_and_api_key(config: ClientConfig) -> tuple[dict[str, str], str | None]:
+def _build_headers_and_api_key(
+    config: ClientConfig,
+) -> tuple[dict[str, str], str | None]:
     headers = dict(config.extra_headers)
     api_key = os.getenv(config.api_key_var)
 
@@ -85,7 +87,9 @@ def _build_headers_and_api_key(config: ClientConfig) -> tuple[dict[str, str], st
     return headers, api_key
 
 
-def _build_http_client(config: ClientConfig, headers: dict[str, str]) -> httpx.AsyncClient:
+def _build_http_client(
+    config: ClientConfig, headers: dict[str, str]
+) -> httpx.AsyncClient:
     timeout = httpx.Timeout(config.timeout, connect=5.0)
     limits = httpx.Limits(
         max_connections=config.max_connections,

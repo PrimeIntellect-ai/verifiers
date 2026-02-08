@@ -43,7 +43,7 @@ class MultiTurnEnv(vf.Environment):
     @abstractmethod
     async def env_response(
         self, messages: Messages, state: State, **kwargs
-    ) -> Messages:
+    ) -> Messages | str:
         """
         Generate a response from the environment.
         """
@@ -91,6 +91,7 @@ class MultiTurnEnv(vf.Environment):
             prev_turn_completion = state["trajectory"][-1]["completion"]
             messages = concat_messages([prev_turn_prompt, prev_turn_completion])
             env_response = await self.env_response(messages, state)
+            assert isinstance(env_response, list)
             return concat_messages([messages, env_response])
 
     async def render_completion(self, state: State):
@@ -136,7 +137,10 @@ class MultiTurnEnv(vf.Environment):
         response: Response,
     ):
         if self.message_type == "completion":
-            completion_messages = response.message.content or ""
+            completion_content = response.message.content
+            completion_messages = (
+                completion_content if isinstance(completion_content, str) else ""
+            )
         else:
             completion_messages = await parse_response_message(response)
         tokens = await parse_response_tokens(response, self.max_seq_len)

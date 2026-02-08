@@ -78,9 +78,7 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
         native_tools = []
         for tool in tools:
             normalized_tool = (
-                tool
-                if isinstance(tool, Tool)
-                else Tool.model_validate(tool)
+                tool if isinstance(tool, Tool) else Tool.model_validate(tool)
             )
             native_tools.append(await self.to_native_tool(normalized_tool))
         return native_tools

@@ -10,7 +10,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import TextContent, Tool as MCPTool
 
 import verifiers as vf
-from verifiers.types import Tool
+from verifiers.types import Tool, ToolMessage
 
 
 @dataclass
@@ -225,13 +225,13 @@ class MCPEnv(vf.ToolEnv):
 
     async def call_tool(
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
-    ) -> vf.Message:
+    ) -> ToolMessage:
         if tool_name in self.tool_map:
             tool_wrapper = self.tool_map[tool_name]
             try:
                 result = await tool_wrapper(**tool_args)
                 return cast(
-                    vf.Message,
+                    ToolMessage,
                     {
                         "role": "tool",
                         "content": str(result),
@@ -240,7 +240,7 @@ class MCPEnv(vf.ToolEnv):
                 )
             except Exception as e:
                 return cast(
-                    vf.Message,
+                    ToolMessage,
                     {
                         "role": "tool",
                         "content": self.error_formatter(e),
@@ -249,7 +249,7 @@ class MCPEnv(vf.ToolEnv):
                 )
         else:
             return cast(
-                vf.Message,
+                ToolMessage,
                 {
                     "role": "tool",
                     "content": f"Error: Tool '{tool_name}' not found",

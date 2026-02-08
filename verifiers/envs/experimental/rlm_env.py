@@ -61,7 +61,7 @@ from verifiers.types import (
     ChatMessage,
     ChatMessages,
     Messages,
-    ModelResponse,
+    Response,
     State,
     TrajectoryStep,
 )
@@ -361,7 +361,7 @@ class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
 
     prompt_messages: ChatMessages  # Messages before this LLM call
-    response: ModelResponse  # Full response object (with token_ids, logprobs)
+    response: Response  # Full response object (with token_ids, logprobs)
     tool_call_count: int  # Number of tool calls made in this turn
 
 
@@ -2943,7 +2943,11 @@ class RLMEnv(vf.StatefulToolEnv):
             if params:
                 lines.append("**Parameters:**")
                 for param_name, param_info in params.items():
-                    param_dict = param_info if isinstance(param_info, dict) else {}
+                    param_dict = (
+                        cast(dict[str, Any], param_info)
+                        if isinstance(param_info, dict)
+                        else {}
+                    )
                     param_type = param_dict.get("type", "any")
                     param_desc = param_dict.get("description", "")
                     lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
@@ -3115,7 +3119,7 @@ class RLMEnv(vf.StatefulToolEnv):
             return await asyncio.wait_for(
                 self.get_model_response(
                     prompt_state,
-                    messages,
+                    cast(Messages, messages),
                     client=client,
                     model=model,
                     message_type="chat",
@@ -3245,7 +3249,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 try:
                     raw_args = (
                         function_obj.arguments
-                        if function_obj is not None and hasattr(function_obj, "arguments")
+                        if function_obj is not None
+                        and hasattr(function_obj, "arguments")
                         else getattr(tool_call, "arguments", "{}")
                     )
                     tool_args = json.loads(raw_args)
@@ -3517,13 +3522,9 @@ class RLMEnv(vf.StatefulToolEnv):
             }
 
             if self.include_sub_llm_in_trajectory:
-                tokens = await parse_response_tokens(
-                    turn["response"], self.max_seq_len
-                )
+                tokens = await parse_response_tokens(turn["response"], self.max_seq_len)
                 completion_messages = await parse_response_message(turn["response"])
-                response_is_truncated = (
-                    turn["response"].message.is_truncated or False
-                )
+                response_is_truncated = turn["response"].message.is_truncated or False
                 is_truncated = response_is_truncated or (
                     tokens is not None and bool(tokens.get("is_truncated"))
                 )
@@ -4189,7 +4190,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
         """Add model response and align stored prompt with injected scaffold on first turn."""
         if len(state["trajectory"]) == 0:

@@ -2,7 +2,7 @@ import json
 from typing import Callable, cast
 
 import verifiers as vf
-from verifiers.types import Messages, ToolMessage
+from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import convert_func_to_tool, is_valid_tool_content_parts
 
@@ -41,8 +41,11 @@ class ToolMonitorRubric(vf.Rubric):
         total = 0
         assert isinstance(completion, list)
         for msg in completion:
-            if msg.role == "assistant" and hasattr(msg, "tool_calls") and msg.tool_calls:
-                total += len(msg.tool_calls)
+            if msg.role != "assistant" or not hasattr(msg, "tool_calls"):
+                continue
+            tool_calls = msg.tool_calls
+            if isinstance(tool_calls, list):
+                total += len(tool_calls)
         return float(total)
 
     def get_tool_call_count_func(self, tool_name: str) -> Callable:
@@ -53,10 +56,14 @@ class ToolMonitorRubric(vf.Rubric):
             count = 0
             assert isinstance(completion, list)
             for msg in completion:
-                if msg.role == "assistant" and hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tool_call in msg.tool_calls:
-                        if tool_call.name == tool_name:
-                            count += 1
+                if not isinstance(msg, AssistantMessage):
+                    continue
+                tool_calls = msg.tool_calls
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, ToolCall) and tool_call.name == tool_name:
+                        count += 1
 
             return count
 
@@ -125,11 +132,7 @@ class ToolEnv(vf.MultiTurnEnv):
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
-        content = (
-            result
-            if is_valid_tool_content_parts(result)
-            else str(result)
-        )
+        content = result if is_valid_tool_content_parts(result) else str(result)
         return ToolMessage(
             role="tool",
             content=content,
@@ -160,9 +163,7 @@ class ToolEnv(vf.MultiTurnEnv):
                 continue  # skip tool call below
 
             try:
-                tool_message = await self.call_tool(
-                    tool_name, tool_args, tool_call_id
-                )
+                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):

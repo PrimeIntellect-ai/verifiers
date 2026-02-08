@@ -46,7 +46,11 @@ class ThinkParser(Parser):
                 return 0.0
             return sum(
                 follows_format(
-                    (m.get("content", "") if isinstance(m, dict) else (m.content or ""))
+                    self._content_to_text(
+                        m.get("content", "")
+                        if isinstance(m, dict)
+                        else (m.content or "")
+                    )
                 )
                 for m in messages
             ) / len(messages)

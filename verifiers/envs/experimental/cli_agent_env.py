@@ -3,6 +3,7 @@ import logging
 import time
 import uuid
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from prime_sandboxes import (
     AdvancedConfigs,
@@ -15,21 +16,63 @@ from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.types import (
-    ChatCompletionToolParam,
     Messages,
     MessageType,
-    ModelResponse,
+    Response,
     SamplingArgs,
     State,
+    Tool,
 )
 from verifiers.utils.interception_utils import (
     InterceptionServer,
-    create_empty_completion,
     deliver_response,
     get_streaming_model_response,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _chat_completion_to_vf_response(chat_response: object, model: str) -> Response:
+    choice = getattr(chat_response, "choices", [None])[0]
+    message = getattr(choice, "message", None)
+    raw_tool_calls = getattr(message, "tool_calls", None) or []
+    tool_calls: list[vf.ToolCall] = []
+    for raw_tool_call in raw_tool_calls:
+        function_obj = getattr(raw_tool_call, "function", None)
+        tool_id = getattr(raw_tool_call, "id", None)
+        tool_name = getattr(function_obj, "name", None)
+        tool_args = getattr(function_obj, "arguments", None)
+        if (
+            isinstance(tool_id, str)
+            and isinstance(tool_name, str)
+            and isinstance(tool_args, str)
+        ):
+            tool_calls.append(
+                vf.ToolCall(id=tool_id, name=tool_name, arguments=tool_args)
+            )
+
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason not in {"stop", "length", "tool_calls"}:
+        finish_reason = None
+
+    response_id = getattr(chat_response, "id", "")
+    created = getattr(chat_response, "created", int(time.time()))
+    response_model = getattr(chat_response, "model", model)
+
+    return Response(
+        id=response_id if isinstance(response_id, str) else "",
+        created=created if isinstance(created, int) else int(time.time()),
+        model=response_model if isinstance(response_model, str) else model,
+        usage=None,
+        message=vf.ResponseMessage(
+            content=getattr(message, "content", None),
+            reasoning_content=None,
+            tool_calls=tool_calls or None,
+            finish_reason=finish_reason,
+            is_truncated=finish_reason == "length",
+            tokens=None,
+        ),
+    )
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
@@ -280,16 +323,30 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self,
         state: State,
         prompt: Messages,
-        client: AsyncOpenAI | None = None,
+        client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType | None = None,
-    ) -> ModelResponse:
+    ) -> Response:
         """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
         if not prompt:
-            return create_empty_completion(model or state["model"])
+            resolved_model = model or state["model"]
+            return Response(
+                id="agent-completed",
+                created=int(time.time()),
+                model=resolved_model,
+                usage=None,
+                message=vf.ResponseMessage(
+                    content="",
+                    reasoning_content=None,
+                    tool_calls=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                ),
+            )
 
         request_id = state.get("current_request_id")
         intercept = (
@@ -300,22 +357,29 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             # Always use the configured model from state, not the intercepted model
             # (agent may send a placeholder like "model" from its config)
             model = state.get("model") or model
-            oai_tools = intercept.get("tools") or oai_tools
+            intercept_tools = intercept.get("tools")
+            if intercept_tools:
+                tool_defs = self._normalize_tool_defs(intercept_tools) or tool_defs
 
-        response: ModelResponse | None = None
+        response: Response | None = None
+        interception_response: object | None = None
         error: BaseException | None = None
 
         try:
             # Handle streaming requests
             if intercept and intercept.get("stream"):
-                response = await get_streaming_model_response(
+                streamed_response = await get_streaming_model_response(
                     state=state,
                     prompt=prompt,
                     intercept=intercept,
                     client=client,
                     model=model,
-                    oai_tools=oai_tools,
+                    oai_tools=intercept.get("tools"),
                     sampling_args=sampling_args,
+                )
+                interception_response = streamed_response
+                response = _chat_completion_to_vf_response(
+                    streamed_response, model or state["model"]
                 )
             else:
                 response = await super().get_model_response(
@@ -323,26 +387,28 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     prompt=prompt,
                     client=client,
                     model=model,
-                    oai_tools=oai_tools,
+                    tool_defs=tool_defs,
                     sampling_args=sampling_args,
                     message_type=message_type,
                 )
+                interception_response = response
         except BaseException as e:
             error = e
             raise
         finally:
             # Always unblock HTTP handler, even on exception
             if intercept:
-                deliver_response(intercept, response, error)
+                deliver_response(intercept, interception_response, error)
                 state["current_request_id"] = None
 
+        assert response is not None
         return response
 
     async def add_model_response(
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
         """Add model response and update top-level prompt on first turn."""
         # Skip adding empty "agent completed" step - keeps trajectory clean

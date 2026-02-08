@@ -109,7 +109,11 @@ def message_to_printable(message: Any) -> Any:
 
     content = getattr(message, "content", None)
     if isinstance(content, list):
-        raw = message.model_dump() if hasattr(message, "model_dump") else {"content": content}
+        raw = (
+            message.model_dump()
+            if hasattr(message, "model_dump")
+            else {"content": content}
+        )
         printable = message_to_printable(raw)
         if hasattr(message, "model_copy"):
             return message.model_copy(update={"content": printable.get("content", "")})

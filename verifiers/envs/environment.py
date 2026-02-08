@@ -89,6 +89,7 @@ from verifiers.utils.save_utils import (
 from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
+
 class Environment(ABC):
     """
     Base class for all environments.
@@ -1064,7 +1065,7 @@ class Environment(ABC):
                     for i, group_input in enumerate(filtered_group_inputs):
                         # For grouped scoring, keep each group on one endpoint so
                         # rollouts in the same group can benefit from shared KV cache.
-                        group_client: AsyncOpenAI | ClientConfig = (
+                        group_client: AsyncOpenAI | AsyncAnthropic | ClientConfig = (
                             get_client_for_group()
                         )
                         task = asyncio.create_task(

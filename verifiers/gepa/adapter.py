@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from gepa.core.adapter import EvaluationBatch
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
 
 from verifiers.envs.environment import Environment
@@ -62,7 +63,7 @@ class VerifiersGEPAAdapter:
     """Bridges GEPA optimization loop with verifiers evaluation infrastructure."""
 
     env: Environment
-    client: AsyncOpenAI
+    client: AsyncOpenAI | AsyncAnthropic
     model: str
     sampling_args: SamplingArgs | None = None
     max_concurrent: int = 32

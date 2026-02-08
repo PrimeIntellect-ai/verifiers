@@ -86,9 +86,7 @@ class TestStatefulToolEnv:
         mock_stateful_tool_env.add_tool(tool_with_dict, args_to_skip=["state"])
 
         schema = next(
-            t
-            for t in mock_stateful_tool_env.tool_defs
-            if t["name"] == "tool_with_dict"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "tool_with_dict"
         )
         assert "state" not in schema["parameters"]["properties"]
 
@@ -112,9 +110,7 @@ class TestStatefulToolEnv:
 
         # But schema should have hidden removed
         schema = next(
-            t
-            for t in mock_stateful_tool_env.tool_defs
-            if t["name"] == "my_tool"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "my_tool"
         )
         assert "hidden" not in schema["parameters"]["properties"]
         assert "command" in schema["parameters"]["properties"]
@@ -143,9 +139,7 @@ class TestStatefulToolEnv:
 
         # But schema should have hidden removed
         schema = next(
-            t
-            for t in mock_stateful_tool_env.tool_defs
-            if t["name"] == "my_tool"
+            t for t in mock_stateful_tool_env.tool_defs if t["name"] == "my_tool"
         )
         assert "hidden" not in schema["parameters"]["properties"]
         assert "command" in schema["parameters"]["properties"]

@@ -14,10 +14,10 @@ import importlib.resources
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from verifiers import setup_logging
-from verifiers.types import ClientConfig, EvalConfig, EvalRunConfig
+from verifiers.types import ClientConfig, ClientType, EvalConfig, EvalRunConfig
 from verifiers.utils.eval_utils import (
     load_endpoints,
     load_toml_config,
@@ -39,6 +39,12 @@ DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_CLIENT_TYPE = "openai"
+
+
+def _normalize_client_type(value: Any) -> ClientType:
+    if value in {"openai", "anthropic"}:
+        return cast(ClientType, value)
+    return "openai"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -397,7 +403,7 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            client_type = (
+            client_type = _normalize_client_type(
                 raw_client_type
                 if client_type_override
                 else endpoint.get("client_type", DEFAULT_CLIENT_TYPE)
@@ -430,7 +436,9 @@ def main():
             api_base_url = (
                 raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
             )
-            client_type = raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
+            client_type = _normalize_client_type(
+                raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
+            )
 
         # Merge sampling args
         merged_sampling_args: dict = {}
@@ -466,7 +474,7 @@ def main():
         ):
             endpoint_configs = [
                 ClientConfig(
-                    client_type=(
+                    client_type=_normalize_client_type(
                         raw_client_type
                         if client_type_override
                         else endpoint.get("client_type", client_type)
@@ -482,7 +490,7 @@ def main():
 
         assert primary_api_base_url is not None
         client_config = ClientConfig(
-            client_type=client_type,
+            client_type=_normalize_client_type(client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,

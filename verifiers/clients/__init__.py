@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from typing import cast
 
 from verifiers.clients.client import Client
 from verifiers.clients.anthropic import AnthropicMessagesClient
@@ -54,8 +55,8 @@ def resolve_client(
     else:
         # Fall back to OpenAI client for duck-typed clients (e.g., mocks, proxies)
         if message_type == "completion":
-            return OAICompletionsClient(client)
-        return OAIChatCompletionsClient(client)
+            return OAICompletionsClient(cast(AsyncOpenAI, client))
+        return OAIChatCompletionsClient(cast(AsyncOpenAI, client))
 
 
 __all__ = [

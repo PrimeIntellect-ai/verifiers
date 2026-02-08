@@ -13,7 +13,6 @@ from typing import (
 )
 
 
-
 if TYPE_CHECKING:
     from datasets import Dataset
 
@@ -210,10 +209,11 @@ class Response(CustomBaseModel):
     @property
     def choices(self) -> list[ResponseChoice]:
         """Legacy compatibility with ChatCompletion/Completion response access."""
+        text_content = self.message.content
         return [
             ResponseChoice(
                 message=self.message,
-                text=self.message.content,
+                text=text_content if isinstance(text_content, str) else None,
                 finish_reason=self.message.finish_reason,
             )
         ]
@@ -224,7 +224,7 @@ class Response(CustomBaseModel):
 # ──────────────────────────────────────────────────────────────────────
 ChatMessage = ChatCompletionMessageParam
 ChatMessages = list[ChatMessage]
-ModelResponse = Completion | ChatCompletion | None
+ModelResponse = Response | Completion | ChatCompletion | None
 
 # ──────────────────────────────────────────────────────────────────────
 # Core data types
@@ -253,8 +253,8 @@ class TokenUsage(TypedDict):
 
 
 class TrajectoryStep(TypedDict):
-    prompt: Messages
-    completion: Messages
+    prompt: Messages | str
+    completion: Messages | str
     response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
@@ -307,8 +307,8 @@ class RolloutOutput(dict):
     # Required fields
     example_id: int
     task: str
-    prompt: Messages | None
-    completion: Messages | None
+    prompt: Messages | str | None
+    completion: Messages | str | None
     reward: float
     timing: RolloutTiming
     is_completed: bool
@@ -337,7 +337,7 @@ class State(dict):
     stop_condition: str | None
     tool_defs: list[Tool]
     trajectory: list[TrajectoryStep]
-    completion: Messages | None
+    completion: Messages | str | None
     reward: float | None
     advantage: float | None
     metrics: dict[str, float] | None

@@ -98,7 +98,11 @@ class XMLParser(Parser):
                 return getattr(parsed, self.answer_field)
         else:
             for msg in reversed(self.get_assistant_messages(completion)):
-                content = msg.get("content", "") if isinstance(msg, dict) else (msg.content or "")
+                content = self._content_to_text(
+                    msg.get("content", "")
+                    if isinstance(msg, dict)
+                    else (msg.content or "")
+                )
                 parsed = self.parse(content)
                 if (
                     parsed
@@ -140,7 +144,11 @@ class XMLParser(Parser):
             # Calculate format adherence for each message
             format_scores = []
             for msg in model_messages:
-                content = msg.get("content", "") if isinstance(msg, dict) else (msg.content or "")
+                content = self._content_to_text(
+                    msg.get("content", "")
+                    if isinstance(msg, dict)
+                    else (msg.content or "")
+                )
                 parsed = self.parse(content)
                 parsed_no_strip = self.parse(content, strip=False)
 

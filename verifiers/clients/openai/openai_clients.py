@@ -98,6 +98,25 @@ OpenAITextMessages = str
 OpenAITextResponse = Completion
 
 
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, Mapping):
+                if part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+        return " ".join(chunks).strip()
+    return ""
+
+
 class OAICompletionsClient(
     Client[
         AsyncOpenAI,
@@ -121,9 +140,9 @@ class OAICompletionsClient(
             if isinstance(message, str):
                 prompt += message
             elif isinstance(message, dict):
-                prompt += cast(str, message.get("content", "") or "")
+                prompt += _content_to_text(message.get("content", ""))
             else:
-                prompt += message.content or ""
+                prompt += _content_to_text(message.content)
         return prompt, {}
 
     async def to_native_tool(self, tool: Tool) -> None:
@@ -317,7 +336,9 @@ class OAIChatCompletionsClient(
             elif role == "assistant":
                 tool_calls = message.get("tool_calls")
                 if tool_calls is not None:
-                    oai_tool_calls = []
+                    oai_tool_calls: (
+                        list[ChatCompletionMessageFunctionToolCallParam] | None
+                    ) = []
                     for tool_call in cast(list[Any], tool_calls):
                         tc_id, name, arguments = parse_legacy_tool_call(tool_call)
                         oai_tool_calls.append(
@@ -334,8 +355,8 @@ class OAIChatCompletionsClient(
                     oai_tool_calls = None
                 return ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=normalize_content(message.get("content", "")),
-                    tool_calls=oai_tool_calls,
+                    content=cast(Any, normalize_content(message.get("content", ""))),
+                    tool_calls=cast(Any, oai_tool_calls),
                     reasoning_content=message.get("reasoning_content"),  # type: ignore[arg-type]
                 )
             elif role == "tool":
@@ -350,9 +371,11 @@ class OAIChatCompletionsClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def from_chat_message(message: Message | Mapping[str, Any]) -> OpenAIChatMessage:
+        def from_chat_message(
+            message: Message | Mapping[str, Any],
+        ) -> OpenAIChatMessage:
             if isinstance(message, Mapping):
-                return from_legacy_chat_message(message)
+                return from_legacy_chat_message(cast(Mapping[str, Any], message))
             if isinstance(message, SystemMessage):
                 return ChatCompletionSystemMessageParam(
                     role="system", content=normalize_content(message.content)
@@ -363,7 +386,9 @@ class OAIChatCompletionsClient(
                 )
             elif isinstance(message, AssistantMessage):
                 if message.tool_calls is not None:
-                    oai_tool_calls = [
+                    oai_tool_calls: (
+                        list[ChatCompletionMessageFunctionToolCallParam] | None
+                    ) = [
                         ChatCompletionMessageFunctionToolCallParam(
                             type="function",
                             id=tool_call.id,
@@ -378,15 +403,15 @@ class OAIChatCompletionsClient(
                     oai_tool_calls = None
                 return ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=normalize_content(message.content),
-                    tool_calls=oai_tool_calls,
+                    content=cast(Any, normalize_content(message.content)),
+                    tool_calls=cast(Any, oai_tool_calls),
                     reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
                 )
             elif isinstance(message, ToolMessage):
                 return ChatCompletionToolMessageParam(
                     role="tool",
                     tool_call_id=message.tool_call_id,
-                    content=message.content,
+                    content=_content_to_text(message.content),
                 )
             else:
                 raise ValueError(f"Invalid chat message: {message}")
