@@ -6,6 +6,10 @@ import pytest
 import tomllib
 
 SKIPPED_ENVS = [
+    # Requires OPENAI_API_KEY environment variable for judge setup.
+    "toxicity_explanation",
+    # Requires OPENAI_API_KEY environment variable for judge setup.
+    "wiki_search",
     # Requires EXA_API_KEY environment variable
     "mcp_search_env",
     # Requires fix for completion dataset setup
@@ -21,6 +25,8 @@ SKIPPED_ENVS = [
     "browser_dom_example",
     # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
     "browser_cua_example",
+    # Requires Prime sandbox/tunnel team access and external infra.
+    "opencode_harbor",
     # Uses prime-tunnel which is still experimental and has low usage limits
     "terminus_harbor",
 ]
@@ -95,8 +101,8 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     repo_root = Path(__file__).parent.parent
     cmd = (
         f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
-        f"uv pip install {repo_root.as_posix()} && "
-        f"uv pip install {env_dir.absolute().as_posix()}"
+        f"uv pip install --reinstall --no-cache {env_dir.absolute().as_posix()} && "
+        f"uv pip install --reinstall --no-cache {repo_root.as_posix()}"
     )
     process = subprocess.run(
         cmd, shell=True, executable="/bin/bash", capture_output=True, text=True

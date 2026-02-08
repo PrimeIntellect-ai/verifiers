@@ -163,6 +163,15 @@ class MockAsyncOpenAI:
         mock_response.id = "test-id"
         mock_response.model = "test-model"
         mock_response.object = "chat.completion"
+        mock_response.created = 0
+        mock_response.usage = None
+
+        # model_dump() should return a realistic dict for reasoning content extraction
+        mock_message.model_dump = lambda: {
+            "role": "assistant",
+            "content": response_data["content"],
+            "tool_calls": response_data.get("tool_calls", None),
+        }
 
         return mock_response
 
@@ -193,6 +202,8 @@ class MockAsyncOpenAI:
         mock_response.id = "test-id"
         mock_response.model = "test-model"
         mock_response.object = "text_completion"
+        mock_response.created = 0
+        mock_response.usage = None
 
         return mock_response
 
