@@ -157,6 +157,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         extra_env_kwargs: dict[str, Any] | None = None,
         log_level: str | None = None,
         log_file: str | None = None,
+        log_file_level: str | None = None,
         startup_timeout: float = 120.0,
     ) -> None:
         await super().start_server(
@@ -164,6 +165,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             extra_env_kwargs=extra_env_kwargs or {},
             log_level=log_level,
             log_file=log_file,
+            log_file_level=log_file_level,
             startup_timeout=startup_timeout,
         )
 
