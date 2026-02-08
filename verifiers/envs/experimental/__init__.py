@@ -1,3 +1,4 @@
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from .agent_env import AgentEnv
+from .sandbox_mixin import SandboxMixin
 
-__all__ = ["SandboxMixin"]
+__all__ = ["AgentEnv", "SandboxMixin"]
