@@ -1,4 +1,10 @@
-# Environments
+# environments/AGENTS.md
+
+<!-- Generated for lab workspaces. -->
+
+This file mirrors the "Environments" documentation page.
+
+---
 
 This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 

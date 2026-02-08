@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections.abc import Mapping
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -24,6 +25,10 @@ from verifiers.types import (
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.usage_utils import (
+    StateUsageTracker,
+    extract_usage_tokens as extract_usage_tokens_from_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +45,7 @@ def is_json_serializable(value: object) -> bool:
         return True
     if isinstance(value, (list, tuple)):
         return all(is_json_serializable(item) for item in value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return all(
             isinstance(k, str) and is_json_serializable(v) for k, v in value.items()
         )
@@ -64,26 +69,53 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return value.as_posix()
     elif isinstance(value, (BaseException)):
         return repr(value)
+    elif isinstance(value, Mapping):
+        return dict(value)
     else:
         return str(value)
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0, 0
+    return extract_usage_tokens_from_response(response)
 
-    def get_usage_value(usage_obj: object, key: str) -> int | float:
-        if isinstance(usage_obj, dict):
-            return cast(dict[str, Any], usage_obj).get(key, 0)
-        return getattr(usage_obj, key, 0)
 
-    prompt_tokens = get_usage_value(usage, "prompt_tokens")
-    completion_tokens = get_usage_value(usage, "completion_tokens")
-    if not prompt_tokens and not completion_tokens:
-        prompt_tokens = get_usage_value(usage, "input_tokens")
-        completion_tokens = get_usage_value(usage, "output_tokens")
-    return int(prompt_tokens or 0), int(completion_tokens or 0)
+def _coerce_token_usage(value: object) -> TokenUsage | None:
+    if not isinstance(value, Mapping):
+        return None
+    mapping_value = cast(Mapping[str, Any], value)
+    try:
+        input_raw = mapping_value.get("input_tokens")
+        output_raw = mapping_value.get("output_tokens")
+        input_tokens = float(0.0 if input_raw is None else input_raw)
+        output_tokens = float(0.0 if output_raw is None else output_raw)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def _extract_state_token_usage(state: State) -> TokenUsage | None:
+    tracker = state.get("usage_tracker")
+    if isinstance(tracker, StateUsageTracker):
+        usage = tracker.snapshot()
+        coerced = _coerce_token_usage(usage)
+        if coerced is not None:
+            return coerced
+        # Tracker exists but has not seen usage yet. Avoid falling through to
+        # state["usage"], which is a zeroed live tracker view.
+        token_usage = _coerce_token_usage(state.get("token_usage"))
+        if token_usage is not None:
+            return token_usage
+        return None
+
+    for key in ("token_usage", "usage"):
+        usage = _coerce_token_usage(state.get(key))
+        if usage is not None:
+            return usage
+
+    return None
 
 
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
@@ -131,24 +163,29 @@ def state_to_output(state: State, state_columns: list[str] = []) -> RolloutOutpu
         metrics=state.get("metrics", {}),
         oai_tools=state.get("oai_tools", None),
     )
-    trajectory = state.get("trajectory", [])
-    input_tokens = 0
-    output_tokens = 0
-    usage_seen = False
-    for step in trajectory:
-        response = step.get("response")
-        if response is None:
-            continue
-        if getattr(response, "usage", None) is not None:
-            usage_seen = True
-        step_input_tokens, step_output_tokens = extract_usage_tokens(response)
-        input_tokens += step_input_tokens
-        output_tokens += step_output_tokens
-    if usage_seen:
-        output["token_usage"] = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        }
+    usage = _extract_state_token_usage(state)
+    if usage is None:
+        # Legacy fallback for states that do not use state-level usage tracking.
+        trajectory = state.get("trajectory", [])
+        input_tokens = 0
+        output_tokens = 0
+        usage_seen = False
+        for step in trajectory:
+            response = step.get("response")
+            if response is None:
+                continue
+            if getattr(response, "usage", None) is not None:
+                usage_seen = True
+            step_input_tokens, step_output_tokens = extract_usage_tokens(response)
+            input_tokens += step_input_tokens
+            output_tokens += step_output_tokens
+        if usage_seen:
+            usage = {
+                "input_tokens": float(input_tokens),
+                "output_tokens": float(output_tokens),
+            }
+    if usage is not None:
+        output["token_usage"] = usage
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:

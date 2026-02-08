@@ -572,7 +572,7 @@ class ClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
-    endpoint_configs: list[ClientConfig] = []
+    endpoint_configs: list[EndpointClientConfig] = []
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
@@ -587,6 +587,22 @@ When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded wi
 - **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
 
 This allows seamless use after running `prime login`.
+
+### EndpointClientConfig
+
+```python
+class EndpointClientConfig(BaseModel):
+    client_idx: int = 0
+    api_key_var: str = "PRIME_API_KEY"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    timeout: float = 3600.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
+    extra_headers: dict[str, str] = {}
+```
+
+Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the same fields as `ClientConfig` except `endpoint_configs` itself, preventing recursive nesting.
 
 ### EvalConfig
 

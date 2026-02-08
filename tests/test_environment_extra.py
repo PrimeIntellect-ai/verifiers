@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Callable
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from datasets import Dataset
@@ -31,6 +32,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import sanitize_tool_calls
 from verifiers.utils.save_utils import make_dataset as build_dataset
+from verifiers.utils.save_utils import state_to_output
 
 
 # Local simple concrete Environment for testing
@@ -131,6 +133,67 @@ async def test_get_model_response_chat_with_tools(
     assert mock_openai_client.chat.completions.create.await_count == 1
     kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
     assert "tools" in kwargs and kwargs["tools"] == tools
+
+
+@pytest.mark.asyncio
+async def test_get_model_response_tracks_usage_on_state(
+    mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+    prompt: vf.Messages = [{"role": "user", "content": "Track usage"}]
+    state = await env.init_state(
+        input=make_input(prompt=prompt),
+        client=mock_openai_client,
+        model="test-model",
+    )
+
+    resp1 = MagicMock()
+    resp1.choices = [MagicMock(message=MagicMock(content="ok", tool_calls=None))]
+    resp1.usage = {"prompt_tokens": 11, "completion_tokens": 7}
+
+    resp2 = MagicMock()
+    resp2.choices = [MagicMock(message=MagicMock(content="ok2", tool_calls=None))]
+    resp2.usage = {"input_tokens": 3, "output_tokens": 2}
+
+    mock_openai_client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2])
+
+    await env.get_model_response(state=state, prompt=prompt)
+    await env.get_model_response(state=state, prompt=prompt)
+
+    usage = env.get_state_usage(state)
+    assert usage == {"input_tokens": 14.0, "output_tokens": 9.0}
+    assert state["usage"] == {"input_tokens": 14.0, "output_tokens": 9.0}
+    assert "usage_tracker" in state
+    with pytest.raises(TypeError):
+        state["usage"]["input_tokens"] = 999  # read-only view
+
+
+@pytest.mark.asyncio
+async def test_state_to_output_uses_state_usage_not_trajectory(
+    mock_openai_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_openai_client)
+    prompt: vf.Messages = [{"role": "user", "content": "Track usage independently"}]
+    state = await env.init_state(
+        input=make_input(prompt=prompt),
+        client=mock_openai_client,
+        model="test-model",
+    )
+
+    resp = MagicMock()
+    resp.choices = [MagicMock(message=MagicMock(content="ok", tool_calls=None))]
+    resp.usage = {"prompt_tokens": 5, "completion_tokens": 4}
+    mock_openai_client.chat.completions.create = AsyncMock(return_value=resp)
+
+    await env.get_model_response(state=state, prompt=prompt)
+    # Simulate user clobbering visible usage and omitting response from trajectory.
+    state["usage"] = {"input_tokens": 0.0, "output_tokens": 0.0}
+    state["trajectory"] = []
+    state["metrics"] = {}
+    state["reward"] = 0.0
+
+    output = state_to_output(state, state_columns=[])
+    assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
 
 
 @pytest.mark.asyncio

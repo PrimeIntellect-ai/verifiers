@@ -441,6 +441,15 @@ def test_load_toml_config_single_eval():
         assert result[0]["env_id"] == "env1"
 
 
+def test_repo_eval_example_configs_are_valid():
+    """Bundled example configs should parse with the current eval config schema."""
+    config_paths = sorted(Path("configs/eval").glob("*.toml"))
+    assert config_paths
+    for config_path in config_paths:
+        loaded = load_toml_config(config_path)
+        assert loaded, f"{config_path} should contain at least one [[eval]] section"
+
+
 def test_load_toml_config_multi_env():
     """Multiple envs load correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:

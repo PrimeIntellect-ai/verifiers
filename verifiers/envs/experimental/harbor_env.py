@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
-from prime_sandboxes import AsyncSandboxClient
 
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
@@ -102,9 +101,7 @@ class HarborEnv(vf.CliAgentEnv):
             env_vars.setdefault("AGENT_WORKDIR", self.agent_workdir)
         return env_vars
 
-    async def post_sandbox_setup(
-        self, state: vf.State, sandbox_client: AsyncSandboxClient
-    ) -> None:
+    async def post_sandbox_setup(self, state: vf.State) -> None:
         """Upload Harbor task assets after sandbox creation."""
         task_info: dict[str, Any] = state.get("info", {}) or {}
         task_dir_str = task_info.get("task_dir", "")
@@ -116,13 +113,11 @@ class HarborEnv(vf.CliAgentEnv):
         if not task_dir.exists():
             raise FileNotFoundError(f"Task directory not found: {task_dir}")
 
-        await self.prepare_harbor_task(sandbox_client, state["sandbox_id"], task_dir)
+        await self.prepare_harbor_task(state["sandbox_id"], task_dir)
         state["harbor_config"] = config
         state["harbor_task_dir"] = str(task_dir)
 
-    async def prepare_harbor_task(
-        self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
-    ) -> None:
+    async def prepare_harbor_task(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload task instruction only (oracle/tests uploaded after agent completes)."""
         instruction_path = task_dir / "instruction.md"
         task_toml_path = task_dir / "task.toml"
@@ -139,8 +134,8 @@ class HarborEnv(vf.CliAgentEnv):
                     tar.add(task_toml_path, arcname="task/task.toml")
 
             remote_tar = "/tmp/harbor_task.tar.gz"
-            await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandbox_client.execute_command(
+            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self.sandbox_client.execute_command(
                 sandbox_id,
                 f"mkdir -p /task /logs/verifier {self.agent_workdir} && "
                 f"tar -xzf {remote_tar} -C / && rm {remote_tar}",
@@ -150,9 +145,7 @@ class HarborEnv(vf.CliAgentEnv):
         finally:
             tar_path.unlink(missing_ok=True)
 
-    async def upload_test_assets(
-        self, sandbox_client: AsyncSandboxClient, sandbox_id: str, task_dir: Path
-    ) -> None:
+    async def upload_test_assets(self, sandbox_id: str, task_dir: Path) -> None:
         """Upload oracle/tests after agent completes, right before running tests."""
         solution_dir = task_dir / "solution"
         tests_dir = task_dir / "tests"
@@ -171,8 +164,8 @@ class HarborEnv(vf.CliAgentEnv):
                         tar.add(item, arcname=f"tests/{item.name}")
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
-            await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandbox_client.execute_command(
+            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            await self.sandbox_client.execute_command(
                 sandbox_id,
                 f"mkdir -p /oracle /tests && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 working_dir=None,
@@ -185,6 +178,10 @@ class HarborEnv(vf.CliAgentEnv):
     async def post_rollout(self, state: vf.State):
         """Run Harbor tests to compute reward before sandbox destruction."""
         await super().post_rollout(state)
+        if isinstance(state.get("error"), vf.InfraError):
+            logger.debug(f"Skipping Harbor tests due to prior error: {state['error']}")
+            state["reward"] = 0.0
+            return
         state["reward"] = await self.compute_reward(state)
 
     async def harbor_reward(self, state: vf.State, **kwargs) -> float:
@@ -210,47 +207,57 @@ class HarborEnv(vf.CliAgentEnv):
             logger.error(f"Task directory not found: {task_dir}")
             return 0.0
 
-        sandbox_client = AsyncSandboxClient(
-            max_connections=100,
-            max_keepalive_connections=50,
-        )
         try:
-            # Upload test assets now that agent has completed
-            await self.upload_test_assets(sandbox_client, sandbox_id, task_dir)
+            await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
 
             logger.info(f"Running Harbor tests for task {state.get('task')}")
-            await sandbox_client.execute_command(
-                sandbox_id, "bash test.sh", working_dir="/tests"
+            results = await self.run_background_job(
+                state,
+                "bash test.sh",
+                timeout=300,
+                working_dir="/tests",
+                poll_interval=5,
             )
+            if getattr(results, "exit_code", 0) != 0:
+                logger.warning(
+                    f"Harbor tests exit_code={results.exit_code} "
+                    f"stdout_len={len(getattr(results, 'stdout', '') or '')} "
+                    f"stderr_len={len(getattr(results, 'stderr', '') or '')}"
+                )
 
-            reward_result = await sandbox_client.execute_command(
+            reward_result = await self.with_retry(self.sandbox_client.execute_command)(
                 sandbox_id,
                 "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
                 "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
                 working_dir=None,
             )
-            stdout_val = getattr(reward_result, "stdout", "")
-            if stdout_val is None:
-                reward_val = ""
-            elif isinstance(stdout_val, str):
-                reward_val = stdout_val.strip()
-            else:
-                reward_val = str(stdout_val).strip()
-            if reward_val:
-                try:
-                    # Try as plain float first (reward.txt format)
-                    value = float(reward_val)
-                    logger.info(f"Reward from reward.txt: {value}")
-                    return value
-                except ValueError:
-                    # Fall back to JSON (reward.json format)
-                    data = json.loads(reward_val)
-                    value = float(data.get("reward", 0.0))
-                    logger.info(f"Reward from reward.json: {value}")
-                    return value
-
-            logger.warning("No reward.txt or reward.json produced by Harbor tests")
-            return 0.0
         except Exception as e:
+            if state.get("error") is None:
+                state["error"] = vf.SandboxError(str(e))
             logger.error(f"Error computing Harbor reward: {e}")
             return 0.0
+
+        stdout_val = getattr(reward_result, "stdout", "")
+        if stdout_val is None:
+            reward_val = ""
+        elif isinstance(stdout_val, str):
+            reward_val = stdout_val.strip()
+        else:
+            reward_val = str(stdout_val).strip()
+        if reward_val:
+            try:
+                value = float(reward_val)
+                logger.info(f"Reward from reward.txt: {value}")
+                return value
+            except ValueError:
+                try:
+                    data = json.loads(reward_val)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid reward.json: {e}")
+                    return 0.0
+                value = float(data.get("reward", 0.0))
+                logger.info(f"Reward from reward.json: {value}")
+                return value
+
+        logger.warning("No reward.txt or reward.json produced by Harbor tests")
+        return 0.0

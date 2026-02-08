@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, cast
 
 from gepa.api import optimize
 
@@ -20,23 +21,156 @@ from verifiers.gepa.gepa_utils import save_gepa_results
 from verifiers.types import ClientConfig
 from verifiers.utils.client_utils import setup_client
 from verifiers.utils.eval_utils import load_endpoints
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.path_utils import get_gepa_results_path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
+DEFAULT_ENV_DIR_PATH = "./environments"
 DEFAULT_NUM_TRAIN = 100
 DEFAULT_NUM_VAL = 50
 DEFAULT_MAX_METRIC_CALLS = 500
 DEFAULT_MINIBATCH_SIZE = 3
 
 
+def _ensure_table(value: object, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"'{field_name}' must be a TOML table.")
+    return cast(dict[str, Any], value)
+
+
+def load_gepa_toml_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"TOML config file not found: {path}")
+
+    with path.open("rb") as f:
+        raw_config = load_toml(f)
+
+    if not isinstance(raw_config, dict):
+        raise ValueError(f"Expected top-level TOML table in {path}")
+
+    env_table = raw_config.get("env")
+    if not isinstance(env_table, dict):
+        raise ValueError(f"Config file must contain an [env] table: {path}")
+
+    env_id = env_table.get("env_id")
+    if not isinstance(env_id, str) or not env_id:
+        raise ValueError(f"[env].env_id must be a non-empty string: {path}")
+
+    config: dict[str, Any] = {
+        "env_id": env_id,
+        "env_args": _ensure_table(env_table.get("env_args", {}), "env.env_args"),
+        "extra_env_kwargs": _ensure_table(
+            env_table.get("extra_env_kwargs", {}), "env.extra_env_kwargs"
+        ),
+    }
+
+    for key in (
+        "model",
+        "reflection_model",
+        "endpoints_path",
+        "api_key_var",
+        "api_base_url",
+        "env_dir_path",
+        "run_dir",
+        "save_results",
+        "verbose",
+        "tui",
+    ):
+        if key in raw_config:
+            config[key] = raw_config[key]
+
+    gepa_table = _ensure_table(raw_config.get("gepa", {}), "gepa")
+    for key in (
+        "max_calls",
+        "minibatch_size",
+        "perfect_score",
+        "state_columns",
+        "num_train",
+        "num_val",
+    ):
+        if key in gepa_table:
+            config[key] = gepa_table[key]
+
+    execution_table = _ensure_table(raw_config.get("execution", {}), "execution")
+    for key in ("max_concurrent", "sampling_args", "seed"):
+        if key in execution_table:
+            config[key] = execution_table[key]
+
+    # Resolve config-relative paths for consistency with vf-eval.
+    endpoints_path = config.get("endpoints_path")
+    if isinstance(endpoints_path, str):
+        endpoints_path_obj = Path(endpoints_path)
+        if not endpoints_path_obj.is_absolute():
+            config["endpoints_path"] = str((path.parent / endpoints_path_obj).resolve())
+
+    run_dir = config.get("run_dir")
+    if isinstance(run_dir, str):
+        run_dir_obj = Path(run_dir)
+        if not run_dir_obj.is_absolute():
+            config["run_dir"] = str((path.parent / run_dir_obj).resolve())
+
+    return config
+
+
+def resolve_gepa_config_args(args: argparse.Namespace) -> argparse.Namespace:
+    raw = args.env_id_or_config
+    config_path = Path(raw)
+    if config_path.suffix == ".toml":
+        config = load_gepa_toml_config(config_path)
+    else:
+        args.env_id = raw
+        return args
+
+    for key in (
+        "env_id",
+        "env_args",
+        "extra_env_kwargs",
+        "model",
+        "reflection_model",
+        "endpoints_path",
+        "api_key_var",
+        "api_base_url",
+        "env_dir_path",
+        "run_dir",
+        "verbose",
+        "tui",
+        "max_calls",
+        "minibatch_size",
+        "perfect_score",
+        "state_columns",
+        "num_train",
+        "num_val",
+        "max_concurrent",
+        "sampling_args",
+        "seed",
+    ):
+        if key in config:
+            setattr(args, key, config[key])
+
+    if "save_results" in config:
+        save_results = config["save_results"]
+        if not isinstance(save_results, bool):
+            raise ValueError("'save_results' must be a boolean.")
+        args.no_save = not save_results
+
+    return args
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run GEPA prompt optimization")
 
-    # Environment (aligned with vf-eval)
-    parser.add_argument("env_id", type=str, help="Environment module name")
+    # Environment (aligned with vf-eval config entrypoint)
+    parser.add_argument(
+        "env_id_or_config",
+        type=str,
+        help="Environment module name or path to TOML config file.",
+    )
     parser.add_argument(
         "--env-args",
         "-a",
@@ -48,7 +182,7 @@ def main():
         "--env-dir-path",
         "-p",
         type=str,
-        default="./environments",
+        default=DEFAULT_ENV_DIR_PATH,
         help="Path to environments directory",
     )
     parser.add_argument(
@@ -78,7 +212,7 @@ def main():
         "--endpoints-path",
         "-e",
         type=str,
-        default="./configs/endpoints.toml",
+        default=DEFAULT_ENDPOINTS_PATH,
         help="Path to API endpoints registry (.toml preferred, .py supported)",
     )
     parser.add_argument("--api-key-var", "-k", type=str, default=None)
@@ -144,6 +278,11 @@ def main():
     )
 
     args = parser.parse_args()
+    try:
+        args = resolve_gepa_config_args(args)
+    except (FileNotFoundError, ValueError) as e:
+        raise SystemExit(str(e)) from e
+
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
 
     # Load endpoints and resolve model config

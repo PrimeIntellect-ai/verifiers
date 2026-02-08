@@ -129,9 +129,25 @@ def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
                 f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
             )
 
+        url = raw_entry_dict.get("url")
+        api_base_url = raw_entry_dict.get("api_base_url")
+        if url is not None and api_base_url is not None and url != api_base_url:
+            raise ValueError(
+                f"Conflicting values for 'url' and 'api_base_url' in {entry_source}"
+            )
+
+        key = raw_entry_dict.get("key")
+        api_key_var = raw_entry_dict.get("api_key_var")
+        if key is not None and api_key_var is not None and key != api_key_var:
+            raise ValueError(
+                f"Conflicting values for 'key' and 'api_key_var' in {entry_source}"
+            )
+
         endpoint_payload = {
             k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
         }
+        endpoint_payload["url"] = url if url is not None else api_base_url
+        endpoint_payload["key"] = key if key is not None else api_key_var
         endpoint = _coerce_endpoint(
             endpoint_payload,
             source=f"{entry_source} (endpoint_id={endpoint_id!r})",
@@ -429,6 +445,35 @@ def print_timing(results: GenerateOutputs):
     )
 
 
+def print_usage(results: GenerateOutputs):
+    usage_count = 0
+    input_tokens_total = 0.0
+    output_tokens_total = 0.0
+    for output in results["outputs"]:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        usage_count += 1
+        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
+        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+
+    usage = None
+    if usage_count > 0:
+        usage = {
+            "input_tokens": input_tokens_total / usage_count,
+            "output_tokens": output_tokens_total / usage_count,
+        }
+    elif results["metadata"].get("usage") is not None:
+        usage = results["metadata"]["usage"]
+
+    if usage is None:
+        return
+
+    print("Usage:")
+    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
+    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+
+
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
@@ -458,6 +503,7 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_rewards(results)
     print_info(results)
     print_timing(results)
+    print_usage(results)
 
     tasks = set([o["task"] for o in results["outputs"]])
     if len(tasks) > 1:
@@ -467,6 +513,7 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             print_rewards(task_results)
             print_info(task_results)
             print_timing(task_results)
+            print_usage(task_results)
 
 
 @contextmanager

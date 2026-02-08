@@ -1,3 +1,5 @@
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: local
     hooks:
@@ -13,18 +15,13 @@ repos:
         types_or: [python, pyi]
       - id: sync-agents-md
         name: Sync AGENTS.md from docs
-        entry: uv run python scripts/sync_agents_md.py
+        entry: uv run python scripts/sync.py
         language: system
-        files: ^docs/(overview|environments)\.md$
+        files: ^(docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py)$
         pass_filenames: false
       - id: ty
-        name: ty
-        entry: ty
-        args:
-          - check
-          - --exit-zero
-          - --output-format=concise
-        language: python
-        additional_dependencies:
-          - ty==0.0.1a21
-        types_or: [python, pyi]
+        name: ty (ci parity)
+        entry: uv run ty check verifiers
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
