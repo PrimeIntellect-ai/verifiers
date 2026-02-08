@@ -7,12 +7,14 @@ import httpx
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, EndpointClientConfig
 
 logger = logging.getLogger(__name__)
 
 
-def _merge_endpoint(parent: ClientConfig, endpoint: ClientConfig) -> ClientConfig:
+def _merge_endpoint(
+    parent: ClientConfig, endpoint: EndpointClientConfig
+) -> ClientConfig:
     """Merge parent config fields into an endpoint config, preserving endpoint overrides."""
     merged_data = endpoint.model_dump(mode="python")
     explicitly_set = set(endpoint.model_fields_set)
