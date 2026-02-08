@@ -96,8 +96,8 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     repo_root = Path(__file__).parent.parent
     cmd = (
         f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
-        f"uv pip install --reinstall --no-cache {env_dir.absolute().as_posix()} && "
-        f"uv pip install --reinstall --no-cache {repo_root.as_posix()}"
+        f"uv pip install {repo_root.as_posix()} && "
+        f"uv pip install {env_dir.absolute().as_posix()}"
     )
     process = subprocess.run(
         cmd, shell=True, executable="/bin/bash", capture_output=True, text=True

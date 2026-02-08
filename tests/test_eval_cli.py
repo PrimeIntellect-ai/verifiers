@@ -50,6 +50,7 @@ def run_cli(make_metadata, make_state, make_input):
             "state_columns": [],
             "save_results": False,
             "resume": None,
+            "save_every": -1,
             "save_to_hf_hub": False,
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
