@@ -155,9 +155,9 @@ Add non-interactive controls:
 ## Global `uv tool` Dev Workflow (Prime + Local Verifiers)
 Recommended commands:
 - For developing both repos together:
-  - `uv tool install --force -e /Users/williambrown/dev/prime-cli/packages/prime --with-editable /Users/williambrown/dev/verifiers`
+  - `uv tool install --force -e /path/to/prime-cli/packages/prime --with-editable /path/to/verifiers`
 - For stable prime + local verifiers only:
-  - `uv tool install --force prime --with-editable /Users/williambrown/dev/verifiers`
+  - `uv tool install --force prime --with-editable /path/to/verifiers`
 
 This ensures `prime` always invokes local editable verifiers without reinstall churn.
 
