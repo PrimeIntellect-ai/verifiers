@@ -23,7 +23,7 @@ from verifiers.workers.types import (
 class ZMQEnvClient(EnvClient):
     """ZMQ-based environment client."""
 
-    DEFAULT_REQUEST_TIMEOUT_S = 600.0
+    DEFAULT_REQUEST_TIMEOUT = 36_000  # 10h
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000"):
         super().__init__(address=address)
@@ -153,9 +153,7 @@ class ZMQEnvClient(EnvClient):
                 if self._receiver_task is None:
                     await self._start()
 
-        effective_timeout = (
-            self.DEFAULT_REQUEST_TIMEOUT_S if timeout is None else timeout
-        )
+        effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
         # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
