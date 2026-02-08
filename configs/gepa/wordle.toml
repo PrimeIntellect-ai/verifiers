@@ -1,18 +1,11 @@
-# Example GEPA configuration for the Wordle environment.
-# Equivalent CLI:
-# vf-gepa primeintellect/wordle \
-#   --model Qwen/Qwen3-30B-A3B-Thinking-2507 \
-#   --endpoints-path ./configs/endpoints.toml \
-#   --num-train 100 --num-val 50 --max-calls 500
-
-env_id = "primeintellect/wordle"
 model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 reflection_model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 endpoints_path = "../endpoints.toml"
 
-[env_args]
-
-[extra_env_kwargs]
+[env]
+env_id = "primeintellect/wordle"
+env_args = {}
+extra_env_kwargs = {}
 
 [gepa]
 max_calls = 500
