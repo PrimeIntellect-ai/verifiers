@@ -3,26 +3,28 @@ Multi-agent environment for turn-based games.
 
 This module provides the base class for multi-agent RL environments, extending
 MultiTurnEnv with support for:
-- Multiple actors with distinct system prompts
-- Turn order management via get_initial_actor() / get_next_actor()
-- Per-actor trajectory tagging for credit assignment
+- Multiple agents with distinct system prompts
+- Turn order management via Protocol or get_initial_agent() / get_next_agent()
+- Per-agent trajectory tagging for credit assignment
 
 Key concepts:
-- Actor: A trainable entity with its own system prompt (defined in actor.py)
+- Agent: A participant with its own identity/prompt (defined in agent.py)
+- Protocol: Defines turn order and interaction patterns (defined in protocol.py)
 
-Game Implementation:
+Environment Implementation:
 - Subclasses implement these main hooks:
-  - get_initial_actor(state): Who goes first
-  - get_next_actor(state): Who goes next
-  - build_actor_prompt(actor_id, state): Build fresh prompt for this actor
+  - get_initial_agent(state): Who goes first (or use a Protocol)
+  - get_next_agent(state): Who goes next (or use a Protocol)
+  - build_agent_prompt(agent_id, state): Build fresh prompt for this agent
   - on_turn_complete(state): Update game state after each turn
 """
 
 from abc import abstractmethod
 
 import verifiers as vf
-from verifiers.envs.actor import Actor
+from verifiers.envs.agent import Agent
 from verifiers.envs.multiturn_env import MultiTurnEnv
+from verifiers.envs.protocol import Protocol
 from verifiers.types import Messages, State, TrajectoryStep
 
 
@@ -30,81 +32,99 @@ class MultiAgentEnv(MultiTurnEnv):
     """
     Base class for multi-agent environments.
 
+    Turn order can be specified either by:
+    1. Passing a Protocol to __init__ (reusable turn logic)
+    2. Implementing get_initial_agent() and get_next_agent() in subclass
+
     Subclasses must implement:
-    - get_initial_actor(): Who goes first
-    - get_next_actor(): Who goes next (for alternating turns)
-    - build_actor_prompt(): Build prompt for current actor
+    - build_agent_prompt(): Build prompt for current agent
 
     Subclasses may optionally override:
     - on_turn_complete(): Game logic after each turn
+    - get_initial_agent() / get_next_agent(): If not using a Protocol
     """
 
-    # List of actor IDs this environment uses (e.g., ["player_0", "player_1"])
+    # List of agent IDs this environment uses (e.g., ["player_0", "player_1"])
     # Subclasses should override this or set in __init__
-    actors: list[str] = []
+    agents: list[str] = []
 
-    def __init__(self, **kwargs):
-        """Initialize multi-agent environment."""
-        super().__init__(**kwargs)
-        # Internal storage for Actor objects (when not using Protocol)
-        self._actor_registry: dict[str, Actor] = {}
-
-    def register_actor(self, actor: Actor) -> None:
-        """Register an Actor object for lookup by get_actor()."""
-        self._actor_registry[actor.id] = actor
-        if actor.id not in self.actors:
-            self.actors.append(actor.id)
-
-    def get_actor(self, actor_id: str) -> Actor:
-        """Get an actor by ID."""
-        if actor_id not in self._actor_registry:
-            raise KeyError(
-                f"Actor '{actor_id}' not found. Did you call register_actor()?"
-            )
-        return self._actor_registry[actor_id]
-
-    # -------------------------------------------------------------------------
-    # Turn Management (Subclasses Implement These)
-    # -------------------------------------------------------------------------
-
-    @abstractmethod
-    def get_initial_actor(self, state: State) -> str:
+    def __init__(self, protocol: Protocol | None = None, **kwargs):
         """
-        Return the actor ID that starts the rollout.
-
-        Example: return "player_0"
-        """
-        pass
-
-    @abstractmethod
-    def get_next_actor(self, state: State) -> str:
-        """
-        Return the actor ID for the next turn.
-
-        Example: Round-robin through players
-        """
-        pass
-
-    # -------------------------------------------------------------------------
-    # Game Hooks (Subclasses Implement These)
-    # -------------------------------------------------------------------------
-
-    @abstractmethod
-    async def build_actor_prompt(self, actor_id: str, state: State) -> Messages:
-        """
-        Build the prompt for the given actor's turn.
-
-        This is called BEFORE the model generates a response.
-        Build a fresh prompt with whatever context this actor needs.
+        Initialize multi-agent environment.
 
         Args:
-            actor_id: The actor who will respond (e.g., "player_0")
+            protocol: Optional Protocol for turn order. If not provided,
+                      subclass must implement get_initial_agent/get_next_agent.
+            **kwargs: Passed to MultiTurnEnv
+        """
+        super().__init__(**kwargs)
+        self._protocol = protocol
+        self._agent_registry: dict[str, Agent] = {}
+
+    def register_agent(self, agent: Agent) -> None:
+        """Register an Agent for lookup by get_agent()."""
+        self._agent_registry[agent.id] = agent
+        if agent.id not in self.agents:
+            self.agents.append(agent.id)
+
+    def get_agent(self, agent_id: str) -> Agent:
+        """Get an agent by ID."""
+        if agent_id not in self._agent_registry:
+            raise KeyError(
+                f"Agent '{agent_id}' not found. Did you call register_agent()?"
+            )
+        return self._agent_registry[agent_id]
+
+    # -------------------------------------------------------------------------
+    # Turn Management
+    # -------------------------------------------------------------------------
+
+    def get_initial_agent(self, state: State) -> str:
+        """
+        Return the agent ID that starts the rollout.
+
+        Default: delegates to Protocol if provided.
+        Override in subclass if not using a Protocol.
+        """
+        if self._protocol:
+            return self._protocol.get_initial_agent(state)
+        raise NotImplementedError("Provide a Protocol or override get_initial_agent()")
+
+    def get_next_agent(self, state: State) -> str:
+        """
+        Return the agent ID for the next turn.
+
+        Default: delegates to Protocol if provided.
+        Override in subclass if not using a Protocol.
+        """
+        if self._protocol:
+            return self._protocol.get_next_agent(state)
+        raise NotImplementedError("Provide a Protocol or override get_next_agent()")
+
+    # -------------------------------------------------------------------------
+    # Agent Prompt Building (Subclasses Implement This)
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def build_agent_prompt(self, agent_id: str, state: State) -> Messages:
+        """
+        Build the prompt for the given agent's turn.
+
+        This is called BEFORE the model generates a response.
+        Build a fresh prompt with whatever context this agent needs.
+
+        Args:
+            agent_id: The agent who will respond (e.g., "player_0")
             state: Current game state with trajectory and extras
 
         Returns:
             Messages list with system prompt and user content
         """
         pass
+
+    # -------------------------------------------------------------------------
+    # Game Logic Hook
+    # -------------------------------------------------------------------------
 
     async def on_turn_complete(self, state: State) -> None:
         """
@@ -118,7 +138,7 @@ class MultiAgentEnv(MultiTurnEnv):
 
         The last turn's info is in state["trajectory"][-1]:
         - ["completion"][-1]["content"]: The model's response text
-        - ["extras"]["actor_id"]: Which actor just responded
+        - ["extras"]["agent_id"]: Which agent just responded
 
         Args:
             state: Current game state (mutate extras as needed)
@@ -133,7 +153,7 @@ class MultiAgentEnv(MultiTurnEnv):
         """Initialize multi-agent state fields."""
         state = await super().setup_state(state)
         state["extras"] = state.get("extras", {})
-        state["extras"]["current_actor_id"] = None
+        state["extras"]["current_agent_id"] = None
         return state
 
     # -------------------------------------------------------------------------
@@ -158,13 +178,13 @@ class MultiAgentEnv(MultiTurnEnv):
     async def add_trajectory_step(
         self, state: State, trajectory_step: TrajectoryStep
     ) -> None:
-        """Tag trajectory step with actor_id."""
-        current_actor_id = state["extras"].get("current_actor_id")
-        if current_actor_id:
-            trajectory_step["extras"]["actor_id"] = current_actor_id
-            # Copy trainability from Actor to step
-            actor = self.get_actor(current_actor_id)
-            trajectory_step["extras"]["is_trainable"] = actor.is_trainable
+        """Tag trajectory step with agent_id."""
+        current_agent_id = state["extras"].get("current_agent_id")
+        if current_agent_id:
+            trajectory_step["extras"]["agent_id"] = current_agent_id
+            # Copy trainability from Agent to step
+            agent = self.get_agent(current_agent_id)
+            trajectory_step["extras"]["is_trainable"] = agent.is_trainable
         await super().add_trajectory_step(state, trajectory_step)
 
     # -------------------------------------------------------------------------
@@ -184,8 +204,8 @@ class MultiAgentEnv(MultiTurnEnv):
         Flow:
         1. Setup state
         2. Loop until game ends:
-           a. Determine current actor
-           b. Build prompt via build_actor_prompt()
+           a. Determine current agent
+           b. Build prompt via build_agent_prompt()
            c. Get model response
            d. Store in trajectory
            e. Process via on_turn_complete()
@@ -198,28 +218,28 @@ class MultiAgentEnv(MultiTurnEnv):
             state["error"] = e
             return state
 
-        # Determine first actor
-        state["extras"]["current_actor_id"] = self.get_initial_actor(state)
+        # Determine first agent
+        state["extras"]["current_agent_id"] = self.get_initial_agent(state)
 
         while not await self.is_completed(state):
-            actor_id = state["extras"]["current_actor_id"]
+            agent_id = state["extras"]["current_agent_id"]
 
             try:
-                # 1. Build prompt for this actor
-                prompt_messages = await self.build_actor_prompt(actor_id, state)
+                # 1. Build prompt for this agent
+                prompt_messages = await self.build_agent_prompt(agent_id, state)
 
                 # 2. Get model response
                 response = await self.get_model_response(state, prompt_messages)
 
-                # 3. Store in trajectory (tags with actor_id)
+                # 3. Store in trajectory (tags with agent_id)
                 await self.add_model_response(state, prompt_messages, response)
 
                 # 4. Process turn (game logic)
                 await self.on_turn_complete(state)
 
-                # 5. Determine next actor (if game continues)
+                # 5. Determine next agent (if game continues)
                 if not await self.is_completed(state):
-                    state["extras"]["current_actor_id"] = self.get_next_actor(state)
+                    state["extras"]["current_agent_id"] = self.get_next_agent(state)
 
             except vf.OverlongPromptError:
                 state["prompt_too_long"] = True

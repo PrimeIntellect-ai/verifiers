@@ -99,7 +99,9 @@ __all__ = [
     "Terminus2",
     "Terminus2Config",
     "SignalConfig",
-    "Actor",
+    "Agent",
+    "Protocol",
+    "RoundRobinProtocol",
     "Environment",
     "MultiTurnEnv",
     "MultiAgentEnv",
@@ -171,7 +173,9 @@ _LAZY_IMPORTS = {
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
     "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
-    "Actor": "verifiers.envs.actor:Actor",
+    "Agent": "verifiers.envs.agent:Agent",
+    "Protocol": "verifiers.envs.protocol:Protocol",
+    "RoundRobinProtocol": "verifiers.envs.protocol:RoundRobinProtocol",
     "MultiAgentEnv": "verifiers.envs.multiagent_env:MultiAgentEnv",
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
@@ -285,7 +289,8 @@ if TYPE_CHECKING:
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
     from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
     from .clients.renderer_client import RendererClient  # noqa: F401
-    from .envs.actor import Actor  # noqa: F401
+    from .envs.agent import Agent  # noqa: F401
+    from .envs.protocol import Protocol, RoundRobinProtocol  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
     from .envs.multiagent_env import MultiAgentEnv  # noqa: F401
