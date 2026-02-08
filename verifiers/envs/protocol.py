@@ -6,7 +6,7 @@ the task/environment logic. This allows the same protocol (e.g., round-robin)
 to be reused across different tasks.
 
 Example protocols:
-- RoundRobinProtocol: Agents take turns in order (player_0 → player_1 → ...)
+- RoundRobinProtocol: Agents take turns in order (0 → 1 → ...)
 - SimultaneousProtocol: All agents act at once (future)
 - HierarchicalProtocol: Some agents coordinate others (future)
 """
@@ -61,7 +61,7 @@ class RoundRobinProtocol(Protocol):
     Simple round-robin turn order: agents take turns in sequence.
 
     Example with 3 agents:
-        player_0 → player_1 → player_2 → player_0 → ...
+        0 → 1 → 2 → 0 → ...
     """
 
     def __init__(self, agent_ids: list[str]):
