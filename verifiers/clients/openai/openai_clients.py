@@ -87,6 +87,13 @@ DEFAULT_REASONING_FIELDS = [
     "reasoning_content",  # DeepSeek API
 ]
 
+
+def _get_usage_field(usage: Any, key: str) -> Any:
+    if isinstance(usage, Mapping):
+        return usage.get(key)
+    return getattr(usage, key, None)
+
+
 OpenAITextMessages = str
 OpenAITextResponse = Completion
 
@@ -160,9 +167,14 @@ class OAICompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = getattr(usage, "prompt_tokens", None)
-            completion_tokens = getattr(usage, "completion_tokens", None)
-            total_tokens = getattr(usage, "total_tokens", None)
+            prompt_tokens = _get_usage_field(usage, "prompt_tokens")
+            completion_tokens = _get_usage_field(usage, "completion_tokens")
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
+                prompt_tokens = _get_usage_field(usage, "input_tokens")
+                completion_tokens = _get_usage_field(usage, "output_tokens")
+            total_tokens = _get_usage_field(usage, "total_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
@@ -531,9 +543,14 @@ class OAIChatCompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = getattr(usage, "prompt_tokens", None)
-            completion_tokens = getattr(usage, "completion_tokens", None)
-            total_tokens = getattr(usage, "total_tokens", None)
+            prompt_tokens = _get_usage_field(usage, "prompt_tokens")
+            completion_tokens = _get_usage_field(usage, "completion_tokens")
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
+                prompt_tokens = _get_usage_field(usage, "input_tokens")
+                completion_tokens = _get_usage_field(usage, "output_tokens")
+            total_tokens = _get_usage_field(usage, "total_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):

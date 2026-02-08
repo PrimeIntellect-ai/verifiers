@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from datasets import Dataset
 
     from verifiers.clients.client import Client as VfClient
-    from verifiers.errors import Error as VfError
+    from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
@@ -342,7 +342,9 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: VfError | None
+    error: Error | None
+    usage: TokenUsage | None
+    usage_tracker: object
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists

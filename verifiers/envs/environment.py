@@ -9,6 +9,7 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -65,6 +66,7 @@ from verifiers.types import (
     State,
     TextMessage,
     Tool,
+    TokenUsage,
 )
 from verifiers.utils.async_utils import (
     maybe_retry,
@@ -84,6 +86,7 @@ from verifiers.utils.save_utils import (
     state_to_output,
     validate_resume_metadata,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
 class Environment(ABC):
@@ -477,6 +480,58 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
+    @final
+    def _get_usage_tracker(
+        self, state: State, create_if_missing: bool = True
+    ) -> StateUsageTracker | None:
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker):
+            return tracker
+        if not create_if_missing:
+            return None
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        # Expose read-only usage in state for live inspection.
+        state["usage"] = tracker.usage
+        return tracker
+
+    @final
+    def increment_state_usage(
+        self,
+        state: State,
+        input_tokens: int | float = 0,
+        output_tokens: int | float = 0,
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment(input_tokens, output_tokens)
+
+    @final
+    def increment_state_usage_from_response(
+        self, state: State, response: object
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment_from_response(response)
+
+    @final
+    def get_state_usage(self, state: State) -> TokenUsage | None:
+        tracker = self._get_usage_tracker(state, create_if_missing=False)
+        if tracker is not None:
+            return tracker.snapshot()
+        usage = state.get("usage")
+        if isinstance(usage, Mapping):
+            try:
+                input_tokens = float(usage.get("input_tokens", 0.0))
+                output_tokens = float(usage.get("output_tokens", 0.0))
+            except (TypeError, ValueError):
+                return None
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        return None
+
     async def get_model_response(
         self,
         state: State,
@@ -535,6 +590,8 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args, message_type
         )
 
+        self._get_usage_tracker(state, create_if_missing=True)
+
         response = await vf_client.get_response(
             prompt=prompt,
             model=model,
@@ -542,6 +599,7 @@ class Environment(ABC):
             sampling_args=sampling_args,
             state=state,
         )
+        self.increment_state_usage_from_response(state, response)
 
         return response
 
@@ -603,6 +661,7 @@ class Environment(ABC):
         state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
 
         state["trajectory"] = []
+        self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None
