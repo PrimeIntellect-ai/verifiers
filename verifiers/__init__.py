@@ -18,6 +18,13 @@ from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
+from .clients.client import Client  # noqa # isort: skip
+from .clients.anthropic import AnthropicMessagesClient  # noqa # isort: skip
+from .clients.openai import (  # noqa # isort: skip
+    OAIChatCompletionsClient,
+    OAIChatCompletionsTokenClient,
+    OAICompletionsClient,
+)
 
 # main imports
 from .envs.env_group import EnvGroup
@@ -71,6 +78,11 @@ __all__ = [
     "StatefulToolEnv",
     "ToolEnv",
     "EnvGroup",
+    "Client",
+    "AnthropicMessagesClient",
+    "OAIChatCompletionsClient",
+    "OAIChatCompletionsTokenClient",
+    "OAICompletionsClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",

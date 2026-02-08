@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -11,21 +12,24 @@ from typing import (
     TypeAlias,
 )
 
-from verifiers.errors import Error
+
 
 if TYPE_CHECKING:
     from datasets import Dataset
+
+    from verifiers.clients.client import Client as VfClient
+    from verifiers.errors import Error as VfError
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
 else:
     from typing import TypedDict
 
-from openai import AsyncOpenAI
-from openai.types.chat.chat_completion import ChatCompletion
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
-
-# openai types
+# openai types (kept for backward compat and internal use)
+from openai.types.chat.chat_completion import ChatCompletion  # noqa: F401
+from openai.types.chat.chat_completion_message_param import (
+    ChatCompletionMessageParam,  # noqa: F401
+)
 from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,  # noqa: F401
 )
@@ -33,24 +37,199 @@ from openai.types.chat.chat_completion_role import ChatCompletionRole  # noqa: F
 from openai.types.chat.chat_completion_tool_param import (
     ChatCompletionToolParam,  # noqa: F401
 )
-from openai.types.completion import Completion
+from openai.types.completion import Completion  # noqa: F401
 from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-# typing aliases
-ChatMessage = ChatCompletionMessageParam
+# ──────────────────────────────────────────────────────────────────────
+# Client / message type literals
+# ──────────────────────────────────────────────────────────────────────
+ClientType = Literal["openai", "anthropic"]
 MessageType = Literal["chat", "completion"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Custom base model with dict-like access
+# ──────────────────────────────────────────────────────────────────────
+class CustomBaseModel(BaseModel):
+    """Allow extras and dict-like attribute access."""
+
+    model_config = ConfigDict(extra="allow")
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __contains__(self, key):
+        return hasattr(self, key)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return self.model_dump() == dict(other)
+        return super().__eq__(other)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Shared message types (provider-agnostic)
+# ──────────────────────────────────────────────────────────────────────
+class TextMessage(CustomBaseModel):
+    role: Literal["text"] = "text"
+    content: str
+
+
+class TextContentPart(CustomBaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageUrlSource(CustomBaseModel):
+    url: str
+
+
+class ImageUrlContentPart(CustomBaseModel):
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageUrlSource
+
+
+class InputAudioSource(CustomBaseModel):
+    data: str
+    format: str
+
+
+class InputAudioContentPart(CustomBaseModel):
+    type: Literal["input_audio"] = "input_audio"
+    input_audio: InputAudioSource
+
+
+class GenericContentPart(CustomBaseModel):
+    type: str
+
+
+ContentPart: TypeAlias = (
+    TextContentPart
+    | ImageUrlContentPart
+    | InputAudioContentPart
+    | GenericContentPart
+    | dict[str, Any]
+)
+MessageContent: TypeAlias = str | list[ContentPart]
+
+
+class SystemMessage(CustomBaseModel):
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+
+class UserMessage(CustomBaseModel):
+    role: Literal["user"] = "user"
+    content: MessageContent
+
+
+class ToolCall(CustomBaseModel):
+    id: str
+    name: str
+    arguments: str
+
+
+class AssistantMessage(CustomBaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: MessageContent | None = None
+    reasoning_content: str | None = None
+    tool_calls: list[ToolCall] | None = None
+
+
+class ToolMessage(CustomBaseModel):
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    content: MessageContent
+
+
+Message: TypeAlias = (
+    SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage
+)
+Messages = list[Message]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Provider-agnostic tool definition
+# ──────────────────────────────────────────────────────────────────────
+class Tool(CustomBaseModel):
+    name: str
+    description: str
+    parameters: dict[str, object]
+    strict: bool | None = None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Response types (returned by Client adapters)
+# ──────────────────────────────────────────────────────────────────────
+class Usage(CustomBaseModel):
+    prompt_tokens: int
+    reasoning_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ResponseTokens(CustomBaseModel):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+
+
+FinishReason = Literal["stop", "length", "tool_calls"] | None
+
+
+class ResponseMessage(AssistantMessage):
+    finish_reason: FinishReason
+    is_truncated: bool | None
+    tokens: ResponseTokens | None = None
+
+
+class ResponseChoice(CustomBaseModel):
+    """Legacy compatibility shape mirroring OpenAI choice objects."""
+
+    message: ResponseMessage
+    text: str | None = None
+    finish_reason: FinishReason = None
+
+
+class Response(CustomBaseModel):
+    id: str
+    created: int
+    model: str
+    usage: Usage | None = None
+    message: ResponseMessage  # can call tools
+
+    @property
+    def choices(self) -> list[ResponseChoice]:
+        """Legacy compatibility with ChatCompletion/Completion response access."""
+        return [
+            ResponseChoice(
+                message=self.message,
+                text=self.message.content,
+                finish_reason=self.message.finish_reason,
+            )
+        ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Legacy aliases (backward compat — will be removed after full migration)
+# ──────────────────────────────────────────────────────────────────────
+ChatMessage = ChatCompletionMessageParam
+ChatMessages = list[ChatMessage]
 ModelResponse = Completion | ChatCompletion | None
 
-ChatMessages = list[ChatMessage]
-Message = str | ChatMessage
-
-Messages = str | list[ChatMessage]
+# ──────────────────────────────────────────────────────────────────────
+# Core data types
+# ──────────────────────────────────────────────────────────────────────
 Info = dict[str, Any]
-
 SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
 GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
@@ -76,7 +255,7 @@ class TokenUsage(TypedDict):
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
-    response: ModelResponse
+    response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
@@ -141,7 +320,7 @@ class RolloutOutput(dict):
     error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
-    oai_tools: list["ChatCompletionToolParam"]
+    oai_tools: list[Tool]
     token_usage: TokenUsage
 
 
@@ -149,21 +328,21 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: AsyncOpenAI
+    client: VfClient
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
     is_completed: bool
     is_truncated: bool
     stop_condition: str | None
-    oai_tools: list[ChatCompletionToolParam]
+    tool_defs: list[Tool]
     trajectory: list[TrajectoryStep]
     completion: Messages | None
     reward: float | None
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: VfError | None
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
@@ -220,7 +399,7 @@ class GenerateMetadata(TypedDict):
     usage: TokenUsage | None
     state_columns: list[str]
     path_to_save: Path
-    tools: list[ChatCompletionToolParam] | None
+    tools: list[Tool] | None
 
 
 class GenerateOutputs(TypedDict):
@@ -244,14 +423,16 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoint = TypedDict(
+    "Endpoint", {"key": str, "url": str, "model": str, "client_type": ClientType}
+)
 Endpoints = dict[str, Endpoint]
 
 
 class ClientConfig(BaseModel):
-    """Pydantic model for OpenAI client configuration."""
+    """Pydantic model for client configuration."""
 
-    client_idx: int = 0
+    client_type: ClientType = "openai"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     timeout: float = 3600.0
@@ -276,6 +457,7 @@ class EvalConfig(BaseModel):
     rollouts_per_example: int
     max_concurrent: int
     independent_scoring: bool = False
+    interleaved_thinking: bool = True
     extra_env_kwargs: dict = {}
     max_retries: int = 0
     # logging

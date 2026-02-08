@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import httpx
-from httpx import AsyncClient
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from verifiers.types import ClientConfig
@@ -25,38 +25,72 @@ def load_prime_config() -> dict:
     return {}
 
 
-def setup_client(config: ClientConfig) -> AsyncOpenAI:
-    """A helper function to setup an AsyncOpenAI client."""
-    # Setup timeouts and limits
-    http_timeout = httpx.Timeout(config.timeout, connect=5.0)
-    limits = httpx.Limits(
-        max_connections=config.max_connections,
-        max_keepalive_connections=config.max_keepalive_connections,
-    )
+def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
+    """Setup base HTTP client with timeouts, limits, and PRIME headers."""
 
-    headers = config.extra_headers
-    api_key = os.getenv(config.api_key_var)
+    def setup_limits(
+        max_connections: int, max_keepalive_connections: int
+    ) -> httpx.Limits:
+        return httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+        )
 
-    # Fall back to prime config if using PRIME_API_KEY
-    if config.api_key_var == "PRIME_API_KEY":
-        prime_config = load_prime_config()
-        if not api_key:
-            api_key = prime_config.get("api_key", "")
-        team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
-        if team_id:
-            headers = {**config.extra_headers, "X-Prime-Team-ID": team_id}
+    def setup_timeout(timeout: float) -> httpx.Timeout:
+        return httpx.Timeout(timeout, connect=5.0)
 
-    # Setup client
-    http_client = AsyncClient(
+    def setup_headers() -> dict[str, str]:
+        headers = config.extra_headers
+        api_key = os.getenv(config.api_key_var)
+
+        # Fall back to prime config if using PRIME_API_KEY
+        if config.api_key_var == "PRIME_API_KEY":
+            prime_config = load_prime_config()
+            if not api_key:
+                api_key = prime_config.get("api_key", "")
+            team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
+            if team_id:
+                headers = {**headers, "X-Prime-Team-ID": team_id}
+        return headers
+
+    limits = setup_limits(config.max_connections, config.max_keepalive_connections)
+    timeout = setup_timeout(config.timeout)
+    headers = setup_headers()
+    return httpx.AsyncClient(
         limits=limits,
-        timeout=http_timeout,
+        timeout=timeout,
         headers=headers,
     )
-    client = AsyncOpenAI(
+
+
+def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
+    """Setup an AsyncOpenAI client from config."""
+    assert config.client_type == "openai"
+    return AsyncOpenAI(
+        api_key=os.getenv(config.api_key_var) or "EMPTY",
         base_url=config.api_base_url,
-        api_key=api_key or "EMPTY",
         max_retries=config.max_retries,
-        http_client=http_client,
+        http_client=setup_http_client(config),
     )
 
-    return client
+
+def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
+    """Setup an AsyncAnthropic client from config."""
+    assert config.client_type == "anthropic"
+
+    return AsyncAnthropic(
+        api_key=os.getenv(config.api_key_var) or "EMPTY",
+        base_url=config.api_base_url,
+        max_retries=config.max_retries,
+        http_client=setup_http_client(config),
+    )
+
+
+def setup_client(config: ClientConfig) -> AsyncOpenAI | AsyncAnthropic:
+    """Setup the appropriate async client based on config.client_type."""
+    if config.client_type == "openai":
+        return setup_openai_client(config)
+    elif config.client_type == "anthropic":
+        return setup_anthropic_client(config)
+    else:
+        raise ValueError(f"Unsupported client type: {config.client_type}")
