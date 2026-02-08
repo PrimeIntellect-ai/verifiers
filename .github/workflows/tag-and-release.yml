@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -26,32 +30,41 @@ jobs:
           fetch-depth: 0
 
       - name: Detect version bump and create tag
+        id: tag
         env:
           BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
         run: |
+          echo "created=false" >> "$GITHUB_OUTPUT"
+
           if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "No valid base commit available; skipping auto-tag."
             exit 0
           fi
 
-          if ! git diff "$BEFORE_SHA" "$AFTER_SHA" -- verifiers/__init__.py | grep -q '__version__'; then
-            echo "No __version__ change detected in verifiers/__init__.py; skipping auto-tag."
-            exit 0
+          OLD_VERSION=$(git show "$BEFORE_SHA:verifiers/__init__.py" | sed -n 's/^__version__ = "\([^"]*\)"$/\1/p')
+          if [ -z "$OLD_VERSION" ]; then
+            echo "Could not find __version__ in previous verifiers/__init__.py" >&2
+            exit 1
           fi
 
-          VERSION=$(python - <<'PY'
+          NEW_VERSION=$(python - <<'PY'
           from pathlib import Path
           import re
           import sys
 
           match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("verifiers/__init__.py").read_text())
           if not match:
-              sys.exit("Could not find __version__ in verifiers/__init__.py")
+              sys.exit("Could not find __version__ in current verifiers/__init__.py")
           print(match.group(1))
           PY
           )
-          TAG="v${VERSION}"
+
+          if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "No __version__ change detected in verifiers/__init__.py; skipping auto-tag."
+            exit 0
+          fi
+
+          TAG="v${NEW_VERSION}"
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             echo "Tag ${TAG} already exists locally; skipping."
@@ -67,6 +80,53 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+  release-from-auto-tag:
+    needs: auto-tag-on-main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout auto-created tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
+
+      - name: Set release metadata
+        id: release
+        run: |
+          echo "tag=${{ needs.auto-tag-on-main.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          echo "version=${{ needs.auto-tag-on-main.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --token "$PYPI_TOKEN"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          body_path: assets/release/RELEASE_${{ steps.release.outputs.tag }}.md
+          files: |
+            dist/*
 
   tag-and-release:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -149,7 +209,7 @@ jobs:
       - name: Publish to PyPI
         env:
           PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token "$PYPI_TOKEN" 
+        run: uv publish --token "$PYPI_TOKEN"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
