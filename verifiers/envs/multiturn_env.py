@@ -73,6 +73,7 @@ class MultiTurnEnv(vf.Environment):
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
+
         def as_messages(value: Messages | str) -> Messages:
             if isinstance(value, str):
                 return [TextMessage(content=value)]
@@ -89,6 +90,7 @@ class MultiTurnEnv(vf.Environment):
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
+
         def as_messages(value: Messages | str) -> Messages:
             if isinstance(value, str):
                 return [TextMessage(content=value)]
@@ -101,7 +103,9 @@ class MultiTurnEnv(vf.Environment):
         last_completion = as_messages(state["trajectory"][-1]["completion"])
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
-            full_conversation = concat_messages([full_conversation, as_messages(state["final_env_response"])])
+            full_conversation = concat_messages(
+                [full_conversation, as_messages(state["final_env_response"])]
+            )
         prompt_messages = as_messages(state["prompt"])
         state["completion"] = full_conversation[len(prompt_messages) :]
 
