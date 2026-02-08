@@ -22,6 +22,20 @@ def test_load_endpoints_python_registry_normalizes_to_lists(tmp_path: Path):
     assert endpoint["key"] == "OPENAI_API_KEY"
 
 
+def test_load_endpoints_python_registry_preserves_client_type(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "client_type": "anthropic"},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["haiku"][0]["client_type"] == "anthropic"
+
+
 def test_load_endpoints_toml_groups_variants_by_endpoint_id(tmp_path: Path):
     registry_path = tmp_path / "endpoints.toml"
     registry_path.write_text(

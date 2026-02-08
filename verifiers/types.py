@@ -21,9 +21,9 @@ if TYPE_CHECKING:
     from verifiers.errors import Error as VfError
 
 if sys.version_info < (3, 12):
-    from typing_extensions import TypedDict
+    from typing_extensions import NotRequired, TypedDict
 else:
-    from typing import TypedDict
+    from typing import NotRequired, TypedDict
 
 # openai types (kept for backward compat and internal use)
 from openai.types.chat.chat_completion import ChatCompletion  # noqa: F401
@@ -423,7 +423,15 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoint = TypedDict(
+    "Endpoint",
+    {
+        "key": str,
+        "url": str,
+        "model": str,
+        "client_type": NotRequired[ClientType],
+    },
+)
 Endpoints = dict[str, list[Endpoint]]
 
 

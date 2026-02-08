@@ -20,6 +20,7 @@ import verifiers as vf
 from verifiers.utils.import_utils import load_toml
 
 from verifiers.types import (
+    ClientType,
     Endpoint,
     Endpoints,
     EvalConfig,
@@ -65,7 +66,16 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    return Endpoint(model=model, url=url, key=key)
+    endpoint = Endpoint(model=model, url=url, key=key)
+    client_type = raw_endpoint_dict.get("client_type")
+    if client_type is not None:
+        if client_type not in ("openai", "anthropic"):
+            raise ValueError(
+                f"Field 'client_type' must be 'openai' or 'anthropic' in {source}"
+            )
+        endpoint["client_type"] = cast(ClientType, client_type)
+
+    return endpoint
 
 
 def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
