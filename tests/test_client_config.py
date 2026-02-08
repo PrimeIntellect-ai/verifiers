@@ -26,7 +26,9 @@ def test_client_config_rejects_recursive_endpoint_configs():
                 "endpoint_configs": [
                     {
                         "api_base_url": "http://localhost:8001/v1",
-                        "endpoint_configs": [{"api_base_url": "http://localhost:8002/v1"}],
+                        "endpoint_configs": [
+                            {"api_base_url": "http://localhost:8002/v1"}
+                        ],
                     }
                 ],
             }
