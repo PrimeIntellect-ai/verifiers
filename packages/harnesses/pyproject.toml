@@ -1,0 +1,9 @@
+[project]
+name = "harnesses"
+version = "0.0.0"
+description = "Draft harness contracts for verifiers integration"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
