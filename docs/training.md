@@ -37,12 +37,12 @@ Use the `prime lab setup` script to download example configuration files for Hos
 prime lab setup
 ```
 
-This will download example TOML configs for Hosted Training into `configs/lab/`, along with `endpoints.py`:
+This will download example TOML configs for Hosted Training into `configs/rl/`, along with `endpoints.toml`:
 
 ```
 configs/
-├── endpoints.py
-└── lab/
+├── endpoints.toml
+└── rl/
     ├── alphabet-sort.toml
     ├── gsm8k.toml
     ├── math-python.toml
@@ -119,23 +119,12 @@ To use `vf.RLTrainer` in your own project, install the optional RL package:
 uv add verifiers-rl
 ```
 
-Then, use the `vf-setup` script to download example configuration files for `vf.RLTrainer` into your workspace:
+`vf-setup --vf-rl` is deprecated and no longer downloads `vf-rl` configs.
+
+Use the optional RL package directly and copy one of its example configs under `configs/rl/` (see `packages/verifiers-rl/verifiers_rl/rl/README.md`):
 
 ```bash
-prime lab setup --vf-rl
-```
-This will download example TOML configs for `vf.RLTrainer` into `configs/vf-rl/`, along with `endpoints.py`:
-
-```
-configs/
-├── endpoints.py
-└── vf-rl/
-    ├── alphabet-sort.toml
-    ├── gsm8k.toml
-    ├── math-python.toml
-    ├── reverse-text.toml
-    ├── wiki-search.toml
-    └── wordle.toml
+uv add verifiers-rl
 ```
 
 `vf-rl` can be used with a single TOML file, largely mirroring the configuration options for `prime-rl` but with some key differences in organization and feature sets.
@@ -174,7 +163,7 @@ max_seq_len = 4096
 To start a training run with `vf.RLTrainer`, do:
 
 ```bash
-uv run vf-rl @ configs/vf-rl/wiki-search.toml
+uv run vf-rl @ configs/rl/wiki-search.toml
 ```
 
 Key fields in `[trainer.args]`:
