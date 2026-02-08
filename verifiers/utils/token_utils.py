@@ -89,10 +89,28 @@ async def get_prompt_ids(
     that this method is called *before* making the model response from
     prompt_messages, i.e. the previous turn's prompt and completion do not yet
     include the environment response and next turn's model response.
+
+    For multi-agent environments, we find the previous turn for the CURRENT agent
+    (not just the global last turn) to correctly compute incremental tokens.
     """
-    prev_turn_prompt = state["trajectory"][-1]["prompt"]
-    prev_turn_completion = state["trajectory"][-1]["completion"]
-    prev_turn_tokens = state["trajectory"][-1]["tokens"]
+    # For multi-agent: find the last trajectory step for THIS agent
+    current_agent_id = state.get("extras", {}).get("current_agent_id")
+    prev_turn = None
+
+    if current_agent_id:
+        # Multi-agent: find last step for this specific agent
+        for step in reversed(state["trajectory"]):
+            if step.get("extras", {}).get("agent_id") == current_agent_id:
+                prev_turn = step
+                break
+
+    # Fallback to last step (single-agent or agent's first turn)
+    if prev_turn is None:
+        prev_turn = state["trajectory"][-1]
+
+    prev_turn_prompt = prev_turn["prompt"]
+    prev_turn_completion = prev_turn["completion"]
+    prev_turn_tokens = prev_turn["tokens"]
     assert prev_turn_tokens is not None
     prev_turn_prompt_ids = prev_turn_tokens["prompt_ids"]
     prev_turn_completion_ids = prev_turn_tokens["completion_ids"]
@@ -101,6 +119,18 @@ async def get_prompt_ids(
     # the env response is all messages after the previous turn
     messages = concat_messages([prev_turn_prompt, prev_turn_completion])
     env_response = prompt_messages[len(messages) :]
+
+    # For multi-agent: if this agent has no previous turn, use full tokenization
+    if (
+        current_agent_id
+        and prev_turn.get("extras", {}).get("agent_id") != current_agent_id
+    ):
+        return await tokenize_vllm(
+            client=client,
+            messages=prompt_messages,
+            tools=state["oai_tools"],
+            model=state["model"],
+        )
 
     def compute_suffix_ids(lst: list[int], value: int) -> list[int]:
         """Returns all tokens after the last occurrence of `value` in `lst`, if any."""
