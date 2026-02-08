@@ -27,7 +27,15 @@ CLAUDE_MD_DST = "CLAUDE.md"
 ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/environments/AGENTS.md"
 ENVS_AGENTS_MD_DST = "environments/AGENTS.md"
 
-PRIME_RL_CONFIGS = [
+ConfigSpec = tuple[str, str, str]
+
+
+def _mirror_repo_configs(repo: str, source_paths: list[str]) -> list[ConfigSpec]:
+    """Map repo paths to identical destination paths."""
+    return [(repo, source_path, source_path) for source_path in source_paths]
+
+
+PRIME_RL_CONFIGS: list[ConfigSpec] = [
     # (source_repo, source_path, dest_path)
     # Configs can come from either verifiers or prime-rl repo
     (
@@ -37,52 +45,33 @@ PRIME_RL_CONFIGS = [
     ),
 ]
 
-RL_CONFIGS = [
-    # (source_repo, source_path, dest_path)
-    (
-        VERIFIERS_REPO,
+RL_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
         "configs/rl/alphabet-sort.toml",
-        "configs/rl/alphabet-sort.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/rl/gsm8k.toml",
-        "configs/rl/gsm8k.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/rl/math-python.toml",
-        "configs/rl/math-python.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/rl/reverse-text.toml",
-        "configs/rl/reverse-text.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/rl/wiki-search.toml",
-        "configs/rl/wiki-search.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/rl/wordle.toml",
-        "configs/rl/wordle.toml",
-    ),
-]
+    ],
+)
 
-GEPA_CONFIGS = [
-    (
-        VERIFIERS_REPO,
+GEPA_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
         "configs/gepa/base.toml",
-        "configs/gepa/base.toml",
-    ),
-    (
-        VERIFIERS_REPO,
         "configs/gepa/wordle.toml",
-        "configs/gepa/wordle.toml",
-    ),
-]
+    ],
+)
+
+EVAL_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
+        "configs/eval/minimal.toml",
+        "configs/eval/multi-env.toml",
+    ],
+)
 
 
 def install_prime_rl():
@@ -136,7 +125,20 @@ def install_prime_rl():
     print("prime-rl setup completed")
 
 
-def download_configs(configs):
+def _dedupe_config_destinations(configs: list[ConfigSpec]) -> list[ConfigSpec]:
+    """Drop duplicate destination paths while preserving the first occurrence."""
+    deduped: list[ConfigSpec] = []
+    seen_destinations: set[str] = set()
+    for config in configs:
+        dest_path = config[2]
+        if dest_path in seen_destinations:
+            continue
+        seen_destinations.add(dest_path)
+        deduped.append(config)
+    return deduped
+
+
+def download_configs(configs: list[ConfigSpec]):
     """Download configs from specified repos."""
     for repo, source_path, dest_path in configs:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -271,13 +273,15 @@ def run_setup(
     else:
         print(f"{ENDPOINTS_DST} already exists")
 
+    configs_to_download: list[ConfigSpec] = []
     if prime_rl:
-        download_configs(PRIME_RL_CONFIGS)
-
-    download_configs(GEPA_CONFIGS)
-
+        configs_to_download.extend(PRIME_RL_CONFIGS)
+    configs_to_download.extend(GEPA_CONFIGS)
+    configs_to_download.extend(EVAL_CONFIGS)
     if not prime_rl:
-        download_configs(RL_CONFIGS)
+        configs_to_download.extend(RL_CONFIGS)
+
+    download_configs(_dedupe_config_destinations(configs_to_download))
 
 
 def main():

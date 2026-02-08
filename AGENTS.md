@@ -37,6 +37,7 @@ This sets up a Python project if needed (with `uv init`), installs `verifiers` (
 configs/
 ├── endpoints.toml      # OpenAI-compatible API endpoint configuration
 ├── rl/                 # Example configs for Hosted Training
+├── eval/               # Example multi-environment eval configs
 └── gepa/               # Example configs for prompt optimization
 environments/
 └── AGENTS.md           # Documentation for AI coding agents
