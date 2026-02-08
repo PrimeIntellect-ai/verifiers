@@ -103,6 +103,12 @@ def _extract_state_token_usage(state: State) -> TokenUsage | None:
         coerced = _coerce_token_usage(usage)
         if coerced is not None:
             return coerced
+        # Tracker exists but has not seen usage yet. Avoid falling through to
+        # state["usage"], which is a zeroed live tracker view.
+        token_usage = _coerce_token_usage(state.get("token_usage"))
+        if token_usage is not None:
+            return token_usage
+        return None
 
     for key in ("token_usage", "usage"):
         usage = _coerce_token_usage(state.get(key))

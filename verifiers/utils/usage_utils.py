@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import math
 from types import MappingProxyType
 
 from verifiers.types import TokenUsage
@@ -8,6 +9,35 @@ def _get_usage_value(usage_obj: object, key: str) -> int | float:
     if isinstance(usage_obj, Mapping):
         return usage_obj.get(key, 0)  # type: ignore[return-value]
     return getattr(usage_obj, key, 0)
+
+
+def _coerce_usage_int(value: object) -> int:
+    """Best-effort usage coercion. Invalid values degrade to zero."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return 0
+        return max(0, int(value))
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 0
+        try:
+            return max(0, int(stripped))
+        except (TypeError, ValueError):
+            try:
+                parsed = float(stripped)
+                if math.isnan(parsed) or math.isinf(parsed):
+                    return 0
+                return max(0, int(parsed))
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
@@ -20,7 +50,7 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
     if not prompt_tokens and not completion_tokens:
         prompt_tokens = _get_usage_value(usage, "input_tokens")
         completion_tokens = _get_usage_value(usage, "output_tokens")
-    return int(prompt_tokens or 0), int(completion_tokens or 0)
+    return _coerce_usage_int(prompt_tokens), _coerce_usage_int(completion_tokens)
 
 
 class StateUsageTracker:

@@ -25,6 +25,7 @@ from verifiers.utils.save_utils import (
     states_to_outputs,
     validate_resume_metadata,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 
 
 # Test models for make_serializable tests
@@ -186,6 +187,27 @@ class TestSavingResults:
         input_tokens, output_tokens = extract_usage_tokens(response)
         assert input_tokens == 8
         assert output_tokens == 3
+
+    def test_extract_usage_tokens_invalid_values(self):
+        response = type(
+            "Response",
+            (),
+            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
+        )()
+        input_tokens, output_tokens = extract_usage_tokens(response)
+        assert input_tokens == 0
+        assert output_tokens == 0
+
+    def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
+        self, make_state
+    ):
+        state = make_state()
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = []
+        output = states_to_outputs([state], state_columns=[])[0]
+        assert "token_usage" not in output
 
     def test_states_to_outputs(self, make_state):
         states = [
