@@ -10,6 +10,7 @@ uv.lock
 .ropeproject/
 .scratch/
 .chroma_db/
+/.codex/environments/
 
 # artifacts
 core.* 

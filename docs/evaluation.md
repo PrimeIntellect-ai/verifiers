@@ -11,6 +11,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Evaluation Scope](#evaluation-scope)
   - [Concurrency](#concurrency)
   - [Output and Saving](#output-and-saving)
+  - [Resuming Evaluations](#resuming-evaluations)
 - [Environment Defaults](#environment-defaults)
 - [Multi-Environment Evaluation](#multi-environment-evaluation)
   - [TOML Configuration](#toml-configuration)
@@ -65,10 +66,10 @@ prime eval run my-env -x '{"max_turns": 20}'
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--endpoints-path` | `-e` | `./configs/endpoints.py` | Path to endpoints registry |
+| `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to endpoints registry (`.toml` preferred, `.py` supported) |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 
-For convenience, define model endpoints in `./configs/endpoints.py` to avoid repeating URL and key flags:
+For convenience, define model endpoints in `./configs/endpoints.toml` (or `./configs/endpoints.py`) to avoid repeating URL and key flags.
 
 ```python
 ENDPOINTS = {
@@ -85,6 +86,18 @@ ENDPOINTS = {
 }
 ```
 
+Equivalent TOML format:
+
+```toml
+[[endpoint]]
+endpoint_id = "gpt-4.1-mini"
+model = "gpt-4.1-mini"
+url = "https://api.openai.com/v1"
+key = "OPENAI_API_KEY"
+```
+
+To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
+
 Then use the alias directly:
 
 ```bash
@@ -92,6 +105,10 @@ prime eval run my-env -m qwen3-235b-i
 ```
 
 If the model name is in the registry, those values are used by default, but you can override them with `--api-base-url` and/or `--api-key-var`. If the model name isn't found, the CLI flags are used (falling back to defaults when omitted).
+
+In other words, `-m/--model` is treated as an endpoint alias lookup when present in the registry, and otherwise treated as a literal model id.
+
+When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections to resolve from the endpoint registry. `endpoint_id` is only supported when `endpoints_path` points to a TOML registry file.
 
 ### Sampling Parameters
 
@@ -124,6 +141,7 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
 | `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
 | `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
+| `--independent-scoring` | `-i` | false | Score each rollout individually instead of by group |
 | `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
@@ -138,12 +156,60 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 | `--tui` | `-u` | false | Use alternate screen mode (TUI) for display |
 | `--debug` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--save-results` | `-s` | false | Save results to disk |
-| `--save-every` | `-f` | -1 | Save checkpoint every N rollouts |
+| `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
 
-Results are saved to `./outputs/evals/{env_id}--{model}/` as a Hugging Face dataset.
+Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`, containing:
+
+- `results.jsonl` — rollout outputs, one per line
+- `metadata.json` — evaluation configuration and aggregate metrics
+
+### Resuming Evaluations
+
+Long-running evaluations can be interrupted and resumed using checkpointing. When `--save-results` is enabled, results are saved incrementally after each completed group of rollouts. Use `--resume` to continue from where you left off. Pass a path to resume a specific run, or omit the path to auto-detect the latest incomplete matching run.
+
+**Running with checkpoints:**
+
+```bash
+prime eval run my-env -n 1000 -s
+```
+
+With `-s` (save results) enabled, partial results are written to disk after each group completes. If the evaluation is interrupted, the output directory will contain all completed rollouts up until the interruption.
+
+**Resuming from a checkpoint:**
+
+```bash
+prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
+```
+
+When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, and `rollouts_per_example` where saved `num_examples` is less than or equal to the current run. When resuming:
+
+1. Existing completed rollouts are loaded from the checkpoint
+2. Remaining rollouts are computed based on the example ids and group size
+3. Only incomplete rollouts are executed
+4. New results are appended to the existing checkpoint
+
+If all rollouts are already complete, the evaluation returns immediately with the existing results.
+
+**Configuration compatibility:**
+
+When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--env-args`, or `--rollouts-per-example` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
+
+**Example workflow:**
+
+```bash
+# Start a large evaluation with checkpointing
+prime eval run math-python -n 500 -r 3 -s
+
+# If interrupted, find the run directory
+ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
+
+# Resume from the checkpoint
+prime eval run math-python -n 500 -r 3 -s \
+  --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
+```
 
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
 
@@ -223,6 +289,7 @@ Each `[[eval]]` section must contain an `env_id` field. All other fields are opt
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
+| `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
 Example with `env_args`:
 

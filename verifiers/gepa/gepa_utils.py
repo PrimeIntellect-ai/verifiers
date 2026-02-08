@@ -81,12 +81,14 @@ def save_gepa_results(
                 if score == best_score
             ]
 
-            records.append({
-                "valset_row": row_idx,
-                "best_score": best_score,
-                "num_best_prompts": len(best_prompts),
-                "best_prompts": best_prompts,
-            })
+            records.append(
+                {
+                    "valset_row": row_idx,
+                    "best_score": best_score,
+                    "num_best_prompts": len(best_prompts),
+                    "best_prompts": best_prompts,
+                }
+            )
 
     # Save frontier as JSONL
     if records:
@@ -102,7 +104,9 @@ def save_gepa_results(
     metadata = {
         "num_candidates": len(candidates),
         "best_idx": best_idx,
-        "best_score": float(val_scores[best_idx]) if val_scores and best_idx < len(val_scores) else None,
+        "best_score": float(val_scores[best_idx])
+        if val_scores and best_idx < len(val_scores)
+        else None,
         "total_metric_calls": getattr(result, "total_metric_calls", None),
         "completed_at": datetime.now().isoformat(),
     }

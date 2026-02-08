@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs
+from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
@@ -40,7 +40,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
-    usage: dict[str, float] | None = None
+    usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -169,19 +169,24 @@ class EvalDisplay(BaseDisplay):
 
     @staticmethod
     def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
-        """Return the effective concurrency shown in the UI."""
-        max_concurrent = config.max_concurrent
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
         if (
             not config.independent_scoring
-            and max_concurrent > 0
+            and config.max_concurrent > 0
             and config.rollouts_per_example > 1
         ):
-            max_concurrent = math.ceil(max_concurrent / config.rollouts_per_example)
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
 
-        if max_concurrent > 0 and total_rollouts > 0:
-            return min(max_concurrent, total_rollouts)
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
 
-        return max_concurrent
+        return display_rollout_concurrency
 
     def update_env_state(
         self,
@@ -192,7 +197,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
-        usage: dict[str, float] | None = None,
+        usage: TokenUsage | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -284,7 +289,7 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_tokens_row(self, usage: dict[str, float]) -> Table | None:
+    def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
         """Create a tokens row with input/output values."""
         tokens_text = Text()
         tokens_text.append("╰─ ", style="dim")
@@ -301,6 +306,21 @@ class EvalDisplay(BaseDisplay):
                 tokens_text.append("   ")
         return make_aligned_row(tokens_text, Text())
 
+    @staticmethod
+    def _format_client_target(config: EvalConfig) -> str:
+        endpoint_configs = config.client_config.endpoint_configs
+        endpoint_count = len(endpoint_configs) if endpoint_configs else 1
+
+        if config.endpoint_id and endpoint_count >= 2:
+            return f"endpoint_id={config.endpoint_id} ({endpoint_count} endpoints)"
+
+        if endpoint_configs:
+            if endpoint_count == 1:
+                return endpoint_configs[0].api_base_url
+            return ", ".join(endpoint.api_base_url for endpoint in endpoint_configs)
+
+        return config.client_config.api_base_url
+
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs[env_idx]
@@ -310,7 +330,7 @@ class EvalDisplay(BaseDisplay):
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
-        config_line.append(config.client_config.api_base_url, style="white")
+        config_line.append(self._format_client_target(config), style="white")
         config_line.append("  |  ", style="dim")
         config_line.append(str(env_state.num_examples), style="white")
         config_line.append("x", style="white")
@@ -320,9 +340,7 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
-        display_max_concurrent = self._display_max_concurrent(
-            config, env_state.total
-        )
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
         config_line.append(fmt_concurrency(display_max_concurrent), style="white")
         config_line.append(" concurrent rollouts", style="dim")
@@ -338,10 +356,6 @@ class EvalDisplay(BaseDisplay):
         if config.save_results:
             config_line.append("  |  ", style="dim")
             config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
 
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback

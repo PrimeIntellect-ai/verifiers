@@ -23,6 +23,8 @@ This folder contains installable example environments that showcase common usage
 - **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
+- **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
+- **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
 ### Tool use
 - **ToolEnv (native function-calling)**
@@ -69,6 +71,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
+- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
 - **MCP integration**: `mcp_search_env`
 - **RLM (recursive LLM)**: `rlm_secrets`

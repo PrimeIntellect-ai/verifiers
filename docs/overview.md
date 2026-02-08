@@ -31,8 +31,10 @@ prime lab setup
 This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
 ```
 configs/
-├── endpoints.py        # OpenAI-compatible API endpoint configuration
-└── lab/                # Example configs for Hosted Training
+├── endpoints.toml      # OpenAI-compatible API endpoint configuration
+├── rl/                 # Example configs for Hosted Training
+├── eval/               # Example multi-environment eval configs
+└── gepa/               # Example configs for prompt optimization
 environments/
 └── AGENTS.md           # Documentation for AI coding agents
 AGENTS.md               # Top-level documentation for AI coding agents
@@ -86,7 +88,7 @@ To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
 prime eval run my-env -m gpt-5-nano # run and save eval results locally
 ```
-Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.py`.
+Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
 View local evaluation results in the terminal UI:
 ```bash

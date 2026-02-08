@@ -6,14 +6,13 @@ import tenacity as tc
 from prime_sandboxes import CommandTimeoutError
 
 
-
 from verifiers.envs.sandbox_env import (
     CreateSandboxRequest,
     SandboxCreationError,
     SandboxNotReadyError,
     ThreadedAsyncSandboxClient,
-    LoggerProtocol,
 )
+
 
 class SandboxExecutorMixin:
     """Small helper mixin for sandbox lifecycle + retries."""
@@ -47,7 +46,7 @@ class SandboxExecutorMixin:
                 jitter=jitter,
             ),
             before_sleep=tc.before_sleep_log(
-                cast(LoggerProtocol, self._sandbox_logger),
+                cast(Any, self._sandbox_logger),
                 logging.WARNING,
             ),
             reraise=True,

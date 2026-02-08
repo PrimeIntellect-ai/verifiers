@@ -3,7 +3,8 @@
 import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, cast
+
 from dotenv import load_dotenv
 import verifiers as vf
 from stagehand import AsyncStagehand
@@ -91,7 +92,8 @@ class DOMMode:
             }
         browserbase_params = browserbase_params or None
 
-        session = await self.stagehand_client.sessions.create(
+        sessions = cast(Any, self.stagehand_client.sessions)
+        session = await sessions.create(
             model_name=self.stagehand_model,
             browserbase_session_create_params=browserbase_params,
         )

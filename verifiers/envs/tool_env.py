@@ -6,7 +6,10 @@ from openai.types.chat import ChatCompletionAssistantMessageParam
 import verifiers as vf
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.tool_utils import convert_func_to_oai_tool, is_valid_tool_content_parts
+from verifiers.utils.tool_utils import (
+    convert_func_to_oai_tool,
+    is_valid_tool_content_parts,
+)
 
 
 class ToolMonitorRubric(vf.Rubric):
