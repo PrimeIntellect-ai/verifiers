@@ -23,12 +23,14 @@ Key features:
 import asyncio
 import base64
 import contextvars
+import errno
 import json
 import logging
 import os
 import pickle
 import random
 import re
+import select
 import shutil
 import signal
 import shlex
@@ -342,7 +344,8 @@ class RLMMonitorRubric(vf.Rubric):
 
     def _make_state_metric(self, key: str):
         async def metric(state: State):
-            return state[key]
+            value = state.get(key, 0)
+            return 0 if value is None else value
 
         metric.__name__ = key
         return metric
@@ -1565,14 +1568,66 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         def _do_io() -> str:
             payload_json = json.dumps(payload)
-            with open(
-                session.paths.command_fifo, "w", encoding="utf-8"
-            ) as command_file:
-                command_file.write(payload_json)
-            with open(
-                session.paths.response_fifo, "r", encoding="utf-8"
-            ) as response_file:
-                return response_file.read()
+            payload_bytes = payload_json.encode("utf-8")
+            deadline = time.monotonic() + self.env.code_execution_timeout
+
+            try:
+                cmd_fd = os.open(
+                    session.paths.command_fifo, os.O_WRONLY | os.O_NONBLOCK
+                )
+            except OSError as exc:
+                if exc.errno in (errno.ENXIO, errno.ENOENT):
+                    raise RLMCodeExecutionTimeout from exc
+                raise
+            try:
+                remaining = payload_bytes
+                while remaining:
+                    try:
+                        written = os.write(cmd_fd, remaining)
+                        remaining = remaining[written:]
+                    except BlockingIOError:
+                        now = time.monotonic()
+                        if now >= deadline:
+                            raise RLMCodeExecutionTimeout
+                        timeout = min(0.05, deadline - now)
+                        _, writable, _ = select.select([], [cmd_fd], [], timeout)
+                        if not writable:
+                            continue
+            finally:
+                os.close(cmd_fd)
+
+            try:
+                res_fd = os.open(
+                    session.paths.response_fifo, os.O_RDONLY | os.O_NONBLOCK
+                )
+            except OSError as exc:
+                if exc.errno in (errno.ENOENT,):
+                    raise RLMCodeExecutionTimeout from exc
+                raise
+            chunks: list[bytes] = []
+            try:
+                while True:
+                    now = time.monotonic()
+                    if now >= deadline:
+                        raise RLMCodeExecutionTimeout
+                    timeout = min(0.05, deadline - now)
+                    ready, _, _ = select.select([res_fd], [], [], timeout)
+                    if not ready:
+                        continue
+                    chunk = os.read(res_fd, 4096)
+                    if chunk:
+                        chunks.append(chunk)
+                        continue
+                    if not chunks:
+                        time.sleep(0.01)
+                        continue
+                    break
+            finally:
+                os.close(res_fd)
+
+            if not chunks:
+                raise RLMCodeExecutionTimeout
+            return b"".join(chunks).decode("utf-8", errors="replace")
 
         try:
             raw = await asyncio.wait_for(
@@ -1585,6 +1640,10 @@ class LocalRLMExecutor(BaseRLMExecutor):
             )
             self._unblock_response_fifo(session, payload.get("seq", 0))
             raise RLMCodeExecutionTimeout from e
+        except RLMCodeExecutionTimeout:
+            logger.warning("RLM worker did not respond in time")
+            self._unblock_response_fifo(session, payload.get("seq", 0))
+            raise
         except Exception as e:
             raise vf.SandboxError() from e
 
@@ -1880,9 +1939,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 # Allow environments to run repo/tool setup before the worker starts.
                 await self.env.on_sandbox_ready(state, sandbox.id)
             except Exception as exc:
-                raise vf.SandboxError(
-                    f"Sandbox setup hook failed: {exc}"
-                ) from exc
+                raise vf.SandboxError(f"Sandbox setup hook failed: {exc}") from exc
 
         if not session.sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
@@ -1935,6 +1992,8 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             raw = await self._send_worker_request(session, payload)
         except CommandTimeoutError as e:
             raise RLMCodeExecutionTimeout from e
+        except RLMCodeExecutionTimeout:
+            raise
         except Exception as e:
             raise vf.SandboxError() from e
 
@@ -2280,6 +2339,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             raise vf.SandboxError() from Exception("Sandbox not initialized")
         payload_json = json.dumps(payload)
         payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
+        timeout_seconds = int(self.env.code_execution_timeout)
         alive_check = (
             f'[ -f "{session.paths.worker_pid_file}" ] '
             f'&& [ -d "/proc/$(cat {session.paths.worker_pid_file})" ] '
@@ -2290,14 +2350,77 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             {alive_check}
             python - <<'PY'
     import base64
+    import errno
     import json
+    import os
+    import select
     import sys
+    import time
 
     data = base64.b64decode('{payload_b64}').decode('utf-8')
-    with open('{session.paths.command_fifo}', 'w', encoding='utf-8') as command_file:
-        command_file.write(data)
-    with open('{session.paths.response_fifo}', 'r', encoding='utf-8') as response_file:
-        sys.stdout.write(response_file.read())
+    command_fifo = '{session.paths.command_fifo}'
+    response_fifo = '{session.paths.response_fifo}'
+    timeout_seconds = {timeout_seconds}
+    deadline = time.time() + timeout_seconds
+
+    try:
+        cmd_fd = os.open(command_fifo, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENXIO, errno.ENOENT):
+            print("WORKER_DEAD")
+            sys.exit(0)
+        raise
+    try:
+        payload_bytes = data.encode("utf-8")
+        remaining = payload_bytes
+        while remaining:
+            try:
+                written = os.write(cmd_fd, remaining)
+                remaining = remaining[written:]
+            except BlockingIOError:
+                now = time.time()
+                if now >= deadline:
+                    print("WORKER_TIMEOUT")
+                    sys.exit(0)
+                timeout = min(0.05, deadline - now)
+                _, writable, _ = select.select([], [cmd_fd], [], timeout)
+                if not writable:
+                    continue
+    finally:
+        os.close(cmd_fd)
+
+    try:
+        res_fd = os.open(response_fifo, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT,):
+            print("WORKER_DEAD")
+            sys.exit(0)
+        raise
+    chunks = []
+    try:
+        while True:
+            now = time.time()
+            if now >= deadline:
+                print("WORKER_TIMEOUT")
+                sys.exit(0)
+            timeout = min(0.05, deadline - now)
+            ready, _, _ = select.select([res_fd], [], [], timeout)
+            if not ready:
+                continue
+            chunk = os.read(res_fd, 4096)
+            if chunk:
+                chunks.append(chunk)
+                continue
+            if not chunks:
+                time.sleep(0.01)
+                continue
+            break
+    finally:
+        os.close(res_fd)
+    if not chunks:
+        print("WORKER_DEAD")
+        sys.exit(0)
+    sys.stdout.write(b"".join(chunks).decode("utf-8", errors="replace"))
     PY
             """
         )
@@ -2308,7 +2431,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         )
         raw_response = result.stdout or ""
         if raw_response and raw_response.strip() == "WORKER_DEAD":
-            raise vf.SandboxError() from RuntimeError("RLM worker not running")
+            raise RLMCodeExecutionTimeout
+        if raw_response and raw_response.strip() == "WORKER_TIMEOUT":
+            raise RLMCodeExecutionTimeout
         return raw_response
 
     async def _upload_directory(
