@@ -13,7 +13,9 @@ def test_run_setup_downloads_endpoints_toml_and_rl_plus_gepa_configs(
     downloaded: list[tuple[str, str]] = []
     config_batches: list[list[tuple[str, str, str]]] = []
 
-    monkeypatch.setattr(setup.wget, "download", lambda src, dst: downloaded.append((src, dst)))
+    monkeypatch.setattr(
+        setup.wget, "download", lambda src, dst: downloaded.append((src, dst))
+    )
     monkeypatch.setattr(
         setup,
         "download_configs",
@@ -34,7 +36,9 @@ def test_run_setup_vf_rl_is_deprecated_and_does_not_download_vf_rl_configs(
     downloaded: list[tuple[str, str]] = []
     config_batches: list[list[tuple[str, str, str]]] = []
 
-    monkeypatch.setattr(setup.wget, "download", lambda src, dst: downloaded.append((src, dst)))
+    monkeypatch.setattr(
+        setup.wget, "download", lambda src, dst: downloaded.append((src, dst))
+    )
     monkeypatch.setattr(
         setup,
         "download_configs",
