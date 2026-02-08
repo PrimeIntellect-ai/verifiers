@@ -4,7 +4,7 @@ Multi-agent environment for turn-based games.
 This module provides the base class for multi-agent RL environments, extending
 MultiTurnEnv with support for:
 - Multiple agents with distinct system prompts
-- Turn order management via Protocol or get_initial_agent() / get_next_agent()
+- Turn order management via Protocol
 - Per-agent trajectory tagging for credit assignment
 
 Key concepts:
@@ -12,9 +12,8 @@ Key concepts:
 - Protocol: Defines turn order and interaction patterns (defined in protocol.py)
 
 Environment Implementation:
+- Subclasses must provide a Protocol for turn management
 - Subclasses implement these main hooks:
-  - get_initial_agent(state): Who goes first (or use a Protocol)
-  - get_next_agent(state): Who goes next (or use a Protocol)
   - build_agent_prompt(agent_id, state): Build fresh prompt for this agent
   - on_turn_complete(state): Update game state after each turn
 """
@@ -32,29 +31,26 @@ class MultiAgentEnv(MultiTurnEnv):
     """
     Base class for multi-agent environments.
 
-    Turn order can be specified either by:
-    1. Passing a Protocol to __init__ (reusable turn logic)
-    2. Implementing get_initial_agent() and get_next_agent() in subclass
+    Turn order is managed by a Protocol, which must be provided at init.
+    This keeps turn logic reusable and separate from environment logic.
 
     Subclasses must implement:
     - build_agent_prompt(): Build prompt for current agent
 
     Subclasses may optionally override:
     - on_turn_complete(): Game logic after each turn
-    - get_initial_agent() / get_next_agent(): If not using a Protocol
     """
 
     # List of agent IDs this environment uses (e.g., ["player_0", "player_1"])
     # Subclasses should override this or set in __init__
     agents: list[str] = []
 
-    def __init__(self, protocol: Protocol | None = None, **kwargs):
+    def __init__(self, protocol: Protocol, **kwargs):
         """
         Initialize multi-agent environment.
 
         Args:
-            protocol: Optional Protocol for turn order. If not provided,
-                      subclass must implement get_initial_agent/get_next_agent.
+            protocol: Protocol for turn order management.
             **kwargs: Passed to MultiTurnEnv
         """
         super().__init__(**kwargs)
@@ -76,30 +72,16 @@ class MultiAgentEnv(MultiTurnEnv):
         return self._agent_registry[agent_id]
 
     # -------------------------------------------------------------------------
-    # Turn Management
+    # Turn Management (delegated to Protocol)
     # -------------------------------------------------------------------------
 
     def get_initial_agent(self, state: State) -> str:
-        """
-        Return the agent ID that starts the rollout.
-
-        Default: delegates to Protocol if provided.
-        Override in subclass if not using a Protocol.
-        """
-        if self._protocol:
-            return self._protocol.get_initial_agent(state)
-        raise NotImplementedError("Provide a Protocol or override get_initial_agent()")
+        """Return the agent ID that starts the rollout."""
+        return self._protocol.get_initial_agent(state)
 
     def get_next_agent(self, state: State) -> str:
-        """
-        Return the agent ID for the next turn.
-
-        Default: delegates to Protocol if provided.
-        Override in subclass if not using a Protocol.
-        """
-        if self._protocol:
-            return self._protocol.get_next_agent(state)
-        raise NotImplementedError("Provide a Protocol or override get_next_agent()")
+        """Return the agent ID for the next turn."""
+        return self._protocol.get_next_agent(state)
 
     # -------------------------------------------------------------------------
     # Agent Prompt Building (Subclasses Implement This)
