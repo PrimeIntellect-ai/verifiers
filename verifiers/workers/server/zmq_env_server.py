@@ -121,11 +121,12 @@ class ZMQEnvServer(EnvServer):
                 )
 
         except asyncio.CancelledError:
-            self.logger.debug(f"Request {request_id} cancelled during shutdown")
             return
 
         except Exception as e:
-            self.logger.error(f"Error processing request: {e}", exc_info=True)
+            self.logger.error(
+                f"Error processing request {request_id}: {e}", exc_info=True
+            )
             response = BaseResponse(
                 success=False,
                 error=repr(e),

@@ -68,11 +68,7 @@ class ZMQEnvClient(EnvClient):
         """Fail all pending futures with the given reason."""
         pending_count = len(self.pending)
         if pending_count:
-            self.logger.warning(
-                "Failing %d pending request(s): %s",
-                pending_count,
-                reason,
-            )
+            self.logger.warning(f"Failing {pending_count} pending request(s): {reason}")
         for _, future in list(self.pending.items()):
             if not future.done():
                 future.set_exception(RuntimeError(reason))
@@ -100,11 +96,6 @@ class ZMQEnvClient(EnvClient):
                         try:
                             response = msgpack.unpackb(response_data, raw=False)
                             future.set_result(response)
-                            self.logger.debug(
-                                "Resolved request_id=%s (pending=%d)",
-                                request_id,
-                                len(self.pending),
-                            )
                         except Exception as unpack_error:
                             # Unpacking failed - fail the specific future
                             self.logger.error(
@@ -117,9 +108,7 @@ class ZMQEnvClient(EnvClient):
                             )
                 else:
                     self.logger.warning(
-                        "Received response for unknown request_id=%s (pending=%d)",
-                        request_id,
-                        len(self.pending),
+                        f"Received response for unknown request_id={request_id} (pending={len(self.pending)})"
                     )
 
             except asyncio.CancelledError:
@@ -171,14 +160,6 @@ class ZMQEnvClient(EnvClient):
 
         future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
-        self.logger.debug(
-            "Sending %s request_id=%s timeout=%.1fs (pending=%d)",
-            request.request_type,
-            request_id,
-            effective_timeout,
-            len(self.pending),
-        )
-
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
         try:
@@ -186,11 +167,7 @@ class ZMQEnvClient(EnvClient):
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
             self.logger.error(
-                "Timed out waiting for request_id=%s type=%s after %.1fs (pending=%d)",
-                request_id,
-                request.request_type,
-                effective_timeout,
-                len(self.pending),
+                f"Timed out waiting for request_id={request_id} type={request.request_type} after {effective_timeout:.1f}s (pending={len(self.pending)})"
             )
             raise TimeoutError(
                 f"Environment timeout for {request.request_type} request after {effective_timeout}s"
