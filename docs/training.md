@@ -37,17 +37,20 @@ Use the `prime lab setup` script to download example configuration files for Hos
 prime lab setup
 ```
 
-This will download example TOML configs for Hosted Training into `configs/rl/`, along with `endpoints.toml`:
+This will download example TOML configs for Hosted Training into `configs/rl/`, along with `endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
 ```
 configs/
 ├── endpoints.toml
-└── rl/
-    ├── alphabet-sort.toml
-    ├── gsm8k.toml
-    ├── math-python.toml
-    ├── reverse-text.toml
-    ├── wiki-search.toml
+├── rl/
+│   ├── alphabet-sort.toml
+│   ├── gsm8k.toml
+│   ├── math-python.toml
+│   ├── reverse-text.toml
+│   ├── wiki-search.toml
+│   └── wordle.toml
+└── gepa/
+    ├── base.toml
     └── wordle.toml
 ```
 
