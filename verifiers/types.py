@@ -38,7 +38,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # typing aliases
 ChatMessage = ChatCompletionMessageParam
@@ -164,6 +164,8 @@ class State(dict):
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None
+    usage: TokenUsage | None
+    usage_tracker: object
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
@@ -193,10 +195,12 @@ class State(dict):
 JsonPrimitive = Literal["string", "number", "integer", "boolean", "array", "object"]
 
 # callbacks
-StartCallback = Callable[[int], None]  # total rollouts
+StartCallback = Callable[
+    [list[RolloutInput], list[RolloutInput] | list[list[RolloutInput]]], None
+]
 ProgressCallback = Callable[
-    [list[RolloutOutput], list[RolloutOutput]], None
-]  # all_outputs, new_outputs
+    [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
+]  # all_outputs, new_outputs, new_metadata
 LogCallback = Callable[[str], None]  # log messages
 
 
@@ -214,6 +218,7 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    avg_error: float
     usage: TokenUsage | None
     state_columns: list[str]
     path_to_save: Path
@@ -242,7 +247,7 @@ class RolloutScores(TypedDict):
 
 
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
-Endpoints = dict[str, Endpoint]
+Endpoints = dict[str, list[Endpoint]]
 
 
 class ClientConfig(BaseModel):
@@ -251,11 +256,15 @@ class ClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list["ClientConfig"] = Field(default_factory=list)
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] = {}
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+ClientConfig.model_rebuild()
 
 
 class EvalConfig(BaseModel):
@@ -266,6 +275,7 @@ class EvalConfig(BaseModel):
     env_args: dict
     env_dir_path: str
     # evaluation
+    endpoint_id: str | None = None
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
@@ -277,11 +287,10 @@ class EvalConfig(BaseModel):
     max_retries: int = 0
     # logging
     verbose: bool = False
-    use_tqdm: bool = True
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
-    save_every: int = -1
+    resume_path: Path | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
 

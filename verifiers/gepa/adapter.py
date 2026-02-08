@@ -14,6 +14,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.message_utils import message_to_printable
 from verifiers.utils.save_utils import make_serializable
 
@@ -35,11 +36,13 @@ def make_reflection_lm(
     """
     import os
 
+    resolved_client_config = resolve_client_config(client_config)
+
     client = OpenAI(
-        api_key=os.environ.get(client_config.api_key_var, ""),
-        base_url=client_config.api_base_url,
-        timeout=client_config.timeout,
-        max_retries=client_config.max_retries,
+        api_key=os.environ.get(resolved_client_config.api_key_var, ""),
+        base_url=resolved_client_config.api_base_url,
+        timeout=resolved_client_config.timeout,
+        max_retries=resolved_client_config.max_retries,
     )
 
     def reflection_lm(prompt: str) -> str:
@@ -73,9 +76,6 @@ class VerifiersGEPAAdapter:
     # GEPA adapter protocol: None means use default proposer with reflection_lm
     propose_new_texts: Callable[..., dict[str, str]] | None = None
 
-    # Display control
-    use_tqdm: bool = False
-
     # Internal: track candidates by prompt hash
     _seen_prompts: dict[str, int] = field(default_factory=dict)
 
@@ -90,6 +90,9 @@ class VerifiersGEPAAdapter:
         """
         inputs = _inject_system_prompt(batch, candidate.get("system_prompt", ""))
 
+        def do_nothing(*args, **kwargs) -> None:
+            pass
+
         results = asyncio.get_event_loop().run_until_complete(
             self.env.generate(
                 inputs=inputs,
@@ -97,8 +100,9 @@ class VerifiersGEPAAdapter:
                 model=self.model,
                 sampling_args=self.sampling_args,
                 max_concurrent=self.max_concurrent,
-                use_tqdm=self.use_tqdm,
                 state_columns=self.state_columns,
+                on_start=do_nothing,
+                on_progress=do_nothing,
             )
         )
 

@@ -74,7 +74,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     def __init__(
         self,
-        openenv_project: str | Path,
+        openenv_project: str | Path | None = None,
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
@@ -93,7 +93,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         jitter: float = 1e-3,
         **kwargs: Any,
     ):
-        self.openenv_project = str(openenv_project)
+        self.openenv_project = self._resolve_openenv_project(openenv_project)
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
@@ -138,6 +138,18 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             message_type="chat",
             **kwargs,
         )
+
+    def _resolve_openenv_project(self, openenv_project: str | Path | None) -> str:
+        if openenv_project is not None:
+            return str(openenv_project)
+
+        current_file = Path(__file__).resolve()
+        for frame_info in inspect.stack()[1:]:
+            frame_path = Path(frame_info.filename).resolve()
+            if frame_path != current_file:
+                return str(frame_path.parent / "proj")
+
+        return str(Path.cwd() / "proj")
 
     async def start_server(
         self,

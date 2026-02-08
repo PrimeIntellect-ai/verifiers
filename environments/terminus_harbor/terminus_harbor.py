@@ -2,8 +2,6 @@ import logging
 import tempfile
 from pathlib import Path
 
-from prime_sandboxes import AsyncSandboxClient
-
 import verifiers as vf
 from verifiers.envs.experimental.harbor_env import HarborEnv
 
@@ -52,30 +50,28 @@ class TerminusHarborEnv(HarborEnv):
         env_vars["OPENAI_API_KEY"] = "dummy-key-for-proxy"
         return env_vars
 
-    async def post_sandbox_setup(
-        self, state: vf.State, sandbox_client: AsyncSandboxClient
-    ) -> None:
+    async def post_sandbox_setup(self, state: vf.State) -> None:
         """Upload task assets and run_agent.py script."""
-        await super().post_sandbox_setup(state, sandbox_client)
+        await super().post_sandbox_setup(state)
 
         sandbox_id = state["sandbox_id"]
 
         # Install curl, git, uv, and Python
-        await sandbox_client.execute_command(
+        await self.sandbox_client.execute_command(
             sandbox_id,
             "apt-get update && apt-get install -y curl git 2>&1",
             working_dir=None,
             timeout=120,
         )
 
-        await sandbox_client.execute_command(
+        await self.sandbox_client.execute_command(
             sandbox_id,
             "curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1",
             working_dir=None,
             timeout=120,
         )
 
-        await sandbox_client.execute_command(
+        await self.sandbox_client.execute_command(
             sandbox_id,
             "$HOME/.local/bin/uv python install 3.12 2>&1",
             working_dir=None,
@@ -84,22 +80,21 @@ class TerminusHarborEnv(HarborEnv):
 
         # Upload the run_agent.py script
         script_content = self._get_run_agent_script()
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(script_content)
             temp_path = f.name
 
         try:
-            await sandbox_client.upload_file(
+            await self.sandbox_client.upload_file(
                 sandbox_id,
                 f"{self.agent_workdir}/run_agent.py",
-                temp_path
+                temp_path,
             )
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
-
     def _get_run_agent_script(self) -> str:
-        return '''#!/usr/bin/env python3
+        return """#!/usr/bin/env python3
 import sys
 import asyncio
 import os
@@ -255,7 +250,7 @@ if __name__ == "__main__":
     print("Starting asyncio.run(main())...", flush=True)
     asyncio.run(main())
     print("=== run_agent.py finished ===", flush=True)
-'''
+"""
 
 
 def load_environment(
