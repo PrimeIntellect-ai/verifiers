@@ -1,5 +1,5 @@
-model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
-reflection_model = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+model = "qwen3-30b-i"
+reflection_model = "qwen3-30b-i"
 endpoints_path = "../endpoints.toml"
 
 [env]
