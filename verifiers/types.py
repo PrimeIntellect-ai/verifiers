@@ -164,6 +164,8 @@ class State(dict):
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
     error: Error | None
+    usage: TokenUsage | None
+    usage_tracker: object
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists

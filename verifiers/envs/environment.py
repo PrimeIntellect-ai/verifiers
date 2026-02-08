@@ -10,6 +10,7 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -67,6 +68,7 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
+    TokenUsage,
 )
 from verifiers.utils.async_utils import (
     maybe_retry,
@@ -92,6 +94,7 @@ from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
@@ -426,6 +429,58 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
+    @final
+    def _get_usage_tracker(
+        self, state: State, create_if_missing: bool = True
+    ) -> StateUsageTracker | None:
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker):
+            return tracker
+        if not create_if_missing:
+            return None
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        # Expose read-only usage in state for live inspection.
+        state["usage"] = tracker.usage
+        return tracker
+
+    @final
+    def increment_state_usage(
+        self,
+        state: State,
+        input_tokens: int | float = 0,
+        output_tokens: int | float = 0,
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment(input_tokens, output_tokens)
+
+    @final
+    def increment_state_usage_from_response(
+        self, state: State, response: object
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment_from_response(response)
+
+    @final
+    def get_state_usage(self, state: State) -> TokenUsage | None:
+        tracker = self._get_usage_tracker(state, create_if_missing=False)
+        if tracker is not None:
+            return tracker.snapshot()
+        usage = state.get("usage")
+        if isinstance(usage, Mapping):
+            try:
+                input_tokens = float(usage.get("input_tokens", 0.0))
+                output_tokens = float(usage.get("output_tokens", 0.0))
+            except (TypeError, ValueError):
+                return None
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        return None
+
     async def get_model_response(
         self,
         state: State,
@@ -623,6 +678,7 @@ class Environment(ABC):
         client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
             client, model, oai_tools, sampling_args, message_type
         )
+        self._get_usage_tracker(state, create_if_missing=True)
         sampling_args = normalize_sampling_args(sampling_args)
         if self.interleaved_rollouts:
             sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
@@ -651,6 +707,7 @@ class Environment(ABC):
         # Some providers (e.g. OpenRouter) may return None for response or response.choices
         if response is None:
             raise vf.EmptyModelResponseError("Model returned no response")
+        self.increment_state_usage_from_response(state, response)
         if response.choices is None:
             raise vf.EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
@@ -708,6 +765,7 @@ class Environment(ABC):
         else:
             state["oai_tools"] = []
         state["trajectory"] = []
+        self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None

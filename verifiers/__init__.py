@@ -144,6 +144,8 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
@@ -155,15 +157,13 @@ if TYPE_CHECKING:
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
-    from verifiers_rl.rl.trainer import (  # noqa: F401
-        GRPOConfig,
-        GRPOTrainer,
-        RLConfig,
-        RLTrainer,
-        grpo_defaults,
-        lora_defaults,
-    )
-    from verifiers_rl.rl.trainer.utils import (  # noqa: F401
-        get_model,
-        get_model_and_tokenizer,
-    )
+
+    # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
+    RLConfig: Any
+    RLTrainer: Any
+    GRPOTrainer: Any
+    GRPOConfig: Any
+    grpo_defaults: Any
+    lora_defaults: Any
+    get_model: Any
+    get_model_and_tokenizer: Any
