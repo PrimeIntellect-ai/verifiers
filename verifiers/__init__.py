@@ -62,6 +62,7 @@ __all__ = [
     "HarborEnv",
     "MCPEnv",
     "BrowserEnv",
+    "OpenEnvEnv",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -78,30 +79,30 @@ __all__ = [
     "quiet_verifiers",
     "load_environment",
     "print_prompt_completions_sample",
-    "get_model",
-    "get_model_and_tokenizer",
-    "RLTrainer",
-    "RLConfig",
-    "GRPOTrainer",
-    "GRPOConfig",
-    "grpo_defaults",
-    "lora_defaults",
     "cleanup",
     "stop",
     "teardown",
     "ensure_keys",
     "MissingKeyError",
+    "get_model",
+    "get_model_and_tokenizer",
+    "RLConfig",
+    "RLTrainer",
+    "GRPOTrainer",
+    "GRPOConfig",
+    "grpo_defaults",
+    "lora_defaults",
 ]
 
 _LAZY_IMPORTS = {
-    "get_model": "verifiers.rl.trainer.utils:get_model",
-    "get_model_and_tokenizer": "verifiers.rl.trainer.utils:get_model_and_tokenizer",
-    "RLConfig": "verifiers.rl.trainer:RLConfig",
-    "RLTrainer": "verifiers.rl.trainer:RLTrainer",
-    "GRPOTrainer": "verifiers.rl.trainer:GRPOTrainer",
-    "GRPOConfig": "verifiers.rl.trainer:GRPOConfig",
-    "grpo_defaults": "verifiers.rl.trainer:grpo_defaults",
-    "lora_defaults": "verifiers.rl.trainer:lora_defaults",
+    "get_model": "verifiers_rl.rl.trainer.utils:get_model",
+    "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
+    "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
+    "RLTrainer": "verifiers_rl.rl.trainer:RLTrainer",
+    "GRPOTrainer": "verifiers_rl.rl.trainer:GRPOTrainer",
+    "GRPOConfig": "verifiers_rl.rl.trainer:GRPOConfig",
+    "grpo_defaults": "verifiers_rl.rl.trainer:grpo_defaults",
+    "lora_defaults": "verifiers_rl.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
@@ -112,6 +113,7 @@ _LAZY_IMPORTS = {
     "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
+    "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
 }
 
 
@@ -122,32 +124,46 @@ def __getattr__(name: str):
     except KeyError:
         raise AttributeError(f"module 'verifiers' has no attribute '{name}'")
     except ModuleNotFoundError as e:
-        # warn that accessed var needs [all] to be installed
+        rl_names = {
+            "get_model",
+            "get_model_and_tokenizer",
+            "RLConfig",
+            "RLTrainer",
+            "GRPOTrainer",
+            "GRPOConfig",
+            "grpo_defaults",
+            "lora_defaults",
+        }
+        if name in rl_names:
+            raise AttributeError(
+                f"To use verifiers.{name}, install as `verifiers-rl`."
+            ) from e
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e
 
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
     from .envs.experimental.gym_env import GymEnv  # noqa: F401
     from .envs.experimental.harbor_env import HarborEnv  # noqa: F401
     from .envs.experimental.mcp_env import MCPEnv  # noqa: F401
     from .envs.integrations.browser_env import BrowserEnv  # noqa: F401
+    from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
-    from .rl.trainer import (  # noqa: F401
-        GRPOConfig,
-        GRPOTrainer,
-        RLConfig,
-        RLTrainer,
-        grpo_defaults,
-        lora_defaults,
-    )
-    from .rl.trainer.utils import (  # noqa: F401
-        get_model,
-        get_model_and_tokenizer,
-    )
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+
+    # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
+    RLConfig: Any
+    RLTrainer: Any
+    GRPOTrainer: Any
+    GRPOConfig: Any
+    grpo_defaults: Any
+    lora_defaults: Any
+    get_model: Any
+    get_model_and_tokenizer: Any
