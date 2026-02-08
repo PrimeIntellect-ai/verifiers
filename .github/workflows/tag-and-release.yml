@@ -2,6 +2,8 @@ name: Tag and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -12,7 +14,62 @@ on:
         type: string
 
 jobs:
+  auto-tag-on-main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version bump and create tag
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No valid base commit available; skipping auto-tag."
+            exit 0
+          fi
+
+          if ! git diff "$BEFORE_SHA" "$AFTER_SHA" -- verifiers/__init__.py | grep -q '__version__'; then
+            echo "No __version__ change detected in verifiers/__init__.py; skipping auto-tag."
+            exit 0
+          fi
+
+          VERSION=$(python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("verifiers/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in verifiers/__init__.py")
+          print(match.group(1))
+          PY
+          )
+          TAG="v${VERSION}"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists locally; skipping."
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin; skipping."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
   tag-and-release:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
