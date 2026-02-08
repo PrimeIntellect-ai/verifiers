@@ -227,7 +227,6 @@ def ensure_uv_project():
 
 def run_setup(
     prime_rl: bool = False,
-    vf_rl: bool = False,
     skip_agents_md: bool = False,
     skip_install: bool = False,
 ) -> None:
@@ -235,7 +234,6 @@ def run_setup(
 
     Args:
         prime_rl: Install prime-rl and download prime-rl configs.
-        vf_rl: Deprecated. Kept for backward compatibility; no configs are downloaded.
         skip_agents_md: Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md.
         skip_install: Skip uv project initialization and verifiers installation.
     """
@@ -273,18 +271,12 @@ def run_setup(
     else:
         print(f"{ENDPOINTS_DST} already exists")
 
-    if vf_rl:
-        print(
-            "Warning: --vf-rl is deprecated and will be removed in a future release. "
-            "Install verifiers-rl and use configs from that package instead."
-        )
-
     if prime_rl:
         download_configs(PRIME_RL_CONFIGS)
 
     download_configs(GEPA_CONFIGS)
 
-    if not prime_rl and not vf_rl:
+    if not prime_rl:
         download_configs(RL_CONFIGS)
 
 
@@ -296,11 +288,6 @@ def main():
         "--prime-rl",
         action="store_true",
         help="Install prime-rl and download prime-rl configs",
-    )
-    parser.add_argument(
-        "--vf-rl",
-        action="store_true",
-        help="[DEPRECATED] vf-rl configs are no longer bundled by vf-setup",
     )
     parser.add_argument(
         "--skip-agents-md",
@@ -316,7 +303,6 @@ def main():
 
     run_setup(
         prime_rl=args.prime_rl,
-        vf_rl=args.vf_rl,
         skip_agents_md=args.skip_agents_md,
         skip_install=args.skip_install,
     )
