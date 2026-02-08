@@ -213,6 +213,8 @@ class GenerateMetadata(TypedDict):
     tools: list[ChatCompletionToolParam] | None
 ```
 
+`base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
 ### RolloutScore / RolloutScores
 
 ```python
@@ -567,14 +569,18 @@ Combines rubrics for `EnvGroup`.
 
 ```python
 class ClientConfig(BaseModel):
+    client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list[ClientConfig] = []
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = {}
 ```
+
+Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
@@ -589,6 +595,7 @@ class EvalConfig(BaseModel):
     env_id: str
     env_args: dict
     env_dir_path: str
+    endpoint_id: str | None = None
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
@@ -610,8 +617,10 @@ class EvalConfig(BaseModel):
 
 ```python
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
-Endpoints = dict[str, Endpoint]
+Endpoints = dict[str, list[Endpoint]]
 ```
+
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 
 ---
 

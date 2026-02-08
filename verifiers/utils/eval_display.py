@@ -306,6 +306,21 @@ class EvalDisplay(BaseDisplay):
                 tokens_text.append("   ")
         return make_aligned_row(tokens_text, Text())
 
+    @staticmethod
+    def _format_client_target(config: EvalConfig) -> str:
+        endpoint_configs = config.client_config.endpoint_configs
+        endpoint_count = len(endpoint_configs) if endpoint_configs else 1
+
+        if config.endpoint_id and endpoint_count >= 2:
+            return f"endpoint_id={config.endpoint_id} ({endpoint_count} endpoints)"
+
+        if endpoint_configs:
+            if endpoint_count == 1:
+                return endpoint_configs[0].api_base_url
+            return ", ".join(endpoint.api_base_url for endpoint in endpoint_configs)
+
+        return config.client_config.api_base_url
+
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs[env_idx]
@@ -315,7 +330,7 @@ class EvalDisplay(BaseDisplay):
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
-        config_line.append(config.client_config.api_base_url, style="white")
+        config_line.append(self._format_client_target(config), style="white")
         config_line.append("  |  ", style="dim")
         config_line.append(str(env_state.num_examples), style="white")
         config_line.append("x", style="white")

@@ -42,7 +42,7 @@ from openai.types.shared_params import (  # noqa: F401
     FunctionDefinition,
     FunctionParameters,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # ──────────────────────────────────────────────────────────────────────
 # Client / message type literals
@@ -423,23 +423,26 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict(
-    "Endpoint", {"key": str, "url": str, "model": str, "client_type": ClientType}
-)
-Endpoints = dict[str, Endpoint]
+Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
+Endpoints = dict[str, list[Endpoint]]
 
 
 class ClientConfig(BaseModel):
     """Pydantic model for client configuration."""
 
+    client_idx: int = 0
     client_type: ClientType = "openai"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list["ClientConfig"] = Field(default_factory=list)
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
-    extra_headers: dict[str, str] = {}
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+ClientConfig.model_rebuild()
 
 
 class EvalConfig(BaseModel):
@@ -450,6 +453,7 @@ class EvalConfig(BaseModel):
     env_args: dict
     env_dir_path: str
     # evaluation
+    endpoint_id: str | None = None
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs

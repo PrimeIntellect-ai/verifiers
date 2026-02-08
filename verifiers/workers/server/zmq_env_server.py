@@ -83,6 +83,8 @@ class ZMQEnvServer(EnvServer):
             await asyncio.gather(*self.pending_tasks, return_exceptions=True)
             self.pending_tasks.clear()
 
+        await self._close_cached_clients()
+
         self.socket.close()
         self.ctx.term()
         self.logger.debug("Environment server shut down")

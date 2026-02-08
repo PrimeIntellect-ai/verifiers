@@ -108,15 +108,15 @@ This will launch a tmux session with separate panes for the trainer, orchestrato
 
 If you want to hack on new training algorithms and are less concerned with maximum performance or advanced features, you can use the included `RLTrainer` (via `vf-rl`), whose core files are under 1000 lines of code and include only the most essential logic for fairly-performant async off-policy training (with a similar core algorithm as `prime-rl`).
 
-The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `verifiers/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
+The included `RLTrainer` is a minimal, hackable training loop based on `transformers.Trainer` that supports both full-parameter finetuning and LoRA training. `RLTrainer` can be viewed as a "baby" `prime-rl` that adopts a similar default training recipe (async CISPO with one-step off-policy overlap), intended for single-node test runs with dense models. The primary files (`trainer.py` and `orchestrator.py`, located in `packages/verifiers-rl/verifiers_rl/rl/trainer/`) are under 1000 lines of code, and are designed to be a convenient starting point for writing your own training loop.
 
 The feature set is intentionally kept minimal and focused. Users seeking maximum performance, MoE support, multi-node training, multidimensional parallelism, and other advanced features should use the `prime-rl` trainer. 
 
 ### Setup and Configuration
 
-To use `vf.RLTrainer` in your own project, install with RL extras:
+To use `vf.RLTrainer` in your own project, install the optional RL package:
 ```bash
-uv add 'verifiers[rl]'
+uv add verifiers-rl
 ```
 
 Then, use the `vf-setup` script to download example configuration files for `vf.RLTrainer` into your workspace:

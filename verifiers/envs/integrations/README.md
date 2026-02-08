@@ -161,13 +161,11 @@ uv run vf-build my-openenv
 
 ```python
 # environments/my_openenv/my_openenv.py
-from pathlib import Path
 from typing import Any
 import verifiers as vf
 from verifiers.envs.integrations.openenv_env import OpenEnvEnv
 
-def render_prompt(observation: Any, **kwargs: Any) -> list[dict[str, str]]:
-    del kwargs
+def render_prompt(observation: Any) -> list[dict[str, str]]:
     if not isinstance(observation, dict):
         raise RuntimeError("Expected dict observation")
     prompt = observation.get("prompt")
@@ -181,7 +179,6 @@ def load_environment(
     seed: int = 0,
 ) -> vf.Environment:
     return OpenEnvEnv(
-        openenv_project=Path(__file__).parent / "proj",
         prompt_renderer=render_prompt,
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,

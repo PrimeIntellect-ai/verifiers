@@ -243,9 +243,14 @@ uv run pytest tests/ --cov=verifiers  # With coverage
 uv run pytest tests/test_envs.py -vv              # All environments
 uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
-# Linting
-uv run ruff check --fix .             # Fix lint errors
-uv run pre-commit run --all-files     # Run all pre-commit hooks
+# Linting & formatting & type checking
+uv run ruff check .                                     # Check lint errors
+uv run ruff check --fix .                               # Fix lint errors
+uv run ruff format --check .                            # Check formatting
+uv run ruff format .                                    # Format code
+uv run ty check verifiers/                              # Type check
+uv run ty check verifiers/ --ignore unresolved-import   # Type check (CPU-only)
+uv run pre-commit run --all-files                       # Run all pre-commit hooks
 
 # Environment tools
 prime env init new-env                       # Create environment

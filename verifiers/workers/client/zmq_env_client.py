@@ -23,6 +23,8 @@ from verifiers.workers.types import (
 class ZMQEnvClient(EnvClient):
     """ZMQ-based environment client."""
 
+    DEFAULT_REQUEST_TIMEOUT_S = 600.0
+
     def __init__(self, address: str = "tcp://127.0.0.1:5000"):
         super().__init__(address=address)
 
@@ -64,6 +66,13 @@ class ZMQEnvClient(EnvClient):
 
     def _fail_all_pending(self, reason: str):
         """Fail all pending futures with the given reason."""
+        pending_count = len(self.pending)
+        if pending_count:
+            self.logger.warning(
+                "Failing %d pending request(s): %s",
+                pending_count,
+                reason,
+            )
         for _, future in list(self.pending.items()):
             if not future.done():
                 future.set_exception(RuntimeError(reason))
@@ -91,6 +100,11 @@ class ZMQEnvClient(EnvClient):
                         try:
                             response = msgpack.unpackb(response_data, raw=False)
                             future.set_result(response)
+                            self.logger.debug(
+                                "Resolved request_id=%s (pending=%d)",
+                                request_id,
+                                len(self.pending),
+                            )
                         except Exception as unpack_error:
                             # Unpacking failed - fail the specific future
                             self.logger.error(
@@ -103,7 +117,9 @@ class ZMQEnvClient(EnvClient):
                             )
                 else:
                     self.logger.warning(
-                        f"Received response for unknown request_id: {request_id}"
+                        "Received response for unknown request_id=%s (pending=%d)",
+                        request_id,
+                        len(self.pending),
                     )
 
             except asyncio.CancelledError:
@@ -134,7 +150,12 @@ class ZMQEnvClient(EnvClient):
         # auto-start receiver if not already running (with lock to prevent race)
         if self._receiver_task is None:
             async with self._start_lock:
-                await self._start()
+                if self._receiver_task is None:
+                    await self._start()
+
+        effective_timeout = (
+            self.DEFAULT_REQUEST_TIMEOUT_S if timeout is None else timeout
+        )
 
         # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
@@ -151,15 +172,29 @@ class ZMQEnvClient(EnvClient):
 
         future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
+        self.logger.debug(
+            "Sending %s request_id=%s timeout=%.1fs (pending=%d)",
+            request.request_type,
+            request_id,
+            effective_timeout,
+            len(self.pending),
+        )
 
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
         try:
-            raw_response = await asyncio.wait_for(future, timeout=timeout)
+            raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
+            self.logger.error(
+                "Timed out waiting for request_id=%s type=%s after %.1fs (pending=%d)",
+                request_id,
+                request.request_type,
+                effective_timeout,
+                len(self.pending),
+            )
             raise TimeoutError(
-                f"Environment timeout for {request.request_type} request after {timeout}s"
+                f"Environment timeout for {request.request_type} request after {effective_timeout}s"
             )
 
         # validate response with Pydantic
