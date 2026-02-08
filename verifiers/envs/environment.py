@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import atexit
 import functools
@@ -8,13 +10,15 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime
+from multiprocessing import Process
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    AsyncContextManager,
+    Any,
     Awaitable,
     Callable,
     List,
@@ -24,8 +28,21 @@ from typing import (
     final,
 )
 
-from datasets import Dataset
-from openai import AsyncOpenAI, BadRequestError, OpenAI
+from openai import AsyncOpenAI, AuthenticationError, BadRequestError, OpenAI
+
+from verifiers.utils.client_utils import (
+    resolve_client_config,
+    resolve_client_configs,
+    setup_client,
+)
+from verifiers.utils.eval_utils import filter_inputs
+from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.worker_utils import get_free_port
+from verifiers.workers.client.zmq_env_client import ZMQEnvClient
+from verifiers.workers.server.zmq_env_server import ZMQEnvServer
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.completion_choice import CompletionChoice
@@ -36,6 +53,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ChatCompletionToolParam,
     ChatMessage,
+    ClientConfig,
     DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
@@ -45,22 +63,39 @@ from verifiers.types import (
     ModelResponse,
     ProgressCallback,
     RolloutInput,
+    RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     StartCallback,
     State,
+    TokenUsage,
 )
-from verifiers.utils.async_utils import maybe_retry, maybe_semaphore
+from verifiers.utils.async_utils import (
+    maybe_retry,
+    maybe_semaphore,
+    with_sem,
+)
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.eval_utils import make_dataset, save_rollout_results
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
-from verifiers.utils.path_utils import get_results_path
+from verifiers.utils.save_utils import (
+    GenerateOutputsBuilder,
+    load_outputs,
+    make_dataset,
+    push_results_to_hf_hub,
+    save_metadata,
+    save_new_outputs,
+    save_outputs,
+    state_to_output,
+    validate_resume_metadata,
+)
 from verifiers.utils.token_utils import (
     get_prompt_ids,
     prepare_sampling_args_for_token_prompts,
 )
+from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
     pass
@@ -118,6 +153,9 @@ class Environment(ABC):
                 'to contain a "prompt" column.'
             )
 
+        self.env_client: EnvClient | None = None
+        self.env_server_process: Process | None = None
+
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
         self.dataset: Dataset | None = None
@@ -144,7 +182,9 @@ class Environment(ABC):
         self.sampling_args = {"n": 1, "extra_body": {}}
         if sampling_args is not None:
             # merge extra_body if provided
-            self.sampling_args["extra_body"].update(sampling_args.get("extra_body", {}))  # type: ignore[union-attr]
+            cast(dict[str, Any], self.sampling_args["extra_body"]).update(
+                cast(dict[str, Any], sampling_args.get("extra_body", {}))
+            )
             # copy other keys
             for key, value in sampling_args.items():
                 if key != "extra_body":
@@ -223,7 +263,7 @@ class Environment(ABC):
         ):
             dataset = dataset.rename_column("example_id", "src_id")
         if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore (weird datasets thing)
+            dataset = dataset.add_column("example_id", range(len(dataset)))
         return dataset
 
     def _ensure_prompt(
@@ -389,6 +429,58 @@ class Environment(ABC):
             return self.eval_dataset.select(range(n))
         return self.eval_dataset
 
+    @final
+    def _get_usage_tracker(
+        self, state: State, create_if_missing: bool = True
+    ) -> StateUsageTracker | None:
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker):
+            return tracker
+        if not create_if_missing:
+            return None
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        # Expose read-only usage in state for live inspection.
+        state["usage"] = tracker.usage
+        return tracker
+
+    @final
+    def increment_state_usage(
+        self,
+        state: State,
+        input_tokens: int | float = 0,
+        output_tokens: int | float = 0,
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment(input_tokens, output_tokens)
+
+    @final
+    def increment_state_usage_from_response(
+        self, state: State, response: object
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment_from_response(response)
+
+    @final
+    def get_state_usage(self, state: State) -> TokenUsage | None:
+        tracker = self._get_usage_tracker(state, create_if_missing=False)
+        if tracker is not None:
+            return tracker.snapshot()
+        usage = state.get("usage")
+        if isinstance(usage, Mapping):
+            try:
+                input_tokens = float(usage.get("input_tokens", 0.0))
+                output_tokens = float(usage.get("output_tokens", 0.0))
+            except (TypeError, ValueError):
+                return None
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        return None
+
     async def get_model_response(
         self,
         state: State,
@@ -463,24 +555,26 @@ class Environment(ABC):
             async def wrapper(*args, **kwargs):
                 try:
                     return await func(*args, **kwargs)
-                except Exception as e:
+                except AuthenticationError:
+                    # re-raise auth errors to exit immediately
+                    raise
+                except BadRequestError as e:
                     # in case of making a request with an overlong prompt, e.g
                     # we raise a special overlong prompt error
-                    if isinstance(e, BadRequestError):
-                        error_text = e.response.text.lower()
-                        context_length_phrases = [
-                            "this model's maximum context length is",
-                            "is longer than the model's context length",
-                            "exceeds the model's context length",
-                            "exceed the configured limit",
-                            "exceeds the configured limit",
-                            "exceeded model",
-                        ]
-                        if any(
-                            phrase in error_text for phrase in context_length_phrases
-                        ):
-                            self.logger.debug("Caught overlong prompt.")
-                            raise vf.OverlongPromptError from e
+                    error_text = e.response.text.lower()
+                    context_length_phrases = [
+                        "maximum context length is",
+                        "is longer than the model's context length",
+                        "exceeds the model's context length",
+                        "exceed the configured limit",
+                        "exceeds the configured limit",
+                        "exceeded model",
+                    ]
+                    if any(phrase in error_text for phrase in context_length_phrases):
+                        self.logger.debug("Caught overlong prompt.")
+                        raise vf.OverlongPromptError from e
+                    raise vf.ModelError from e
+                except Exception as e:
                     # in all other case we raise a generic model error
                     raise vf.ModelError from e
 
@@ -584,6 +678,7 @@ class Environment(ABC):
         client, model, oai_tools, sampling_args, message_type = resolve_optional_args(
             client, model, oai_tools, sampling_args, message_type
         )
+        self._get_usage_tracker(state, create_if_missing=True)
         sampling_args = normalize_sampling_args(sampling_args)
         if self.interleaved_rollouts:
             sampling_args = prepare_sampling_args_for_token_prompts(sampling_args)
@@ -612,6 +707,7 @@ class Environment(ABC):
         # Some providers (e.g. OpenRouter) may return None for response or response.choices
         if response is None:
             raise vf.EmptyModelResponseError("Model returned no response")
+        self.increment_state_usage_from_response(state, response)
         if response.choices is None:
             raise vf.EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
@@ -647,25 +743,29 @@ class Environment(ABC):
         Creates State with input fields in "input" RolloutInput for structured access,
         but State's forwarding behavior allows backward-compatible direct access.
         """
-        state_input = deepcopy(input)
+        state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
         if "task" not in state_input:
             state_input["task"] = self.env_id or "default"
-        state = State(input=RolloutInput(**state_input))  # type: ignore[missing-typed-dict-key]
+        state = State(input=state_input)
         state["client"] = client
         state["model"] = model
         state["sampling_args"] = sampling_args
         state["is_completed"] = False
         state["is_truncated"] = False
         state["oai_tools"] = None
-        if "info" in state and hasattr(state["info"], "oai_tools"):
-            state["oai_tools"] = state["info"]["oai_tools"]
+        info = state.get("info")
+        if isinstance(info, dict) and "oai_tools" in info:
+            state["oai_tools"] = info["oai_tools"]
+        elif info is not None and hasattr(info, "oai_tools"):
+            state["oai_tools"] = getattr(info, "oai_tools")
         elif hasattr(self, "oai_tools"):
             state["oai_tools"] = self.oai_tools
         else:
             state["oai_tools"] = []
         state["trajectory"] = []
+        self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
         state["metrics"] = None
@@ -716,7 +816,7 @@ class Environment(ABC):
             if state.get("stop_condition") == "has_error":
                 err = state["error"]
                 err_chain = ErrorChain(err)
-                self.logger.error(f"Aborted rollout due to {err_chain}")
+                self.logger.error(f"Aborted rollout due to {repr(err_chain)}")
             return True
         return False
 
@@ -740,164 +840,134 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager | None = None,
-        score: bool = False,
-    ) -> State:
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+    ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
-        async with gen_sem:
-            state = await self.rollout(
+
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
+        if self.env_client is not None:  # in server mode
+            if resolved_client_config is None:
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await self.env_client.run_rollout(
                 input,
-                client,
+                resolved_client_config,
                 model,
-                gen_sampling_args,
+                sampling_args,
+                max_retries,
+                state_columns,
             )
-        if score:
-            assert score_sem is not None
+
+        local_client: AsyncOpenAI
+        owned_local_client: AsyncOpenAI | None = None
+        if resolved_client_config is not None:
+            owned_local_client = setup_client(resolved_client_config)
+            local_client = owned_local_client
+        else:
+            local_client = cast(AsyncOpenAI, client)
+
+        async def run_rollout_attempt() -> State:
+            state = await self.rollout(input, local_client, model, sampling_args)
+
             if self.score_rollouts:
-                await self.rubric.score_rollout(state, score_sem=score_sem)
+                await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
-        return state
+
+            return state
+
+        try:
+            state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        finally:
+            if owned_local_client is not None:
+                await owned_local_client.close()
+        output = state_to_output(state, state_columns or [])
+        return output
 
     @final
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: AsyncContextManager,
-        score_sem: AsyncContextManager,
-        score: bool = True,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
         **kwargs,
-    ) -> list[State]:
+    ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
-        rollout_tasks = [
-            self.run_rollout(
-                input,
-                client,
+
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
+        if self.env_client is not None:  # in server mode
+            if resolved_client_config is None:
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await self.env_client.run_group(
+                group_inputs,
+                resolved_client_config,
                 model,
-                gen_sampling_args,
-                gen_sem,
+                sampling_args,
+                max_retries,
+                state_columns,
             )
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
-        if score:
+
+        local_client: AsyncOpenAI
+        owned_local_client: AsyncOpenAI | None = None
+        if resolved_client_config is not None:
+            owned_local_client = setup_client(resolved_client_config)
+            local_client = owned_local_client
+        else:
+            local_client = cast(AsyncOpenAI, client)
+
+        async def run_group_attempt() -> list[State]:
+            rollout_tasks = [
+                self.rollout(input, local_client, model, sampling_args)
+                for input in group_inputs
+            ]
+            group_states = await asyncio.gather(*rollout_tasks)
+
             if self.score_rollouts:
-                await self.rubric.score_group(group_states, score_sem=score_sem)
+                await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
-        return list(group_states)
+            return group_states
 
-    def _prepare_rollout_results(
-        self,
-        all_states: list[State],
-        model: str,
-        client: AsyncOpenAI,
-        state_columns: list[str] | None,
-        results_path: Path | None,
-        gen_sampling_args: SamplingArgs,
-        start_time: float,
-    ) -> GenerateOutputs:
-        """Prepare GenerateOutputs from a list of completed states."""
-        # Determine path_to_save
-        if results_path is None:
-            path_to_save = get_results_path(self.env_id, model)
-        else:
-            path_to_save = results_path
-        prompts = [state["prompt"] for state in all_states]
-        completions = [state.get("completion") for state in all_states]
-        answers = [state.get("answer", "") for state in all_states]
-        tasks = [state.get("task", "default") for state in all_states]
-        infos = [state.get("info", {}) for state in all_states]
-        example_ids = [state.get("example_id", 0) for state in all_states]
-        rewards = [state.get("reward", 0.0) for state in all_states]
-        stop_conditions = [state.get("stop_condition", None) for state in all_states]
-        is_truncated = [state.get("is_truncated", False) for state in all_states]
-
-        metrics: dict[str, list[float]] = {}
-        for state in all_states:
-            if state.get("metrics"):
-                for metric_name, metric_value in state["metrics"].items():
-                    if metric_name not in metrics:
-                        metrics[metric_name] = []
-                    metrics[metric_name].append(metric_value)
-
-        num_unique_examples = len(set(example_ids)) if example_ids else 0
-        rollouts_per_example = (
-            len(all_states) // num_unique_examples if num_unique_examples > 0 else 1
-        )
-
-        def _tools_key(tools: list | None) -> str:
-            if not tools:
-                return ""
-            return str(sorted([t.get("function", {}).get("name", "") for t in tools]))
-
-        all_tools = [state.get("oai_tools") for state in all_states]
-        unique_tool_sets = set(_tools_key(t) for t in all_tools)
-        tools_vary = len(unique_tool_sets) > 1
-
-        if tools_vary:
-            metadata_tools = None
-        else:
-            metadata_tools = next((t for t in all_tools if t), self.oai_tools)
-
-        metadata = GenerateMetadata(
-            env_id=self.env_id,
-            env_args=self.env_args,
-            model=model,
-            base_url=str(client.base_url) if hasattr(client, "base_url") else "",
-            num_examples=num_unique_examples,
-            rollouts_per_example=rollouts_per_example,
-            sampling_args=gen_sampling_args,
-            date=datetime.now().isoformat(),
-            time_ms=(time.time() - start_time) * 1000.0,
-            avg_reward=sum(rewards) / len(rewards) if rewards else 0.0,
-            avg_metrics={
-                name: sum(values) / len(values) if values else 0.0
-                for name, values in metrics.items()
-            },
-            state_columns=state_columns or [],
-            path_to_save=path_to_save,
-            tools=metadata_tools,
-        )
-
-        return GenerateOutputs(
-            prompt=prompts,
-            completion=completions,
-            answer=answers,
-            state=all_states,
-            task=tasks,
-            info=infos,
-            example_id=example_ids,
-            reward=rewards,
-            metrics=metrics,
-            stop_conditions=stop_conditions,
-            is_truncated=is_truncated,
-            metadata=metadata,
-        )
+        try:
+            group_states = await maybe_retry(
+                run_group_attempt, max_retries=max_retries
+            )()
+        finally:
+            if owned_local_client is not None:
+                await owned_local_client.close()
+        outputs = [
+            state_to_output(state, state_columns or []) for state in group_states
+        ]
+        return outputs
 
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
-        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -906,159 +976,266 @@ class Environment(ABC):
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
+
+        Args:
+            client: Can be a single AsyncOpenAI client or a ClientConfig.
         """
+        from datasets import Dataset
+        from tqdm import tqdm
+
+        pbar: tqdm | None = None
+
+        def default_on_start(
+            raw_inputs: list[RolloutInput],
+            filtered_inputs: list[RolloutInput] | list[list[RolloutInput]],
+        ) -> None:
+            """Initializes the progress bar from the raw inputs."""
+            nonlocal pbar
+
+            total_rollouts = len(raw_inputs)
+            total_groups = len(set([i["example_id"] for i in raw_inputs]))
+            rollouts_per_example = (
+                total_rollouts // total_groups if total_groups > 0 else 0
+            )
+
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining_rollouts = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining_rollouts = len(filtered_inputs)
+            saved_rollouts = total_rollouts - remaining_rollouts
+
+            if filtered_inputs:
+                if isinstance(filtered_inputs[0], list):
+                    pbar_total = total_groups
+                    pbar_initial = saved_rollouts // rollouts_per_example
+                    pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
+                else:
+                    pbar_total = total_rollouts
+                    pbar_initial = saved_rollouts
+                    pbar_desc = f"Processing {total_rollouts} rollouts"
+
+                pbar = tqdm(
+                    total=pbar_total,
+                    initial=pbar_initial,
+                    desc=pbar_desc,
+                    postfix=dict(reward="?"),
+                )
+
+        def default_on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            new_metadata: GenerateMetadata,
+        ) -> None:
+            """Updates the progress bar from the new outputs."""
+            nonlocal pbar
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
+
+        def default_on_log(message: str) -> None:
+            """Logs using the environment logger."""
+            self.logger.info(message)
+
+        on_start = on_start or cast(StartCallback, default_on_start)
+        on_progress = on_progress or cast(ProgressCallback, default_on_progress)
+        on_log = on_log or cast(LogCallback, default_on_log)
+
         if isinstance(inputs, Dataset):
-            inputs_list = inputs.to_list()
+            raw_inputs = cast(list[RolloutInput], inputs.to_list())
         elif isinstance(inputs, list):
-            inputs_list = inputs
-
-        # notify caller of actual total count (useful when num_examples=-1)
-        if on_start is not None:
-            on_start(len(inputs_list))
-
-        # resolve concurrency knobs
-        gen_limit = max_concurrent_generation
-        score_limit = max_concurrent_scoring
-        if gen_limit is None:
-            gen_limit = max_concurrent
-        if score_limit is None:
-            score_limit = max_concurrent
+            raw_inputs = inputs
 
         # set up semaphores
-        gen_sem = await maybe_semaphore(gen_limit)
-        score_sem = await maybe_semaphore(score_limit)
+        sem = await maybe_semaphore(max_concurrent)
 
         # set up sampling args
-        gen_sampling_args = deepcopy(self.sampling_args)
+        default_sampling_args = deepcopy(self.sampling_args)
         if sampling_args is not None:
-            gen_sampling_args.update(sampling_args)
+            default_sampling_args.update(sampling_args)
+        sampling_args = default_sampling_args
 
-        start_time = time.time()
+        # initialize outputs builder
+        total_rollouts = len(raw_inputs)
+        num_examples = len(set([i["example_id"] for i in raw_inputs]))
+        rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
+        builder = GenerateOutputsBuilder(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            client=client,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            state_columns=state_columns,
+            sampling_args=sampling_args,
+            results_path=results_path,
+        )
 
-        # create tasks based on mode
-        tasks: dict[asyncio.Task, int] = {}
-        if independent_scoring:
-            for i, input_item in enumerate(inputs_list):
-                task = asyncio.create_task(
-                    maybe_retry(self.run_rollout, max_retries=max_retries)(
-                        input_item,
-                        client,
-                        model,
-                        gen_sampling_args,
-                        gen_sem,
-                        score_sem,
-                        score=True,
-                    )
-                )
-                tasks[task] = i
-            pbar_total = len(inputs_list)
-            pbar_desc = f"Processing {len(inputs_list)} rollouts"
+        single_client: AsyncOpenAI | None = None
+        endpoint_client_configs: list[ClientConfig] = []
+        endpoint_client_idx = 0
+        if isinstance(client, ClientConfig):
+            endpoint_client_configs = resolve_client_configs(client)
         else:
-            input_groups: dict[int, list[RolloutInput]] = {}
-            for input_item in inputs_list:
-                example_id = input_item["example_id"]
-                if example_id not in input_groups:
-                    input_groups[example_id] = []
-                input_groups[example_id].append(input_item)
-            group_list = list(input_groups.values())
+            # AsyncOpenAI path
+            single_client = client
 
-            for i, group in enumerate(group_list):
-                task = asyncio.create_task(
-                    maybe_retry(self.run_group, max_retries=max_retries)(
-                        group,
-                        client,
-                        model,
-                        gen_sampling_args,
-                        gen_sem,
-                        score_sem,
-                    )
-                )
-                tasks[task] = i
-            pbar_total = len(group_list)
-            pbar_desc = f"Processing {len(group_list)} groups ({len(inputs_list)} total rollouts)"
+        local_endpoint_clients: list[AsyncOpenAI] = []
 
-        # set up progress bar (only when use_tqdm=True and no external progress callback)
-        pbar = None
-        if use_tqdm and on_progress is None:
-            from tqdm import tqdm
+        def get_client_for_group() -> AsyncOpenAI | ClientConfig:
+            """Get next client in round-robin order or return the single client."""
+            nonlocal endpoint_client_idx
+            if self.env_client is not None and endpoint_client_configs:
+                config = endpoint_client_configs[
+                    endpoint_client_idx % len(endpoint_client_configs)
+                ]
+                endpoint_client_idx += 1
+                return config
+            if local_endpoint_clients:
+                local_client = local_endpoint_clients[
+                    endpoint_client_idx % len(local_endpoint_clients)
+                ]
+                endpoint_client_idx += 1
+                return local_client
+            assert single_client is not None
+            return single_client
 
-            pbar = tqdm(total=pbar_total, desc=pbar_desc, postfix=dict(reward="?"))
-
-        # process tasks as they complete
-        reward_sum, reward_count = 0, 0
-        groups_or_rollouts_completed = 0
-        all_states: list[State] = []
         try:
-            for coro in asyncio.as_completed(tasks.keys()):
-                result = await coro
-                # normalize: independent_scoring returns State, group returns list[State]
-                states = [result] if independent_scoring else result
-                all_states.extend(states)
-                groups_or_rollouts_completed += 1
+            if self.env_client is None and endpoint_client_configs:
+                for endpoint_config in endpoint_client_configs:
+                    local_endpoint_clients.append(setup_client(endpoint_config))
 
-                # track reward for rolling average
-                for s in states:
-                    r = s.get("reward")
-                    if r is not None:
-                        reward_sum += r
-                        reward_count += 1
-
-                # update progress bar or call callback
-                if pbar is not None:
-                    pbar.update(1)
-                    if reward_count > 0:
-                        pbar.set_postfix(reward=f"{reward_sum / reward_count:.3f}")
-                elif on_progress is not None:
-                    on_progress(all_states, states)
-
-                # save intermediate results
-                if (
-                    save_results
-                    and save_every > 0
-                    and groups_or_rollouts_completed % save_every == 0
-                ):
-                    temp_results = self._prepare_rollout_results(
-                        all_states,
-                        model,
-                        client,
-                        state_columns,
-                        results_path,
-                        gen_sampling_args,
-                        start_time,
+            # load existing results if available
+            if results_path is not None and is_valid_eval_results_path(results_path):
+                validate_resume_metadata(
+                    results_path=results_path,
+                    env_id=self.env_id,
+                    model=model,
+                    num_examples=num_examples,
+                    rollouts_per_example=rollouts_per_example,
+                )
+                on_log(f"Resuming evaluation from {results_path}")
+                outputs = load_outputs(results_path)
+                builder.add_outputs(outputs)
+                filtered_inputs = filter_inputs(
+                    raw_inputs, outputs, rollouts_per_example
+                )
+                if not filtered_inputs:
+                    on_log(
+                        "No remaining rollouts to evaluate, returning completed outputs"
                     )
-                    self.logger.debug(
-                        f"Saving intermediate results to {temp_results['metadata']['path_to_save']}"
+                    return builder.build(sort_by_example_id=True)
+                on_log(
+                    f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
+                )
+            else:
+                filtered_inputs = raw_inputs
+
+            if save_results:
+                on_log(f"Saving results to {builder.results_path}")
+
+            tasks: dict[asyncio.Task, int] = {}
+            try:
+                # create tasks based on mode
+                if independent_scoring:
+                    on_start(raw_inputs, filtered_inputs)
+                    for i, rollout_input in enumerate(filtered_inputs):
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_rollout(
+                                    rollout_input,
+                                    get_client_for_group(),
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+                else:
+                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+                    for rollout_input in filtered_inputs:
+                        example_id = rollout_input["example_id"]
+                        group_inputs[example_id].append(rollout_input)
+                    filtered_group_inputs = list(group_inputs.values())
+                    on_start(raw_inputs, filtered_group_inputs)
+
+                    for i, group_input in enumerate(filtered_group_inputs):
+                        # For grouped scoring, keep each group on one endpoint so
+                        # rollouts in the same group can benefit from shared KV cache.
+                        group_client: AsyncOpenAI | ClientConfig = (
+                            get_client_for_group()
+                        )
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_group(
+                                    group_input,
+                                    group_client,
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+
+                for coro in asyncio.as_completed(tasks.keys()):
+                    result = await coro
+
+                    # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
+                    new_outputs = [result] if independent_scoring else result
+                    builder.add_outputs(new_outputs)
+                    metadata = builder.build_metadata()
+
+                    on_progress(builder.outputs, new_outputs, metadata)
+
+                    # incrementally save outputs
+                    if save_results:
+                        save_new_outputs(new_outputs, builder.results_path)
+                        save_metadata(metadata, builder.results_path)
+            finally:
+                # cancel all outstanding tasks and await their completion
+                pending = [task for task in tasks.keys() if not task.done()]
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            # build final results (sorted by example_id for deterministic ordering)
+            results = builder.build(sort_by_example_id=True)
+
+            # save if requested
+            if save_results:
+                save_outputs(results["outputs"], builder.results_path)
+                save_metadata(results["metadata"], builder.results_path)
+                if push_to_hf_hub:
+                    push_results_to_hf_hub(results, hf_hub_dataset_name)
+                if on_log is not None:
+                    on_log(
+                        f"Saved final results to {results['metadata']['path_to_save']}"
                     )
-                    save_rollout_results(temp_results)
+
+            return results
         finally:
             if pbar is not None:
                 pbar.close()
-
-        # sort by example_id to ensure deterministic ordering regardless of completion order
-        all_states.sort(key=lambda s: s.get("example_id", 0))
-
-        results = self._prepare_rollout_results(
-            all_states,
-            model,
-            client,
-            state_columns,
-            results_path,
-            gen_sampling_args,
-            start_time,
-        )
-
-        # save if requested
-        if save_results:
-            save_rollout_results(results, push_to_hf_hub, hf_hub_dataset_name)
-            if on_log is not None:
-                on_log(f"Saved final results to {results['metadata']['path_to_save']}")
-
-        return results
+            if local_endpoint_clients:
+                await asyncio.gather(
+                    *(client.close() for client in local_endpoint_clients),
+                    return_exceptions=True,
+                )
 
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | OpenAI,
+        client: AsyncOpenAI | OpenAI | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
         if isinstance(client, OpenAI):
@@ -1071,7 +1248,7 @@ class Environment(ABC):
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()
-            import nest_asyncio  # type: ignore
+            import nest_asyncio
 
             nest_asyncio.apply()
             return loop.run_until_complete(coro)
@@ -1104,21 +1281,17 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
-        use_tqdm: bool = True,
         independent_scoring: bool = False,
         max_retries: int = 0,
         on_start: StartCallback | None = None,
@@ -1136,15 +1309,11 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
-            use_tqdm=use_tqdm,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
             on_start=on_start,
@@ -1155,18 +1324,15 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | AsyncOpenAI,
+        client: OpenAI | AsyncOpenAI | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
         rollouts_per_example: int = 1,
         max_concurrent: int = -1,
-        max_concurrent_generation: int | None = None,
-        max_concurrent_scoring: int | None = None,
         results_path: Path | None = None,
         state_columns: list[str] | None = None,
         save_results: bool = False,
-        save_every: int = -1,
         push_to_hf_hub: bool = False,
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
@@ -1182,12 +1348,9 @@ class Environment(ABC):
             model=model,
             sampling_args=sampling_args,
             max_concurrent=max_concurrent,
-            max_concurrent_generation=max_concurrent_generation,
-            max_concurrent_scoring=max_concurrent_scoring,
             results_path=results_path,
             state_columns=state_columns,
             save_results=save_results,
-            save_every=save_every,
             push_to_hf_hub=push_to_hf_hub,
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
@@ -1230,6 +1393,55 @@ class Environment(ABC):
             self.logger.warning(
                 f"{self.__class__.__name__} is configured to use interleaved rollouts. All model responses after the first turn will be pre-tokenized before being sent to the model. Currently, this is a hand-crafted feature for PRIME-RL's vLLM server extension."
             )
+
+    async def start_server(
+        self,
+        address: str | None = None,
+        extra_env_kwargs: dict[str, Any] = {},
+        log_level: str | None = None,
+        log_file: str | None = None,
+        startup_timeout: float = 10.0,
+    ) -> None:
+        """Start a ZMQ server process for this environment.
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        self.env_server_process = Process(
+            target=ZMQEnvServer.run_server,
+            args=(
+                self.env_id,
+                self.env_args,
+                extra_env_kwargs,
+                log_level,
+                log_file,
+            ),
+            kwargs=dict(address=address),
+            daemon=True,  # ensure server process is terminated when parent exits
+        )
+        self.env_server_process.start()
+        self.env_client = ZMQEnvClient(address=address)
+        await self.env_client.health(timeout=startup_timeout)
+
+    async def stop_server(self) -> None:
+        """Stop the ZMQ server process for this environment.
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
+        if self.env_client is not None:
+            await self.env_client.close()
+            self.env_client = None
+        if self.env_server_process is not None:
+            self.env_server_process.terminate()
+            self.env_server_process.join(timeout=5)
+            if self.env_server_process.is_alive():
+                self.env_server_process.kill()
+                self.env_server_process.join(timeout=5)
+            self.env_server_process = None
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

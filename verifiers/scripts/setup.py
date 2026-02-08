@@ -15,56 +15,27 @@ PRIME_RL_INSTALL_SCRIPT_REF = (
     "main"  # Ref to use for fetching the install script itself
 )
 
-ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/endpoints.py"
-ENDPOINTS_DST = "configs/endpoints.py"
+ENDPOINTS_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/endpoints.toml"
+ENDPOINTS_DST = "configs/endpoints.toml"
 
-ZERO3_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/configs/zero3.yaml"
-ZERO3_DST = "configs/zero3.yaml"
-
-AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/AGENTS.md"
+AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/AGENTS.md"
 AGENTS_MD_DST = "AGENTS.md"
 
-CLAUDE_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/CLAUDE.md"
+CLAUDE_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/CLAUDE.md"
 CLAUDE_MD_DST = "CLAUDE.md"
 
-ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/environments/AGENTS.md"
+ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/environments/AGENTS.md"
 ENVS_AGENTS_MD_DST = "environments/AGENTS.md"
 
-VF_RL_CONFIGS = [
-    # (source_repo, source_path, dest_path)
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/alphabet-sort.toml",
-        "configs/vf-rl/alphabet-sort.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/gsm8k.toml",
-        "configs/vf-rl/gsm8k.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/math-python.toml",
-        "configs/vf-rl/math-python.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/reverse-text.toml",
-        "configs/vf-rl/reverse-text.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/wiki-search.toml",
-        "configs/vf-rl/wiki-search.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/local/vf-rl/wordle.toml",
-        "configs/vf-rl/wordle.toml",
-    ),
-]
+ConfigSpec = tuple[str, str, str]
 
-PRIME_RL_CONFIGS = [
+
+def _mirror_repo_configs(repo: str, source_paths: list[str]) -> list[ConfigSpec]:
+    """Map repo paths to identical destination paths."""
+    return [(repo, source_path, source_path) for source_path in source_paths]
+
+
+PRIME_RL_CONFIGS: list[ConfigSpec] = [
     # (source_repo, source_path, dest_path)
     # Configs can come from either verifiers or prime-rl repo
     (
@@ -74,39 +45,33 @@ PRIME_RL_CONFIGS = [
     ),
 ]
 
-LAB_CONFIGS = [
-    # (source_repo, source_path, dest_path)
-    (
-        VERIFIERS_REPO,
-        "configs/lab/alphabet-sort.toml",
-        "configs/lab/alphabet-sort.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/lab/gsm8k.toml",
-        "configs/lab/gsm8k.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/lab/math-python.toml",
-        "configs/lab/math-python.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/lab/reverse-text.toml",
-        "configs/lab/reverse-text.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/lab/wiki-search.toml",
-        "configs/lab/wiki-search.toml",
-    ),
-    (
-        VERIFIERS_REPO,
-        "configs/lab/wordle.toml",
-        "configs/lab/wordle.toml",
-    ),
-]
+RL_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
+        "configs/rl/alphabet-sort.toml",
+        "configs/rl/gsm8k.toml",
+        "configs/rl/math-python.toml",
+        "configs/rl/reverse-text.toml",
+        "configs/rl/wiki-search.toml",
+        "configs/rl/wordle.toml",
+    ],
+)
+
+GEPA_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
+        "configs/gepa/base.toml",
+        "configs/gepa/wordle.toml",
+    ],
+)
+
+EVAL_CONFIGS = _mirror_repo_configs(
+    VERIFIERS_REPO,
+    [
+        "configs/eval/minimal.toml",
+        "configs/eval/multi-env.toml",
+    ],
+)
 
 
 def install_prime_rl():
@@ -160,7 +125,20 @@ def install_prime_rl():
     print("prime-rl setup completed")
 
 
-def download_configs(configs):
+def _dedupe_config_destinations(configs: list[ConfigSpec]) -> list[ConfigSpec]:
+    """Drop duplicate destination paths while preserving the first occurrence."""
+    deduped: list[ConfigSpec] = []
+    seen_destinations: set[str] = set()
+    for config in configs:
+        dest_path = config[2]
+        if dest_path in seen_destinations:
+            continue
+        seen_destinations.add(dest_path)
+        deduped.append(config)
+    return deduped
+
+
+def download_configs(configs: list[ConfigSpec]):
     """Download configs from specified repos."""
     for repo, source_path, dest_path in configs:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -251,7 +229,6 @@ def ensure_uv_project():
 
 def run_setup(
     prime_rl: bool = False,
-    vf_rl: bool = False,
     skip_agents_md: bool = False,
     skip_install: bool = False,
 ) -> None:
@@ -259,7 +236,6 @@ def run_setup(
 
     Args:
         prime_rl: Install prime-rl and download prime-rl configs.
-        vf_rl: Download vf-rl configs.
         skip_agents_md: Skip downloading AGENTS.md, CLAUDE.md, and environments/AGENTS.md.
         skip_install: Skip uv project initialization and verifiers installation.
     """
@@ -297,19 +273,15 @@ def run_setup(
     else:
         print(f"{ENDPOINTS_DST} already exists")
 
-    if vf_rl:
-        if not os.path.exists(ZERO3_DST):
-            wget.download(ZERO3_SRC, ZERO3_DST)
-            print(f"\nDownloaded {ZERO3_DST} from https://github.com/{VERIFIERS_REPO}")
-        else:
-            print(f"{ZERO3_DST} already exists")
-        download_configs(VF_RL_CONFIGS)
-
+    configs_to_download: list[ConfigSpec] = []
     if prime_rl:
-        download_configs(PRIME_RL_CONFIGS)
+        configs_to_download.extend(PRIME_RL_CONFIGS)
+    configs_to_download.extend(GEPA_CONFIGS)
+    configs_to_download.extend(EVAL_CONFIGS)
+    if not prime_rl:
+        configs_to_download.extend(RL_CONFIGS)
 
-    if not prime_rl and not vf_rl:
-        download_configs(LAB_CONFIGS)
+    download_configs(_dedupe_config_destinations(configs_to_download))
 
 
 def main():
@@ -320,11 +292,6 @@ def main():
         "--prime-rl",
         action="store_true",
         help="Install prime-rl and download prime-rl configs",
-    )
-    parser.add_argument(
-        "--vf-rl",
-        action="store_true",
-        help="Download vf-rl configs",
     )
     parser.add_argument(
         "--skip-agents-md",
@@ -340,7 +307,6 @@ def main():
 
     run_setup(
         prime_rl=args.prime_rl,
-        vf_rl=args.vf_rl,
         skip_agents_md=args.skip_agents_md,
         skip_install=args.skip_install,
     )

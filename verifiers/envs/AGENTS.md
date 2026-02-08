@@ -33,11 +33,13 @@ Third-party library wrappers that require additional dependencies:
 |-------------|-------|-----------------|
 | `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
+| `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
 
 When developing in the `verifiers` repo:
 ```bash
-uv sync --extra ta   # for TextArenaEnv
-uv sync --extra rg   # for ReasoningGymEnv
+uv sync --extra ta       # for TextArenaEnv
+uv sync --extra rg       # for ReasoningGymEnv
+uv sync --extra browser  # for BrowserEnv
 ```
 
 ### TextArenaEnv
@@ -47,6 +49,18 @@ Wrapper for text-based TextArena environments (games, simulations). When adding 
 ### ReasoningGymEnv
 
 Wrapper for [reasoning-gym](https://github.com/reasoning-gym/reasoning-gym) procedural datasets. Supports single datasets or composite mixtures via `DatasetSpec`.
+
+### BrowserEnv
+
+Browser automation environment using [Browserbase](https://browserbase.com) with two modes:
+
+**DOM mode** (`mode="dom"`): Natural language browser control via Stagehand SDK.
+
+**CUA mode** (`mode="cua"`): Vision-based browser control using coordinate-based primitives.
+
+CUA mode supports automatic sandbox deployment (`use_sandbox=True`, the default), where the CUA server is automatically deployed to a sandbox container. This eliminates the need for manual server setup. The server files are located in `assets/templates/browserbase/cua/` and are uploaded to sandboxes during rollout initialization.
+
+For local development, set `use_sandbox=False` and start the server manually from `assets/templates/browserbase/cua/`.
 
 ## Experimental
 

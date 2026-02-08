@@ -47,8 +47,8 @@ class ErrorChain:
     def __contains__(self, error_cls: type[BaseException]) -> bool:
         return any(issubclass(type(e), error_cls) for e in self.chain)
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         return " -> ".join([type(e).__name__ for e in self.chain])
 
-    def __str__(self) -> str:
-        return ", caused by ".join([repr(e) for e in self.chain])
+    def __repr__(self) -> str:
+        return " -> ".join([repr(e) for e in self.chain])

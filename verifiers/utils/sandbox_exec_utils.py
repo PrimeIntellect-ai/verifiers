@@ -1,9 +1,10 @@
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import tenacity as tc
 from prime_sandboxes import CommandTimeoutError
+
 
 from verifiers.envs.sandbox_env import (
     CreateSandboxRequest,
@@ -19,7 +20,7 @@ class SandboxExecutorMixin:
     def _init_sandbox_executor(
         self,
         *,
-        sandbox_client_max_workers: int = 10,
+        sandbox_client_max_workers: int = 50,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         max_retries: int = 5,
@@ -44,7 +45,10 @@ class SandboxExecutorMixin:
                 max=max_backoff_seconds,
                 jitter=jitter,
             ),
-            before_sleep=tc.before_sleep_log(self._sandbox_logger, logging.WARNING),
+            before_sleep=tc.before_sleep_log(
+                cast(Any, self._sandbox_logger),
+                logging.WARNING,
+            ),
             reraise=True,
         ).wraps
 

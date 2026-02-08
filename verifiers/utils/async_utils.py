@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+async def with_sem(sem: AsyncContextManager, coro: Coroutine[Any, Any, T]) -> T:
+    """Wrap a coroutine with a context manager (typically a semaphore)."""
+    try:
+        async with sem:
+            return await coro
+    finally:
+        # closes the coroutine if it was never awaited (e.g. cancelled while acquiring sem)
+        coro.close()
+
+
 async def maybe_await(func: Callable, *args, **kwargs):
     result = func(*args, **kwargs)
     if inspect.isawaitable(result):
@@ -111,6 +121,7 @@ def maybe_retry(
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
     Re-raises specified errors from state["error"] to trigger tenacity retry.
+    Returns result with error in state if retries are exhausted (does not crash).
 
     Usage:
         state = await maybe_retry(self.run_rollout, max_retries=3)(input, client, ...)
@@ -147,8 +158,30 @@ def maybe_retry(
             f"Caught {error_chain} in {caller}. Retrying in {print_time(next_action)} (retry {retry_state.attempt_number}/{max_retries})"
         )
 
+    last_result = None
+
+    def return_last_result(retry_state: tc.RetryCallState):
+        """Return the last result when retries are exhausted (instead of raising)."""
+        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
+        error_chain = (
+            repr(
+                ErrorChain(
+                    retry_state.outcome.exception() or Exception("Unknown exception")
+                )
+            )
+            if retry_state.outcome
+            else None
+        )
+        logger.error(
+            f"Retries exhausted for {caller} after {max_retries} attempts. "
+            f"Last error: {error_chain}. Continuing with error in state."
+        )
+        return last_result
+
     async def wrapper(*args, **kwargs):
+        nonlocal last_result
         result = await func(*args, **kwargs)
+        last_result = result  # store result
         reraise_error_from_state(result, error_types)
         return result
 
@@ -160,5 +193,6 @@ def maybe_retry(
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
         before_sleep=log_retry,
+        retry_error_callback=return_last_result,
         reraise=True,
     ).wraps(wrapper)

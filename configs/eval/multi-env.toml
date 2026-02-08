@@ -1,0 +1,21 @@
+endpoints_path = "../endpoints.toml"
+
+endpoint_id = "gpt-5-mini"
+save_results = true
+rollouts_per_example = 3
+
+[[eval]]
+env_id = "bfcl-v3"
+num_examples = 100
+
+[[eval]]
+env_id = "tau2-bench"
+num_examples = 100
+
+[[eval]]
+env_id = "wiki-search"
+num_examples = 100
+
+[[eval]]
+env_id = "tool-test"
+num_examples = 100

@@ -6,7 +6,10 @@ from openai.types.chat import ChatCompletionAssistantMessageParam
 import verifiers as vf
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
+from verifiers.utils.tool_utils import (
+    convert_func_to_oai_tool,
+    is_valid_tool_content_parts,
+)
 
 
 class ToolMonitorRubric(vf.Rubric):
@@ -44,7 +47,7 @@ class ToolMonitorRubric(vf.Rubric):
         assert isinstance(completion, list)
         for msg in completion:
             if msg["role"] == "assistant" and "tool_calls" in msg:
-                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
                 tool_calls = assistant_msg.get("tool_calls", [])
                 if isinstance(tool_calls, list):
                     total += len(tool_calls)
@@ -60,7 +63,7 @@ class ToolMonitorRubric(vf.Rubric):
             assert isinstance(completion, list)
             for msg in completion:
                 if msg["role"] == "assistant" and "tool_calls" in msg:
-                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)  # type: ignore[redundant-cast]
+                    assistant_msg = cast(ChatCompletionAssistantMessageParam, msg)
                     tool_calls = assistant_msg.get("tool_calls", [])
                     for tool_call in tool_calls:
                         if tool_call.get("function", {}).get("name") == tool_name:
@@ -133,9 +136,10 @@ class ToolEnv(vf.MultiTurnEnv):
         """Call a tool based on JSON command."""
         tool_func = self.tool_map[tool_name]
         result = await maybe_await(tool_func, **tool_args)
+        content = result if is_valid_tool_content_parts(result) else str(result)
         return cast(
             vf.Message,
-            {"role": "tool", "content": str(result), "tool_call_id": tool_call_id},
+            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
         )
 
     async def env_response(

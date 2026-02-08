@@ -116,6 +116,31 @@ class RolloutInput(TypedDict):
     info: Info              # Optional
 ```
 
+### RolloutOutput
+
+```python
+class RolloutOutput(dict):
+    # Required fields
+    example_id: int
+    task: str
+    prompt: Messages | None
+    completion: Messages | None
+    reward: float
+    timing: RolloutTiming
+    is_completed: bool
+    is_truncated: bool
+    metrics: dict[str, float]
+    # Optional fields
+    answer: str
+    info: Info
+    error: str | None
+    stop_condition: str | None
+    trajectory: list[TrajectoryStep]
+    oai_tools: list[ChatCompletionToolParam]
+```
+
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+
 ### TrajectoryStep
 
 ```python
@@ -162,21 +187,11 @@ class RolloutTiming(TypedDict, total=False):
 
 ```python
 class GenerateOutputs(TypedDict):
-    prompt: list[Messages]
-    completion: list[Messages]
-    answer: list[str]
-    state: list[State]
-    task: list[str]
-    info: list[Info]
-    example_id: list[int]
-    reward: list[float]
-    metrics: dict[str, list[float]]
-    stop_conditions: list[str | None]
-    is_truncated: list[bool]
+    outputs: list[RolloutOutput]
     metadata: GenerateMetadata
 ```
 
-Output from `Environment.generate()`.
+Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
 
 ### GenerateMetadata
 
@@ -195,7 +210,10 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     state_columns: list[str]
     path_to_save: Path
+    tools: list[ChatCompletionToolParam] | None
 ```
+
+`base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
 
 ### RolloutScore / RolloutScores
 
@@ -208,21 +226,6 @@ class RolloutScores(TypedDict):
     reward: list[float]
     metrics: dict[str, list[float]]
 ```
-
-### ProcessedOutputs
-
-```python
-class ProcessedOutputs(TypedDict):
-    prompt_ids: list[list[int]]
-    prompt_mask: list[list[int]]
-    completion_ids: list[list[int]]
-    completion_mask: list[list[int]]
-    completion_logprobs: list[list[float]]
-    rewards: list[float]
-    is_truncated: list[bool]
-```
-
-Tokenized outputs for training.
 
 ---
 
@@ -398,6 +401,25 @@ Sandboxed container execution using `prime` sandboxes.
 
 Persistent Python REPL in sandbox. Extends `SandboxEnv`.
 
+#### OpenEnvEnv
+
+```python
+class OpenEnvEnv(MultiTurnEnv):
+    def __init__(
+        self,
+        openenv_project: str | Path,
+        num_train_examples: int = 100,
+        num_eval_examples: int = 50,
+        seed: int = 0,
+        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        max_turns: int = -1,
+        rubric: Rubric | None = None,
+        **kwargs,
+    ): ...
+```
+
+OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
+
 #### EnvGroup
 
 ```python
@@ -547,14 +569,18 @@ Combines rubrics for `EnvGroup`.
 
 ```python
 class ClientConfig(BaseModel):
+    client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list[ClientConfig] = []
     timeout: float = 3600.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = {}
 ```
+
+Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
@@ -569,22 +595,20 @@ class EvalConfig(BaseModel):
     env_id: str
     env_args: dict
     env_dir_path: str
+    endpoint_id: str | None = None
     model: str
     client_config: ClientConfig
     sampling_args: SamplingArgs
     num_examples: int
     rollouts_per_example: int
     max_concurrent: int
-    max_concurrent_generation: int | None = None
-    max_concurrent_scoring: int | None = None
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
-    print_results: bool = False
     verbose: bool = False
     state_columns: list[str] | None = None
     save_results: bool = False
-    save_every: int = -1
+    resume_path: Path | None = None
     save_to_hf_hub: bool = False
     hf_hub_dataset_name: str | None = None
 ```
@@ -593,8 +617,10 @@ class EvalConfig(BaseModel):
 
 ```python
 Endpoint = TypedDict("Endpoint", {"key": str, "url": str, "model": str})
-Endpoints = dict[str, Endpoint]
+Endpoints = dict[str, list[Endpoint]]
 ```
+
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 
 ---
 
@@ -628,7 +654,7 @@ async def early_cleanup(self, state: State) -> None:
     ...
 ```
 
-Mark a method as a rollout cleanup handler.
+Mark a method as a rollout cleanup handler. Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully to ensure cleanup completes even when resources are in unexpected states.
 
 ### @vf.teardown
 
@@ -676,6 +702,28 @@ vf.load_environment(env_id: str, **kwargs) -> Environment
 ```
 
 Load an environment by ID (e.g., `"primeintellect/gsm8k"`).
+
+### Configuration Utilities
+
+```python
+vf.ensure_keys(keys: list[str]) -> None
+```
+
+Validate that required environment variables are set. Raises `MissingKeyError` (a `ValueError` subclass) with a clear message listing all missing keys and instructions for setting them.
+
+```python
+class MissingKeyError(ValueError):
+    keys: list[str]  # list of missing key names
+```
+
+Example:
+
+```python
+def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
+    vf.ensure_keys([api_key_var])
+    # now safe to use os.environ[api_key_var]
+    ...
+```
 
 ### Logging Utilities
 

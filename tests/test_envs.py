@@ -15,12 +15,31 @@ SKIPPED_ENVS = [
     #                 ~~~~~~~~~~^^^^^^^^^^^^^^
     # KeyError: 'example_id'
     "continuation_quality",
+    # Different project structure (uses src/ layout, no pyproject.toml at root)
+    "mcp_env",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, MODEL_API_KEY
+    "browser_dom_example",
+    # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
+    "browser_cua_example",
+    # Uses prime-tunnel which is still experimental and has low usage limits
+    "terminus_harbor",
+    "opencode_harbor",
+]
+
+SKIPPED_ENV_LOADING_ENVS = [
+    # OpenEnv datasets are built by resetting seeds in sandbox-backed env servers.
+    # Skip generic load checks here and cover via dedicated OpenEnv tests.
+    "openenv_echo",
+    "openenv_textarena",
 ]
 
 
 def get_environments() -> list[Path]:
     """Get all subdirectories of `environments/`, or only changed environments if CHANGED_ENVS is set."""
     all_envs = list(x for x in Path("environments").iterdir() if x.is_dir())
+
+    # Filter out skipped environments
+    all_envs = [env for env in all_envs if env.name not in SKIPPED_ENVS]
 
     # Filter environments if CHANGED_ENVS is set (for PRs)
     changed_envs = os.getenv("CHANGED_ENVS")
@@ -71,6 +90,8 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     """Test environment in a fresh venv with local verifiers installed first."""
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
+    if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
+        pytest.skip(f"Skipping slow OpenEnv smoke test for {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
     cmd = (

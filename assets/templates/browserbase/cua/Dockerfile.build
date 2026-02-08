@@ -1,0 +1,35 @@
+# Dockerfile for building CUA server SEA binary (linux-x64)
+#
+# This creates a linux-x64 binary that can be deployed to sandboxes.
+#
+# Usage:
+#   docker build --platform linux/amd64 -f Dockerfile.build -t cua-builder .
+#   docker run --rm --platform linux/amd64 -v $(pwd)/dist:/output cua-builder
+#
+# Or use the npm script:
+#   pnpm build:binary:docker
+
+FROM --platform=linux/amd64 node:22-slim
+
+WORKDIR /app
+
+# Install pnpm
+RUN npm install -g pnpm
+
+# Copy package files first for better caching
+COPY package.json pnpm-lock.yaml* ./
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+
+# Copy source files
+COPY . .
+
+# Build the binary (output goes to /app/dist/sea/)
+RUN pnpm build:binary
+
+# Move built files to /build so volume mount doesn't shadow them
+RUN mv dist /build
+
+# Default command copies the binary to the mounted /output volume
+CMD cp -r /build/sea /output/

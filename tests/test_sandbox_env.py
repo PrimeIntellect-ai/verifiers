@@ -12,14 +12,9 @@ def sandbox_env():
     """Fixture to create a SandboxEnv instance with mocked dataset."""
     mock_dataset = Dataset.from_dict({"question": ["mock question"], "info": [{}]})
 
-    mock_async_client_patcher = patch("verifiers.envs.sandbox_env.AsyncSandboxClient")
     mock_request_patcher = patch("verifiers.envs.sandbox_env.CreateSandboxRequest")
 
-    mock_async_client = mock_async_client_patcher.start()
     mock_request_patcher.start()
-
-    mock_async_client_instance = MagicMock()
-    mock_async_client.return_value = mock_async_client_instance
 
     try:
         env = SandboxEnv(dataset=mock_dataset, max_retries=1, base_delay=0.1)
@@ -27,7 +22,6 @@ def sandbox_env():
         env.active_sandboxes = {"sandbox1", "sandbox2", "sandbox3"}
         yield env
     finally:
-        mock_async_client_patcher.stop()
         mock_request_patcher.stop()
 
 

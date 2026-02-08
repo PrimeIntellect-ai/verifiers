@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: multi-turn
-- **Parser**: default `Parser`
 - **Rubric overview**: Sequence similarity against the 5 target answers across turns
 
 ### Quickstart

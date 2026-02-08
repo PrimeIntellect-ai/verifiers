@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, AsyncContextManager, cast
+from typing import Any, cast
 
 import verifiers as vf
 from verifiers.types import (
@@ -67,7 +67,7 @@ class Rubric:
 
     # private helpers
     def _get_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs]  # type: ignore[possibly-missing-attribute]
+        return [getattr(func, "__name__", repr(func)) for func in self.funcs]
 
     def _get_reward_funcs(self) -> list[RewardFunc]:
         return [func for func in self.funcs]
@@ -93,10 +93,14 @@ class Rubric:
 
     # individual-level reward helpers
     def _get_individual_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [
+            getattr(func, "__name__", repr(func))
+            for func in self.funcs
+            if not self._is_group_func(func)
+        ]
 
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [func for func in self.funcs if not self._is_group_func(func)]
 
     def _get_individual_reward_weights(self) -> list[float]:
         return [
@@ -109,7 +113,6 @@ class Rubric:
         self,
         func: RewardFunc,
         state: State,
-        score_sem: AsyncContextManager,
     ) -> float:
         """
         Invoke `func` with only the required arguments.
@@ -121,46 +124,49 @@ class Rubric:
         ``
         """
 
-        async def _call():
-            sig = inspect.signature(func)
+        sig = inspect.signature(func)
 
-            merged = dict(
-                prompt=state["prompt"],
-                completion=state["completion"],
-                answer=state.get("answer", ""),
-                state=state,
-                task=state["task"],
-                info=state.get("info", {}),
-            )
-            merged.update(self.class_objects)
-            if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-                try:
-                    ans = float(await maybe_await(func, **merged))
-                except Exception as e:
-                    self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
-                    )
-                    ans = 0.0
-            else:
-                allowed = {k: v for k, v in merged.items() if k in sig.parameters}
-                try:
-                    ans = float(await maybe_await(func, **allowed))
-                except Exception as e:
-                    self.logger.error(
-                        f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
-                    )
-                    ans = 0.0
-            return ans
-
-        async with score_sem:
-            return await _call()
+        merged = dict(
+            prompt=state["prompt"],
+            completion=state["completion"],
+            answer=state.get("answer", ""),
+            state=state,
+            task=state["task"],
+            info=state.get("info", {}),
+        )
+        merged.update(self.class_objects)
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            try:
+                ans = float(await maybe_await(func, **merged))
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                )
+                ans = 0.0
+        else:
+            allowed = {k: v for k, v in merged.items() if k in sig.parameters}
+            try:
+                ans = float(await maybe_await(func, **allowed))
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                )
+                ans = 0.0
+        return ans
 
     # group-level reward helpers
     def _get_group_reward_func_names(self) -> list[str]:
-        return [func.__name__ for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return [
+            getattr(func, "__name__", repr(func))
+            for func in self.funcs
+            if self._is_group_func(func)
+        ]
 
     def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
-        return [func for func in self.funcs if self._is_group_func(func)]  # type: ignore[possibly-missing-attribute]
+        return cast(
+            list[GroupRewardFunc],
+            [func for func in self.funcs if self._is_group_func(func)],
+        )
 
     def _get_group_reward_weights(self) -> list[float]:
         return [
@@ -173,51 +179,46 @@ class Rubric:
         self,
         func: GroupRewardFunc,
         states: list[State],
-        score_sem: AsyncContextManager,
     ) -> list[float]:
         """
         Invoke `func` with only the required arguments.
         """
 
-        async def _call():
-            sig = inspect.signature(func)
-            merged = dict(
-                prompts=[state["prompt"] for state in states],
-                completions=[state["completion"] for state in states],
-                answers=[state.get("answer", "") for state in states],
-                states=states,
-                tasks=[state["task"] for state in states],
-                infos=[state.get("info", {}) for state in states],
-            )
-            merged.update(self.class_objects)
-            if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-                try:
-                    ans = await maybe_await(func, **merged)
-                except Exception as e:
-                    self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
-                    )
-                    ans = [0.0] * len(states)
-            else:
-                allowed = {k: v for k, v in merged.items() if k in sig.parameters}
-                try:
-                    ans = await maybe_await(func, **allowed)
-                except Exception as e:
-                    self.logger.error(
-                        f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
-                    )
-                    ans = [0.0] * len(states)
-            return ans
-
-        async with score_sem:
-            return await _call()
+        sig = inspect.signature(func)
+        merged = dict(
+            prompts=[state["prompt"] for state in states],
+            completions=[state["completion"] for state in states],
+            answers=[state.get("answer", "") for state in states],
+            states=states,
+            tasks=[state["task"] for state in states],
+            infos=[state.get("info", {}) for state in states],
+        )
+        merged.update(self.class_objects)
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            try:
+                ans = await maybe_await(func, **merged)
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                )
+                ans = [0.0] * len(states)
+        else:
+            allowed = {k: v for k, v in merged.items() if k in sig.parameters}
+            try:
+                ans = await maybe_await(func, **allowed)
+            except Exception as e:
+                self.logger.error(
+                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                )
+                ans = [0.0] * len(states)
+        return ans
 
     async def dummy_score_rollout(self, state: State):
         """Score a single rollout with dummy rewards."""
         state["reward"] = 0.0
         state["metrics"] = {}
 
-    async def score_rollout(self, state: State, score_sem: AsyncContextManager):
+    async def score_rollout(self, state: State):
         """
         Evaluate all reward functions for a single rollout.
         """
@@ -233,7 +234,6 @@ class Rubric:
                 await self._call_individual_reward_func(
                     func=func,
                     state=state,
-                    score_sem=score_sem,
                 )
             )
         rewards = RolloutScore(
@@ -261,7 +261,7 @@ class Rubric:
         for state in states:
             await self.dummy_score_rollout(state)
 
-    async def score_group(self, states: list[State], score_sem: AsyncContextManager):
+    async def score_group(self, states: list[State]):
         """
         Score a group of rollouts together.
 
@@ -281,9 +281,7 @@ class Rubric:
             if is_group:
                 # GroupRewardFunc: score all states together
                 group_func = cast(GroupRewardFunc, func)
-                scores = await self._call_group_reward_func(
-                    group_func, states, score_sem=score_sem
-                )
+                scores = await self._call_group_reward_func(group_func, states)
                 func_name = func.__name__
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
@@ -294,9 +292,7 @@ class Rubric:
             else:
                 reward_func = cast(RewardFunc, func)
                 score_tasks = [
-                    self._call_individual_reward_func(
-                        reward_func, state, score_sem=score_sem
-                    )
+                    self._call_individual_reward_func(reward_func, state)
                     for state in states
                 ]
                 scores = await asyncio.gather(*score_tasks)

@@ -17,11 +17,15 @@ class TestImports:
 
     @staticmethod
     def _is_optional_dependency_error(error_msg: str) -> bool:
-        """Check if an AttributeError indicates missing optional dependencies."""
+        """Check if an error indicates missing optional dependencies."""
         optional_dependency_patterns = [
+            "install as `verifiers-rl`",
             "install as `verifiers[all]`",
             "install as `verifiers[math]`",
             "install as `verifiers[",  # catches any [extra] pattern
+            "verifiers[browser]",  # browser extra
+            "verifiers[ta]",  # textarena extra
+            "verifiers[rg]",  # reasoning-gym extra
         ]
         return any(pattern in error_msg for pattern in optional_dependency_patterns)
 
@@ -32,7 +36,7 @@ class TestImports:
                 # This should not raise AttributeError
                 item = getattr(verifiers, item_name)
                 assert item is not None, f"{item_name} in __all__ but is None"
-            except AttributeError as e:
+            except (AttributeError, ImportError) as e:
                 # Check if this is an expected optional dependency error
                 if self._is_optional_dependency_error(str(e)):
                     # This is expected for items requiring optional dependencies
@@ -56,11 +60,11 @@ class TestImports:
             try:
                 item = getattr(verifiers, name)
                 assert item is not None
-            except AttributeError as e:
+            except (AttributeError, ImportError) as e:
                 # This is expected for lazy imports when dependencies are missing
                 if self._is_optional_dependency_error(str(e)):
                     # This is the expected error for missing optional dependencies
                     pass
                 else:
-                    # This is an unexpected AttributeError, re-raise it
+                    # This is an unexpected error, re-raise it
                     raise

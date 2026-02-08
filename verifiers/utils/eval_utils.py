@@ -1,24 +1,28 @@
+from __future__ import annotations
+
 import asyncio
 import importlib.util
-import json
 import logging
+import math
 import time
 from collections import Counter, defaultdict
-from contextlib import contextmanager
+from collections.abc import Mapping
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ImportError:
-    import tomli as tomllib  # type: ignore[import-not-found]
-
-import numpy as np
-from datasets import Dataset, disable_progress_bar, enable_progress_bar
+from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
+import numpy as np
+
 import verifiers as vf
+from verifiers.utils.import_utils import load_toml
+
+if TYPE_CHECKING:
+    pass
 from verifiers.types import (
+    Endpoint,
     Endpoints,
     EvalConfig,
     EvalRunConfig,
@@ -26,45 +30,189 @@ from verifiers.types import (
     GenerateOutputs,
     LogCallback,
     ProgressCallback,
+    RolloutInput,
+    RolloutOutput,
     StartCallback,
-    State,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.client_utils import setup_client
-from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
-from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
 
 
+def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
+    if not isinstance(raw_endpoint, dict):
+        raise ValueError(f"Endpoint entry must be a table/dict in {source}")
+
+    raw_endpoint_dict = cast(dict[str, object], raw_endpoint)
+    model = raw_endpoint_dict.get("model")
+    url = raw_endpoint_dict.get("url")
+    key = raw_endpoint_dict.get("key")
+
+    missing = [
+        field
+        for field, value in (("model", model), ("url", url), ("key", key))
+        if value is None
+    ]
+    if missing:
+        raise ValueError(f"Missing required field(s) {missing} in {source}")
+
+    if (
+        not isinstance(model, str)
+        or not isinstance(url, str)
+        or not isinstance(key, str)
+    ):
+        raise ValueError(
+            f"Fields 'model', 'url', and 'key' must all be strings in {source}"
+        )
+
+    return Endpoint(model=model, url=url, key=key)
+
+
+def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
+    if not isinstance(raw_endpoints, dict):
+        raise ValueError(f"ENDPOINTS must be a dict in {source}")
+
+    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
+    normalized: Endpoints = {}
+    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
+        if not isinstance(endpoint_id, str):
+            raise ValueError(f"Endpoint ids must be strings in {source}")
+
+        if isinstance(raw_endpoint_group, list):
+            if not raw_endpoint_group:
+                raise ValueError(
+                    f"Endpoint '{endpoint_id}' has an empty endpoint list in {source}"
+                )
+            normalized[endpoint_id] = [
+                _coerce_endpoint(
+                    raw_endpoint,
+                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
+                )
+                for raw_endpoint in raw_endpoint_group
+            ]
+        else:
+            normalized[endpoint_id] = [
+                _coerce_endpoint(
+                    raw_endpoint_group,
+                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
+                )
+            ]
+
+    return normalized
+
+
+def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
+    if not isinstance(raw_toml, dict):
+        raise ValueError(f"Expected top-level TOML table in {source}")
+
+    raw_toml_dict = cast(dict[str, object], raw_toml)
+    raw_endpoint_entries = raw_toml_dict.get("endpoint", [])
+    if not isinstance(raw_endpoint_entries, list):
+        raise ValueError(
+            f"Expected [[endpoint]] array-of-tables in {source}, got {type(raw_endpoint_entries)}"
+        )
+
+    normalized: Endpoints = {}
+    for idx, raw_entry in enumerate(raw_endpoint_entries):
+        entry_source = f"{source} ([[endpoint]] index {idx})"
+        if not isinstance(raw_entry, dict):
+            raise ValueError(
+                f"Each [[endpoint]] entry must be a table in {entry_source}"
+            )
+
+        raw_entry_dict = cast(dict[str, object], raw_entry)
+        endpoint_id = raw_entry_dict.get("endpoint_id")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            raise ValueError(
+                f"Each [[endpoint]] entry must include non-empty string 'endpoint_id' in {entry_source}"
+            )
+
+        url = raw_entry_dict.get("url")
+        api_base_url = raw_entry_dict.get("api_base_url")
+        if url is not None and api_base_url is not None and url != api_base_url:
+            raise ValueError(
+                f"Conflicting values for 'url' and 'api_base_url' in {entry_source}"
+            )
+
+        key = raw_entry_dict.get("key")
+        api_key_var = raw_entry_dict.get("api_key_var")
+        if key is not None and api_key_var is not None and key != api_key_var:
+            raise ValueError(
+                f"Conflicting values for 'key' and 'api_key_var' in {entry_source}"
+            )
+
+        endpoint_payload = {
+            k: v for k, v in raw_entry_dict.items() if k != "endpoint_id"
+        }
+        endpoint_payload["url"] = url if url is not None else api_base_url
+        endpoint_payload["key"] = key if key is not None else api_key_var
+        endpoint = _coerce_endpoint(
+            endpoint_payload,
+            source=f"{entry_source} (endpoint_id={endpoint_id!r})",
+        )
+        normalized.setdefault(endpoint_id, []).append(endpoint)
+
+    return normalized
+
+
+def resolve_endpoints_file(endpoints_path: str) -> Path | None:
+    endpoints_path_obj = Path(endpoints_path)
+    if endpoints_path_obj.is_dir():
+        toml_file = endpoints_path_obj / "endpoints.toml"
+        python_file = endpoints_path_obj / "endpoints.py"
+        if toml_file.exists():
+            return toml_file
+        if python_file.exists():
+            return python_file
+        return None
+    return endpoints_path_obj
+
+
 def load_endpoints(endpoints_path: str):
     try:
-        endpoints_path_obj = Path(endpoints_path)
-        if endpoints_path_obj.is_dir():
-            endpoints_file = endpoints_path_obj / "endpoints.py"
-        else:
-            endpoints_file = endpoints_path_obj
+        endpoints_file = resolve_endpoints_file(endpoints_path)
+        if endpoints_file is None:
+            raise ImportError(
+                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
+            )
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            spec = importlib.util.spec_from_file_location("endpoints", endpoints_file)
-            assert spec and spec.loader
-            endpoints_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(endpoints_module)
-            # check that module exposes ENDPOINTS
-            if not hasattr(endpoints_module, "ENDPOINTS"):
-                raise AttributeError(
-                    f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
+            if endpoints_file.suffix == ".py":
+                spec = importlib.util.spec_from_file_location(
+                    "endpoints", endpoints_file
                 )
-            endpoints = cast(Endpoints, endpoints_module.ENDPOINTS)
+                assert spec and spec.loader
+                endpoints_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(endpoints_module)
+                # check that module exposes ENDPOINTS
+                if not hasattr(endpoints_module, "ENDPOINTS"):
+                    raise AttributeError(
+                        f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
+                    )
+                endpoints = _normalize_python_endpoints(
+                    cast(object, endpoints_module.ENDPOINTS),
+                    source=endpoints_file,
+                )
+            elif endpoints_file.suffix == ".toml":
+                with open(endpoints_file, "rb") as f:
+                    raw_toml = load_toml(f)
+                endpoints = _normalize_toml_endpoints(raw_toml, source=endpoints_file)
+            else:
+                raise ImportError(
+                    f"Unsupported endpoints file extension '{endpoints_file.suffix}' at {endpoints_file}"
+                )
+            num_endpoint_variants = sum(len(group) for group in endpoints.values())
             logger.debug(
-                f"Successfully loaded {len(endpoints)} endpoints from registry"
+                "Successfully loaded %d endpoint ids (%d endpoint variant(s)) from registry",
+                len(endpoints),
+                num_endpoint_variants,
             )
         else:
-            raise ImportError(f"endpoints.py not found at {endpoints_file}")
-    except (ImportError, AttributeError) as e:
+            raise ImportError(f"Endpoint registry file not found at {endpoints_file}")
+    except (ImportError, AttributeError, ValueError) as e:
         logger.warning(
             f"No local endpoint registry found at {endpoints_path}. "
             f"Please specify the model name (-m), API host base URL (-b), and API key variable name (-k). "
@@ -100,7 +248,7 @@ def load_toml_config(path: Path) -> list[dict]:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "rb") as f:
-        raw_config = tomllib.load(f)
+        raw_config = load_toml(f)
 
     # validate schema
     eval_list = raw_config.get("eval", [])
@@ -130,6 +278,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "endpoints_path",
         "extra_env_kwargs",
         # model/client
+        "endpoint_id",
         "model",
         "api_key_var",
         "api_base_url",
@@ -142,8 +291,6 @@ def load_toml_config(path: Path) -> list[dict]:
         "num_examples",
         "rollouts_per_example",
         "max_concurrent",
-        "max_concurrent_generation",
-        "max_concurrent_scoring",
         "independent_scoring",
         "max_retries",
         # logging
@@ -151,7 +298,8 @@ def load_toml_config(path: Path) -> list[dict]:
         # saving
         "state_columns",
         "save_results",
-        "save_every",
+        "resume",
+        "resume_path",
         "save_to_hf_hub",
         "hf_hub_dataset_name",
     }
@@ -176,59 +324,74 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
+        # Resolve endpoints_path relative to the config file location.
+        endpoints_path = merged.get("endpoints_path")
+        if isinstance(endpoints_path, str):
+            endpoints_path_obj = Path(endpoints_path)
+            if not endpoints_path_obj.is_absolute():
+                merged["endpoints_path"] = str(
+                    (path.parent / endpoints_path_obj).resolve()
+                )
         merged_eval_list.append(merged)
 
     return merged_eval_list
 
 
-def get_results_by_task(results: GenerateOutputs) -> dict[str, GenerateOutputs]:
-    """Group results by task name.
+def filter_inputs(
+    inputs: list[RolloutInput], outputs: list[RolloutOutput], rollouts_per_example: int
+) -> list[RolloutInput]:
+    """Filter inputs based on the number of rollouts per example."""
+    inputs_by_example_id, outputs_by_example_id = defaultdict(list), defaultdict(list)
+    for input in inputs:
+        inputs_by_example_id[input["example_id"]].append(input)
+    for output in outputs:
+        outputs_by_example_id[output["example_id"]].append(output)
 
-    Args:
-        results: The GenerateOutputs from an evaluation run.
+    filtered_inputs: list[RolloutInput] = []
+    for example_id in inputs_by_example_id.keys():
+        example_inputs = inputs_by_example_id[example_id]
+        example_outputs = outputs_by_example_id[example_id]
+        rollouts_left = rollouts_per_example - len(example_outputs)
+        if rollouts_left > 0:
+            filtered_inputs.extend(example_inputs[:rollouts_left])
 
-    Returns:
-        A dictionary mapping task names to their corresponding GenerateOutputs.
-    """
-    task_indices: dict[str, list[int]] = {}
-    for i, task in enumerate(results["task"]):
-        if task not in task_indices:
-            task_indices[task] = []
-        task_indices[task].append(i)
+    return filtered_inputs
 
-    task_results: dict[str, GenerateOutputs] = {}
-    for task, indices in task_indices.items():
-        task_results[task] = GenerateOutputs(
-            prompt=[results["prompt"][i] for i in indices],
-            completion=[results["completion"][i] for i in indices],
-            answer=[results["answer"][i] for i in indices],
-            state=[results["state"][i] for i in indices],
-            task=[results["task"][i] for i in indices],
-            info=[results["info"][i] for i in indices],
-            example_id=[results["example_id"][i] for i in indices],
-            reward=[results["reward"][i] for i in indices],
-            metrics={k: [v[i] for i in indices] for k, v in results["metrics"].items()},
-            stop_conditions=[results["stop_conditions"][i] for i in indices],
-            is_truncated=[results["is_truncated"][i] for i in indices],
-            metadata=results["metadata"],
-        )
-    return task_results
+
+def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
+    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
+    if not list_of_dicts:
+        return {}
+    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
+
+
+def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
+    """Get only the rollouts for a given task."""
+    outputs = [o for o in results["outputs"] if o["task"] == task]
+    return GenerateOutputs(
+        outputs=outputs,
+        metadata=results["metadata"],  # duplicate metadata
+    )
 
 
 def print_rewards(results: GenerateOutputs):
+    rewards = [o["reward"] for o in results["outputs"]]
     print("Rewards:")
     print(
-        f"reward: avg - {sum(results['reward']) / len(results['reward']):.3f}, std - {np.std(results['reward']):.3f}"
+        f"reward: avg - {sum(rewards) / len(rewards):.3f}, std - {np.std(rewards):.3f}"
     )
     r = results["metadata"]["rollouts_per_example"]
-    n = len(results["reward"]) // r
+    n = len(rewards) // r
     # results are sorted by example_id, so rollout i is at indices [i, i+r, i+2r, ...]
     for i in range(r):
-        trials = [round(results["reward"][i + (j * r)], 3) for j in range(n)]
+        trials = [round(rewards[i + (j * r)], 3) for j in range(n)]
         out = f"r{i + 1}: {trials}"
         print(out)
-    for k in results["metrics"]:
-        v = results["metrics"][k]
+
+    metrics = [o["metrics"] for o in results["outputs"]]
+    metrics_col = to_col_order(metrics)
+    for k in metrics_col.keys():
+        v = metrics_col[k]
         print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
         for i in range(r):
             trials = [round(v[i + (j * r)], 3) for j in range(n)]
@@ -237,34 +400,36 @@ def print_rewards(results: GenerateOutputs):
 
 
 def print_info(results: GenerateOutputs):
+    is_truncated = [o["is_truncated"] for o in results["outputs"]]
     print("Info:")
     print(
-        f"is_truncated: avg - {np.mean(results['is_truncated']):.3f}, std - {np.std(results['is_truncated']):.3f}"
+        f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    counter = Counter(results["stop_conditions"])
+    stop_conditions = [o["stop_condition"] for o in results["outputs"]]
+    counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"
     )
-    errors = [s.get("error") for s in results["state"]]
+    errors = [o.get("error") for o in results["outputs"]]
     has_errors = [e is not None for e in errors]
     if any(has_errors):
         print(
             f"errors: avg - {np.mean(has_errors):.3f}, std - {np.std(has_errors):.3f}"
         )
-        errors = [e for e in errors if e is not None]
-        error_chains = [ErrorChain(e) for e in errors]
+        error_chains = [e["error_chain_str"] for e in errors if e is not None]
+        # Errors are serialized as strings, count unique error types
         counter = Counter(error_chains)
-        for error_chain, count in counter.items():
-            print(f" - {repr(error_chain)}: {count / counter.total():.3f}")
+        for error_str, count in counter.items():
+            print(f" - {error_str}: {count / counter.total():.3f}")
 
 
 def print_timing(results: GenerateOutputs):
     print("Timing:")
-    generation_ms_arr = np.array(
-        [s["timing"]["generation_ms"] for s in results["state"]]
-    )
-    scoring_ms_arr = np.array([s["timing"]["scoring_ms"] for s in results["state"]])
-    total_ms_arr = np.array([s["timing"]["total_ms"] for s in results["state"]])
+    timing = [o["timing"] for o in results["outputs"]]
+    timing_col = to_col_order(timing)
+    generation_ms_arr = np.array(timing_col["generation_ms"])
+    scoring_ms_arr = np.array(timing_col["scoring_ms"])
+    total_ms_arr = np.array(timing_col["total_ms"])
     generation_arr = generation_ms_arr / 1000
     scoring_arr = scoring_ms_arr / 1000
     total_arr = total_ms_arr / 1000
@@ -280,10 +445,36 @@ def print_timing(results: GenerateOutputs):
     )
 
 
-def print_results(
-    results: GenerateOutputs,
-    num_samples: int = 1,
-):
+def print_usage(results: GenerateOutputs):
+    usage_count = 0
+    input_tokens_total = 0.0
+    output_tokens_total = 0.0
+    for output in results["outputs"]:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        usage_count += 1
+        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
+        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+
+    usage = None
+    if usage_count > 0:
+        usage = {
+            "input_tokens": input_tokens_total / usage_count,
+            "output_tokens": output_tokens_total / usage_count,
+        }
+    elif results["metadata"].get("usage") is not None:
+        usage = results["metadata"]["usage"]
+
+    if usage is None:
+        return
+
+    print("Usage:")
+    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
+    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+
+
+def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
     print(f"Environment: {results['metadata']['env_id']}")
@@ -293,14 +484,18 @@ def print_results(
     print(f"Rollouts per example: {results['metadata']['rollouts_per_example']}")
     print("--- Example ---")
 
-    printable_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    printable_completions = [messages_to_printable(c) for c in results["completion"]]
-    errors = [s.get("error") for s in results["state"]]
+    # prompt/completion are already in printable format from state_to_output
+    printable_prompts = [o["prompt"] if o["prompt"] else [] for o in results["outputs"]]
+    printable_completions = [
+        o["completion"] if o["completion"] else [] for o in results["outputs"]
+    ]
+    rewards = [o["reward"] for o in results["outputs"]]
+    errors = [o.get("error") for o in results["outputs"]]
     print_prompt_completions_sample(
         printable_prompts,
         printable_completions,
         errors,
-        results["reward"],
+        rewards,
         step=0,
         num_samples=num_samples,
     )
@@ -308,15 +503,29 @@ def print_results(
     print_rewards(results)
     print_info(results)
     print_timing(results)
+    print_usage(results)
 
-    num_tasks = len(set(results["task"]))
-    if num_tasks > 1:
-        task_results = get_results_by_task(results)
-        for task, task_results in task_results.items():
+    tasks = set([o["task"] for o in results["outputs"]])
+    if len(tasks) > 1:
+        for task in tasks:
+            task_results = get_task_outputs(results, task)
             print(f"\n--- {task} ---")
             print_rewards(task_results)
             print_info(task_results)
             print_timing(task_results)
+            print_usage(task_results)
+
+
+@contextmanager
+def quiet_datasets():
+    prev_level = ds_logging.get_verbosity()
+    ds_logging.set_verbosity(ds_logging.WARNING)
+    disable_progress_bar()
+    try:
+        yield
+    finally:
+        ds_logging.set_verbosity(prev_level)
+        enable_progress_bar()
 
 
 async def run_evaluation(
@@ -325,12 +534,6 @@ async def run_evaluation(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
-    # set up AsyncOpenAI client with high limits to prevent timeouts
-    client = setup_client(config.client_config)
-    logger.debug(
-        f"Initialized AsyncOpenAI client with base_url: {config.client_config.api_base_url}"
-    )
-
     # load environment
     vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
@@ -339,38 +542,54 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # run evaluation
-    results_path = get_eval_results_path(config)
-    logger.debug(f"Starting evaluation with model: {config.model}")
-    logger.debug(
-        f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-    )
-    # disable tqdm when callbacks are provided (TUI handles progress display)
-    use_tqdm = config.use_tqdm and on_progress is None
-    results = await vf_env.evaluate(
-        client=client,
-        model=config.model,
-        sampling_args=config.sampling_args,
-        num_examples=config.num_examples,
-        rollouts_per_example=config.rollouts_per_example,
-        max_concurrent=config.max_concurrent,
-        max_concurrent_generation=config.max_concurrent_generation,
-        max_concurrent_scoring=config.max_concurrent_scoring,
-        results_path=results_path,
-        state_columns=config.state_columns,
-        save_results=config.save_results,
-        save_every=config.save_every,
-        push_to_hf_hub=config.save_to_hf_hub,
-        hf_hub_dataset_name=config.hf_hub_dataset_name,
-        use_tqdm=use_tqdm,
-        independent_scoring=config.independent_scoring,
-        max_retries=config.max_retries,
-        on_start=on_start,
-        on_progress=on_progress,
-        on_log=on_log,
-    )
+    # start env server as sidecar process
+    try:
+        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
 
-    return results
+        # run evaluation
+        results_path = config.resume_path or get_eval_results_path(config)
+        logger.debug(f"Starting evaluation with model: {config.model}")
+        logger.debug(
+            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+        )
+        effective_group_max_concurrent = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            # Grouped scoring applies the semaphore at group level. Convert
+            # rollout-level concurrency to group-level slots.
+            effective_group_max_concurrent = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            if config.num_examples > 0:
+                effective_group_max_concurrent = min(
+                    effective_group_max_concurrent, config.num_examples
+                )
+
+        outputs = await vf_env.evaluate(
+            client=config.client_config,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            max_concurrent=effective_group_max_concurrent,
+            results_path=results_path,
+            state_columns=config.state_columns,
+            save_results=config.save_results,
+            push_to_hf_hub=config.save_to_hf_hub,
+            hf_hub_dataset_name=config.hf_hub_dataset_name,
+            independent_scoring=config.independent_scoring,
+            max_retries=config.max_retries,
+            on_start=on_start,
+            on_progress=on_progress,
+            on_log=on_log,
+        )
+    finally:
+        await vf_env.stop_server()
+
+    return outputs
 
 
 async def run_evaluations(config: EvalRunConfig) -> None:
@@ -423,77 +642,35 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         env_config: EvalConfig, env_idx: int
     ) -> GenerateOutputs:
         """Run a single evaluation with display progress updates."""
-        actor_rewards: dict[str, list[float]] = defaultdict(list)
-        metrics_values: dict[str, list[float]] = defaultdict(list)
-        error_count = 0
-        is_multiagent = False
 
-        def on_start(total: int) -> None:
+        def on_start(raw_inputs: list[RolloutInput], filtered_inputs) -> None:
+            total = len(raw_inputs)
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining = len(filtered_inputs) if filtered_inputs else 0
+            resumed = total - remaining
             num_examples = total // env_config.rollouts_per_example
-            display.update_env_state(env_idx, total=total, num_examples=num_examples)
+            display.update_env_state(
+                env_idx, total=total, num_examples=num_examples, progress=resumed
+            )
 
-        def on_progress(all_states: list[State], new_states: list[State]) -> None:
-            nonlocal error_count, is_multiagent
-
-            for s in new_states:
-                if s.get("error") is not None:
-                    error_count += 1
-
-                # Track rewards per-actor
-                actor_id = s.get("extras", {}).get("current_actor_id")
-                reward = s.get("reward")
-                if reward is not None:
-                    key = actor_id if actor_id else "_single"
-                    actor_rewards[key].append(reward)
-                    if actor_id:
-                        is_multiagent = True
-
-                # Track metrics (skip *_reward for multi-agent, we compute those ourselves)
-                for name, value in (s.get("metrics") or {}).items():
-                    if value is not None and not (is_multiagent and name.endswith("_reward")):
-                        metrics_values[name].append(value)
-
-            # Build display values
-            metrics: dict[str, float] = {}
-
-            if is_multiagent:
-                # Multi-agent: per-actor rewards first
-                reward = 0.0
-                for aid in sorted(actor_rewards.keys()):
-                    vals = actor_rewards[aid]
-                    if vals:
-                        metrics[aid] = sum(vals) / len(vals)
-            else:
-                # Single-agent: combined reward
-                vals = actor_rewards.get("_single", [])
-                reward = sum(vals) / len(vals) if vals else 0.0
-
-            # Add other metrics
-            for name, vals in metrics_values.items():
-                if vals:
-                    metrics[name] = sum(vals) / len(vals)
-
-            # Count completed: unique games for multi-agent, total states for single-agent
-            if is_multiagent:
-                # Multi-agent: count unique parent games (by trajectory_id)
-                # Exclude spawned children (parent_episode_id is set) to avoid overcounting
-                parent_states = [
-                    s for s in all_states
-                    if s.get("extras", {}).get("parent_episode_id") is None
-                ]
-                completed = len(set(s.get("trajectory_id") for s in parent_states))
-            else:
-                completed = len(all_states)
-
-            error_rate = error_count / completed if completed > 0 else 0.0
-
+        def on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            metadata: GenerateMetadata,
+        ) -> None:
             display.update_env_state(
                 env_idx,
-                progress=completed,
-                reward=reward,
-                metrics=metrics,
-                error_rate=error_rate,
-                is_multiagent=is_multiagent,
+                progress=len(all_outputs),
+                reward=metadata.get("avg_reward"),
+                metrics=metadata.get("avg_metrics"),
+                error_rate=metadata.get("avg_error"),
+                usage=metadata.get("usage"),
             )
 
         def on_log(message: str) -> None:
@@ -525,126 +702,33 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
             display.update_env_state(env_idx, status="failed", error=str(e))
             raise
 
+    async def refresh_loop() -> None:
+        while not display.state.all_completed:
+            display.refresh()
+            await asyncio.sleep(1)
+
     try:
         async with display:
-            await asyncio.gather(
-                *[
-                    run_with_progress(env_config, idx)
-                    for idx, env_config in enumerate(config.evals)
-                ],
-                return_exceptions=True,
-            )
+            refresh_task = asyncio.create_task(refresh_loop())
+            try:
+                await asyncio.gather(
+                    *[
+                        run_with_progress(env_config, idx)
+                        for idx, env_config in enumerate(config.evals)
+                    ],
+                    return_exceptions=True,
+                )
 
-            display.refresh()
-            if tui_mode:
-                await display.wait_for_exit()
+                display.refresh()
+                if tui_mode:
+                    await display.wait_for_exit()
+            finally:
+                refresh_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await refresh_task
 
     except KeyboardInterrupt:
         pass  # exit on interrupt
 
     # print final summary after exit
     display.print_final_summary()
-
-
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
-
-
-def get_hf_hub_dataset_name(results: GenerateOutputs) -> str:
-    metadata = results["metadata"]
-    dataset_name = (
-        metadata["env_id"]
-        + "_"
-        + metadata["model"].replace("/", "_")
-        + "_n"
-        + str(metadata["num_examples"])
-        + "_r"
-        + str(metadata["rollouts_per_example"])
-    )
-    return dataset_name
-
-
-def make_dataset(results: GenerateOutputs, **kwargs) -> Dataset:
-    clean_prompts = [messages_to_printable(p) for p in results["prompt"]]
-    clean_prompts = [sanitize_tool_calls(p) for p in clean_prompts]
-    clean_completions = [messages_to_printable(c) for c in results["completion"]]
-    clean_completions = [sanitize_tool_calls(c) for c in clean_completions]
-    save_info = any(info != {} for info in results["info"])
-    save_answer = any(answer != "" for answer in results["answer"])
-    errors = [s.get("error") for s in results["state"]]
-    results_dict = {
-        "example_id": results["example_id"],
-        "prompt": clean_prompts,
-        "completion": clean_completions,
-        "task": results["task"],
-        "reward": results["reward"],
-        "error": [repr(e) if e is not None else None for e in errors],
-        "generation_ms": [s["timing"]["generation_ms"] for s in results["state"]],
-        "scoring_ms": [s["timing"]["scoring_ms"] for s in results["state"]],
-        "total_ms": [s["timing"]["total_ms"] for s in results["state"]],
-    }
-    if save_info:
-        results_dict["info"] = results["info"]
-    if save_answer:
-        results_dict["answer"] = results["answer"]
-    for k in results["metrics"]:
-        v = results["metrics"][k]
-        results_dict[k] = v
-
-    # Add actor_id column for multi-agent environments
-    if "actor_id" in results and results["actor_id"]:
-        results_dict["actor_id"] = results["actor_id"]
-
-    # Add selected state columns if specified
-    state_columns = results["metadata"]["state_columns"]
-    if state_columns:
-        for col in state_columns:
-            if col == "responses":
-                results_dict[col] = [
-                    [r.model_dump() for r in s.get(col, [])] for s in results["state"]
-                ]
-            else:
-                results_dict[col] = [s.get(col) for s in results["state"]]
-
-    return Dataset.from_dict(results_dict)
-
-
-@contextmanager
-def quiet_datasets():
-    prev_level = ds_logging.get_verbosity()
-    ds_logging.set_verbosity(ds_logging.WARNING)
-    disable_progress_bar()
-    try:
-        yield
-    finally:
-        ds_logging.set_verbosity(prev_level)
-        enable_progress_bar()
-
-
-def save_to_disk(dataset: Dataset, metadata_dict: dict, path_to_save: Path):
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    with quiet_datasets():
-        dataset.to_json(path_to_save / "results.jsonl")
-    with open(path_to_save / "metadata.json", "w") as f:
-        json.dump(metadata_dict, f)
-
-
-def save_rollout_results(
-    results: GenerateOutputs,
-    push_to_hf_hub: bool = False,
-    hf_hub_dataset_name: str | None = None,
-):
-    path_to_save = results["metadata"]["path_to_save"]
-    path_to_save.parent.mkdir(parents=True, exist_ok=True)
-    dataset = make_dataset(results)
-    metadata_dict = sanitize_metadata(results["metadata"])
-    save_to_disk(dataset, metadata_dict, path_to_save)
-    logger.info(f"Results saved to {path_to_save}")
-    if push_to_hf_hub:
-        dataset_name = hf_hub_dataset_name or get_hf_hub_dataset_name(results)
-        dataset.push_to_hub(dataset_name)
-        logger.info(f"Dataset saved to Hugging Face Hub: {dataset_name}")

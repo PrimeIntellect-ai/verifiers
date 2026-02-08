@@ -30,6 +30,8 @@ def load_environment(
     judge_base_url: str = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
 ) -> vf.Environment:
+    vf.ensure_keys([judge_api_key_var])
+
     dataset = load_dataset(dataset_name, split=dataset_split)
     # only accept examples with >~100 words or so
     dataset = dataset.filter(lambda x: x[dataset_key].count(" ") > 100)
@@ -37,7 +39,7 @@ def load_environment(
     dataset = dataset.shuffle(seed=777)
 
     judge_client = AsyncOpenAI(
-        base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, "EMPTY")
+        base_url=judge_base_url, api_key=os.environ[judge_api_key_var]
     )
     judge_prompt = """Evaluate this base model continuation from a prefix, compared to the true continuation from Wikipedia.
 

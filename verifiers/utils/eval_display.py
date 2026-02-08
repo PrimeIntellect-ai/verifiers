@@ -6,13 +6,11 @@ Provides a visual progress display that works in two modes:
 - TUI mode (screen=True): Alternate screen buffer with echo handling
 """
 
-import json
+import math
 import time
-from collections import defaultdict
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from rich.columns import Columns
 from rich.console import Group
@@ -21,10 +19,9 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs
-from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
-from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import messages_to_printable
+from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
+from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
+from verifiers.utils.message_utils import format_messages
 
 
 @dataclass
@@ -43,6 +40,7 @@ class EnvEvalState:
     rollouts_per_example: int = 1  # rollouts per example (from config)
     reward: float = 0.0  # reward (rolling avg, 0.0 for multi-agent)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
+    usage: TokenUsage | None = None
     error_rate: float = 0.0  # error rate (rolling avg)
     is_multiagent: bool = False  # whether this env has multiple actors
 
@@ -63,56 +61,8 @@ class EnvEvalState:
         return end - self.start_time
 
 
-def _format_messages(messages: Any) -> Text:
-    """Format messages for display (similar to print_prompt_completions_sample)."""
-
-    def _attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
-        val = getattr(obj, key, None)
-        if val is not None:
-            return val
-        if isinstance(obj, Mapping):
-            return obj.get(key, default)
-        return default
-
-    def _normalize_tool_call(tc: Any) -> dict[str, str]:
-        src = _attr_or_key(tc, "function") or tc
-        name = _attr_or_key(src, "name", "") or ""
-        args = _attr_or_key(src, "arguments", {}) or {}
-        if not isinstance(args, str):
-            try:
-                args = json.dumps(args)
-            except Exception:
-                args = str(args)
-        return {"name": name, "args": args}
-
-    if isinstance(messages, str):
-        return Text(messages)
-
-    out = Text()
-    for idx, msg in enumerate(messages):
-        if idx:
-            out.append("\n\n")
-
-        assert isinstance(msg, dict)
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        style = "bright_cyan" if role == "assistant" else "bright_magenta"
-
-        out.append(f"{role}: ", style="bold")
-        out.append(str(content) if content else "", style=style)
-
-        for tc in msg.get("tool_calls") or []:
-            payload = _normalize_tool_call(tc)
-            out.append(
-                "\n\n[tool call]\n" + json.dumps(payload, indent=2, ensure_ascii=False),
-                style=style,
-            )
-
-    return out
-
-
-def _make_histogram(values: list[float], bins: int = 10, width: int = 20) -> Text:
-    """Create a simple text histogram of values."""
+def _make_histogram(values: list[float], bins: int = 10, height: int = 8) -> Text:
+    """Create a simple vertical text histogram of values."""
     if not values:
         return Text("no data", style="dim")
 
@@ -127,16 +77,51 @@ def _make_histogram(values: list[float], bins: int = 10, width: int = 20) -> Tex
         counts[bin_idx] += 1
 
     max_count = max(counts)
+    scaled = [
+        int(round((c / max_count) * height)) if max_count > 0 else 0 for c in counts
+    ]
+
+    label_width = max(
+        4,
+        len(f"{min_val:.2f}"),
+        len(f"{max_val:.2f}"),  # keep labels aligned
+    )
+    count_width = max(len(str(c)) for c in counts)
+    col_width = max(label_width, count_width)
+    spacer = " "
+    bar_on = "█" * col_width
+    bar_off = "░" * col_width
+
     out = Text()
-
+    # Counts (top row)
     for i, count in enumerate(counts):
-        bin_start = min_val + i * bin_width
-        bar_len = int((count / max_count) * width) if max_count > 0 else 0
-        bar = "█" * bar_len + "░" * (width - bar_len)
+        out.append(str(count).center(col_width), style="dim")
+        if i < bins - 1:
+            out.append(spacer)
+    out.append("\n")
 
-        out.append(f"{bin_start:5.2f} ", style="dim")
-        out.append(bar, style="cyan")
-        out.append(f" {count}\n", style="dim")
+    # Bars (top to bottom)
+    for row in range(height, 0, -1):
+        for i, h in enumerate(scaled):
+            if h >= row:
+                out.append(bar_on, style="cyan")
+            else:
+                out.append(bar_off, style="dim")
+            if i < bins - 1:
+                out.append(spacer)
+        out.append("\n")
+
+    # Baseline
+    out.append("─" * (bins * col_width + (bins - 1)), style="dim")
+    out.append("\n")
+
+    # Bin labels (start values)
+    for i in range(bins):
+        bin_start = min_val + i * bin_width
+        label = f"{bin_start:.2f}".center(col_width)
+        out.append(label, style="dim")
+        if i < bins - 1:
+            out.append(spacer)
 
     return out
 
@@ -183,6 +168,27 @@ class EvalDisplay(BaseDisplay):
                 rollouts_per_example=config.rollouts_per_example,
             )
 
+    @staticmethod
+    def _display_max_concurrent(config: EvalConfig, total_rollouts: int) -> int:
+        """Return rollout-level concurrency shown in the UI."""
+        display_rollout_concurrency = config.max_concurrent
+        if (
+            not config.independent_scoring
+            and config.max_concurrent > 0
+            and config.rollouts_per_example > 1
+        ):
+            max_group_concurrency = math.ceil(
+                config.max_concurrent / config.rollouts_per_example
+            )
+            display_rollout_concurrency = (
+                max_group_concurrency * config.rollouts_per_example
+            )
+
+        if display_rollout_concurrency > 0 and total_rollouts > 0:
+            return min(display_rollout_concurrency, total_rollouts)
+
+        return display_rollout_concurrency
+
     def update_env_state(
         self,
         env_idx: int,
@@ -192,6 +198,7 @@ class EvalDisplay(BaseDisplay):
         num_examples: int | None = None,
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
+        usage: TokenUsage | None = None,
         error_rate: float | None = None,
         is_multiagent: bool | None = None,
         error: str | None = None,
@@ -224,6 +231,9 @@ class EvalDisplay(BaseDisplay):
 
         if metrics is not None:
             env_state.metrics = metrics
+
+        if usage is not None:
+            env_state.usage = usage
 
         if error_rate is not None:
             env_state.error_rate = error_rate
@@ -270,15 +280,7 @@ class EvalDisplay(BaseDisplay):
 
         for i, (name, value) in enumerate(metrics.items()):
             # format value
-            if isinstance(value, float):
-                if value == int(value):
-                    value_str = str(int(value))
-                elif abs(value) < 0.01:
-                    value_str = f"{value:.4f}"
-                else:
-                    value_str = f"{value:.3f}"
-            else:
-                value_str = str(value)
+            value_str = format_numeric(value)
 
             # add metric with dotted leader
             metrics_text.append(name, style="dim")
@@ -299,6 +301,38 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
+    def _make_tokens_row(self, usage: TokenUsage) -> Table | None:
+        """Create a tokens row with input/output values."""
+        tokens_text = Text()
+        tokens_text.append("╰─ ", style="dim")
+        token_items = [
+            ("input", usage.get("input_tokens", 0.0)),
+            ("output", usage.get("output_tokens", 0.0)),
+        ]
+        for i, (name, value) in enumerate(token_items):
+            value_str = format_numeric(value)
+            tokens_text.append(name, style="dim")
+            tokens_text.append(" ", style="dim")
+            tokens_text.append(value_str, style="bold")
+            if i < len(token_items) - 1:
+                tokens_text.append("   ")
+        return make_aligned_row(tokens_text, Text())
+
+    @staticmethod
+    def _format_client_target(config: EvalConfig) -> str:
+        endpoint_configs = config.client_config.endpoint_configs
+        endpoint_count = len(endpoint_configs) if endpoint_configs else 1
+
+        if config.endpoint_id and endpoint_count >= 2:
+            return f"endpoint_id={config.endpoint_id} ({endpoint_count} endpoints)"
+
+        if endpoint_configs:
+            if endpoint_count == 1:
+                return endpoint_configs[0].api_base_url
+            return ", ".join(endpoint.api_base_url for endpoint in endpoint_configs)
+
+        return config.client_config.api_base_url
+
     def _make_env_panel(self, env_idx: int) -> Panel:
         """Create a full-width panel for a single environment with config and progress."""
         config = self.configs[env_idx]
@@ -308,7 +342,7 @@ class EvalDisplay(BaseDisplay):
         config_line = Text()
         config_line.append(config.model, style="white")
         config_line.append(" via ", style="dim")
-        config_line.append(config.client_config.api_base_url, style="white")
+        config_line.append(self._format_client_target(config), style="white")
         config_line.append("  |  ", style="dim")
         config_line.append(str(env_state.num_examples), style="white")
         config_line.append("x", style="white")
@@ -318,18 +352,10 @@ class EvalDisplay(BaseDisplay):
         def fmt_concurrency(val: int) -> str:
             return "∞" if val == -1 else str(val)
 
+        display_max_concurrent = self._display_max_concurrent(config, env_state.total)
         config_line.append("  |  ", style="dim")
-        if config.max_concurrent_generation or config.max_concurrent_scoring:
-            gen_concurrency = config.max_concurrent_generation or config.max_concurrent
-            sem_concurrency = config.max_concurrent_scoring or config.max_concurrent
-            config_line.append(fmt_concurrency(gen_concurrency), style="white")
-            config_line.append(" concurrent generation", style="dim")
-            config_line.append(" and ", style="dim")
-            config_line.append(fmt_concurrency(sem_concurrency), style="white")
-            config_line.append(" concurrent scoring", style="dim")
-        else:
-            config_line.append(fmt_concurrency(config.max_concurrent), style="white")
-            config_line.append(" concurrent rollouts", style="dim")
+        config_line.append(fmt_concurrency(display_max_concurrent), style="white")
+        config_line.append(" concurrent rollouts", style="dim")
 
         if config.sampling_args and any(config.sampling_args.values()):
             config_line.append("  |  ", style="dim")
@@ -342,10 +368,6 @@ class EvalDisplay(BaseDisplay):
         if config.save_results:
             config_line.append("  |  ", style="dim")
             config_line.append("saving results", style="white")
-            if config.save_every > 0:
-                config_line.append(" every ", style="dim")
-                config_line.append(str(config.save_every), style="white")
-                config_line.append(" steps", style="dim")
 
         # create progress bar with timing
         # use env_state.total which gets updated by on_start callback
@@ -378,6 +400,11 @@ class EvalDisplay(BaseDisplay):
         metrics_content = self._make_metrics_row(
             env_state.reward, env_state.metrics, env_state.error_rate, env_state.is_multiagent
         )
+        tokens_content = (
+            self._make_tokens_row(env_state.usage)
+            if env_state.usage is not None
+            else None
+        )
 
         # log message for special events
         log_content = Text()
@@ -398,6 +425,10 @@ class EvalDisplay(BaseDisplay):
         content_items = [config_line, space, progress]
         if metrics_content:
             content_items.append(metrics_content)
+        else:
+            content_items.append(space)
+        if tokens_content:
+            content_items.append(tokens_content)
         else:
             content_items.append(space)
         content_items.append(space)
@@ -483,72 +514,6 @@ class EvalDisplay(BaseDisplay):
         """Print a comprehensive summary after the display closes."""
         self.console.print()
 
-        # Summary table with main metrics
-        table = Table(title="Evaluation Summary")
-        table.add_column("env_id", style="cyan")
-        table.add_column("status", justify="center")
-        table.add_column("examples", justify="center")
-        table.add_column("rollouts", justify="center")
-        table.add_column("reward", justify="center")
-        table.add_column("errors", justify="center")
-        table.add_column("time", justify="center")
-
-        for idx, config in enumerate(self.configs):
-            env_state = self.state.envs[idx]
-            status_styles = {
-                "completed": "[green]done[/green]",
-                "failed": "[red]failed[/red]",
-                "running": "[yellow]running[/yellow]",
-                "pending": "[dim]pending[/dim]",
-            }
-            status = status_styles.get(env_state.status, env_state.status)
-
-            # use env_state.total for actual resolved values
-            total_rollouts = env_state.total
-            num_examples = total_rollouts // config.rollouts_per_example
-            examples_str = str(num_examples)
-            rollouts_str = str(config.rollouts_per_example)
-
-            # Per-actor rewards for multi-agent, otherwise single reward
-            results = env_state.results
-            actor_ids = results.get("actor_id", []) if results else []
-            if actor_ids:
-                actor_rewards: dict[str, list[float]] = defaultdict(list)
-                for aid, rew in zip(actor_ids, results["reward"]):
-                    actor_rewards[aid].append(rew)
-                reward_parts = [
-                    f"{aid}: {sum(rews)/len(rews):.2f}"
-                    for aid, rews in actor_rewards.items()
-                ]
-                reward = " | ".join(reward_parts)
-            else:
-                reward = f"{env_state.reward:.3f}"
-
-            # error rate with color coding
-            error_rate = env_state.error_rate
-            if error_rate > 0.10:
-                error_str = f"[red]{error_rate:.1%}[/red]"
-            elif error_rate > 0:
-                error_str = f"[yellow]{error_rate:.1%}[/yellow]"
-            else:
-                error_str = f"[green]{error_rate:.1%}[/green]"
-
-            elapsed = env_state.elapsed_time
-            mins, secs = divmod(int(elapsed), 60)
-            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
-
-            table.add_row(
-                config.env_id,
-                status,
-                examples_str,
-                rollouts_str,
-                reward,
-                error_str,
-                time_str,
-            )
-
-        self.console.print(table)
-
         # Per-environment detailed sections
         for idx, config in enumerate(self.configs):
             env_state = self.state.envs[idx]
@@ -586,6 +551,76 @@ class EvalDisplay(BaseDisplay):
                 self.console.print(f"[red]error in {config.env_id}:[/red]")
                 self.console.print(f"  {env_state.error}")
 
+        # Summary table with main metrics (printed last)
+        table = Table(title="Evaluation Summary")
+        table.add_column("env_id", style="cyan")
+        table.add_column("status", justify="center")
+        table.add_column("examples", justify="center")
+        table.add_column("rollouts", justify="center")
+        table.add_column("reward", justify="center")
+        show_usage = any(
+            env_state.usage is not None
+            or (
+                env_state.results is not None
+                and env_state.results["metadata"].get("usage") is not None
+            )
+            for env_state in self.state.envs.values()
+        )
+        if show_usage:
+            table.add_column("input", justify="center")
+            table.add_column("output", justify="center")
+        table.add_column("errors", justify="center")
+        table.add_column("time", justify="center")
+
+        for idx, config in enumerate(self.configs):
+            env_state = self.state.envs[idx]
+            status_styles = {
+                "completed": "[green]done[/green]",
+                "failed": "[red]failed[/red]",
+                "running": "[yellow]running[/yellow]",
+                "pending": "[dim]pending[/dim]",
+            }
+            status = status_styles.get(env_state.status, env_state.status)
+
+            # use env_state.total for actual resolved values
+            total_rollouts = env_state.total
+            num_examples = total_rollouts // config.rollouts_per_example
+            examples_str = str(num_examples)
+            rollouts_str = str(config.rollouts_per_example)
+
+            reward = f"{env_state.reward:.3f}"
+            input_tokens = None
+            output_tokens = None
+            usage = None
+            if env_state.results is not None:
+                usage = env_state.results["metadata"].get("usage")
+            else:
+                usage = env_state.usage
+            if usage is not None:
+                input_tokens = format_numeric(usage.get("input_tokens", 0.0))
+                output_tokens = format_numeric(usage.get("output_tokens", 0.0))
+
+            # error rate with color coding
+            error_rate = env_state.error_rate
+            if error_rate > 0.10:
+                error_str = f"[red]{error_rate:.1%}[/red]"
+            elif error_rate > 0:
+                error_str = f"[yellow]{error_rate:.1%}[/yellow]"
+            else:
+                error_str = f"[green]{error_rate:.1%}[/green]"
+
+            elapsed = env_state.elapsed_time
+            mins, secs = divmod(int(elapsed), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+
+            row = [config.env_id, status, examples_str, rollouts_str, reward]
+            if show_usage:
+                row.extend([input_tokens or "-", output_tokens or "-"])
+            row.extend([error_str, time_str])
+            table.add_row(*row)
+
+        self.console.print()
+        self.console.print(table)
         self.console.print()
 
     def _make_env_detail(
@@ -594,108 +629,65 @@ class EvalDisplay(BaseDisplay):
         """Create detailed content for a single environment's summary."""
         items: list[Panel] = []
 
-        # Check if multi-agent (has actor_id field)
-        actor_ids = results.get("actor_id", [])
-        is_multiagent = bool(actor_ids)
+        # Example 0 prompt/completion (already in printable format from state_to_output)
+        outputs = results["outputs"]
+        if outputs and outputs[0]["prompt"] and outputs[0]["completion"]:
+            prompt = outputs[0]["prompt"]
+            completion = outputs[0]["completion"]
+            reward_0 = outputs[0]["reward"] if outputs[0]["reward"] else 0.0
+            error_0 = outputs[0].get("error") if outputs[0] else None
 
-        # Example 0 prompt/completion
-        if results["prompt"] and results["completion"]:
-            if is_multiagent:
-                # Multi-agent: show one panel per unique actor for example 0
-                example_ids = results.get("example_id", [])
-                first_example_id = example_ids[0] if example_ids else 0
-
-                # Find first occurrence of each actor in example 0
-                seen_actors: set[str] = set()
-                for idx, (eid, aid) in enumerate(zip(example_ids, actor_ids)):
-                    if eid != first_example_id:
-                        continue
-                    if aid in seen_actors:
-                        continue
-                    seen_actors.add(aid)
-
-                    completion = messages_to_printable(results["completion"][idx])
-                    reward_i = results["reward"][idx]
-                    error_i = results["state"][idx].get("error")
-
-                    completion_text = _format_messages(completion)
-                    if error_i is not None:
-                        completion_text.append("\n\nerror: ", style="bold red")
-                        completion_text.append(str(ErrorChain(error_i)), style="bold red")
-                    completion_text.append("\n\nreward: ", style="bold cyan")
-                    completion_text.append(f"{reward_i:.3f}", style="bold cyan")
-
-                    items.append(
-                        Panel(
-                            completion_text,
-                            title=f"[dim]example 0 — {aid}[/dim]",
-                            border_style="dim",
-                        )
-                    )
-            else:
-                # Single-agent: original behavior
-                prompt = messages_to_printable(results["prompt"][0])
-                completion = messages_to_printable(results["completion"][0])
-                reward_0 = results["reward"][0] if results["reward"] else 0.0
-                error_0 = results["state"][0].get("error") if results["state"] else None
-
-                # Prompt panel
-                items.append(
-                    Panel(
-                        _format_messages(prompt),
-                        title="[dim]example 0 — prompt[/dim]",
-                        border_style="dim",
-                    )
+            # Prompt panel
+            items.append(
+                Panel(
+                    format_messages(prompt),
+                    title="[dim]example 0 — prompt[/dim]",
+                    border_style="dim",
                 )
 
-                # Completion panel (with error if any)
-                completion_text = _format_messages(completion)
-                if error_0 is not None:
-                    completion_text.append("\n\nerror: ", style="bold red")
-                    completion_text.append(str(ErrorChain(error_0)), style="bold red")
-                completion_text.append("\n\nreward: ", style="bold cyan")
-                completion_text.append(f"{reward_0:.3f}", style="bold cyan")
+            # Completion panel (with error if any)
+            completion_text = format_messages(completion)
+            if error_0 is not None:
+                completion_text.append("\n\nerror: ", style="bold red")
+                completion_text.append(error_0, style="bold red")
+            completion_text.append("\n\nreward: ", style="bold cyan")
+            completion_text.append(f"{reward_0:.3f}", style="bold cyan")
 
-                items.append(
-                    Panel(
-                        completion_text,
-                        title="[dim]example 0 — completion[/dim]",
-                        border_style="dim",
-                    )
+            items.append(
+                Panel(
+                    completion_text,
+                    title="[dim]example 0 — completion[/dim]",
+                    border_style="dim",
                 )
 
         # Reward distribution
-        rewards = results["reward"]
+        rewards = [o["reward"] for o in outputs]
         if rewards:
-            if is_multiagent:
-                # Multi-agent: show per-actor histograms
-                actor_rewards: dict[str, list[float]] = defaultdict(list)
-                for aid, rew in zip(actor_ids, rewards):
-                    actor_rewards[aid].append(rew)
+            # All rollouts histogram
+            all_rollouts_content = Group(
+                Text("all rollouts:", style="bold"),
+                _make_histogram(rewards, bins=8, height=8),
+            )
 
-                # Build per-actor content with histogram for each
-                actor_contents = []
-                for aid, rews in actor_rewards.items():
-                    avg_rew = sum(rews) / len(rews) if rews else 0.0
-                    actor_content = Group(
-                        Text(f"{aid}: ", style="bold cyan"),
-                        Text(f"{avg_rew:.3f} avg ({len(rews)} rollouts)"),
-                        _make_histogram(rews, bins=6, width=20),
-                    )
-                    actor_contents.append(actor_content)
+            # Per-example averages if multiple rollouts
+            rollouts_per = config.rollouts_per_example
+            if rollouts_per > 1 and len(rewards) >= rollouts_per:
+                num_examples = len(rewards) // rollouts_per
+                example_avgs = []
+                for i in range(num_examples):
+                    example_rewards = rewards[i * rollouts_per : (i + 1) * rollouts_per]
+                    example_avgs.append(sum(example_rewards) / len(example_rewards))
 
-                # Display side by side if 2 actors, otherwise stacked
-                if len(actor_contents) == 2:
-                    reward_display = Columns(actor_contents, equal=True, expand=True)
-                else:
-                    reward_display = Group(*actor_contents)
+                per_example_content = Group(
+                    Text("per-example avg:", style="bold"),
+                    _make_histogram(example_avgs, bins=8, height=8),
+                )
 
-                items.append(
-                    Panel(
-                        reward_display,
-                        title="[dim]reward distribution (per-actor)[/dim]",
-                        border_style="dim",
-                    )
+                # Side by side
+                reward_display = Columns(
+                    [all_rollouts_content, per_example_content],
+                    equal=True,
+                    expand=True,
                 )
             else:
                 # Single-agent: original behavior
@@ -739,10 +731,7 @@ class EvalDisplay(BaseDisplay):
         if env_state.metrics:
             metrics_text = Text()
             for name, value in env_state.metrics.items():
-                if isinstance(value, float):
-                    value_str = f"{value:.4f}"
-                else:
-                    value_str = str(value)
+                value_str = format_numeric(value)
                 metrics_text.append(f"• {name}: ", style="cyan")
                 metrics_text.append(f"{value_str}\n")
 
@@ -750,6 +739,26 @@ class EvalDisplay(BaseDisplay):
                 Panel(
                     metrics_text,
                     title="[dim]metrics (avg)[/dim]",
+                    border_style="dim",
+                )
+            )
+
+        usage = results["metadata"].get("usage")
+        if usage is not None:
+            tokens_text = Text()
+            for name, value in usage.items():
+                value_str = (
+                    format_numeric(value)
+                    if isinstance(value, (int, float, str))
+                    else str(value)
+                )
+                label = name.replace("_", " ")
+                tokens_text.append(f"• {label}: ", style="cyan")
+                tokens_text.append(f"{value_str}\n")
+            items.append(
+                Panel(
+                    tokens_text,
+                    title="[dim]usage (avg)[/dim]",
                     border_style="dim",
                 )
             )

@@ -21,6 +21,8 @@ from textual.theme import Theme
 from textual.widgets import Footer, Input, Label, OptionList, Static, TextArea
 from textual.widgets._option_list import Option
 
+from verifiers.utils.display_utils import format_numeric
+
 
 # ----------------------------
 # Discovery and data loading
@@ -250,6 +252,32 @@ def format_prompt_or_completion(prompt_or_completion) -> Text:
         return out
     out.append(str(prompt_or_completion))
     return out
+
+
+def _coerce_info_value(info: Any) -> Any:
+    """Return parsed JSON when info is a JSON string, otherwise original value."""
+    if not isinstance(info, str):
+        return info
+    stripped = info.strip()
+    if not stripped:
+        return ""
+    if stripped[0] not in "[{":
+        return info
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return info
+
+
+def format_info_for_details(info: Any) -> str:
+    """Format record info for the details panel in rollout view."""
+    info_value = _coerce_info_value(info)
+    if isinstance(info_value, (dict, list)):
+        try:
+            return json.dumps(info_value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            return str(info_value)
+    return str(info_value)
 
 
 # ----------------------------
@@ -648,8 +676,12 @@ class ViewRunScreen(Screen):
                         id="completion-scroll",
                     )
 
-            # Details section (horizontal scroll)
-            yield Panel(Static("", id="details", markup=False), classes="details-panel")
+            # Details section
+            with Panel(classes="details-panel"):
+                yield VerticalScroll(
+                    Static("", id="details", markup=False),
+                    id="details-scroll",
+                )
 
         yield Footer()
 
@@ -657,6 +689,7 @@ class ViewRunScreen(Screen):
         meta = self.run.load_metadata()
         sampling_args = meta.get("sampling_args", {})
         avg_reward = meta.get("avg_reward", "")
+        usage = meta.get("usage")
         if isinstance(avg_reward, (int, float)):
             avg_reward_str = f"{avg_reward:.3f}"
         else:
@@ -665,8 +698,20 @@ class ViewRunScreen(Screen):
         def format_sampling_param(value: Any) -> str:
             return str(value) if value is not None else "N/A"
 
+        def format_numeric_or_na(value: Any) -> str:
+            if value is None:
+                return "N/A"
+            if isinstance(value, (float, int, str)):
+                return format_numeric(value)
+            return str(value)
+
         temperature_str = format_sampling_param(sampling_args.get("temperature"))
         max_tokens_str = format_sampling_param(sampling_args.get("max_tokens"))
+        avg_input_tokens = None
+        avg_output_tokens = None
+        if usage is not None:
+            avg_input_tokens = format_numeric_or_na(usage.get("input_tokens", None))
+            avg_output_tokens = format_numeric_or_na(usage.get("output_tokens", None))
 
         # Create three columns of information without markup, with styled labels
         col1_items = [
@@ -686,12 +731,20 @@ class ViewRunScreen(Screen):
             ("", ""),
         ]
 
-        col3_items = [
-            ("Avg reward: ", avg_reward_str),
-            ("Max tokens: ", max_tokens_str),
-            ("Temperature: ", temperature_str),
-            ("", ""),
-        ]
+        col3_items = [("Avg reward: ", avg_reward_str)]
+        if avg_input_tokens is not None and avg_output_tokens is not None:
+            col3_items.extend(
+                [
+                    ("Avg input tokens: ", avg_input_tokens),
+                    ("Avg output tokens: ", avg_output_tokens),
+                ]
+            )
+        col3_items.extend(
+            [
+                ("Max tokens: ", max_tokens_str),
+                ("Temperature: ", temperature_str),
+            ]
+        )
 
         def build_padded(label: str, value: str, width: int) -> Text:
             combined = f"{label}{value}"
@@ -780,13 +833,12 @@ class ViewRunScreen(Screen):
         info = record.get("info", None)
         if info not in (None, {}):
             details_lines.append("Info: ", style="bold")
-            try:
-                details_lines.append(json.dumps(info, ensure_ascii=False, indent=2))
-            except Exception:
-                details_lines.append(str(info))
+            details_lines.append(format_info_for_details(info))
 
         task = record.get("task", None)
         if task not in (None, ""):
+            if details_lines.plain and not details_lines.plain.endswith("\n"):
+                details_lines.append("\n")
             details_lines.append("Task: ", style="bold")
             details_lines.append(str(task))
 
@@ -812,6 +864,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_next_record(self) -> None:
         if self.records:
@@ -820,6 +873,7 @@ class ViewRunScreen(Screen):
             # Reset scroll positions
             self.query_one("#prompt-scroll").scroll_y = 0
             self.query_one("#completion-scroll").scroll_y = 0
+            self.query_one("#details-scroll").scroll_y = 0
 
     def action_search(self) -> None:
         if not self.records:
@@ -1040,7 +1094,7 @@ class VerifiersTUI(App):
         text-style: bold;
     }
     
-    #prompt-scroll, #completion-scroll {
+    #prompt-scroll, #completion-scroll, #details-scroll {
         height: 1fr;
         background: $surface;
         padding: 0 1;
@@ -1054,6 +1108,7 @@ class VerifiersTUI(App):
         min-height: 3;
         max-height: 6;
     }
+
     
     .run-list-panel {
         height: 1fr;
