@@ -238,7 +238,10 @@ class InterceptionServer:
         except Exception as e:
             logger.error(f"[{rollout_id}] Streaming error: {e}")
 
-        await response.write_eof()
+        try:
+            await response.write_eof()
+        except ConnectionResetError:
+            logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
         return response
 
 
