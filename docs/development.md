@@ -16,7 +16,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 ## Setup
 
 ### Prerequisites
-- Python 3.10, 3.11, 3.12, or 3.13
+- Python 3.13 recommended for CI parity with Ty checks
 - [uv](https://docs.astral.sh/uv/) package manager
 
 ### Installation
@@ -32,8 +32,8 @@ uv sync
 # GPU-based trainer development:
 uv sync --all-extras
 
-# Install pre-commit hooks:
-uv run pre-commit install
+# Install pre-commit hooks (including pre-push Ty gate):
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 ## Project Structure
@@ -142,15 +142,14 @@ def test_with_mock(mock_client):
 4. **Add tests** for new functionality
 5. **Run tests**: `uv run pytest tests/`
 6. **Run linting/format checks**: `uv run ruff check --fix . && uv run ruff format --check verifiers tests`
-7. **Run CI-parity type checks**: `uv sync && uv run ty check verifiers`
+7. **Run CI-parity type checks**: `uv run ty check verifiers`
 8. **Update docs** if adding/changing public APIs
 9. **Submit PR** with clear description
 
 ### Code Style
 
 - Strict `ruff` enforcement - all PRs must pass `ruff check --fix .` and `ruff format --check verifiers tests`
-- `ty` must pass via `uv sync && uv run ty check verifiers` to mirror CI setup
-- Use `uv run ty ...` (not a globally installed `ty`) so local runs use the project-managed Ty version, same as CI
+- `ty` must pass via `uv run ty check verifiers` to mirror CI setup (Python 3.13 target)
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -160,7 +159,7 @@ def test_with_mock(mock_client):
 
 - [ ] Tests pass locally (`uv run pytest tests/`)
 - [ ] Linting/format checks pass (`uv run ruff check --fix . && uv run ruff format --check verifiers tests`)
-- [ ] Type checks pass (`uv sync && uv run ty check verifiers`)
+- [ ] Type checks pass (`uv run ty check verifiers`)
 - [ ] Pre-commit hooks pass (`uv run pre-commit run --all-files`)
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
@@ -250,7 +249,7 @@ uv run pytest tests/test_envs.py -k math_python   # Specific environment
 # Linting
 uv run ruff check --fix .             # Fix lint errors
 uv run ruff format --check verifiers tests  # Verify Python formatting
-uv sync && uv run ty check verifiers  # Uses project-managed ty version (same as CI)
+uv run ty check verifiers               # Type check (matches CI Ty target)
 uv run pre-commit run --all-files     # Run all pre-commit hooks
 
 # Environment tools
