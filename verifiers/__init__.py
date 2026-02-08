@@ -17,7 +17,8 @@ from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 from .envs.environment import Environment  # noqa # isort: skip
 from .envs.multiturn_env import MultiTurnEnv  # noqa # isort: skip
-from .envs.actor import Actor  # noqa # isort: skip
+from .envs.agent import Agent  # noqa # isort: skip
+from .envs.protocol import Protocol, RoundRobinProtocol  # noqa # isort: skip
 from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
 from .envs.tool_env import ToolEnv  # noqa # isort: skip
 from .clients.client import Client  # noqa # isort: skip
@@ -73,7 +74,9 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
-    "Actor",
+    "Agent",
+    "Protocol",
+    "RoundRobinProtocol",
     "Environment",
     "MultiTurnEnv",
     "MultiAgentEnv",
