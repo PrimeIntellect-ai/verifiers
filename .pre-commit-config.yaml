@@ -1,5 +1,6 @@
 default_install_hook_types: [pre-commit, pre-push]
 
+exclude: ^environments/.*/tasks/
 repos:
   - repo: local
     hooks:
