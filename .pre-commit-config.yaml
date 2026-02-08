@@ -1,3 +1,5 @@
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: local
     hooks:
@@ -18,13 +20,8 @@ repos:
         files: ^(docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py)$
         pass_filenames: false
       - id: ty
-        name: ty
-        entry: ty
-        args:
-          - check
-          - --exit-zero
-          - --output-format=concise
-        language: python
-        additional_dependencies:
-          - ty==0.0.1a21
-        types_or: [python, pyi]
+        name: ty (ci parity)
+        entry: uv run ty check verifiers
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
