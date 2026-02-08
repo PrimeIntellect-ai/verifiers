@@ -385,6 +385,13 @@ class CliAgentEnv(vf.MultiTurnEnv):
         model = model or state["model"]
         sampling_args = sampling_args or state.get("sampling_args") or {}
 
+        # Migration compatibility: state["client"] may be a vf.Client wrapper.
+        raw_client = client
+        if not hasattr(raw_client, "chat"):
+            wrapped_client = getattr(raw_client, "client", None)
+            if wrapped_client is not None and hasattr(wrapped_client, "chat"):
+                raw_client = wrapped_client
+
         # Remove max_tokens and use max_completion_tokens for chat
         if "max_tokens" in sampling_args:
             sampling_args = dict(sampling_args)
@@ -402,7 +409,7 @@ class CliAgentEnv(vf.MultiTurnEnv):
             create_kwargs["tools"] = oai_tools
         create_kwargs.update(sampling_args)
 
-        stream = await client.chat.completions.create(**create_kwargs)
+        stream = await raw_client.chat.completions.create(**create_kwargs)
 
         # Accumulate response while streaming chunks
         accumulated_content = ""

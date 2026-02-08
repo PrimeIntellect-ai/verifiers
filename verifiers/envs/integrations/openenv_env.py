@@ -14,7 +14,7 @@ import tenacity as tc
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.types import ChatMessage, ChatMessages
+from verifiers.types import ChatMessage, ChatMessages, Tool
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 try:
@@ -331,7 +331,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 state["openenv_mcp_client"] = mcp_client
                 if self._mcp_tools is None:
                     self._mcp_tools = await self._mcp_list_tools(mcp_client)
-                state["oai_tools"] = self._convert_mcp_tools(self._mcp_tools)
+                state["tool_defs"] = self._convert_mcp_tools(self._mcp_tools)
                 result = await self._invoke(cast(Any, mcp_client).reset, seed=seed)
                 state["openenv_done"] = bool(result.done)
                 state["prompt"] = self._require_prompt_messages(state)
@@ -1124,8 +1124,8 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             "No prompt fallback is supported."
         )
 
-    def _convert_mcp_tools(self, tools: Iterable[Any]) -> list[dict[str, Any]]:
-        oai_tools = []
+    def _convert_mcp_tools(self, tools: Iterable[Any]) -> list[Tool]:
+        tool_defs: list[Tool] = []
         for tool in tools:
             tool_dict: dict[str, Any] | None = None
             if hasattr(tool, "model_dump"):
@@ -1142,16 +1142,13 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                         "description": getattr(tool, "description", ""),
                         "input_schema": getattr(tool, "input_schema", None),
                     }
-            oai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool_dict.get("name", ""),
-                        "description": tool_dict.get("description", ""),
-                        "parameters": tool_dict.get("input_schema")
-                        or tool_dict.get("inputSchema")
-                        or {"type": "object", "properties": {}},
-                    },
-                }
+            tool_defs.append(
+                Tool(
+                    name=tool_dict.get("name", ""),
+                    description=tool_dict.get("description", ""),
+                    parameters=tool_dict.get("input_schema")
+                    or tool_dict.get("inputSchema")
+                    or {"type": "object", "properties": {}},
+                )
             )
-        return oai_tools
+        return tool_defs

@@ -50,7 +50,6 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from openai.types.chat import ChatCompletionFunctionToolParam
 from prime_tunnel import Tunnel
 from prime_sandboxes import SandboxClient
 from prime_sandboxes.core import APIClient
@@ -67,11 +66,10 @@ from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
+    parse_response_message,
     parse_response_tokens,
 )
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
+from verifiers.utils.tool_utils import convert_func_to_tool
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from prime_sandboxes import CommandTimeoutError
@@ -2596,14 +2594,11 @@ class RLMEnv(vf.StatefulToolEnv):
             context="sub-LLM tools",
             reserved_names=set(_FIXED_REPL_TOOL_NAMES),
         )
-        self.sub_oai_tools: list[ChatCompletionFunctionToolParam] = [
-            convert_func_to_oai_tool(tool) for tool in self.sub_tools
+        self.sub_tool_defs: list[vf.Tool] = [
+            convert_func_to_tool(tool) for tool in self.sub_tools
         ]
-        self.root_tool_doc_funcs: list[Callable] = []
-        for tool in self.root_tools:
-            self.root_tool_doc_funcs.append(tool)
-        self.root_oai_tools: list[ChatCompletionFunctionToolParam] = [
-            convert_func_to_oai_tool(tool) for tool in self.root_tool_doc_funcs
+        self.root_tool_defs: list[vf.Tool] = [
+            convert_func_to_tool(tool) for tool in self.root_tools
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
         self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]
@@ -2732,16 +2727,12 @@ class RLMEnv(vf.StatefulToolEnv):
 
         return "\n".join(lines)
 
-    def _append_tool_docs(
-        self, lines: list[str], oai_tools: list[ChatCompletionFunctionToolParam]
-    ) -> None:
-        for oai_tool in oai_tools:
-            func_def = oai_tool["function"]
-            name = func_def["name"]
-            desc = func_def.get("description", "No description")
-            params = cast(
-                dict[str, Any], func_def.get("parameters", {}).get("properties", {})
-            )
+    def _append_tool_docs(self, lines: list[str], tool_defs: list[vf.Tool]) -> None:
+        for tool_def in tool_defs:
+            name = tool_def.name
+            desc = tool_def.description or "No description"
+            params_obj = tool_def.parameters.get("properties", {})
+            params = params_obj if isinstance(params_obj, dict) else {}
 
             lines.append(f"### `{name}`")
             lines.append(f"{desc}\n")
@@ -2749,8 +2740,9 @@ class RLMEnv(vf.StatefulToolEnv):
             if params:
                 lines.append("**Parameters:**")
                 for param_name, param_info in params.items():
-                    param_type = param_info.get("type", "any")
-                    param_desc = param_info.get("description", "")
+                    param_dict = param_info if isinstance(param_info, dict) else {}
+                    param_type = param_dict.get("type", "any")
+                    param_desc = param_dict.get("description", "")
                     lines.append(f"- `{param_name}` ({param_type}): {param_desc}")
                 lines.append("")
 
@@ -2764,7 +2756,7 @@ class RLMEnv(vf.StatefulToolEnv):
             "The sub-LLMs called via `llm_batch()` have access to the following tools:\n"
         )
 
-        self._append_tool_docs(lines, self.sub_oai_tools)
+        self._append_tool_docs(lines, self.sub_tool_defs)
 
         lines.append(
             "When delegating tasks to sub-LLMs via `llm_batch()`, they can use these "
@@ -2792,7 +2784,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 "The root model can call the following tools inside the Python REPL:\n"
             )
 
-        self._append_tool_docs(lines, self.root_oai_tools)
+        self._append_tool_docs(lines, self.root_tool_defs)
 
         lines.append(
             "These tools run on the host and are only accessible from within the REPL."
@@ -2910,13 +2902,13 @@ class RLMEnv(vf.StatefulToolEnv):
             # never tries to compute interleaved prompt_ids from the main rollout.
             # Sub-LLM prompts are independent tool calls, not continuations of the
             # root conversation; using the real state would treat them as such.
-            # We also mirror sampling_args/oai_tools onto the fake state because
+            # We also mirror sampling_args/tool_defs onto the fake state because
             # get_model_response falls back to state values when args are falsy
             # (e.g., {} or None), which would otherwise raise KeyError.
             prompt_state = State()
             prompt_state["trajectory"] = []
             prompt_state["sampling_args"] = sampling_args
-            prompt_state["oai_tools"] = tools or []
+            prompt_state["tool_defs"] = tools or []
             return await asyncio.wait_for(
                 self.get_model_response(
                     prompt_state,
@@ -2988,7 +2980,7 @@ class RLMEnv(vf.StatefulToolEnv):
         tool_call_count = 0
         num_turns = 0
         turns: list[SubLLMTurn] = []
-        tools = self.sub_oai_tools if self.sub_oai_tools else None
+        tools = self.sub_tool_defs if self.sub_tool_defs else None
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
@@ -3041,9 +3033,19 @@ class RLMEnv(vf.StatefulToolEnv):
             current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
 
             for tool_call in tool_calls:
-                tool_name = tool_call.function.name
+                function_obj = getattr(tool_call, "function", None)
+                tool_name = (
+                    function_obj.name
+                    if function_obj is not None and hasattr(function_obj, "name")
+                    else getattr(tool_call, "name", "")
+                )
                 try:
-                    tool_args = json.loads(tool_call.function.arguments)
+                    raw_args = (
+                        function_obj.arguments
+                        if function_obj is not None and hasattr(function_obj, "arguments")
+                        else getattr(tool_call, "arguments", "{}")
+                    )
+                    tool_args = json.loads(raw_args)
                 except json.JSONDecodeError:
                     tool_args = {}
                 tool_result = await self._call_sub_tool(
@@ -3313,13 +3315,11 @@ class RLMEnv(vf.StatefulToolEnv):
 
             if self.include_sub_llm_in_trajectory:
                 tokens = await parse_response_tokens(
-                    turn["response"], "chat", self.max_seq_len
+                    turn["response"], self.max_seq_len
                 )
-                completion_messages = await parse_response_messages(
-                    turn["response"], "chat"
-                )
-                response_is_truncated = await parse_is_truncated(
-                    turn["response"], "chat"
+                completion_messages = await parse_response_message(turn["response"])
+                response_is_truncated = (
+                    turn["response"].message.is_truncated or False
                 )
                 is_truncated = response_is_truncated or (
                     tokens is not None and bool(tokens.get("is_truncated"))

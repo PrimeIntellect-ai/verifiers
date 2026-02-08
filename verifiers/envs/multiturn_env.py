@@ -3,12 +3,13 @@ import logging
 from abc import abstractmethod
 from typing import final
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.types import (
     Messages,
-    ModelResponse,
+    Response,
     RolloutInput,
     SamplingArgs,
     State,
@@ -16,8 +17,7 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import concat_messages
 from verifiers.utils.response_utils import (
-    parse_is_truncated,
-    parse_response_messages,
+    parse_response_message,
     parse_response_tokens,
 )
 
@@ -72,6 +72,18 @@ class MultiTurnEnv(vf.Environment):
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
+        if self.message_type == "completion":
+            if len(state["trajectory"]) == 0:
+                return state["prompt"]
+            prev_turn_prompt = state["trajectory"][-1]["prompt"]
+            prev_turn_completion = state["trajectory"][-1]["completion"]
+            assert isinstance(prev_turn_prompt, str)
+            assert isinstance(prev_turn_completion, str)
+            messages = prev_turn_prompt + prev_turn_completion
+            env_response = await self.env_response(messages, state)
+            assert isinstance(env_response, str)
+            return messages + env_response
+
         if len(state["trajectory"]) == 0:
             return state["prompt"]
         else:
@@ -83,6 +95,24 @@ class MultiTurnEnv(vf.Environment):
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
+        if self.message_type == "completion":
+            if len(state["trajectory"]) == 0:
+                state["completion"] = ""
+                return
+            last_prompt = state["trajectory"][-1]["prompt"]
+            last_completion = state["trajectory"][-1]["completion"]
+            assert isinstance(last_prompt, str)
+            assert isinstance(last_completion, str)
+            full_conversation = last_prompt + last_completion
+            if state.get("final_env_response"):
+                final_env_response = state["final_env_response"]
+                assert isinstance(final_env_response, str)
+                full_conversation += final_env_response
+            prompt = state["prompt"]
+            assert isinstance(prompt, str)
+            state["completion"] = full_conversation[len(prompt) :]
+            return
+
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
@@ -103,13 +133,14 @@ class MultiTurnEnv(vf.Environment):
         self,
         state: State,
         prompt_messages: Messages,
-        response: ModelResponse,
+        response: Response,
     ):
-        completion_messages = await parse_response_messages(response, self.message_type)
-        response_is_truncated = await parse_is_truncated(response, self.message_type)
-        tokens = await parse_response_tokens(
-            response, self.message_type, self.max_seq_len
-        )
+        if self.message_type == "completion":
+            completion_messages = response.message.content or ""
+        else:
+            completion_messages = await parse_response_message(response)
+        tokens = await parse_response_tokens(response, self.max_seq_len)
+        response_is_truncated = response.message.is_truncated or False
         is_truncated = response_is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
@@ -130,7 +161,7 @@ class MultiTurnEnv(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:

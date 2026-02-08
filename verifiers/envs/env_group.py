@@ -3,10 +3,11 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Mapping, final
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 import verifiers as vf
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import Messages, RolloutInput, SamplingArgs
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -192,14 +193,14 @@ class EnvGroup(vf.Environment):
         # wrap rubrics in EnvGroupRubric
         rubric = EnvGroupRubric(self.env_map)
 
-        # don't set oai_tools at the group level since different sub-environments
+        # don't set tool_defs at the group level since different sub-environments
         # may have different tools. Instead, set them per-task in rollout().
         # initialize parent Environment
         super().__init__(
             dataset=dataset,
             eval_dataset=eval_dataset,
             rubric=rubric,
-            oai_tools=None,
+            tool_defs=None,
             map_kwargs=map_kwargs,
             **kwargs,
         )
@@ -211,7 +212,7 @@ class EnvGroup(vf.Environment):
         self,
         dataset: Dataset,
         system_prompt: str | None = None,
-        few_shot: vf.ChatMessages | None = None,
+        few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
@@ -267,7 +268,7 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | AsyncAnthropic,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:
@@ -294,3 +295,9 @@ class EnvGroup(vf.Environment):
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)
+
+    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
+        """Set the interleaved thinking flag for this environment group and all sub-environments."""
+        self.interleaved_thinking = interleaved_thinking
+        for env in self.envs:
+            env.set_interleaved_thinking(interleaved_thinking)

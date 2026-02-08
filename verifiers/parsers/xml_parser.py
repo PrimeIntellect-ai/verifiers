@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from verifiers.parsers.parser import Parser
-from verifiers.types import ChatMessage, Messages
+from verifiers.types import Messages
 
 
 class XMLParser(Parser):
@@ -98,8 +98,7 @@ class XMLParser(Parser):
                 return getattr(parsed, self.answer_field)
         else:
             for msg in reversed(self.get_assistant_messages(completion)):
-                assert "content" in msg
-                content = str(msg["content"])
+                content = msg.get("content", "") if isinstance(msg, dict) else (msg.content or "")
                 parsed = self.parse(content)
                 if (
                     parsed
@@ -132,7 +131,7 @@ class XMLParser(Parser):
         - Fields have proper content and spacing
         """
 
-        def format_reward_func(completion: list[ChatMessage]):
+        def format_reward_func(completion: Messages):
             """Reward function that checks if each step follows the expected format."""
             model_messages = self.get_assistant_messages(completion)
             if not model_messages:
@@ -141,8 +140,7 @@ class XMLParser(Parser):
             # Calculate format adherence for each message
             format_scores = []
             for msg in model_messages:
-                assert "content" in msg
-                content = str(msg["content"])
+                content = msg.get("content", "") if isinstance(msg, dict) else (msg.content or "")
                 parsed = self.parse(content)
                 parsed_no_strip = self.parse(content, strip=False)
 
