@@ -1,9 +1,7 @@
 """
 Agent: A participant in multi-agent environments.
 
-Currently contains agent metadata (id, system prompt, trainability).
-In the future, when Harness is introduced, Agent will be extended to
-compose with Harness and Model: Agent = Harness + Model.
+Contains agent metadata (id, system prompt, trainability).
 """
 
 from dataclasses import dataclass
@@ -16,12 +14,8 @@ class Agent:
 
     Fields:
         id: Unique identifier for this agent (e.g., "player_0", "guesser")
-        system_prompt: The agent's persona/instructions
+        system_prompt: The agent's specific instructions
         is_trainable: Whether to compute gradients for this agent's actions
-
-    Future:
-        When Harness is introduced, Agent will be extended to include
-        rollout logic and model binding: Agent = Harness + Model.
     """
 
     id: str
