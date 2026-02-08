@@ -141,13 +141,15 @@ def test_with_mock(mock_client):
 3. **Make changes** following existing patterns
 4. **Add tests** for new functionality
 5. **Run tests**: `uv run pytest tests/`
-6. **Run linting**: `uv run ruff check --fix .`
-7. **Update docs** if adding/changing public APIs
-8. **Submit PR** with clear description
+6. **Run linting/format checks**: `uv run ruff check --fix . && uv run ruff format --check verifiers tests`
+7. **Run CI-parity type checks**: `uv sync && uv run ty check verifiers`
+8. **Update docs** if adding/changing public APIs
+9. **Submit PR** with clear description
 
 ### Code Style
 
-- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .`
+- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .` and `ruff format --check verifiers tests`
+- `ty` must pass via `uv sync && uv run ty check verifiers` to mirror CI setup
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -156,7 +158,8 @@ def test_with_mock(mock_client):
 ### PR Checklist
 
 - [ ] Tests pass locally (`uv run pytest tests/`)
-- [ ] Linting passes (`uv run ruff check --fix .`)
+- [ ] Linting/format checks pass (`uv run ruff check --fix . && uv run ruff format --check verifiers tests`)
+- [ ] Type checks pass (`uv sync && uv run ty check verifiers`)
 - [ ] Pre-commit hooks pass (`uv run pre-commit run --all-files`)
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
@@ -245,6 +248,8 @@ uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
 # Linting
 uv run ruff check --fix .             # Fix lint errors
+uv run ruff format --check verifiers tests  # Verify Python formatting
+uv sync && uv run ty check verifiers  # Run ty exactly like CI
 uv run pre-commit run --all-files     # Run all pre-commit hooks
 
 # Environment tools
