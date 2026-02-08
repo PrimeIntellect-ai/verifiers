@@ -36,5 +36,7 @@ jobs:
           version: "latest"
       - name: Install dependencies
         run: uv sync
+      - name: Show ty version
+        run: uv run ty version
       - name: Run ty
         run: uv run ty check verifiers

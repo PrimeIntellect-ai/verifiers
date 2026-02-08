@@ -14,6 +14,7 @@ This directory contains automated workflows for the verifiers project.
 **What it does**:
 - Runs ruff for linting and formatting checks
 - Runs ty type checks with `uv run ty check verifiers`
+- Uses the project-managed Ty version from the `uv` environment (same command local devs run)
 - Uses configuration from `pyproject.toml`
 
 ### 2. Test (`test.yml`)
@@ -46,6 +47,7 @@ To run checks locally the same way they run in CI:
 ```bash
 # Ty parity with CI (Python 3.11 configured in `pyproject.toml`)
 uv sync
+uv run ty version                     # Optional: inspect resolved Ty version
 uv run ty check verifiers
 
 # Tests

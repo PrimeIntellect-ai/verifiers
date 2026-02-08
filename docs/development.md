@@ -150,6 +150,7 @@ def test_with_mock(mock_client):
 
 - Strict `ruff` enforcement - all PRs must pass `ruff check --fix .` and `ruff format --check verifiers tests`
 - `ty` must pass via `uv sync && uv run ty check verifiers` to mirror CI setup
+- Use `uv run ty ...` (not a globally installed `ty`) so local runs use the project-managed Ty version, same as CI
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -249,7 +250,7 @@ uv run pytest tests/test_envs.py -k math_python   # Specific environment
 # Linting
 uv run ruff check --fix .             # Fix lint errors
 uv run ruff format --check verifiers tests  # Verify Python formatting
-uv sync && uv run ty check verifiers  # Run ty exactly like CI
+uv sync && uv run ty check verifiers  # Uses project-managed ty version (same as CI)
 uv run pre-commit run --all-files     # Run all pre-commit hooks
 
 # Environment tools
