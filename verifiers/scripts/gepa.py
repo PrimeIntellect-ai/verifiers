@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from gepa.api import optimize
 
@@ -41,7 +41,7 @@ def _ensure_table(value: object, field_name: str) -> dict[str, Any]:
         return {}
     if not isinstance(value, dict):
         raise ValueError(f"'{field_name}' must be a TOML table.")
-    return dict(value)
+    return cast(dict[str, Any], value)
 
 
 def load_gepa_toml_config(path: Path) -> dict[str, Any]:
