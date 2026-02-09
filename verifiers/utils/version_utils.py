@@ -25,8 +25,9 @@ class VersionInfo(TypedDict):
     env_commit: str | None
 
 
-def _git_commit_for_path(path: Path) -> str | None:
-    """Get the git commit hash for a file or directory path.
+def get_commit_for_path(path: Path) -> str | None:
+    """
+    Get the git commit hash for a file or directory path.
 
     Walks up the directory tree to find a git repository and returns the
     HEAD commit hash.
@@ -47,7 +48,7 @@ def _git_commit_for_path(path: Path) -> str | None:
     return None
 
 
-def _get_package_source_path(package_name: str) -> Path | None:
+def get_package_source_path(package_name: str) -> Path | None:
     """Get the source directory for an installed package."""
     try:
         module = importlib.import_module(package_name)
@@ -67,21 +68,15 @@ def get_vf_version() -> str:
 
 def get_vf_commit() -> str | None:
     """Return the git commit hash of the verifiers package, or None."""
-    source = _get_package_source_path("verifiers")
+    source = get_package_source_path("verifiers")
     if source is None:
         return None
-    return _git_commit_for_path(source)
-
-
-def _env_module_name(env_id: str) -> str | None:
-    """Derive the importable module name from an env_id, or None if empty."""
-    name = env_id.replace("-", "_").split("/")[-1]
-    return name if name else None
+    return get_commit_for_path(source)
 
 
 def get_env_version(env_id: str) -> str | None:
     """Return the installed version of an environment package, or None."""
-    module_name = _env_module_name(env_id)
+    module_name = env_id.replace("-", "_").split("/")[-1]
     if not module_name:
         return None
     try:
@@ -92,20 +87,10 @@ def get_env_version(env_id: str) -> str | None:
 
 def get_env_commit(env_id: str) -> str | None:
     """Return the git commit hash of an environment package, or None."""
-    module_name = _env_module_name(env_id)
+    module_name = env_id.replace("-", "_").split("/")[-1]
     if not module_name:
         return None
-    source = _get_package_source_path(module_name)
+    source = get_package_source_path(module_name)
     if source is None:
         return None
-    return _git_commit_for_path(source)
-
-
-def get_version_info(env_id: str) -> VersionInfo:
-    """Build a VersionInfo dict for the current verifiers + environment."""
-    return VersionInfo(
-        vf_version=get_vf_version(),
-        vf_commit=get_vf_commit(),
-        env_version=get_env_version(env_id),
-        env_commit=get_env_commit(env_id),
-    )
+    return get_commit_for_path(source)

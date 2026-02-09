@@ -21,6 +21,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
     TokenUsage,
+    VersionInfo,
 )
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import messages_to_printable, sanitize_tool_calls
@@ -29,7 +30,12 @@ from verifiers.utils.usage_utils import (
     StateUsageTracker,
     extract_usage_tokens as extract_usage_tokens_from_response,
 )
-from verifiers.utils.version_utils import get_version_info
+from verifiers.utils.version_utils import (
+    get_env_commit,
+    get_env_version,
+    get_vf_commit,
+    get_vf_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +265,12 @@ class GenerateOutputsBuilder:
         self.results_path = results_path or get_results_path(env_id, model)
         self.start_time = time.time()
         self.base_url = self._compute_base_url(self.client)
-        self.version_info = get_version_info(env_id)
+        self.version_info = VersionInfo(
+            vf_version=get_vf_version(),
+            vf_commit=get_vf_commit(),
+            env_version=get_env_version(env_id),
+            env_commit=get_env_commit(env_id),
+        )
 
         # Accumulated outputs
         self.outputs: list[RolloutOutput] = []

@@ -73,6 +73,15 @@ class TokenUsage(TypedDict):
     output_tokens: float
 
 
+class VersionInfo(TypedDict):
+    """Version and commit metadata for the verifiers framework and environment."""
+
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
+
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -202,15 +211,6 @@ ProgressCallback = Callable[
     [list[RolloutOutput], list[RolloutOutput], "GenerateMetadata"], None
 ]  # all_outputs, new_outputs, new_metadata
 LogCallback = Callable[[str], None]  # log messages
-
-
-class VersionInfo(TypedDict):
-    """Version and commit metadata for the verifiers framework and environment."""
-
-    vf_version: str
-    vf_commit: str | None
-    env_version: str | None
-    env_commit: str | None
 
 
 class GenerateMetadata(TypedDict):
