@@ -130,8 +130,8 @@ async def test_get_model_response_chat_with_tools(
         state=state,
         prompt=prompt,
     )
-    # Ensure the client was invoked and received tools kwarg
-    assert hasattr(resp, "choices")
+    # Ensure the client was invoked and returned provider-agnostic Response
+    assert isinstance(resp, vf.Response)
     assert mock_openai_client.chat.completions.create.await_count == 1
     kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
     assert "tools" in kwargs
