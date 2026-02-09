@@ -276,7 +276,7 @@ class EnvGroup(vf.Environment):
         env_client: EnvClient | None = None,
     ) -> vf.RolloutOutput:
         env = self.get_env_for_task(input["task"])
-        env_client = env_client or env.env_client
+        env_client = env_client or env.env_client or self.env_client
         return await env.run_rollout(
             input, client, model, sampling_args, max_retries, state_columns, env_client
         )
@@ -293,7 +293,7 @@ class EnvGroup(vf.Environment):
         env_client: EnvClient | None = None,
     ) -> list[vf.RolloutOutput]:
         env = self.get_env_for_task(group_inputs[0]["task"])
-        env_client = env_client or env.env_client
+        env_client = env_client or env.env_client or self.env_client
         return await env.run_group(
             group_inputs,
             client,
