@@ -9,6 +9,7 @@
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Configuration Types](#configuration-types)
+- [Prime CLI Plugin](#prime-cli-plugin)
 - [Decorators](#decorators)
 - [Utility Functions](#utility-functions)
 
@@ -637,6 +638,50 @@ Endpoints = dict[str, list[Endpoint]]
 ```
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+
+---
+
+## Prime CLI Plugin
+
+Verifiers exposes a plugin contract consumed by `prime` for command execution.
+
+### PRIME_PLUGIN_API_VERSION
+
+```python
+PRIME_PLUGIN_API_VERSION = 1
+```
+
+API version for compatibility checks between `prime` and `verifiers`.
+
+### PrimeCLIPlugin
+
+```python
+@dataclass(frozen=True)
+class PrimeCLIPlugin:
+    api_version: int = PRIME_PLUGIN_API_VERSION
+    eval_module: str = "verifiers.cli.commands.eval"
+    gepa_module: str = "verifiers.cli.commands.gepa"
+    install_module: str = "verifiers.cli.commands.install"
+    init_module: str = "verifiers.cli.commands.init"
+    setup_module: str = "verifiers.cli.commands.setup"
+    build_module: str = "verifiers.cli.commands.build"
+
+    def build_module_command(
+        self, module_name: str, args: Sequence[str] | None = None
+    ) -> list[str]:
+        ...
+```
+
+`build_module_command` returns a subprocess command list for `python -m <module> ...`.
+
+### get_plugin
+
+```python
+def get_plugin() -> PrimeCLIPlugin:
+    ...
+```
+
+Returns the plugin instance consumed by `prime`.
 
 ---
 
