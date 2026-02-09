@@ -567,10 +567,11 @@ async def run_evaluation(
             )
             if on_log_file is not None:
                 on_log_file(log_file)
-            logger.debug(f"Starting evaluation with model: {config.model}")
-            logger.debug(
-                f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-            )
+
+        logger.debug(f"Starting evaluation with model: {config.model}")
+        logger.debug(
+            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+        )
 
         effective_group_max_concurrent = config.max_concurrent
         if (
