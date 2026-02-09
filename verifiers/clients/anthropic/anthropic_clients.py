@@ -246,12 +246,14 @@ class AnthropicMessagesClient(
                 messages=prompt,
                 tools=tools,
                 **normalize_sampling_args(sampling_args),
+                **kwargs,
             )
         else:
             return await self.client.messages.create(
                 model=model,
                 messages=prompt,
                 **normalize_sampling_args(sampling_args),
+                **kwargs,
             )
 
     async def raise_from_native_response(self, response: AnthropicMessage) -> None:
@@ -302,6 +304,7 @@ class AnthropicMessagesClient(
                     return None
 
         content, reasoning_content, tool_calls = parse_content(response.content)
+        is_truncated = response.stop_reason == "max_tokens"
 
         return Response(
             id=response.id,
@@ -313,7 +316,7 @@ class AnthropicMessagesClient(
                 reasoning_content=reasoning_content or None,
                 tool_calls=tool_calls or None,
                 finish_reason=parse_finish_reason(response),
-                is_truncated=None,
+                is_truncated=is_truncated,
                 tokens=None,
             ),
         )
