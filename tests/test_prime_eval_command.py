@@ -197,9 +197,11 @@ def test_main_hosted_supports_toml_config(monkeypatch, tmp_path):
     monkeypatch.setattr(
         eval_command.vf_eval,
         "get_env_eval_defaults",
-        lambda env_id: {"num_examples": 11, "rollouts_per_example": 5}
-        if env_id == "primeintellect/wordle@2.0.0"
-        else {},
+        lambda env_id: (
+            {"num_examples": 11, "rollouts_per_example": 5}
+            if env_id == "primeintellect/wordle@2.0.0"
+            else {}
+        ),
     )
 
     calls: list[dict[str, object]] = []
