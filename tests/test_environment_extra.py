@@ -579,7 +579,7 @@ def test_sanitize_tool_calls_outputs_strings():
         def __init__(self, name: str, args: str):
             self.function = type("F", (), {"name": name, "arguments": args})()
 
-        def model_dump(self):
+        def model_dump(self, **kwargs):
             return {
                 "id": "x",
                 "type": "function",

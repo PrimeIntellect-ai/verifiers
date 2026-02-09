@@ -319,7 +319,8 @@ class GenerateOutputsBuilder:
         self.outputs.extend(new_outputs)
         for output in new_outputs:
             self.tools_list.append(
-                output.get("tool_defs") or cast(list[Tool] | None, output.get("oai_tools"))
+                output.get("tool_defs")
+                or cast(list[Tool] | None, output.get("oai_tools"))
             )
 
     def build_metadata(self) -> GenerateMetadata:
