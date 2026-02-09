@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from verifiers.errors import Error, ModelError
 from verifiers.types import (
@@ -71,16 +71,13 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
         """Convert the native response to a vf.Response."""
         ...
 
-    async def to_native_tools(self, tools: list[Tool] | None) -> list[Any] | None:
+    async def to_native_tools(self, tools: list[Tool] | None) -> list[ToolT] | None:
         """Converts a list of vf.Tools to the native tool format for this client."""
         if tools is None:
             return None
-        native_tools = []
+        native_tools: list[ToolT] = []
         for tool in tools:
-            normalized_tool = (
-                tool if isinstance(tool, Tool) else Tool.model_validate(tool)
-            )
-            native_tools.append(await self.to_native_tool(normalized_tool))
+            native_tools.append(await self.to_native_tool(tool))
         return native_tools
 
     async def get_response(

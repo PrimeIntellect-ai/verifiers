@@ -425,7 +425,7 @@ class OAIChatCompletionsClient(
                 name=tool.name,
                 description=tool.description,
                 parameters=tool.parameters,
-                strict=True,
+                strict=tool.strict if tool.strict is not None else True,
             ),
         )
 

@@ -374,7 +374,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     intercept=intercept,
                     client=client,
                     model=model,
-                    oai_tools=intercept.get("tools"),
+                    native_tools=intercept.get("tools"),
                     sampling_args=sampling_args,
                 )
                 interception_response = streamed_response

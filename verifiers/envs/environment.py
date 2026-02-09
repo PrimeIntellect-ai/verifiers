@@ -552,9 +552,13 @@ class Environment(ABC):
             assert model is not None
             if tool_defs is None:
                 tool_defs = state.get("tool_defs")
-            tool_defs = self._normalize_tool_defs(
-                cast(list[Tool] | list[dict[str, Any]] | None, tool_defs)
-            )
+            if tool_defs is not None and not all(
+                isinstance(tool, Tool) for tool in tool_defs
+            ):
+                raise TypeError(
+                    "tool_defs must be a list of vf.Tool objects at runtime. "
+                    "Normalize tool dicts during state initialization."
+                )
             if isinstance(tool_defs, list) and len(tool_defs) == 0:
                 tool_defs = None
             sampling_args = cast(

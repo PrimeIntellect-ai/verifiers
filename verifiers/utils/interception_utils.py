@@ -228,7 +228,7 @@ async def get_streaming_model_response(
     intercept: dict,
     client: AsyncOpenAI | Any | None = None,
     model: str | None = None,
-    oai_tools: list[ChatCompletionToolParam] | None = None,
+    native_tools: list[ChatCompletionToolParam] | None = None,
     sampling_args: SamplingArgs | None = None,
 ) -> ChatCompletion:
     """
@@ -264,8 +264,8 @@ async def get_streaming_model_response(
         "messages": prompt,
         "stream": True,
     }
-    if oai_tools:
-        create_kwargs["tools"] = oai_tools
+    if native_tools:
+        create_kwargs["tools"] = native_tools
     create_kwargs.update(sampling_args)
 
     stream = await raw_client.chat.completions.create(**create_kwargs)

@@ -29,6 +29,7 @@ from verifiers.types import (
     GenerateOutputs,
     RolloutInput,
     SamplingArgs,
+    Tool,
 )
 from verifiers.utils.message_utils import sanitize_tool_calls
 from verifiers.utils.save_utils import make_dataset as build_dataset
@@ -113,11 +114,11 @@ async def test_get_model_response_chat_with_tools(
     env = make_dummy_env(mock_openai_client)
     prompt: vf.Messages = [{"role": "user", "content": "Hello"}]
     tool_defs = [
-        {
-            "name": "echo",
-            "description": "echo",
-            "parameters": {},
-        }
+        Tool(
+            name="echo",
+            description="echo",
+            parameters={},
+        )
     ]
     state = await env.init_state(
         input=make_input(prompt=prompt),
@@ -220,11 +221,11 @@ async def test_get_model_response_completion_rejects_tools(
             model="test-model",
         )
         state["tool_defs"] = [
-            {
-                "name": "noop",
-                "description": "",
-                "parameters": {},
-            }
+            Tool(
+                name="noop",
+                description="",
+                parameters={},
+            )
         ]
         await env.get_model_response(state=state, prompt="Complete this")
 
