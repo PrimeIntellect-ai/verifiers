@@ -860,7 +860,7 @@ class TestEmptyModelResponseErrors:
         # Should not raise
         response = await env.get_model_response(state, prompt)
         assert response is not None
-        assert response.choices[0].message.tool_calls is not None  # type: ignore
+        assert response.message.tool_calls is not None
 
     @pytest.mark.asyncio
     async def test_completion_empty_text_raises_empty_model_response_error(

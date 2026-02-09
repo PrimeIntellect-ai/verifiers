@@ -3179,7 +3179,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
             prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
             return SubLLMResult(
-                final_content=response.choices[0].message.content or "",
+                final_content=response.message.content or "",
                 turns=[
                     SubLLMTurn(
                         prompt_messages=_clone_messages(messages),
@@ -3227,7 +3227,7 @@ class RLMEnv(vf.StatefulToolEnv):
             total_prompt_tokens += prompt_tokens
             total_completion_tokens += completion_tokens
 
-            assistant_message = response.choices[0].message
+            assistant_message = response.message
             tool_calls = getattr(assistant_message, "tool_calls", None)
             turn_tool_count = len(tool_calls) if tool_calls else 0
             tool_call_count += turn_tool_count
@@ -3312,7 +3312,7 @@ class RLMEnv(vf.StatefulToolEnv):
         prompt_tokens, completion_tokens = _extract_tokens_from_response(response)
 
         return SubLLMResult(
-            final_content=response.choices[0].message.content or "",
+            final_content=response.message.content or "",
             turns=turns,
             total_prompt_tokens=total_prompt_tokens + prompt_tokens,
             total_completion_tokens=total_completion_tokens + completion_tokens,

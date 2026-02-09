@@ -164,32 +164,12 @@ class ResponseMessage(AssistantMessage):
     tokens: ResponseTokens | None = None
 
 
-class ResponseChoice(CustomBaseModel):
-    """Legacy compatibility shape mirroring OpenAI choice objects."""
-
-    message: ResponseMessage
-    text: str | None = None
-    finish_reason: FinishReason = None
-
-
 class Response(CustomBaseModel):
     id: str
     created: int
     model: str
     usage: Usage | None = None
     message: ResponseMessage  # can call tools
-
-    @property
-    def choices(self) -> list[ResponseChoice]:
-        """Legacy compatibility with ChatCompletion/Completion response access."""
-        text_content = self.message.content
-        return [
-            ResponseChoice(
-                message=self.message,
-                text=text_content if isinstance(text_content, str) else None,
-                finish_reason=self.message.finish_reason,
-            )
-        ]
 
 
 # Core data types

@@ -477,8 +477,8 @@ class TestMultiTurnEnv:
         assert len(state["trajectory"]) == 3
         # Each trajectory step should have the structure returned by get_model_response
         for step in state["trajectory"]:
-            assert hasattr(step["response"], "choices")
-            assert len(step["response"].choices) > 0
+            assert hasattr(step["response"], "message")
+            assert step["response"].message is not None
 
     @pytest.mark.asyncio
     async def test_final_env_response_stops_rollout(

@@ -115,9 +115,7 @@ class TestToolEnv:
 
         tool_messages = [m for m in completion if m.get("role") == "tool"]
         assert tool_messages and tool_messages[0]["content"] == "16"
-        assert (
-            state["trajectory"][0]["response"].choices[0].message.tool_calls is not None
-        )
+        assert state["trajectory"][0]["response"].message.tool_calls is not None
 
     @pytest.mark.asyncio
     async def test_tool_env_completion_without_tool_calls(
