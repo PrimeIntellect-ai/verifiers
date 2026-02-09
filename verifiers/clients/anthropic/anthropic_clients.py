@@ -55,32 +55,6 @@ class AnthropicMessagesClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[AnthropicMessageParam], dict]:
-        def parse_legacy_tool_call(tool_call: Any) -> tuple[str, str, dict[str, Any]]:
-            if isinstance(tool_call, Mapping):
-                tool_call_id = tool_call.get("id")
-                function_obj = tool_call.get("function")
-                if isinstance(function_obj, Mapping):
-                    name = function_obj.get("name")
-                    raw_input = function_obj.get("arguments")
-                else:
-                    name = tool_call.get("name")
-                    raw_input = tool_call.get("arguments")
-            else:
-                tool_call_id = getattr(tool_call, "id", None)
-                function_obj = getattr(tool_call, "function", None)
-                if function_obj is not None:
-                    name = getattr(function_obj, "name", None)
-                    raw_input = getattr(function_obj, "arguments", None)
-                else:
-                    name = getattr(tool_call, "name", None)
-                    raw_input = getattr(tool_call, "arguments", None)
-
-            if not isinstance(tool_call_id, str):
-                tool_call_id = ""
-            if not isinstance(name, str):
-                name = ""
-            return tool_call_id, name, _parse_tool_args(raw_input)
-
         def parse_data_url(url: str) -> tuple[str, str] | None:
             if not url.startswith("data:"):
                 return None
@@ -167,64 +141,6 @@ class AnthropicMessagesClient(
                 return cast(dict[str, Any], tc_args)
             return {}
 
-        def from_legacy_chat_message(message: dict) -> AnthropicMessageParam | None:
-            role = message.get("role")
-            if role == "system":
-                return None  # handled separately
-
-            elif role == "user":
-                return AnthropicMessageParam(
-                    role="user",
-                    content=cast(
-                        Any, normalize_anthropic_content(message.get("content", ""))
-                    ),
-                )
-
-            elif role == "assistant":
-                tool_calls = message.get("tool_calls")
-                if tool_calls:
-                    content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-                    for text_chunk in content_to_text_chunks(message.get("content")):
-                        content_blocks.append(
-                            TextBlockParam(type="text", text=text_chunk)
-                        )
-                    for tool_call in cast(list[Any], tool_calls):
-                        tool_call_id, tool_name, tool_input = parse_legacy_tool_call(
-                            tool_call
-                        )
-                        content_blocks.append(
-                            ToolUseBlockParam(
-                                type="tool_use",
-                                id=tool_call_id,
-                                name=tool_name,
-                                input=tool_input,
-                            )
-                        )
-                    return AnthropicMessageParam(
-                        role="assistant", content=content_blocks
-                    )
-                return AnthropicMessageParam(
-                    role="assistant",
-                    content=str(message.get("content", "")),
-                )
-            elif role == "tool":
-                tool_call_id = message.get("tool_call_id")
-                if not isinstance(tool_call_id, str):
-                    tool_call_id = ""
-                return AnthropicMessageParam(
-                    role="user",
-                    content=[
-                        ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call_id,
-                            content=message.get("content", ""),
-                        )
-                    ],
-                )
-
-            else:
-                raise ValueError(f"Invalid chat message: {message}")
-
         def from_chat_message(message: Message) -> AnthropicMessageParam | None:
             assert not isinstance(message, str)
             if isinstance(message, SystemMessage):
@@ -288,22 +204,10 @@ class AnthropicMessagesClient(
                 if isinstance(msg, SystemMessage):
                     content = msg.content
                     system_contents.append(" ".join(content_to_text_chunks(content)))
-                elif isinstance(msg, Mapping) and msg.get("role") == "system":
-                    raw_content = msg["content"]
-                    system_contents.append(
-                        " ".join(content_to_text_chunks(raw_content))
-                    )
             return "\n\n".join(system_contents)
 
         system = extract_system_content(messages)
-        prompt = [
-            (
-                from_legacy_chat_message(cast(dict, msg))
-                if isinstance(msg, Mapping)
-                else from_chat_message(msg)
-            )
-            for msg in messages
-        ]
+        prompt = [from_chat_message(msg) for msg in messages]
         prompt = [converted for converted in prompt if converted is not None]
 
         return prompt, {"system": system}

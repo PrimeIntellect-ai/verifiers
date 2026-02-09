@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import final
+from typing import cast, final
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -17,6 +17,7 @@ from verifiers.types import (
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -77,7 +78,18 @@ class MultiTurnEnv(vf.Environment):
         def as_messages(value: Messages | str) -> Messages:
             if isinstance(value, str):
                 return [TextMessage(content=value)]
-            return value
+            normalized: Messages = []
+            for message in value:
+                if isinstance(message, dict):
+                    normalized.append(from_raw_message(dict(message)))
+                    continue
+                if hasattr(message, "role") and hasattr(message, "content"):
+                    normalized.append(cast(vf.Message, message))
+                    continue
+                raise TypeError(
+                    f"Invalid message type in sequence: {type(message).__name__}"
+                )
+            return normalized
 
         if len(state["trajectory"]) == 0:
             return as_messages(state["prompt"])
@@ -94,7 +106,18 @@ class MultiTurnEnv(vf.Environment):
         def as_messages(value: Messages | str) -> Messages:
             if isinstance(value, str):
                 return [TextMessage(content=value)]
-            return value
+            normalized: Messages = []
+            for message in value:
+                if isinstance(message, dict):
+                    normalized.append(from_raw_message(dict(message)))
+                    continue
+                if hasattr(message, "role") and hasattr(message, "content"):
+                    normalized.append(cast(vf.Message, message))
+                    continue
+                raise TypeError(
+                    f"Invalid message type in sequence: {type(message).__name__}"
+                )
+            return normalized
 
         if len(state["trajectory"]) == 0:
             state["completion"] = []

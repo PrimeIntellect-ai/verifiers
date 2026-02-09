@@ -13,14 +13,14 @@ from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessage,
     ChatCompletionMessageToolCall,
+    ChatCompletionToolParam,
 )
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message_tool_call import Function
 
 from verifiers.types import (
-    ChatCompletionToolParam,
     Messages,
-    ModelResponse,
+    Response,
     SamplingArgs,
     State,
 )
@@ -367,7 +367,9 @@ async def get_streaming_model_response(
 
 
 def deliver_response(
-    intercept: dict, response: ModelResponse | None, error: BaseException | None = None
+    intercept: dict,
+    response: ChatCompletion | Response | None,
+    error: BaseException | None = None,
 ) -> None:
     future = intercept.get("response_future")
     if future and not future.done():

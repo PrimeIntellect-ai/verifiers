@@ -133,16 +133,9 @@ class OAICompletionsClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[OpenAITextMessages, dict]:
-        if isinstance(messages, str):
-            return messages, {}
         prompt = ""
         for message in messages:
-            if isinstance(message, str):
-                prompt += message
-            elif isinstance(message, dict):
-                prompt += _content_to_text(message.get("content", ""))
-            else:
-                prompt += _content_to_text(message.content)
+            prompt += _content_to_text(message.content)
         return prompt, {}
 
     async def to_native_tool(self, tool: Tool) -> None:
@@ -283,34 +276,6 @@ class OAIChatCompletionsClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[OpenAIChatMessages, dict]:
-        def parse_legacy_tool_call(tool_call: Any) -> tuple[str, str, str]:
-            if isinstance(tool_call, Mapping):
-                tc_id = tool_call.get("id")
-                function_obj = tool_call.get("function")
-                if isinstance(function_obj, Mapping):
-                    name = function_obj.get("name")
-                    arguments = function_obj.get("arguments")
-                else:
-                    name = tool_call.get("name")
-                    arguments = tool_call.get("arguments")
-            else:
-                tc_id = getattr(tool_call, "id", None)
-                function_obj = getattr(tool_call, "function", None)
-                if function_obj is not None:
-                    name = getattr(function_obj, "name", None)
-                    arguments = getattr(function_obj, "arguments", None)
-                else:
-                    name = getattr(tool_call, "name", None)
-                    arguments = getattr(tool_call, "arguments", None)
-
-            if not isinstance(tc_id, str):
-                tc_id = ""
-            if not isinstance(name, str):
-                name = ""
-            if not isinstance(arguments, str):
-                arguments = "{}"
-            return tc_id, name, arguments
-
         def normalize_content_part(part: Any) -> dict[str, Any]:
             if isinstance(part, Mapping):
                 return dict(part)
@@ -323,59 +288,7 @@ class OAIChatCompletionsClient(
                 return [normalize_content_part(p) for p in content]
             return content
 
-        def from_legacy_chat_message(message: Mapping[str, Any]) -> OpenAIChatMessage:
-            role = message.get("role")
-            if role == "system":
-                return ChatCompletionSystemMessageParam(
-                    role="system", content=normalize_content(message.get("content", ""))
-                )
-            elif role == "user":
-                return ChatCompletionUserMessageParam(
-                    role="user", content=normalize_content(message.get("content", ""))
-                )
-            elif role == "assistant":
-                tool_calls = message.get("tool_calls")
-                if tool_calls is not None:
-                    oai_tool_calls: (
-                        list[ChatCompletionMessageFunctionToolCallParam] | None
-                    ) = []
-                    for tool_call in cast(list[Any], tool_calls):
-                        tc_id, name, arguments = parse_legacy_tool_call(tool_call)
-                        oai_tool_calls.append(
-                            ChatCompletionMessageFunctionToolCallParam(
-                                type="function",
-                                id=tc_id,
-                                function=Function(
-                                    name=name,
-                                    arguments=arguments,
-                                ),
-                            )
-                        )
-                else:
-                    oai_tool_calls = None
-                return ChatCompletionAssistantMessageParam(
-                    role="assistant",
-                    content=cast(Any, normalize_content(message.get("content", ""))),
-                    tool_calls=cast(Any, oai_tool_calls),
-                    reasoning_content=message.get("reasoning_content"),  # type: ignore[arg-type]
-                )
-            elif role == "tool":
-                tool_call_id = message.get("tool_call_id")
-                if not isinstance(tool_call_id, str):
-                    tool_call_id = ""
-                return ChatCompletionToolMessageParam(
-                    role="tool",
-                    tool_call_id=tool_call_id,
-                    content=message.get("content", ""),
-                )
-            else:
-                raise ValueError(f"Invalid chat message: {message}")
-
-        def from_chat_message(
-            message: Message | Mapping[str, Any],
-        ) -> OpenAIChatMessage:
-            if isinstance(message, Mapping):
-                return from_legacy_chat_message(cast(Mapping[str, Any], message))
+        def from_chat_message(message: Message) -> OpenAIChatMessage:
             if isinstance(message, SystemMessage):
                 return ChatCompletionSystemMessageParam(
                     role="system", content=normalize_content(message.content)

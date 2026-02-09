@@ -23,24 +23,6 @@ if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
 else:
     from typing import NotRequired, TypedDict
-
-# openai types (kept for backward compat and internal use)
-from openai.types.chat.chat_completion import ChatCompletion  # noqa: F401
-from openai.types.chat.chat_completion_message_param import (
-    ChatCompletionMessageParam,  # noqa: F401
-)
-from openai.types.chat.chat_completion_message_tool_call import (
-    ChatCompletionMessageToolCall,  # noqa: F401
-)
-from openai.types.chat.chat_completion_role import ChatCompletionRole  # noqa: F401
-from openai.types.chat.chat_completion_tool_param import (
-    ChatCompletionToolParam,  # noqa: F401
-)
-from openai.types.completion import Completion  # noqa: F401
-from openai.types.shared_params import (  # noqa: F401
-    FunctionDefinition,
-    FunctionParameters,
-)
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import field_validator
 
@@ -209,11 +191,6 @@ class Response(CustomBaseModel):
             )
         ]
 
-
-# Legacy aliases (backward compat — will be removed after full migration)
-ChatMessage = ChatCompletionMessageParam
-ChatMessages = list[ChatMessage]
-ModelResponse = Response | Completion | ChatCompletion | None
 
 # Core data types
 Info = dict[str, Any]

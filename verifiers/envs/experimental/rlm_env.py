@@ -58,8 +58,9 @@ from prime_sandboxes import SandboxClient
 from prime_sandboxes.core import APIClient
 import verifiers as vf
 from verifiers.types import (
-    ChatMessage,
-    ChatMessages,
+    Message,
+    SystemMessage,
+    UserMessage,
     Messages,
     Response,
     State,
@@ -67,7 +68,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
-from verifiers.utils.message_utils import concat_messages
+from verifiers.utils.message_utils import concat_messages, from_raw_message
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -221,6 +222,19 @@ def _extract_tokens_from_response(response: Any) -> tuple[int, int]:
     )
 
 
+def _clone_messages(messages: Messages) -> Messages:
+    cloned: Messages = []
+    for message in messages:
+        if hasattr(message, "model_copy"):
+            cloned.append(cast(Message, message.model_copy(deep=True)))
+            continue
+        if isinstance(message, dict):
+            cloned.append(from_raw_message(dict(message)))
+            continue
+        raise TypeError(f"Unsupported message type: {type(message).__name__}")
+    return cloned
+
+
 def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("sub_llm_call_count", 0)
     state.setdefault("sub_llm_total_turns", 0)
@@ -360,7 +374,7 @@ class RLMMonitorRubric(vf.Rubric):
 class SubLLMTurn(TypedDict):
     """A single turn in a sub-LLM call (used by RLMEnv)."""
 
-    prompt_messages: ChatMessages  # Messages before this LLM call
+    prompt_messages: Messages  # Messages before this LLM call
     response: Response  # Full response object (with token_ids, logprobs)
     tool_call_count: int  # Number of tool calls made in this turn
 
@@ -3095,7 +3109,7 @@ class RLMEnv(vf.StatefulToolEnv):
         state: State,
         client: Any,
         model: str,
-        messages: ChatMessages,
+        messages: Messages,
         tools: list | None = None,
     ) -> Any | None:
         """Make a single sub-LLM API call matching main-model request mode."""
@@ -3154,7 +3168,7 @@ class RLMEnv(vf.StatefulToolEnv):
         )
 
     async def _run_sub_llm(
-        self, state: State, client: Any, model: str, messages: ChatMessages
+        self, state: State, client: Any, model: str, messages: Messages
     ) -> SubLLMResult:
         """Run a sub-LLM call, with optional tool-calling loop."""
         # Fast path: no tools configured - single LLM call
@@ -3168,7 +3182,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 final_content=response.choices[0].message.content or "",
                 turns=[
                     SubLLMTurn(
-                        prompt_messages=[cast(ChatMessage, dict(m)) for m in messages],
+                        prompt_messages=_clone_messages(messages),
                         response=response,
                         tool_call_count=0,
                     )
@@ -3191,7 +3205,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         for _ in range(self.sub_tool_max_turns):
             num_turns += 1
-            prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
+            prompt_snapshot = _clone_messages(current_messages)
 
             response = await self._call_sub_llm_api(
                 state,
@@ -3237,7 +3251,9 @@ class RLMEnv(vf.StatefulToolEnv):
                     max_turns_reached=False,
                 )
 
-            current_messages.append(cast(ChatMessage, assistant_message.model_dump()))
+            current_messages.append(
+                from_raw_message(assistant_message.model_dump(exclude_none=True))
+            )
 
             for tool_call in tool_calls:
                 function_obj = getattr(tool_call, "function", None)
@@ -3259,22 +3275,20 @@ class RLMEnv(vf.StatefulToolEnv):
                 tool_result = await self._call_sub_tool(
                     tool_name, tool_args, tool_call.id
                 )
-                current_messages.append(cast(ChatMessage, tool_result))
+                current_messages.append(from_raw_message(tool_result))
 
         # Max turns reached - add prompt for final answer and make call without tools
         num_turns += 1
         current_messages.append(
-            cast(
-                ChatMessage,
-                {
-                    "role": "user",
-                    "content": "You've reached the maximum number of tool calls. "
-                    "Based on the information gathered, provide your final answer inside \\boxed{}.",
-                },
+            UserMessage(
+                content=(
+                    "You've reached the maximum number of tool calls. "
+                    "Based on the information gathered, provide your final answer inside \\boxed{}."
+                )
             )
         )
 
-        prompt_snapshot = [cast(ChatMessage, dict(m)) for m in current_messages]
+        prompt_snapshot = _clone_messages(current_messages)
         response = await self._call_sub_llm_api(
             state,
             client,
@@ -3328,9 +3342,9 @@ class RLMEnv(vf.StatefulToolEnv):
         results: list[dict[str, Any] | None] = [None] * len(prompts)
         semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
 
-        def _coerce_prompt_messages(prompt: Any, index: int) -> ChatMessages:
+        def _coerce_prompt_messages(prompt: Any, index: int) -> Messages:
             if isinstance(prompt, str):
-                return [cast(ChatMessage, {"role": "user", "content": prompt})]
+                return [UserMessage(content=prompt)]
             raise ValueError(
                 "llm_batch prompt at index " + str(index) + " must be a string."
             )
@@ -3475,21 +3489,17 @@ class RLMEnv(vf.StatefulToolEnv):
         state_ref: State,
         client: Any,
         sub_model: str,
-        messages: ChatMessages,
+        messages: Messages,
         batch_id: str,
         request_id: str,
         parent_turn: int,
         elapsed_seconds: float | None = None,
     ) -> dict[str, Any]:
-        messages_with_system: ChatMessages = [
-            cast(
-                ChatMessage,
-                {
-                    "role": "system",
-                    "content": _SUB_LLM_SYSTEM_PROMPT_STORE[
-                        self.sub_prompt_verbosity
-                    ].format(num_turns=self.sub_tool_max_turns),
-                },
+        messages_with_system: Messages = [
+            SystemMessage(
+                content=_SUB_LLM_SYSTEM_PROMPT_STORE[self.sub_prompt_verbosity].format(
+                    num_turns=self.sub_tool_max_turns
+                )
             ),
             *messages,
         ]
@@ -3675,7 +3685,23 @@ class RLMEnv(vf.StatefulToolEnv):
         if not sub_model:
             return web.json_response({"error": "Model not available"}, status=500)
 
-        messages = cast(ChatMessages, request_body.get("messages", []))
+        raw_messages = request_body.get("messages", [])
+        if not isinstance(raw_messages, list):
+            return web.json_response({"error": "messages must be a list"}, status=400)
+        messages: Messages = []
+        for raw_message in raw_messages:
+            if isinstance(raw_message, dict):
+                messages.append(from_raw_message(raw_message))
+                continue
+            if hasattr(raw_message, "role") and hasattr(raw_message, "content"):
+                messages.append(cast(Message, raw_message))
+                continue
+            return web.json_response(
+                {
+                    "error": "messages entries must be role/content objects",
+                },
+                status=400,
+            )
         batch_id = request_body.get("_batch_id", "")
         request_id = request_body.get("_request_id", "")
 
@@ -4205,7 +4231,7 @@ class RLMEnv(vf.StatefulToolEnv):
             # First turn: inject RLM scaffolding into the first user message
             prompt = state.get("prompt", [])
             if isinstance(prompt, str):
-                prompt = [{"role": "user", "content": prompt}]
+                prompt = [UserMessage(content=prompt)]
 
             system_prompt = state.get("rlm_system_prompt")
             packages_docs = state.get("rlm_packages_docs")
@@ -4219,7 +4245,18 @@ class RLMEnv(vf.StatefulToolEnv):
             ):
                 raise ValueError("RLM setup_state must run before get_prompt_messages")
 
-            messages = [cast(ChatMessage, dict(m)) for m in prompt]
+            messages: list[dict[str, Any]] = []
+            for message in cast(list[Any], prompt):
+                if hasattr(message, "model_dump"):
+                    messages.append(
+                        cast(dict[str, Any], message.model_dump(exclude_none=True))
+                    )
+                elif isinstance(message, dict):
+                    messages.append(dict(message))
+                else:
+                    raise TypeError(
+                        f"Unsupported prompt message type: {type(message).__name__}"
+                    )
             scaffold = (
                 "<RLM_SCAFFOLDING>\n" + system_prompt + "\n</RLM_SCAFFOLDING>\n\n"
             )
@@ -4256,11 +4293,9 @@ class RLMEnv(vf.StatefulToolEnv):
                 break
 
             if not inserted:
-                messages.append(
-                    cast(ChatMessage, {"role": "user", "content": scaffold})
-                )
+                messages.append({"role": "user", "content": scaffold})
 
-            return cast(Messages, messages)
+            return [from_raw_message(message) for message in messages]
         else:
             # Subsequent turns: use parent implementation
             return await super().get_prompt_messages(state)

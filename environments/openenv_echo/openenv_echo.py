@@ -1,7 +1,8 @@
 from typing import Any, cast
 
 import verifiers as vf
-from verifiers.types import ChatMessages
+from verifiers.types import Message, Messages, UserMessage
+from verifiers.utils.message_utils import from_raw_message
 
 
 def render_echo_prompt(
@@ -9,7 +10,7 @@ def render_echo_prompt(
     *,
     action_schema: dict[str, Any] | None = None,
     context: str = "reset",
-) -> ChatMessages:
+) -> Messages:
     if not isinstance(observation, dict):
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
@@ -17,26 +18,34 @@ def render_echo_prompt(
 
     messages = observation.get("messages")
     if isinstance(messages, list) and messages:
-        return cast(ChatMessages, messages)
+        normalized: Messages = []
+        for message in messages:
+            if isinstance(message, dict):
+                normalized.append(from_raw_message(dict(message)))
+                continue
+            if hasattr(message, "role") and hasattr(message, "content"):
+                normalized.append(cast(Message, message))
+                continue
+            raise RuntimeError(
+                "openenv-echo observation contains unsupported message item type: "
+                f"{type(message).__name__}."
+            )
+        return normalized
 
     prompt = observation.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
-        return cast(ChatMessages, [{"role": "user", "content": prompt}])
+        return [UserMessage(content=prompt)]
 
     if context == "reset" and isinstance(action_schema, dict):
-        return cast(
-            ChatMessages,
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "You are connected to an OpenEnv MCP environment. "
-                        "Call at least one tool before your final response. "
-                        "Action contract: call_tool(tool_name: str, arguments: object)."
-                    ),
-                }
-            ],
-        )
+        return [
+            UserMessage(
+                content=(
+                    "You are connected to an OpenEnv MCP environment. "
+                    "Call at least one tool before your final response. "
+                    "Action contract: call_tool(tool_name: str, arguments: object)."
+                )
+            )
+        ]
 
     raise RuntimeError("openenv-echo observation did not include a renderable prompt.")
 

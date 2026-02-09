@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import cast
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -28,6 +29,7 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     get_streaming_model_response,
 )
+from verifiers.utils.message_utils import from_raw_message
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +324,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages,
+        prompt: Messages | str,
         client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -368,9 +370,18 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         try:
             # Handle streaming requests
             if intercept and intercept.get("stream"):
+                streaming_prompt: Messages = []
+                if isinstance(prompt, str):
+                    streaming_prompt = [vf.TextMessage(content=prompt)]
+                else:
+                    for message in prompt:
+                        if isinstance(message, dict):
+                            streaming_prompt.append(from_raw_message(dict(message)))
+                            continue
+                        streaming_prompt.append(cast(vf.Message, message))
                 streamed_response = await get_streaming_model_response(
                     state=state,
-                    prompt=prompt,
+                    prompt=streaming_prompt,
                     intercept=intercept,
                     client=client,
                     model=model,

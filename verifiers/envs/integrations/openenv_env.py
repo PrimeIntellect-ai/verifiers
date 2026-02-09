@@ -14,7 +14,15 @@ import tenacity as tc
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.types import ChatMessage, ChatMessages, Tool
+from verifiers.types import (
+    AssistantMessage,
+    Message,
+    Messages,
+    Tool,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 try:
@@ -78,7 +86,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: vf.Rubric | None = None,
         startup_timeout_seconds: int = 30,
@@ -360,14 +368,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             await self._cleanup_openenv_state(state)
             raise
 
-    def _make_user_message(self, content: str) -> ChatMessage:
-        return cast(ChatMessage, {"role": "user", "content": content})
+    def _make_user_message(self, content: str) -> Message:
+        return UserMessage(content=content)
 
-    def _make_tool_message(self, content: Any, tool_call_id: str) -> ChatMessage:
-        return cast(
-            ChatMessage,
-            {"role": "tool", "content": content, "tool_call_id": tool_call_id},
-        )
+    def _make_tool_message(self, content: Any, tool_call_id: str) -> Message:
+        return ToolMessage(content=content, tool_call_id=tool_call_id)
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
@@ -382,12 +387,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     ) -> vf.Messages:
         assert isinstance(messages, list)
         last_msg = messages[-1]
-        if last_msg.get("role") != "assistant":
-            return cast(
-                vf.Messages, [self._make_user_message("Expected assistant response.")]
-            )
+        if not isinstance(last_msg, AssistantMessage):
+            return [self._make_user_message("Expected assistant response.")]
 
-        raw_text = str(last_msg.get("content", "")).strip()
+        raw_text = str(last_msg.content or "").strip()
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
         action = self._parse_action(raw_text, action_schema)
 
@@ -412,21 +415,20 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         last_msg = messages[-1]
         tool_calls = (
-            last_msg.get("tool_calls", []) if isinstance(last_msg, dict) else []
+            last_msg.tool_calls if isinstance(last_msg, AssistantMessage) else []
         )
         if not tool_calls:
-            return cast(vf.Messages, [])
+            return []
 
         mcp_client: Any = state["openenv_mcp_client"]
-        tool_messages: ChatMessages = []
+        tool_messages: Messages = []
         total_reward = 0.0
         done = False
         for tool_call in tool_calls:
-            tool_call_id = tool_call.get("id", "")
-            fn_payload = tool_call.get("function", {})
-            tool_name = str(fn_payload.get("name", "")).strip()
+            tool_call_id = tool_call.id
+            tool_name = str(tool_call.name).strip()
             try:
-                tool_args = json.loads(fn_payload.get("arguments", "{}"))
+                tool_args = json.loads(tool_call.arguments)
                 if not isinstance(tool_args, dict):
                     raise ValueError("tool arguments must be an object")
                 if not tool_name:
@@ -447,7 +449,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if state["trajectory"]:
             state["trajectory"][-1]["reward"] = total_reward
         state["openenv_done"] = done
-        return cast(vf.Messages, tool_messages)
+        return tool_messages
 
     def _format_tool_content(self, result: Any) -> Any:
         if is_valid_tool_content_parts(result):
@@ -471,7 +473,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not state["trajectory"]:
             return False
         last_msg = state["trajectory"][-1]["completion"][-1]
-        return last_msg.get("role") == "assistant" and not last_msg.get("tool_calls")
+        return isinstance(last_msg, AssistantMessage) and not last_msg.tool_calls
 
     async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
@@ -1072,7 +1074,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         action_schema: dict[str, Any] | None = None,
         contract: str | None = None,
         seed: int | None = None,
-    ) -> ChatMessages:
+    ) -> Messages:
         normalized_obs = self._normalize_observation(obs)
         renderer_kwargs = {
             "context": context,
@@ -1104,35 +1106,53 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 f"OpenEnv prompt_renderer returned invalid output for {context}: "
                 "expected a non-empty chat messages list."
             )
-        messages = list(cast(list[dict[str, Any]], rendered))
+        messages: Messages = []
+        for raw_message in cast(list[Any], rendered):
+            if isinstance(raw_message, dict):
+                messages.append(from_raw_message(raw_message))
+                continue
+            if hasattr(raw_message, "role") and hasattr(raw_message, "content"):
+                messages.append(cast(Message, raw_message))
+                continue
+            raise RuntimeError(
+                f"OpenEnv prompt_renderer returned unsupported message type for {context}: "
+                f"{type(raw_message).__name__}."
+            )
         if not messages:
             raise RuntimeError(
                 f"OpenEnv prompt_renderer returned an empty messages list for {context}."
             )
         for idx, msg in enumerate(messages):
-            if msg.get("content") is None:
+            if msg.content is None:
                 raise RuntimeError(
                     "OpenEnv prompt_renderer returned a message with null content "
                     f"for {context} at index {idx}."
                 )
-        return cast(ChatMessages, messages)
+        return messages
 
     def _looks_like_messages(self, value: Any) -> bool:
         if not isinstance(value, list):
             return False
         for item in value:
-            if not isinstance(item, dict):
-                return False
-            if "role" not in item or "content" not in item:
-                return False
+            if isinstance(item, dict) and "role" in item and "content" in item:
+                continue
+            if hasattr(item, "role") and hasattr(item, "content"):
+                continue
+            return False
         return True
 
-    def _require_prompt_messages(self, state: vf.State) -> ChatMessages:
+    def _require_prompt_messages(self, state: vf.State) -> Messages:
         current_prompt = state.get("prompt")
         if self._looks_like_messages(current_prompt) and cast(
             list[Any], current_prompt
         ):
-            return cast(ChatMessages, list(cast(list[Any], current_prompt)))
+            messages: Messages = []
+            for raw_message in cast(list[Any], current_prompt):
+                if isinstance(raw_message, dict):
+                    messages.append(from_raw_message(raw_message))
+                elif hasattr(raw_message, "role") and hasattr(raw_message, "content"):
+                    messages.append(cast(Message, raw_message))
+            return messages
         raise RuntimeError(
             "OpenEnv dataset must include a non-empty `prompt`. "
             "No prompt fallback is supported."

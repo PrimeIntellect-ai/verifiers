@@ -337,7 +337,7 @@ class Environment(ABC):
 
                 def prepend_system_prompt(prompt: Messages) -> Messages:
                     assert isinstance(prompt, list), (
-                        f"prompt must be a list of ChatMessages when system_prompt is provided, got {type(prompt)}"
+                        f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
                     )
                     if prompt and prompt[0]["role"] == "system":
                         return prompt
@@ -511,7 +511,7 @@ class Environment(ABC):
     async def get_model_response(
         self,
         state: State,
-        prompt: Messages,
+        prompt: Messages | str,
         client: AsyncOpenAI | AsyncAnthropic | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
@@ -570,10 +570,29 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args, message_type
         )
 
+        def normalize_prompt_messages(prompt_value: Messages | str) -> Messages:
+            if isinstance(prompt_value, str):
+                return [TextMessage(content=prompt_value)]
+            normalized_messages: Messages = []
+            for message in prompt_value:
+                if isinstance(message, dict):
+                    normalized_messages.append(from_raw_message(dict(message)))
+                    continue
+                if hasattr(message, "role") and hasattr(message, "content"):
+                    normalized_messages.append(cast(Message, message))
+                    continue
+                raise TypeError(
+                    f"Invalid prompt message type: {type(message).__name__}. "
+                    "Expected vf.Message-like objects."
+                )
+            return normalized_messages
+
+        normalized_prompt = normalize_prompt_messages(prompt)
+
         self._get_usage_tracker(state, create_if_missing=True)
 
         response = await vf_client.get_response(
-            prompt=prompt,
+            prompt=normalized_prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
