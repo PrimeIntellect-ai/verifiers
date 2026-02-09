@@ -8,21 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from verifiers.types import VersionInfo
+
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
 else:
     from typing import TypedDict
 
 logger = logging.getLogger(__name__)
-
-
-class VersionInfo(TypedDict):
-    """Version and commit metadata for the verifiers framework and environment."""
-
-    vf_version: str
-    vf_commit: str | None
-    env_version: str | None
-    env_commit: str | None
 
 
 def get_commit_for_path(path: Path) -> str | None:
@@ -94,3 +87,13 @@ def get_env_commit(env_id: str) -> str | None:
     if source is None:
         return None
     return get_commit_for_path(source)
+
+
+def get_version_info(env_id: str) -> VersionInfo:
+    """Get version and commit info for the verifiers framework and an environment."""
+    return VersionInfo(
+        vf_version=get_vf_version(),
+        vf_commit=get_vf_commit(),
+        env_version=get_env_version(env_id),
+        env_commit=get_env_commit(env_id),
+    )
