@@ -1922,13 +1922,10 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
             request = self._build_sandbox_request(state)
             state["sandbox_state"] = {
                 "ready": False,
-                "ready_wait_time": 0.0,
                 "command_execution_times": [],
             }
-            start_wait = time.time()
             session.sandbox_id = await self.create_sandbox(state, request)
             state["sandbox_state"]["ready"] = True
-            state["sandbox_state"]["ready_wait_time"] = time.time() - start_wait
 
         if not session.sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
