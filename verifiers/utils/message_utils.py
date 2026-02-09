@@ -1,6 +1,6 @@
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 from rich.text import Text
 
 from verifiers.types import (
@@ -62,6 +62,27 @@ def from_raw_message(message: dict) -> Message:
         return ToolMessage.model_validate(message)
     else:
         raise ValueError(f"Unknown role: {message['role']}")
+
+
+def normalize_messages(
+    value: Messages | str, *, field_name: str = "messages"
+) -> Messages:
+    """Normalize raw/string message inputs into provider-agnostic Message objects."""
+    if isinstance(value, str):
+        return [TextMessage(content=value)]
+    normalized: Messages = []
+    for message in value:
+        if isinstance(message, dict):
+            normalized.append(from_raw_message(dict(message)))
+            continue
+        if hasattr(message, "role") and hasattr(message, "content"):
+            normalized.append(cast(Message, message))
+            continue
+        raise TypeError(
+            f"Invalid {field_name} item type: {type(message).__name__}. "
+            "Expected vf.Message-like objects."
+        )
+    return normalized
 
 
 def concat_messages(messages_list: list[Messages]) -> Messages:

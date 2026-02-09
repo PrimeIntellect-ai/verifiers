@@ -53,7 +53,6 @@ from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
-    Message,
     Messages,
     MessageType,
     ProgressCallback,
@@ -64,7 +63,7 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
-    TextMessage,
+    SystemMessage,
     Tool,
     TokenUsage,
 )
@@ -74,7 +73,7 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import from_raw_message
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -339,12 +338,14 @@ class Environment(ABC):
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
                     )
-                    if prompt and prompt[0]["role"] == "system":
-                        return prompt
-                    sys_msg = cast(
-                        Message, {"role": "system", "content": system_prompt}
+                    normalized_prompt = normalize_messages(
+                        prompt, field_name="dataset prompt"
                     )
-                    return [sys_msg, *prompt]
+                    if normalized_prompt and isinstance(
+                        normalized_prompt[0], SystemMessage
+                    ):
+                        return normalized_prompt
+                    return [SystemMessage(content=system_prompt), *normalized_prompt]
 
                 dataset = dataset.map(
                     lambda x: {"prompt": prepend_system_prompt(x["prompt"])},
@@ -570,24 +571,7 @@ class Environment(ABC):
             client, model, tool_defs, sampling_args, message_type
         )
 
-        def normalize_prompt_messages(prompt_value: Messages | str) -> Messages:
-            if isinstance(prompt_value, str):
-                return [TextMessage(content=prompt_value)]
-            normalized_messages: Messages = []
-            for message in prompt_value:
-                if isinstance(message, dict):
-                    normalized_messages.append(from_raw_message(dict(message)))
-                    continue
-                if hasattr(message, "role") and hasattr(message, "content"):
-                    normalized_messages.append(cast(Message, message))
-                    continue
-                raise TypeError(
-                    f"Invalid prompt message type: {type(message).__name__}. "
-                    "Expected vf.Message-like objects."
-                )
-            return normalized_messages
-
-        normalized_prompt = normalize_prompt_messages(prompt)
+        normalized_prompt = normalize_messages(prompt, field_name="prompt")
 
         self._get_usage_tracker(state, create_if_missing=True)
 
@@ -626,10 +610,8 @@ class Environment(ABC):
 
         # Convert prompt to Pydantic messages
         raw_prompt = input.get("prompt")
-        if isinstance(raw_prompt, str):
-            state["prompt"] = [TextMessage(content=raw_prompt)]
-        elif isinstance(raw_prompt, list):
-            state["prompt"] = [from_raw_message(dict(m)) for m in raw_prompt]
+        if isinstance(raw_prompt, (str, list)):
+            state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
 
         # Wrap raw client in vf.Client adapter
         state["client"] = resolve_client(

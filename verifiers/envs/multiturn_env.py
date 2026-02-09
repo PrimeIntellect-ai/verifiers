@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import cast, final
+from typing import final
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -13,11 +13,10 @@ from verifiers.types import (
     RolloutInput,
     SamplingArgs,
     State,
-    TextMessage,
     TrajectoryStep,
 )
 from verifiers.utils.message_utils import concat_messages
-from verifiers.utils.message_utils import from_raw_message
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -74,62 +73,43 @@ class MultiTurnEnv(vf.Environment):
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
-
-        def as_messages(value: Messages | str) -> Messages:
-            if isinstance(value, str):
-                return [TextMessage(content=value)]
-            normalized: Messages = []
-            for message in value:
-                if isinstance(message, dict):
-                    normalized.append(from_raw_message(dict(message)))
-                    continue
-                if hasattr(message, "role") and hasattr(message, "content"):
-                    normalized.append(cast(vf.Message, message))
-                    continue
-                raise TypeError(
-                    f"Invalid message type in sequence: {type(message).__name__}"
-                )
-            return normalized
-
         if len(state["trajectory"]) == 0:
-            return as_messages(state["prompt"])
-        prev_turn_prompt = as_messages(state["trajectory"][-1]["prompt"])
-        prev_turn_completion = as_messages(state["trajectory"][-1]["completion"])
+            return normalize_messages(state["prompt"], field_name="state.prompt")
+        prev_turn_prompt = normalize_messages(
+            state["trajectory"][-1]["prompt"], field_name="trajectory prompt"
+        )
+        prev_turn_completion = normalize_messages(
+            state["trajectory"][-1]["completion"], field_name="trajectory completion"
+        )
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(messages, state)
-        env_response_messages = as_messages(env_response)
+        env_response_messages = normalize_messages(
+            env_response, field_name="env_response"
+        )
         return concat_messages([messages, env_response_messages])
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
-
-        def as_messages(value: Messages | str) -> Messages:
-            if isinstance(value, str):
-                return [TextMessage(content=value)]
-            normalized: Messages = []
-            for message in value:
-                if isinstance(message, dict):
-                    normalized.append(from_raw_message(dict(message)))
-                    continue
-                if hasattr(message, "role") and hasattr(message, "content"):
-                    normalized.append(cast(vf.Message, message))
-                    continue
-                raise TypeError(
-                    f"Invalid message type in sequence: {type(message).__name__}"
-                )
-            return normalized
-
         if len(state["trajectory"]) == 0:
             state["completion"] = []
             return
-        last_prompt = as_messages(state["trajectory"][-1]["prompt"])
-        last_completion = as_messages(state["trajectory"][-1]["completion"])
+        last_prompt = normalize_messages(
+            state["trajectory"][-1]["prompt"], field_name="trajectory prompt"
+        )
+        last_completion = normalize_messages(
+            state["trajectory"][-1]["completion"], field_name="trajectory completion"
+        )
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
             full_conversation = concat_messages(
-                [full_conversation, as_messages(state["final_env_response"])]
+                [
+                    full_conversation,
+                    normalize_messages(
+                        state["final_env_response"], field_name="final_env_response"
+                    ),
+                ]
             )
-        prompt_messages = as_messages(state["prompt"])
+        prompt_messages = normalize_messages(state["prompt"], field_name="state.prompt")
         state["completion"] = full_conversation[len(prompt_messages) :]
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):

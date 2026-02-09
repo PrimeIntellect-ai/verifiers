@@ -1,8 +1,8 @@
-from typing import Any, cast
+from typing import Any
 
 import verifiers as vf
-from verifiers.types import Message, Messages, UserMessage
-from verifiers.utils.message_utils import from_raw_message
+from verifiers.types import Messages, UserMessage
+from verifiers.utils.message_utils import normalize_messages
 
 
 def render_echo_prompt(
@@ -18,19 +18,12 @@ def render_echo_prompt(
 
     messages = observation.get("messages")
     if isinstance(messages, list) and messages:
-        normalized: Messages = []
-        for message in messages:
-            if isinstance(message, dict):
-                normalized.append(from_raw_message(dict(message)))
-                continue
-            if hasattr(message, "role") and hasattr(message, "content"):
-                normalized.append(cast(Message, message))
-                continue
-            raise RuntimeError(
-                "openenv-echo observation contains unsupported message item type: "
-                f"{type(message).__name__}."
+        try:
+            return normalize_messages(
+                messages, field_name="openenv-echo observation messages"
             )
-        return normalized
+        except TypeError as e:
+            raise RuntimeError(str(e)) from e
 
     prompt = observation.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
