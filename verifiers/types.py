@@ -341,6 +341,7 @@ class EvalConfig(BaseModel):
     max_retries: int = 0
     # logging
     verbose: bool = False
+    debug: bool = False
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False
