@@ -53,7 +53,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ruff",
+    "ruff>=0.15.0",
     "pre-commit",
     "ty>=0.0.1a29",
     "pytest>=7.0.0",
