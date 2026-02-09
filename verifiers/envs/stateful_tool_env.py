@@ -56,7 +56,9 @@ class StatefulToolEnv(vf.ToolEnv):
             **kwargs,
         )
         self.tools: list[Callable] = tools or []
-        self.tool_defs: list[Tool] = [convert_func_to_tool_def(tool) for tool in self.tools]
+        self.tool_defs: list[Tool] = [
+            convert_func_to_tool_def(tool) for tool in self.tools
+        ]
         self.tool_map: dict[str, Callable] = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.tools
