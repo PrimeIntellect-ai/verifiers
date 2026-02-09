@@ -73,6 +73,13 @@ class TokenUsage(TypedDict):
     output_tokens: float
 
 
+class VersionInfo(TypedDict):
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
+
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
@@ -220,6 +227,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     avg_error: float
     usage: TokenUsage | None
+    version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None
@@ -341,6 +349,7 @@ class EvalConfig(BaseModel):
     max_retries: int = 0
     # logging
     verbose: bool = False
+    debug: bool = False
     # saving
     state_columns: list[str] | None = None
     save_results: bool = False

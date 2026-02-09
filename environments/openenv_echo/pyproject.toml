@@ -5,7 +5,7 @@ tags = ["openenv", "mcp", "tools", "example"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers[openenv]>=0.1.10.dev3",
+    "verifiers[openenv]>=0.1.10.dev4",
 ]
 
 [build-system]

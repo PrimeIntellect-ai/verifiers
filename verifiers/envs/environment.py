@@ -10,8 +10,8 @@ import signal
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import Process
@@ -37,7 +37,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.worker_utils import get_free_port
+from verifiers.utils.worker_utils import get_free_port, wait_for_env_server
 from verifiers.workers.client.zmq_env_client import ZMQEnvClient
 from verifiers.workers.server.zmq_env_server import ZMQEnvServer
 
@@ -845,6 +845,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -852,12 +853,13 @@ class Environment(ABC):
         if isinstance(client, ClientConfig):
             resolved_client_config = resolve_client_config(client)
 
-        if self.env_client is not None:  # in server mode
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
             if resolved_client_config is None:
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            return await self.env_client.run_rollout(
+            return await env_client.run_rollout(
                 input,
                 resolved_client_config,
                 model,
@@ -901,6 +903,7 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -909,12 +912,13 @@ class Environment(ABC):
         if isinstance(client, ClientConfig):
             resolved_client_config = resolve_client_config(client)
 
-        if self.env_client is not None:  # in server mode
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
             if resolved_client_config is None:
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
-            return await self.env_client.run_group(
+            return await env_client.run_group(
                 group_inputs,
                 resolved_client_config,
                 model,
@@ -1400,7 +1404,8 @@ class Environment(ABC):
         extra_env_kwargs: dict[str, Any] = {},
         log_level: str | None = None,
         log_file: str | None = None,
-        startup_timeout: float = 10.0,
+        log_file_level: str | None = None,
+        startup_timeout: float = 3600,  # 1h
     ) -> None:
         """Start a ZMQ server process for this environment.
 
@@ -1417,13 +1422,14 @@ class Environment(ABC):
                 extra_env_kwargs,
                 log_level,
                 log_file,
+                log_file_level,
             ),
             kwargs=dict(address=address),
             daemon=True,  # ensure server process is terminated when parent exits
         )
         self.env_server_process.start()
         self.env_client = ZMQEnvClient(address=address)
-        await self.env_client.health(timeout=startup_timeout)
+        await wait_for_env_server(self.env_client, timeout=startup_timeout)
 
     async def stop_server(self) -> None:
         """Stop the ZMQ server process for this environment.

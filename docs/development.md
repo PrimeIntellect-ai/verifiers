@@ -6,6 +6,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 
 - [Setup](#setup)
 - [Project Structure](#project-structure)
+- [Prime CLI Plugin Export](#prime-cli-plugin-export)
 - [Running Tests](#running-tests)
 - [Writing Tests](#writing-tests)
 - [Contributing](#contributing)
@@ -49,13 +50,44 @@ verifiers/
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
 │   │   └── trainer/    # Trainer implementation
-│   ├── scripts/        # CLI entry points
+│   ├── cli/            # Prime-facing CLI modules and plugin exports
+│   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
 ├── configs/            # Example training configurations
 ├── tests/              # Test suite
 └── docs/               # Documentation
 ```
+
+## Prime CLI Plugin Export
+
+Verifiers exports a plugin consumed by `prime` so command behavior is sourced from verifiers modules.
+
+Entry point:
+
+```python
+from verifiers.cli.plugins.prime import get_plugin
+
+plugin = get_plugin()
+```
+
+The plugin exposes:
+
+- `api_version` (current: `1`)
+- command modules:
+  - `eval_module` (`verifiers.cli.commands.eval`)
+  - `gepa_module` (`verifiers.cli.commands.gepa`)
+  - `install_module` (`verifiers.cli.commands.install`)
+  - `init_module` (`verifiers.cli.commands.init`)
+  - `setup_module` (`verifiers.cli.commands.setup`)
+  - `build_module` (`verifiers.cli.commands.build`)
+- `build_module_command(module_name, args)` to construct subprocess invocation for a command module
+
+Contributor guidance:
+
+- Add new prime-facing command logic under `verifiers/cli/commands/`.
+- Export new command modules through `PrimeCLIPlugin` in `verifiers/cli/plugins/prime.py`.
+- Keep `verifiers/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
 
 ## Running Tests
 

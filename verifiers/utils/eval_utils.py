@@ -4,17 +4,17 @@ import asyncio
 import importlib.util
 import logging
 import math
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-
-from datasets import disable_progress_bar, enable_progress_bar
-from datasets.utils import logging as ds_logging
+from typing import TYPE_CHECKING, Callable, cast
 
 import numpy as np
+from datasets import disable_progress_bar, enable_progress_bar
+from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
@@ -295,6 +295,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         # logging
         "verbose",
+        "debug",
         # saving
         "state_columns",
         "save_results",
@@ -516,6 +517,10 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             print_usage(task_results)
 
 
+def get_log_level(verbose: bool) -> str:
+    return "DEBUG" if verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+
+
 @contextmanager
 def quiet_datasets():
     prev_level = ds_logging.get_verbosity()
@@ -531,6 +536,7 @@ def quiet_datasets():
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
+    on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
@@ -542,16 +548,31 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # start env server as sidecar process
-    try:
-        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
+    results_path = config.resume_path or get_eval_results_path(config)
 
-        # run evaluation
-        results_path = config.resume_path or get_eval_results_path(config)
+    try:
+        if config.debug:
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level=get_log_level(config.verbose),
+            )
+        else:
+            log_file = results_path / "eval.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level="CRITICAL",  # disable console logging
+                log_file=str(log_file),
+                log_file_level=get_log_level(config.verbose),
+            )
+            if on_log_file is not None:
+                on_log_file(log_file)
+
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
+
         effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
@@ -676,6 +697,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
+        def register_log_file(log_file: Path) -> None:
+            display.add_log_file_for_env(env_idx, log_file)
+
         display.update_env_state(env_idx, status="running")
         try:
             result = await run_evaluation(
@@ -683,6 +707,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_start=on_start,
                 on_progress=on_progress,
                 on_log=on_log,
+                on_log_file=register_log_file,
             )
 
             # get save path if results were saved
