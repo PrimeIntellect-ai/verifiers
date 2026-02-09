@@ -25,11 +25,6 @@ class EnvClient(ABC):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.address = address
 
-    @staticmethod
-    def _request_timeout(client_config: ClientConfig) -> float:
-        resolved_client_config = resolve_client_config(client_config)
-        return max(1.0, resolved_client_config.timeout)
-
     async def health(self, timeout: float | None = 10) -> bool:
         request = HealthRequest()
         response = await self.handle_health_request(request, timeout=timeout)
