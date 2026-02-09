@@ -129,9 +129,7 @@ def test_build_module_command_build_adds_workspace_env_path(
     ]
 
 
-def test_build_module_command_init_adds_workspace_env_path(
-    tmp_path: Path, monkeypatch
-):
+def test_build_module_command_init_adds_workspace_env_path(tmp_path: Path, monkeypatch):
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
