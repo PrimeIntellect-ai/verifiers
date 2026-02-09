@@ -44,16 +44,12 @@ from openai.types.shared_params import (  # noqa: F401
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import field_validator
 
-# ──────────────────────────────────────────────────────────────────────
 # Client / message type literals
-# ──────────────────────────────────────────────────────────────────────
 ClientType = Literal["openai", "anthropic"]
 MessageType = Literal["chat", "completion"]
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Custom base model with dict-like access
-# ──────────────────────────────────────────────────────────────────────
 class CustomBaseModel(BaseModel):
     """Allow extras and dict-like attribute access."""
 
@@ -74,9 +70,7 @@ class CustomBaseModel(BaseModel):
         return super().__eq__(other)
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Shared message types (provider-agnostic)
-# ──────────────────────────────────────────────────────────────────────
 class TextMessage(CustomBaseModel):
     role: Literal["text"] = "text"
     content: str
@@ -155,9 +149,7 @@ Message: TypeAlias = (
 Messages = list[Message]
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Provider-agnostic tool definition
-# ──────────────────────────────────────────────────────────────────────
 class Tool(CustomBaseModel):
     name: str
     description: str
@@ -165,9 +157,7 @@ class Tool(CustomBaseModel):
     strict: bool | None = None
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Response types (returned by Client adapters)
-# ──────────────────────────────────────────────────────────────────────
 class Usage(CustomBaseModel):
     prompt_tokens: int
     reasoning_tokens: int
@@ -220,16 +210,12 @@ class Response(CustomBaseModel):
         ]
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Legacy aliases (backward compat — will be removed after full migration)
-# ──────────────────────────────────────────────────────────────────────
 ChatMessage = ChatCompletionMessageParam
 ChatMessages = list[ChatMessage]
 ModelResponse = Response | Completion | ChatCompletion | None
 
-# ──────────────────────────────────────────────────────────────────────
 # Core data types
-# ──────────────────────────────────────────────────────────────────────
 Info = dict[str, Any]
 SamplingArgs = dict[str, Any]
 IndividualRewardFunc = Callable[..., float | Awaitable[float]]
