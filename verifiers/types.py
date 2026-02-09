@@ -204,6 +204,15 @@ ProgressCallback = Callable[
 LogCallback = Callable[[str], None]  # log messages
 
 
+class VersionInfo(TypedDict):
+    """Version and commit metadata for the verifiers framework and environment."""
+
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
+
 class GenerateMetadata(TypedDict):
     """Pydantic model for generation metadata."""
 
@@ -220,6 +229,7 @@ class GenerateMetadata(TypedDict):
     avg_metrics: dict[str, float]
     avg_error: float
     usage: TokenUsage | None
+    version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None

@@ -530,10 +530,18 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
         avg_reward: float = 0.0,
         avg_metrics: dict[str, float] = {},
         usage: dict[str, float] | None = None,
+        version_info: dict | None = None,
         state_columns: list[str] = ["foo"],
         path_to_save: Path = Path("test.jsonl"),
         tools: list[ChatCompletionToolParam] | None = None,
     ) -> GenerateMetadata:
+        if version_info is None:
+            version_info = {
+                "vf_version": "0.0.0-test",
+                "vf_commit": None,
+                "env_version": None,
+                "env_commit": None,
+            }
         return GenerateMetadata(
             env_id=env_id,
             env_args=env_args,
@@ -547,6 +555,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
             avg_reward=avg_reward,
             avg_metrics=avg_metrics,
             usage=usage,
+            version_info=version_info,
             state_columns=state_columns,
             path_to_save=path_to_save,
             tools=tools,

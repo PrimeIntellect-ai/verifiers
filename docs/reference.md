@@ -197,6 +197,12 @@ Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects
 ### GenerateMetadata
 
 ```python
+class VersionInfo(TypedDict):
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
 class GenerateMetadata(TypedDict):
     env_id: str
     env_args: dict
@@ -209,12 +215,15 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
     tools: list[ChatCompletionToolParam] | None
 ```
 
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
+`version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
 
 ### RolloutScore / RolloutScores
 
