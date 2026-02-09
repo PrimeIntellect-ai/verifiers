@@ -595,7 +595,7 @@ class OAIChatCompletionsClient(
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
-                tool_calls=parse_tool_calls(response),
+                tool_calls=parse_tool_calls(response) or None,
             ),
         )
 

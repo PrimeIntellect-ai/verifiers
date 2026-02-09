@@ -30,10 +30,10 @@ def resolve_client(
 ) -> Client:
     if isinstance(client, Client):
         return client
-    if interleaved_rollouts and isinstance(client, AsyncOpenAI):
-        return OAIChatCompletionsTokenClient(client)
     if isinstance(client, AsyncOpenAI):
         if message_type == "chat":
+            if interleaved_rollouts:
+                return OAIChatCompletionsTokenClient(client)
             return OAIChatCompletionsClient(client)
         elif message_type == "completion":
             return OAICompletionsClient(client)
