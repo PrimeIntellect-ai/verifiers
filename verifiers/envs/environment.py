@@ -106,7 +106,6 @@ class Environment(ABC):
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
         tool_defs: list[Tool] | None = None,
-        oai_tools: list[Tool] | list[dict[str, Any]] | None = None,  # backward compat
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
@@ -119,16 +118,12 @@ class Environment(ABC):
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: MessageType = message_type
-        if oai_tools is not None:
-            self.logger.warning(
-                "The oai_tools parameter is deprecated. Please use tool_defs instead."
+        if "oai_tools" in kwargs:
+            raise ValueError(
+                "`oai_tools` is no longer supported. Use `tool_defs` with provider-agnostic "
+                "tool definitions: [{'name': ..., 'description': ..., 'parameters': {...}}]."
             )
-        if tool_defs is not None and oai_tools is not None:
-            self.logger.warning(
-                "Both tool_defs and deprecated oai_tools were provided; ignoring oai_tools."
-            )
-        raw_tool_defs = tool_defs if tool_defs is not None else oai_tools
-        self.tool_defs: list[Tool] | None = self._normalize_tool_defs(raw_tool_defs)
+        self.tool_defs: list[Tool] | None = self._normalize_tool_defs(tool_defs)
         self.system_prompt = system_prompt
         self.few_shot = few_shot
         self.parser = parser or Parser()
@@ -218,7 +213,6 @@ class Environment(ABC):
         Accepts:
         - vf.Tool objects
         - vf.Tool-like dicts: {"name", "description", "parameters", "strict?"}
-        - legacy OpenAI tool dicts: {"type":"function","function":{...}}
         """
         if tools is None:
             return None
@@ -230,33 +224,14 @@ class Environment(ABC):
                 continue
 
             if isinstance(raw_tool, dict):
-                legacy_function = raw_tool.get("function")
                 if raw_tool.get("type") == "function" and isinstance(
-                    legacy_function, dict
+                    raw_tool.get("function"), dict
                 ):
-                    name = legacy_function.get("name")
-                    if not isinstance(name, str):
-                        raise ValueError(
-                            f"Legacy OpenAI tool is missing a valid function.name: {raw_tool}"
-                        )
-                    description = legacy_function.get("description", "")
-                    parameters = legacy_function.get("parameters", {})
-                    strict = legacy_function.get("strict")
-                    normalized.append(
-                        Tool(
-                            name=name,
-                            description=description
-                            if isinstance(description, str)
-                            else str(description),
-                            parameters=parameters
-                            if isinstance(parameters, dict)
-                            else {},
-                            strict=strict
-                            if isinstance(strict, bool) or strict is None
-                            else None,
-                        )
+                    raise ValueError(
+                        "Legacy OpenAI tool schema is no longer supported. "
+                        "Use `tool_defs` entries in vf.Tool format: "
+                        "{'name': ..., 'description': ..., 'parameters': {...}}."
                     )
-                    continue
 
             normalized.append(Tool.model_validate(raw_tool))
 
@@ -646,13 +621,14 @@ class Environment(ABC):
         # Resolve tool definitions
         resolved_tool_defs: list[Tool] | list[dict[str, Any]] | None = None
         info = state.get("info")
+        if isinstance(info, dict) and "oai_tools" in info:
+            raise ValueError(
+                "info['oai_tools'] is no longer supported. Use info['tool_defs'] with "
+                "provider-agnostic tool definitions: "
+                "[{'name': ..., 'description': ..., 'parameters': {...}}]."
+            )
         if isinstance(info, dict) and "tool_defs" in info:
             resolved_tool_defs = info["tool_defs"]
-        elif isinstance(info, dict) and "oai_tools" in info:
-            self.logger.warning(
-                "info['oai_tools'] is deprecated. Please use info['tool_defs']."
-            )
-            resolved_tool_defs = info["oai_tools"]
         elif self.tool_defs is not None:
             resolved_tool_defs = self.tool_defs
         else:
@@ -1350,49 +1326,6 @@ class Environment(ABC):
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""
         self.score_rollouts = score_rollouts
-
-    @property
-    def oai_tools(self) -> list[dict[str, Any]] | None:
-        """Backward-compatible OpenAI tool schema view over tool_defs."""
-        if self.tool_defs is None:
-            return None
-        oai_tools: list[dict[str, Any]] = []
-        for tool in self.tool_defs:
-            if isinstance(tool, dict) and tool.get("type") == "function":
-                oai_tools.append(tool)
-                continue
-            if isinstance(tool, dict):
-                name = tool.get("name")
-                if isinstance(name, str):
-                    oai_tools.append(
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "description": tool.get("description", ""),
-                                "parameters": tool.get("parameters", {}),
-                            },
-                        }
-                    )
-                    continue
-
-            name = getattr(tool, "name", None)
-            if isinstance(name, str):
-                oai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "description": getattr(tool, "description", ""),
-                            "parameters": getattr(tool, "parameters", {}),
-                        },
-                    }
-                )
-        return oai_tools
-
-    @oai_tools.setter
-    def oai_tools(self, value: list[Tool] | list[dict[str, Any]] | None) -> None:
-        self.tool_defs = self._normalize_tool_defs(value)
 
     make_dataset = staticmethod(make_dataset)
 

@@ -842,7 +842,7 @@ class TestToolSplitConfiguration:
         with pytest.raises(ValueError, match="llm_batch"):
             build_env(dataset, tools=[llm_batch])
 
-    def test_tools_not_exposed_as_openai_tools(self):
+    def test_tools_not_exposed_as_environment_tool_defs(self):
         def shared_tool() -> str:
             return "shared"
 
@@ -857,7 +857,7 @@ class TestToolSplitConfiguration:
             dataset, tools=[shared_tool], root_tools=[root_tool], sub_tools=[sub_tool]
         )
 
-        tool_names = {tool["function"]["name"] for tool in env.oai_tools}
+        tool_names = {tool.name for tool in env.tool_defs}
         assert "shared_tool" not in tool_names
         assert "root_tool" not in tool_names
         assert "sub_tool" not in tool_names

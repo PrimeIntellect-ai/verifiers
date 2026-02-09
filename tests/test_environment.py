@@ -117,6 +117,25 @@ class TestEnvironmentBase:
         assert isinstance(env.tool_defs[0], Tool)
         assert env.tool_defs[0].name == "echo"
 
+    def test_environment_rejects_oai_tools_param(self, sample_dataset):
+        """Test constructor rejects deprecated oai_tools."""
+        with pytest.raises(ValueError, match="`oai_tools` is no longer supported"):
+            SimpleEnvironment(
+                dataset=sample_dataset,
+                parser=Parser(),
+                rubric=Rubric(),
+                oai_tools=[  # type: ignore[call-arg]
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "description": "Echo text",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
     def test_environment_no_datasets_raises_error(self):
         """Test that Environment raises error when no datasets provided."""
         with pytest.raises(
@@ -265,6 +284,40 @@ class TestEnvironmentBase:
         first_tool = state["tool_defs"][0]
         assert isinstance(first_tool, Tool)
         assert first_tool.name == "echo"
+
+    @pytest.mark.asyncio
+    async def test_init_state_rejects_info_oai_tools(
+        self, mock_openai_client, sample_dataset, make_input
+    ):
+        """Test init_state rejects deprecated info.oai_tools."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        prompt: Messages = [{"role": "user", "content": "Hello"}]
+        with pytest.raises(
+            ValueError, match="info\\['oai_tools'\\] is no longer supported"
+        ):
+            await env.init_state(
+                input=make_input(
+                    prompt=prompt,
+                    info={
+                        "oai_tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "echo",
+                                    "description": "Echo text",
+                                    "parameters": {"type": "object", "properties": {}},
+                                },
+                            }
+                        ]
+                    },
+                ),
+                client=mock_openai_client,
+                model="test-model",
+            )
 
     @pytest.mark.asyncio
     async def test_a_generate_with_score_rollouts(
