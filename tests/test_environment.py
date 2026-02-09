@@ -99,30 +99,23 @@ class TestEnvironmentBase:
         assert env.dataset is None
         assert env.eval_dataset is not None
 
-    def test_environment_with_legacy_oai_tools_normalizes_tool_defs(
-        self, sample_dataset
-    ):
-        """Test constructor-time legacy oai_tools normalization."""
+    def test_environment_with_tool_defs_initializes_tools(self, sample_dataset):
+        """Test constructor-time tool_defs initialization."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
             parser=Parser(),
             rubric=Rubric(),
-            oai_tools=[
+            tool_defs=[
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "echo",
-                        "description": "Echo text",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
+                    "name": "echo",
+                    "description": "Echo text",
+                    "parameters": {"type": "object", "properties": {}},
                 }
             ],
         )
         assert env.tool_defs is not None
         assert isinstance(env.tool_defs[0], Tool)
         assert env.tool_defs[0].name == "echo"
-        assert env.oai_tools is not None
-        assert env.oai_tools[0]["function"]["name"] == "echo"
 
     def test_environment_no_datasets_raises_error(self):
         """Test that Environment raises error when no datasets provided."""
@@ -242,10 +235,10 @@ class TestEnvironmentBase:
         mock_openai_client.completions.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_init_state_normalizes_info_oai_tools(
+    async def test_init_state_normalizes_info_tool_defs(
         self, mock_openai_client, sample_dataset, make_input
     ):
-        """Test init_state normalizes legacy info.oai_tools into state.tool_defs."""
+        """Test init_state normalizes info.tool_defs into state.tool_defs."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
             parser=Parser(),
@@ -256,14 +249,11 @@ class TestEnvironmentBase:
             input=make_input(
                 prompt=prompt,
                 info={
-                    "oai_tools": [
+                    "tool_defs": [
                         {
-                            "type": "function",
-                            "function": {
-                                "name": "echo",
-                                "description": "Echo text",
-                                "parameters": {"type": "object", "properties": {}},
-                            },
+                            "name": "echo",
+                            "description": "Echo text",
+                            "parameters": {"type": "object", "properties": {}},
                         }
                     ]
                 },

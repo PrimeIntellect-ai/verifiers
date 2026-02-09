@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from datasets import Dataset
-from openai.types.chat import ChatCompletionToolParam
 
 from verifiers import (
     MaybeThinkParser,
@@ -30,6 +29,7 @@ from verifiers.types import (
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
+    Tool,
     TrajectoryStep,
 )
 from verifiers.utils.save_utils import state_to_output
@@ -472,7 +472,7 @@ def make_state() -> Callable[..., State]:
         is_completed: bool = True,
         is_truncated: bool = False,
         stop_condition: str | None = "max_turns_reached",
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
         trajectory: list[TrajectoryStep] = [],
         timing=RolloutTiming(
             generation_ms=0.0,
@@ -494,7 +494,7 @@ def make_state() -> Callable[..., State]:
             is_completed=is_completed,
             is_truncated=is_truncated,
             stop_condition=stop_condition,
-            oai_tools=oai_tools,
+            tool_defs=tool_defs,
             trajectory=trajectory,
             timing=timing,
             error=None,
@@ -543,7 +543,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
         usage: dict[str, float] | None = None,
         state_columns: list[str] = ["foo"],
         path_to_save: Path = Path("test.jsonl"),
-        tools: list[ChatCompletionToolParam] | None = None,
+        tools: list[Tool] | None = None,
     ) -> GenerateMetadata:
         return GenerateMetadata(
             env_id=env_id,

@@ -311,7 +311,7 @@ async def test_generate_grouped_scoring_distributes_per_group(
                     "timestamp": "",
                     "token_usage": None,
                     "error": None,
-                    "oai_tools": None,
+                    "tool_defs": None,
                 }
                 for input_item in group_inputs
             ]
@@ -406,7 +406,7 @@ async def test_run_group_server_mode_resolves_endpoint_config(
                     "timestamp": "",
                     "token_usage": None,
                     "error": None,
-                    "oai_tools": None,
+                    "tool_defs": None,
                 }
                 for input_item in group_inputs
             ]
