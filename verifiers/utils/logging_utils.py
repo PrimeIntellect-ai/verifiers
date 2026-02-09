@@ -44,6 +44,7 @@ def setup_logging(
     logger.handlers.clear()
 
     if level is None:
+        logger.propagate = False
         return
 
     # set logger level to the minimum of console and file levels

@@ -550,28 +550,28 @@ async def run_evaluation(
 
     results_path = config.resume_path or get_eval_results_path(config)
 
-    if config.debug:
-        await vf_env.start_server(
-            extra_env_kwargs=config.extra_env_kwargs,
-            log_level=get_log_level(config.verbose),
-        )
-    else:
-        log_file = results_path / "eval.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        await vf_env.start_server(
-            extra_env_kwargs=config.extra_env_kwargs,
-            log_level="CRITICAL",  # disable console logging
-            log_file=str(log_file),
-            log_file_level=get_log_level(config.verbose),
-        )
-        if on_log_file is not None:
-            on_log_file(log_file)
-
     try:
-        logger.debug(f"Starting evaluation with model: {config.model}")
-        logger.debug(
-            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-        )
+        if config.debug:
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level=get_log_level(config.verbose),
+            )
+        else:
+            log_file = results_path / "eval.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level="CRITICAL",  # disable console logging
+                log_file=str(log_file),
+                log_file_level=get_log_level(config.verbose),
+            )
+            if on_log_file is not None:
+                on_log_file(log_file)
+            logger.debug(f"Starting evaluation with model: {config.model}")
+            logger.debug(
+                f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+            )
+
         effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
