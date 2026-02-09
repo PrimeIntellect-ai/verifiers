@@ -164,7 +164,7 @@ class PrimeCLIPlugin:
                 workspace_env_dir = str(env_dir.resolve())
 
         normalized_args = list(args or [])
-        if module_name == self.install_module:
+        if module_name in (self.install_module, self.build_module, self.init_module):
             normalized_args = _normalize_or_append_dir_option(
                 normalized_args,
                 long_flag="--path",
@@ -172,7 +172,7 @@ class PrimeCLIPlugin:
                 fallback_value=workspace_env_dir,
                 cwd=cwd,
             )
-        elif module_name == self.eval_module:
+        elif module_name in (self.eval_module, self.gepa_module):
             normalized_args = _normalize_or_append_dir_option(
                 normalized_args,
                 long_flag="--env-dir-path",
