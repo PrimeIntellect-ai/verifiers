@@ -16,7 +16,7 @@ from typing import (
 if TYPE_CHECKING:
     from datasets import Dataset
 
-    from verifiers.clients.client import Client as VfClient
+    import verifiers as vf
     from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
@@ -316,7 +316,7 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: VfClient
+    client: vf.Client
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
