@@ -19,6 +19,7 @@ TERMINAL_BENCH_SAMPLE_TASKS = [
     "sqlite-with-gcov",
 ]
 
+# make sure these tasks are present locally in `tasks/` directory
 TERMINAL_BENCH_TASKS = [
     "adaptive-rejection-sampler",
     "bn-fit-modify",
@@ -111,7 +112,7 @@ TERMINAL_BENCH_TASKS = [
     "write-compressor",
 ]
 
-BENCHMARKS = {
+DATASETS = {
     "terminal-bench": TERMINAL_BENCH_TASKS,
     "terminal-bench-sample": TERMINAL_BENCH_SAMPLE_TASKS,
 }
@@ -246,7 +247,7 @@ class OpenCodeHarborEnv(HarborEnv):
 
 def load_environment(
     dataset_path: str | Path = Path(__file__).parent / "tasks",
-    benchmark: str | None = None,
+    dataset: str | None = None,
     tasks: list[str] | None = None,
     agent_workdir: str = "/app",
     docker_image: str = "python:3.11-slim",
@@ -259,15 +260,14 @@ def load_environment(
     timeout_minutes: int = 120,
     max_turns: int = 4,
 ) -> OpenCodeHarborEnv:
-    if benchmark and tasks:
-        raise ValueError("Cannot specify both 'benchmark' and 'tasks'")
-    if benchmark:
-        if benchmark not in BENCHMARKS:
+    if dataset and tasks:
+        raise ValueError("Cannot specify both 'dataset' and 'tasks'")
+    if dataset:
+        if dataset not in DATASETS:
             raise ValueError(
-                f"Unknown benchmark '{benchmark}'. "
-                f"Available: {', '.join(BENCHMARKS.keys())}"
+                f"Unknown dataset '{dataset}'. Available: {', '.join(DATASETS.keys())}"
             )
-        tasks = BENCHMARKS[benchmark]
+        tasks = DATASETS[dataset]
 
     return OpenCodeHarborEnv(
         dataset_path=dataset_path,
