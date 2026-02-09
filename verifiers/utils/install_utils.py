@@ -1,6 +1,7 @@
 import importlib
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -10,6 +11,11 @@ import requests
 logger = logging.getLogger(__name__)
 
 ENVIRONMENTS_HUB_URL = "https://api.primeintellect.ai/api/v1/environmentshub"
+
+
+def _uv_pip_cmd(subcommand: str, *args: str) -> list[str]:
+    """Run uv pip against the active Python interpreter for this process."""
+    return ["uv", "pip", subcommand, "--python", sys.executable, *args]
 
 
 def normalize_package_name(name: str) -> str:
@@ -60,7 +66,7 @@ def is_installed(env_name: str, version: Optional[str] = None) -> bool:
     try:
         pkg_name = normalize_package_name(env_name)
         result = subprocess.run(
-            ["uv", "pip", "show", pkg_name],
+            _uv_pip_cmd("show", pkg_name),
             capture_output=True,
             text=True,
         )
@@ -159,9 +165,7 @@ def install_from_hub(env_id: str) -> bool:
         else:
             pkg_spec = pkg_name
         cmd = [
-            "uv",
-            "pip",
-            "install",
+            *_uv_pip_cmd("install"),
             "--upgrade",
             pkg_spec,
             "--extra-index-url",
@@ -169,7 +173,7 @@ def install_from_hub(env_id: str) -> bool:
         ]
     else:
         assert wheel_url is not None
-        cmd = ["uv", "pip", "install", "--upgrade", wheel_url]
+        cmd = [*_uv_pip_cmd("install"), "--upgrade", wheel_url]
 
     logger.info(f"Installing {env_id}...")
     logger.debug(f"Command: {' '.join(cmd)}")
@@ -204,7 +208,7 @@ def install_from_local(env_name: str, env_dir: str = "./environments") -> bool:
 
     logger.info(f"Installing {env_name} from {env_path}...")
     result = subprocess.run(
-        ["uv", "pip", "install", "-e", str(env_path)],
+        [*_uv_pip_cmd("install"), "-e", str(env_path)],
         capture_output=True,
         text=True,
     )
@@ -235,7 +239,7 @@ def install_from_repo(env_name: str, branch: str = "main") -> bool:
 
     logger.info(f"Installing {env_name} from verifiers repo ({branch})...")
     result = subprocess.run(
-        ["uv", "pip", "install", f"{pkg_name} @ {url}"],
+        [*_uv_pip_cmd("install"), f"{pkg_name} @ {url}"],
         capture_output=True,
         text=True,
     )
