@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import Any, cast
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -331,18 +332,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         if not isinstance(intercept_tools, list):
             raise TypeError("Intercepted tools must be provided as a list.")
 
-        normalized_inputs: list[Tool | dict[str, object]] = []
+        normalized_inputs: list[dict[str, Any]] = []
         for raw_tool in intercept_tools:
             if isinstance(raw_tool, Tool):
-                normalized_inputs.append(raw_tool)
+                normalized_inputs.append(raw_tool.model_dump(exclude_none=True))
                 continue
             if not isinstance(raw_tool, dict):
                 raise TypeError(
                     "Intercepted tools must be vf.Tool objects or dict tool definitions."
                 )
+            raw_tool_dict = cast(dict[str, Any], raw_tool)
 
-            function_payload = raw_tool.get("function")
-            if raw_tool.get("type") == "function" and isinstance(
+            function_payload = raw_tool_dict.get("function")
+            if raw_tool_dict.get("type") == "function" and isinstance(
                 function_payload, dict
             ):
                 parameters = function_payload.get("parameters", {})
@@ -360,7 +362,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
                 continue
 
-            normalized_inputs.append(raw_tool)
+            normalized_inputs.append(raw_tool_dict)
 
         return self._normalize_tool_defs(normalized_inputs)
 
