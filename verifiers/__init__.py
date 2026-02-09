@@ -43,7 +43,7 @@ from .utils.logging_utils import (
 )
 
 # Setup default logging configuration
-setup_logging(os.getenv("VF_LOG_LEVEL", "INFO"))
+setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
     "DatasetBuilder",
