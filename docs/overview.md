@@ -35,6 +35,8 @@ configs/
 ├── rl/                 # Example configs for Hosted Training
 ├── eval/               # Example multi-environment eval configs
 └── gepa/               # Example configs for prompt optimization
+.prime/
+└── skills/             # Bundled workflow skills for create/browse/review/eval/GEPA/train/brainstorm
 environments/
 └── AGENTS.md           # Documentation for AI coding agents
 AGENTS.md               # Top-level documentation for AI coding agents
