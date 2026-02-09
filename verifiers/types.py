@@ -74,8 +74,6 @@ class TokenUsage(TypedDict):
 
 
 class VersionInfo(TypedDict):
-    """Version and commit metadata for the verifiers framework and environment."""
-
     vf_version: str
     vf_commit: str | None
     env_version: str | None
