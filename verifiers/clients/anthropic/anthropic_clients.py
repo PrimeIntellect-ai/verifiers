@@ -31,6 +31,7 @@ from verifiers.types import (
     ResponseMessage,
     SamplingArgs,
     SystemMessage,
+    TextMessage,
     Tool,
     ToolCall,
     ToolMessage,
@@ -194,6 +195,8 @@ class AnthropicMessagesClient(
                         )
                     ],
                 )
+            elif isinstance(message, TextMessage):
+                return AnthropicMessageParam(role="user", content=message.content)
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
@@ -239,6 +242,9 @@ class AnthropicMessagesClient(
             sampling_args["max_tokens"] = max_tokens
 
             return {k: v for k, v in sampling_args.items() if v is not None}
+
+        # Remove internal framework keys not recognized by the Anthropic SDK
+        kwargs.pop("state", None)
 
         if tools:
             return await self.client.messages.create(

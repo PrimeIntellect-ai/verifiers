@@ -47,6 +47,7 @@ from verifiers.types import (
     SamplingArgs,
     State,
     SystemMessage,
+    TextMessage,
     Tool,
     ToolCall,
     ToolMessage,
@@ -325,6 +326,10 @@ class OAIChatCompletionsClient(
                     role="tool",
                     tool_call_id=message.tool_call_id,
                     content=_content_to_text(message.content),
+                )
+            elif isinstance(message, TextMessage):
+                return ChatCompletionUserMessageParam(
+                    role="user", content=message.content
                 )
             else:
                 raise ValueError(f"Invalid chat message: {message}")
