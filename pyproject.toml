@@ -160,6 +160,9 @@ filterwarnings = [
 asyncio_mode = "auto"
 norecursedirs = [".git", ".tox", "dist", "build", "*.egg", "__pycache__"]
 
+[tool.ty.environment]
+python-version = "3.13"
+
 [tool.ty.rules]
 unknown-argument = "warn"
 redundant-cast = "ignore"

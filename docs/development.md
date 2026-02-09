@@ -6,6 +6,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 
 - [Setup](#setup)
 - [Project Structure](#project-structure)
+- [Prime CLI Plugin Export](#prime-cli-plugin-export)
 - [Running Tests](#running-tests)
 - [Writing Tests](#writing-tests)
 - [Contributing](#contributing)
@@ -16,7 +17,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 ## Setup
 
 ### Prerequisites
-- Python 3.10, 3.11, 3.12, or 3.13
+- Python 3.13 recommended for CI parity with Ty checks
 - [uv](https://docs.astral.sh/uv/) package manager
 
 ### Installation
@@ -32,8 +33,8 @@ uv sync
 # GPU-based trainer development:
 uv sync --all-extras
 
-# Install pre-commit hooks:
-uv run pre-commit install
+# Install pre-commit hooks (including pre-push Ty gate):
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 ## Project Structure
@@ -48,14 +49,45 @@ verifiers/
 │   ├── rubrics/        # Rubric classes
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
-│   │   └── trainer/    # RLTrainer implementation
-│   ├── scripts/        # CLI entry points
+│   │   └── trainer/    # Trainer implementation
+│   ├── cli/            # Prime-facing CLI modules and plugin exports
+│   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
 ├── configs/            # Example training configurations
 ├── tests/              # Test suite
 └── docs/               # Documentation
 ```
+
+## Prime CLI Plugin Export
+
+Verifiers exports a plugin consumed by `prime` so command behavior is sourced from verifiers modules.
+
+Entry point:
+
+```python
+from verifiers.cli.plugins.prime import get_plugin
+
+plugin = get_plugin()
+```
+
+The plugin exposes:
+
+- `api_version` (current: `1`)
+- command modules:
+  - `eval_module` (`verifiers.cli.commands.eval`)
+  - `gepa_module` (`verifiers.cli.commands.gepa`)
+  - `install_module` (`verifiers.cli.commands.install`)
+  - `init_module` (`verifiers.cli.commands.init`)
+  - `setup_module` (`verifiers.cli.commands.setup`)
+  - `build_module` (`verifiers.cli.commands.build`)
+- `build_module_command(module_name, args)` to construct subprocess invocation for a command module
+
+Contributor guidance:
+
+- Add new prime-facing command logic under `verifiers/cli/commands/`.
+- Export new command modules through `PrimeCLIPlugin` in `verifiers/cli/plugins/prime.py`.
+- Keep `verifiers/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
 
 ## Running Tests
 
@@ -141,13 +173,15 @@ def test_with_mock(mock_client):
 3. **Make changes** following existing patterns
 4. **Add tests** for new functionality
 5. **Run tests**: `uv run pytest tests/`
-6. **Run linting**: `uv run ruff check --fix .`
-7. **Update docs** if adding/changing public APIs
-8. **Submit PR** with clear description
+6. **Run linting/format checks**: `uv run ruff check --fix . && uv run ruff format --check verifiers tests`
+7. **Run CI-parity type checks**: `uv run ty check verifiers`
+8. **Update docs** if adding/changing public APIs
+9. **Submit PR** with clear description
 
 ### Code Style
 
-- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .`
+- Strict `ruff` enforcement - all PRs must pass `ruff check --fix .` and `ruff format --check verifiers tests`
+- `ty` must pass via `uv run ty check verifiers` to mirror CI setup (Python 3.13 target)
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -156,7 +190,8 @@ def test_with_mock(mock_client):
 ### PR Checklist
 
 - [ ] Tests pass locally (`uv run pytest tests/`)
-- [ ] Linting passes (`uv run ruff check --fix .`)
+- [ ] Linting/format checks pass (`uv run ruff check --fix . && uv run ruff format --check verifiers tests`)
+- [ ] Type checks pass (`uv run ty check verifiers`)
 - [ ] Pre-commit hooks pass (`uv run pre-commit run --all-files`)
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
@@ -243,14 +278,11 @@ uv run pytest tests/ --cov=verifiers  # With coverage
 uv run pytest tests/test_envs.py -vv              # All environments
 uv run pytest tests/test_envs.py -k math_python   # Specific environment
 
-# Linting & formatting & type checking
-uv run ruff check .                                     # Check lint errors
-uv run ruff check --fix .                               # Fix lint errors
-uv run ruff format --check .                            # Check formatting
-uv run ruff format .                                    # Format code
-uv run ty check verifiers/                              # Type check
-uv run ty check verifiers/ --ignore unresolved-import   # Type check (CPU-only)
-uv run pre-commit run --all-files                       # Run all pre-commit hooks
+# Linting
+uv run ruff check --fix .             # Fix lint errors
+uv run ruff format --check verifiers tests  # Verify Python formatting
+uv run ty check verifiers               # Type check (matches CI Ty target)
+uv run pre-commit run --all-files     # Run all pre-commit hooks
 
 # Environment tools
 prime env init new-env                       # Create environment

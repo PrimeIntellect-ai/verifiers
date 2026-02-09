@@ -1,6 +1,8 @@
 # environments/AGENTS.md
 
-This file mirrors the "Environments" section from the Verifiers documentation, and is downloaded automatically using the setup script.
+<!-- Generated for repository development workflows. Do not edit directly. -->
+
+This file mirrors the "Environments" documentation page.
 
 ---
 
