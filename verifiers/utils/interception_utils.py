@@ -8,11 +8,9 @@ import uuid
 from typing import Any, cast
 
 from aiohttp import web
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessage,
-    ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import (
@@ -22,15 +20,8 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
 )
-from openai.types.chat.chat_completion_message_tool_call import Function
 
-from verifiers.types import (
-    ChatCompletionToolParam,
-    Messages,
-    ModelResponse,
-    SamplingArgs,
-    State,
-)
+from verifiers.types import ModelResponse
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +78,6 @@ class InterceptionServer:
                     self.port = sockets[0].getsockname()[1]
             if self.port == 0:
                 raise RuntimeError("Failed to resolve OS-assigned port")
-
-            self._app = app
-            self._runner = runner
-            self._site = site
 
             # OS-assigned port if port=0
             if self.port == 0:
@@ -243,142 +230,6 @@ class InterceptionServer:
         except ConnectionResetError:
             logger.debug(f"[{rollout_id}] Client disconnected before write_eof")
         return response
-
-
-async def get_streaming_model_response(
-    state: State,
-    prompt: Messages,
-    intercept: dict,
-    client: AsyncOpenAI | None = None,
-    model: str | None = None,
-    oai_tools: list[ChatCompletionToolParam] | None = None,
-    sampling_args: SamplingArgs | None = None,
-) -> ChatCompletion:
-    """
-    Handle streaming API call, forwarding chunks and accumulating response.
-
-    This function makes a streaming API call to the model, forwards each chunk
-    to the waiting HTTP handler via the chunk queue, and accumulates the full
-    response to return.
-    """
-    chunk_queue = cast(asyncio.Queue, intercept["chunk_queue"])
-
-    client = client or state["client"]
-    model = model or state["model"]
-    sampling_args = sampling_args or state.get("sampling_args") or {}
-
-    # Convert max_tokens to max_completion_tokens for chat
-    if "max_tokens" in sampling_args:
-        sampling_args = dict(sampling_args)
-        max_tokens = sampling_args.pop("max_tokens")
-        if "max_completion_tokens" not in sampling_args:
-            sampling_args["max_completion_tokens"] = max_tokens
-
-    create_kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": prompt,
-        "stream": True,
-    }
-    if oai_tools:
-        create_kwargs["tools"] = oai_tools
-    create_kwargs.update(sampling_args)
-
-    stream = await client.chat.completions.create(**create_kwargs)
-
-    accumulated_content = ""
-    accumulated_tool_calls: dict[int, dict] = {}
-    finish_reason = None
-    completion_id = None
-    created_time = int(time.time())
-    stream_ended = False
-
-    try:
-        async for chunk in stream:
-            await chunk_queue.put(chunk)
-
-            if not completion_id and chunk.id:
-                completion_id = chunk.id
-            if chunk.created:
-                created_time = chunk.created
-
-            if chunk.choices:
-                choice = chunk.choices[0]
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-
-                delta = choice.delta
-                if delta:
-                    if delta.content:
-                        accumulated_content += delta.content
-
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in accumulated_tool_calls:
-                                accumulated_tool_calls[idx] = {
-                                    "id": tc.id or "",
-                                    "type": tc.type or "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            if tc.id:
-                                accumulated_tool_calls[idx]["id"] = tc.id
-                            if tc.function:
-                                if tc.function.name:
-                                    accumulated_tool_calls[idx]["function"]["name"] = (
-                                        tc.function.name
-                                    )
-                                if tc.function.arguments:
-                                    accumulated_tool_calls[idx]["function"][
-                                        "arguments"
-                                    ] += tc.function.arguments
-
-        await chunk_queue.put(None)
-        stream_ended = True
-    finally:
-        if not stream_ended:
-            try:
-                chunk_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-
-    tool_calls_list = None
-    if accumulated_tool_calls:
-        tool_calls_list = [
-            ChatCompletionMessageToolCall(
-                id=tc_data["id"],
-                type="function",
-                function=Function(
-                    name=tc_data["function"]["name"],
-                    arguments=tc_data["function"]["arguments"],
-                ),
-            )
-            for idx, tc_data in sorted(accumulated_tool_calls.items())
-        ]
-
-    message = ChatCompletionMessage(
-        role="assistant",
-        content=accumulated_content if accumulated_content else None,
-        tool_calls=tool_calls_list,
-    )
-
-    result = ChatCompletion(
-        id=completion_id or f"chatcmpl-{uuid.uuid4().hex[:8]}",
-        choices=[
-            Choice(
-                finish_reason=finish_reason or "stop",
-                index=0,
-                message=message,
-            )
-        ],
-        created=created_time,
-        model=model,
-        object="chat.completion",
-    )
-
-    rollout_id = intercept.get("rollout_id", "?")
-    _log_response(rollout_id, result.model_dump())
-
-    return result
 
 
 def deliver_response(
