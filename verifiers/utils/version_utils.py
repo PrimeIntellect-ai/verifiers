@@ -5,15 +5,9 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import subprocess
-import sys
 from pathlib import Path
 
 from verifiers.types import VersionInfo
-
-if sys.version_info < (3, 12):
-    from typing_extensions import TypedDict
-else:
-    from typing import TypedDict
 
 logger = logging.getLogger(__name__)
 
