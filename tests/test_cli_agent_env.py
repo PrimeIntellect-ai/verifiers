@@ -159,6 +159,49 @@ class TestCliAgentEnv:
         response = await env.env_response(messages, state)
         assert response == []
 
+    @pytest.mark.asyncio
+    async def test_non_streaming_intercept_tools_use_oai_schema(
+        self, sample_dataset, mock_openai_client
+    ):
+        """OpenAI-formatted intercepted tools should work for non-streaming requests."""
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            input=sample_dataset[0],
+            client=mock_openai_client,
+            model="test-model",
+        )
+        request_id = "req-test"
+        state["current_request_id"] = request_id
+        env._interception_server.intercepts[request_id] = {
+            "stream": False,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "description": "echo tool",
+                        "parameters": {},
+                    },
+                }
+            ],
+        }
+
+        response = await env.get_model_response(
+            state=state,
+            prompt=sample_dataset[0]["prompt"],
+            client=mock_openai_client,
+            model="test-model",
+        )
+
+        assert isinstance(response, vf.Response)
+        kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
+        assert "tools" in kwargs
+        assert kwargs["tools"][0]["function"]["name"] == "echo"
+
 
 class TestHarborEnv:
     """Tests for HarborEnv."""

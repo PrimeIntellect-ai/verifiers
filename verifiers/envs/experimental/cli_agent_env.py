@@ -320,6 +320,50 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 if time.time() - state["timing"]["start_time"] > self.timeout_seconds:
                     return []
 
+    def _normalize_intercept_tool_defs(
+        self, intercept_tools: object
+    ) -> list[Tool] | None:
+        """Normalize intercepted request tools for the provider-agnostic runtime.
+
+        Agent requests arrive in OpenAI-native tool format. Convert that schema to
+        vf.Tool defs here so the main runtime can stay strict about tool_defs.
+        """
+        if not isinstance(intercept_tools, list):
+            raise TypeError("Intercepted tools must be provided as a list.")
+
+        normalized_inputs: list[Tool | dict[str, object]] = []
+        for raw_tool in intercept_tools:
+            if isinstance(raw_tool, Tool):
+                normalized_inputs.append(raw_tool)
+                continue
+            if not isinstance(raw_tool, dict):
+                raise TypeError(
+                    "Intercepted tools must be vf.Tool objects or dict tool definitions."
+                )
+
+            function_payload = raw_tool.get("function")
+            if raw_tool.get("type") == "function" and isinstance(
+                function_payload, dict
+            ):
+                parameters = function_payload.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    raise TypeError(
+                        "Intercepted function tool parameters must be a JSON object."
+                    )
+                normalized_inputs.append(
+                    {
+                        "name": function_payload.get("name"),
+                        "description": function_payload.get("description", ""),
+                        "parameters": parameters,
+                        "strict": function_payload.get("strict"),
+                    }
+                )
+                continue
+
+            normalized_inputs.append(raw_tool)
+
+        return self._normalize_tool_defs(normalized_inputs)
+
     async def get_model_response(
         self,
         state: State,
@@ -360,7 +404,9 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             model = state.get("model") or model
             intercept_tools = intercept.get("tools")
             if intercept_tools:
-                tool_defs = self._normalize_tool_defs(intercept_tools) or tool_defs
+                tool_defs = (
+                    self._normalize_intercept_tool_defs(intercept_tools) or tool_defs
+                )
 
         response: Response | None = None
         interception_response: object | None = None
