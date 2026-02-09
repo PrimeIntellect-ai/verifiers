@@ -72,7 +72,7 @@ from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
 )
-from verifiers.utils.tool_utils import convert_func_to_tool
+from verifiers.utils.tool_utils import convert_func_to_tool_def
 from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from prime_sandboxes import CommandTimeoutError
@@ -2759,10 +2759,10 @@ class RLMEnv(vf.StatefulToolEnv):
             reserved_names=set(_FIXED_REPL_TOOL_NAMES),
         )
         self.sub_tool_defs: list[vf.Tool] = [
-            convert_func_to_tool(tool) for tool in self.sub_tools
+            convert_func_to_tool_def(tool) for tool in self.sub_tools
         ]
         self.root_tool_defs: list[vf.Tool] = [
-            convert_func_to_tool(tool) for tool in self.root_tools
+            convert_func_to_tool_def(tool) for tool in self.root_tools
         ]
         self.root_tool_names = [_tool_display_name(tool) for tool in self.root_tools]
         self.sub_tool_names = [_tool_display_name(tool) for tool in self.sub_tools]

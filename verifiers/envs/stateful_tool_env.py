@@ -5,7 +5,7 @@ from typing import Callable, cast
 
 import verifiers as vf
 from verifiers.types import Tool, ToolMessage
-from verifiers.utils.tool_utils import convert_func_to_tool
+from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 
 def filter_signature(func, args_to_skip):
@@ -56,7 +56,7 @@ class StatefulToolEnv(vf.ToolEnv):
             **kwargs,
         )
         self.tools: list[Callable] = tools or []
-        self.tool_defs: list[Tool] = [convert_func_to_tool(tool) for tool in self.tools]
+        self.tool_defs: list[Tool] = [convert_func_to_tool_def(tool) for tool in self.tools]
         self.tool_map: dict[str, Callable] = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.tools
@@ -74,7 +74,7 @@ class StatefulToolEnv(vf.ToolEnv):
         Assumes all non-skipped args use standard JSON types (no remaining $ref/$defs).
         """
         self.tools.append(tool)
-        tool_def = convert_func_to_tool(filter_signature(tool, args_to_skip))
+        tool_def = convert_func_to_tool_def(filter_signature(tool, args_to_skip))
         params = tool_def.parameters
         for arg in args_to_skip:
             if (

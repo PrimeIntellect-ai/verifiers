@@ -4,7 +4,7 @@ from typing import Callable, cast
 import verifiers as vf
 from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.tool_utils import convert_func_to_tool, is_valid_tool_content_parts
+from verifiers.utils.tool_utils import convert_func_to_tool_def, is_valid_tool_content_parts
 
 
 class ToolMonitorRubric(vf.Rubric):
@@ -84,7 +84,7 @@ class ToolEnv(vf.MultiTurnEnv):
         self.max_turns = max_turns
         self.error_formatter = error_formatter
         self.stop_errors: list[type[Exception]] = stop_errors or []
-        self.tool_defs = [convert_func_to_tool(tool) for tool in self.tools]
+        self.tool_defs = [convert_func_to_tool_def(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
             for tool in self.tools
@@ -102,7 +102,7 @@ class ToolEnv(vf.MultiTurnEnv):
         self.tools.append(tool)
         if self.tool_defs is None:
             self.tool_defs = []
-        self.tool_defs.append(convert_func_to_tool(tool))
+        self.tool_defs.append(convert_func_to_tool_def(tool))
         self.tool_map[getattr(tool, "__name__", tool.__class__.__name__)] = tool
         self.tool_monitor_rubric.add_tool_metric(tool)
 
@@ -110,7 +110,7 @@ class ToolEnv(vf.MultiTurnEnv):
         self.tools.remove(tool)
         if self.tool_defs is None:
             self.tool_defs = []
-        self.tool_defs.remove(convert_func_to_tool(tool))
+        self.tool_defs.remove(convert_func_to_tool_def(tool))
         tool_name = getattr(tool, "__name__", tool.__class__.__name__)
         self.tool_map.pop(tool_name)
         self.tool_monitor_rubric.remove_tool_metric(tool)

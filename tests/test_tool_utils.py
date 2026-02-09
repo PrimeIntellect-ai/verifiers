@@ -2,14 +2,14 @@
 
 from typing import Optional
 
-from verifiers.utils.tool_utils import convert_func_to_tool
+from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 
 class TestToolUtils:
     """Test cases for the tool_utils module."""
 
-    def test_convert_func_to_tool(self):
-        """Test the convert_func_to_tool function with a description."""
+    def test_convert_func_to_tool_def(self):
+        """Test the convert_func_to_tool_def function with a description."""
 
         def test_func(param1: int, param2: str, param3: bool):
             # google style docstring
@@ -25,7 +25,7 @@ class TestToolUtils:
             """
             return 1.0
 
-        result = convert_func_to_tool(test_func)
+        result = convert_func_to_tool_def(test_func)
         assert result.model_dump(exclude_none=True) == {
             "name": "test_func",
             "description": "This is a test function.",
@@ -54,13 +54,13 @@ class TestToolUtils:
             },
         }
 
-    def test_convert_func_to_tool_with_default_values(self):
-        """Test the convert_func_to_tool function with default values."""
+    def test_convert_func_to_tool_def_with_default_values(self):
+        """Test the convert_func_to_tool_def function with default values."""
 
         def test_func(param1: int, param2: str = "test", param3: bool = True):
             return 1.0
 
-        result = convert_func_to_tool(test_func)
+        result = convert_func_to_tool_def(test_func)
         assert result.model_dump(exclude_none=True) == {
             "name": "test_func",
             "description": "",
@@ -85,13 +85,13 @@ class TestToolUtils:
             },
         }
 
-    def test_convert_func_to_tool_with_optional_values(self):
-        """Test the convert_func_to_tool function with optional values."""
+    def test_convert_func_to_tool_def_with_optional_values(self):
+        """Test the convert_func_to_tool_def function with optional values."""
 
         def test_func(param1: int, param2: str, param3: Optional[bool] = True):
             return None
 
-        result = convert_func_to_tool(test_func)
+        result = convert_func_to_tool_def(test_func)
         assert result.model_dump(exclude_none=True) == {
             "name": "test_func",
             "description": "",
@@ -112,13 +112,13 @@ class TestToolUtils:
             },
         }
 
-    def test_convert_func_to_tool_with_list_type_hint(self):
-        """Test the convert_func_to_tool function with list type hint."""
+    def test_convert_func_to_tool_def_with_list_type_hint(self):
+        """Test the convert_func_to_tool_def function with list type hint."""
 
         def test_func(param1: list[int]):
             return None
 
-        result = convert_func_to_tool(test_func)
+        result = convert_func_to_tool_def(test_func)
         assert result.model_dump(exclude_none=True) == {
             "name": "test_func",
             "description": "",
@@ -137,14 +137,14 @@ class TestToolUtils:
             },
         }
 
-    def test_convert_func_to_tool_without_type_hint(self):
-        """Test the convert_func_to_tool function without type hint."""
+    def test_convert_func_to_tool_def_without_type_hint(self):
+        """Test the convert_func_to_tool_def function without type hint."""
 
         def test_func(param1):
             """This is a test function."""
             return None
 
-        result = convert_func_to_tool(test_func)
+        result = convert_func_to_tool_def(test_func)
         assert result.model_dump(exclude_none=True) == {
             "name": "test_func",
             "description": "This is a test function.",
