@@ -257,7 +257,7 @@ class ClientConfig(BaseModel):
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["ClientConfig"] = Field(default_factory=list)
-    timeout: float = 3600.0
+    timeout: float = 7200.0  # 2h; RLM/sandbox run_group can be slow
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
     max_retries: int = 10

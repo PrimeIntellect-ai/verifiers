@@ -70,6 +70,8 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
             defaults["num_examples"] = eval_config["num_examples"]
         if "rollouts_per_example" in eval_config:
             defaults["rollouts_per_example"] = eval_config["rollouts_per_example"]
+        if "request_timeout" in eval_config:
+            defaults["request_timeout"] = float(eval_config["request_timeout"])
 
         if defaults:
             logger.debug(
@@ -167,6 +169,15 @@ def main():
         type=int,
         default=DEFAULT_MAX_CONCURRENT,
         help="Maximum number of concurrent requests",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Timeout in seconds for each run_group request to the environment worker "
+            "(default: 7200; can be set in TOML or env pyproject [tool.verifiers.eval])"
+        ),
     )
     parser.add_argument(
         "--max-tokens",
@@ -272,6 +283,13 @@ def main():
         default=0,
         help="Max retries for transient infrastructure errors (default: 0)",
     )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap RLM/tool env at N turns (injected into env_args.max_turns; e.g. 20 to avoid long rollouts and context overflows)",
+    )
     args = parser.parse_args()
 
     setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
@@ -293,6 +311,10 @@ def main():
     def build_eval_config(raw: dict) -> EvalConfig:
         """Build EvalConfig from a raw config dict."""
         env_id = raw["env_id"]
+
+        # Merge CLI/top-level max_turns into env_args so envs see it
+        if raw.get("max_turns") is not None:
+            raw.setdefault("env_args", {}).update({"max_turns": raw["max_turns"]})
 
         # Resolve num_examples and rollouts_per_example with env defaults
         env_defaults = get_env_eval_defaults(env_id)
@@ -459,12 +481,19 @@ def main():
             ]
 
         assert primary_api_base_url is not None
-        client_config = ClientConfig(
-            api_key_var=resolved_api_key_var,
-            api_base_url=primary_api_base_url,
-            endpoint_configs=endpoint_configs,
-            extra_headers=merged_headers,
-        )
+        # Resolve request_timeout: raw (CLI/TOML) > env pyproject default > ClientConfig default
+        raw_timeout = raw.get("request_timeout")
+        if raw_timeout is None and env_defaults.get("request_timeout") is not None:
+            raw_timeout = env_defaults["request_timeout"]
+        client_config_kw: dict = {
+            "api_key_var": resolved_api_key_var,
+            "api_base_url": primary_api_base_url,
+            "endpoint_configs": endpoint_configs,
+            "extra_headers": merged_headers,
+        }
+        if raw_timeout is not None:
+            client_config_kw["timeout"] = float(raw_timeout)
+        client_config = ClientConfig(**client_config_kw)
 
         # Backward-compatible TOML field: resume_path
         if raw.get("resume") is None and raw.get("resume_path") is not None:
