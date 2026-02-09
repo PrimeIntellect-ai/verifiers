@@ -12,7 +12,6 @@ from typing import Sequence
 
 PRIME_PLUGIN_API_VERSION = 1
 WORKSPACE_ENV_DIR = "environments"
-WORKSPACE_ROOT_MARKERS = ("pyproject.toml", "verifiers", "environments")
 
 
 def _venv_python(venv_root: Path) -> Path:
@@ -82,11 +81,10 @@ def _resolve_workspace_python(cwd: Path | None = None) -> str:
 
 def _find_workspace_root(start: Path) -> Path | None:
     for directory in [start, *start.parents]:
-        marker_paths = [directory / marker for marker in WORKSPACE_ROOT_MARKERS]
         if (
-            marker_paths[0].is_file()
-            and marker_paths[1].is_dir()
-            and marker_paths[2].is_dir()
+            (directory / "pyproject.toml").is_file()
+            and (directory / "verifiers").is_dir()
+            and (directory / WORKSPACE_ENV_DIR).is_dir()
         ):
             return directory
     return None
