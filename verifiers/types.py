@@ -300,8 +300,8 @@ class RolloutOutput(dict):
 
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition, trajectory, oai_tools,
-                     token_usage
+    Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
+                     oai_tools (deprecated alias), token_usage
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -321,7 +321,8 @@ class RolloutOutput(dict):
     error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
-    oai_tools: list[Tool]
+    tool_defs: list[Tool]
+    oai_tools: list[Tool]  # deprecated alias; mirrors tool_defs in serialized output
     token_usage: TokenUsage
 
 

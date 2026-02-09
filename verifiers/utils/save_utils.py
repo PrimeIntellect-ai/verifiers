@@ -62,7 +62,7 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
     >>> json.dumps(value, default=make_serializable)
     """
     if isinstance(value, BaseModel):
-        return value.model_dump()
+        return value.model_dump(exclude_none=True)
     elif isinstance(value, (datetime, date)):
         return value.isoformat()
     elif isinstance(value, Path):
@@ -186,8 +186,10 @@ def state_to_output(
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
-        oai_tools=state.get("tool_defs"),
+        tool_defs=state.get("tool_defs"),
     )
+    # Backward-compatible alias while downstream consumers migrate to `tool_defs`.
+    output["oai_tools"] = output.get("tool_defs")
     usage = _extract_state_token_usage(state)
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.
@@ -316,7 +318,9 @@ class GenerateOutputsBuilder:
         """Accumulate new outputs."""
         self.outputs.extend(new_outputs)
         for output in new_outputs:
-            self.tools_list.append(output.get("oai_tools"))
+            self.tools_list.append(
+                output.get("tool_defs") or cast(list[Tool] | None, output.get("oai_tools"))
+            )
 
     def build_metadata(self) -> GenerateMetadata:
         """Build metadata from accumulated outputs."""

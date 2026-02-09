@@ -216,7 +216,7 @@ def sanitize_tool_calls(messages: Messages):
                 else:
                     model_dump = getattr(tc, "model_dump", None)
                     assert model_dump is not None
-                    tc_dict = model_dump()
+                    tc_dict = model_dump(exclude_none=True)
                 tool_calls_json.append(json.dumps(tc_dict))
             if isinstance(m, dict):
                 new_m = {
