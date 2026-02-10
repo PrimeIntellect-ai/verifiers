@@ -333,7 +333,7 @@ class Environment(ABC):
         else:
             if system_prompt is not None:
 
-                def prepend_system_prompt(prompt: Messages) -> Messages:
+                def prepend_system_prompt(prompt: list[Any]) -> list[Any]:
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
                     )
