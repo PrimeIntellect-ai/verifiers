@@ -170,11 +170,7 @@ class InterceptionServer:
                 logger.error(f"Error processing intercepted request: {e}")
                 return web.json_response({"error": str(e)}, status=500)
 
-            response_dict = (
-                response.model_dump()
-                if hasattr(response, "model_dump")
-                else dict(response)
-            )
+            response_dict = serialize_intercept_response(response)
 
             _log_response(rollout_id, response_dict)
             return web.json_response(response_dict)
@@ -266,6 +262,9 @@ async def synthesize_stream(
             else:
                 future.set_result(None)
         return
+
+    if chunk_queue is None:
+        raise RuntimeError("Missing chunk_queue for streaming interception")
 
     message = response.message
 
@@ -360,6 +359,70 @@ def create_empty_completion(model: str) -> ChatCompletion:
 
 
 # Logging helpers
+
+
+def _response_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+            else:
+                text = getattr(part, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+        return "".join(text_parts)
+    return ""
+
+
+def serialize_intercept_response(response: Any) -> dict[str, Any]:
+    """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
+    if isinstance(response, Response):
+        message = response.message
+        tool_calls = []
+        for tc in message.tool_calls or []:
+            tool_calls.append(
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                }
+            )
+
+        message_payload: dict[str, Any] = {
+            "role": "assistant",
+            "content": _response_content_to_text(message.content),
+        }
+        if tool_calls:
+            message_payload["tool_calls"] = tool_calls
+
+        choice: dict[str, Any] = {
+            "index": 0,
+            "message": message_payload,
+            "finish_reason": message.finish_reason,
+        }
+
+        output = {
+            "id": response.id,
+            "object": "chat.completion",
+            "created": response.created,
+            "model": response.model,
+            "choices": [choice],
+        }
+
+        if response.usage is not None:
+            output["usage"] = response.usage.model_dump(exclude_none=True)
+
+        return output
+
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return dict(response)
 
 
 def _truncate(s: str, limit: int = 200) -> str:
