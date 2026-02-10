@@ -9,16 +9,18 @@ description: Train models with verifiers environments using hosted RL or prime-r
 Run stable RL training loops with environment-aware hyperparameter choices and clear diagnostics.
 
 ## Preferred Training Paths
-1. Hosted Training service path from lab setup:
+1. By default, assume users intend to use Hosted Training unless they explicitly ask for self-managed training.
+2. Hosted Training service path from lab setup:
 ```bash
 prime lab setup
 ```
-2. Self-managed `prime-rl` workflow:
+3. Self-managed `prime-rl` workflow:
 ```bash
 prime lab setup --prime-rl
-uv run prime-rl @ configs/prime-rl/wiki-search.toml
+uv run prime-rl configs/prime-rl/wiki-search.toml
 ```
-3. Runtime expectation:
+4. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
+5. Runtime expectation:
 - Hosted Training is intended to be launched from a CPU machine.
 - Local `prime-rl` training requires local GPU access.
 

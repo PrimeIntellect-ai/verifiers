@@ -99,6 +99,13 @@ prime env push --path ./environments/my_env --visibility PRIVATE
 prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
 ```
 
+## Synthetic Data
+1. Ask users for preferences on which LLMs to use for synthetic data generation and curation before implementation.
+2. Prefer generating synthetic data from raw source documents whenever possible instead of relying only on hand-authored prompts.
+3. Use LLM orchestration (planner/generator/validator loops) to improve sample quality and diversity.
+4. Use back-translation: start from complete materials and decompose them into incomplete tasks, criteria, or partial artifacts that the model must reconstruct.
+5. Use fan-out subtopic sampling from LLMs to expand coverage and avoid overfitting to a narrow slice of the domain.
+
 ## Deliverable Format
 Report:
 1. Environment ID and path.

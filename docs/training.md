@@ -99,7 +99,7 @@ This will clone and install the `prime-rl` trainer and its dependencies, and set
 
 Then, you can start training with:
 ```bash
-uv run prime-rl @ configs/prime-rl/wiki-search.toml
+uv run prime-rl configs/prime-rl/wiki-search.toml
 ```
 
 This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 

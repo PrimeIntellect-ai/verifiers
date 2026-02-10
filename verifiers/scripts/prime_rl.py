@@ -3,7 +3,7 @@
 Wrapper script to run prime-rl rl command from the current working directory.
 
 Usage:
-    uv run prime-rl @ configs/prime-rl/config.toml
+    uv run prime-rl configs/prime-rl/config.toml
 """
 
 import argparse
@@ -147,7 +147,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Create a tmux session and run prime-rl rl command from a TOML config."
     )
-    parser.add_argument("at", type=str)
     parser.add_argument("config_path", type=str)
     parser.add_argument(
         "--session",
@@ -167,9 +166,6 @@ def main():
 
     if not tmux_exists():
         raise SystemExit("tmux not found in PATH. Please install tmux.")
-
-    if args.at != "@":
-        raise SystemExit("Usage: prime-rl @ path/to/file.toml")
 
     cwd = Path.cwd()
     prime_rl_dir = cwd / "prime-rl"
