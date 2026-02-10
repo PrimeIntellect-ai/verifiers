@@ -3,6 +3,7 @@ import logging
 import time
 import uuid
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx
 from openai import AsyncOpenAI
@@ -95,17 +96,31 @@ class CliAgentEnv(SandboxMixin, vf.Environment):
         self._tunnel: Tunnel | None = None
         self._tunnel_lock = asyncio.Lock()
 
-    async def get_tunnel_url(self) -> str:
+    def _resolve_tunnel_local_addr(self, state: State) -> str:
+        gateway_url = cast(str, state["gateway_url"])
+        parsed = urlparse(gateway_url)
+        host = parsed.hostname
+        if host is None:
+            raise ValueError(f"Invalid gateway URL; missing hostname: {gateway_url}")
+        return host
+
+    async def get_tunnel_url(self, local_addr: str | None = None) -> str:
         """Get tunnel URL, starting the tunnel if needed."""
         async with self._tunnel_lock:
             if self._tunnel is None:
+                if local_addr is None:
+                    raise ValueError("local_addr is required when starting tunnel")
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=self.gateway_port,
+                        local_addr=local_addr,
                         log_level="debug",
                     )
                 else:
-                    self._tunnel = Tunnel(local_port=self.gateway_port)
+                    self._tunnel = Tunnel(
+                        local_port=self.gateway_port,
+                        local_addr=local_addr,
+                    )
                 url = await self._tunnel.start()
                 logger.debug(f"Prime Tunnel started: {url}")
                 return url
@@ -281,7 +296,9 @@ class CliAgentEnv(SandboxMixin, vf.Environment):
             await self.register_rollout(state)
             rollout_registered = True
 
-            tunnel_url = await self.get_tunnel_url()
+            tunnel_local_addr = self._resolve_tunnel_local_addr(state)
+            state["tunnel_local_addr"] = tunnel_local_addr
+            tunnel_url = await self.get_tunnel_url(local_addr=tunnel_local_addr)
             state["tunnel_url"] = tunnel_url
             state["rollout_base_url"] = (
                 f"{tunnel_url.rstrip('/')}/v1/rollouts/{state['rollout_id']}"

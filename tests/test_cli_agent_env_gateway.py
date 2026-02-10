@@ -18,8 +18,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.environments]
 class FakeTunnel:
     instances: list["FakeTunnel"] = []
 
-    def __init__(self, local_port: int, log_level: str | None = None):
+    def __init__(
+        self,
+        local_port: int,
+        local_addr: str = "127.0.0.1",
+        log_level: str | None = None,
+    ):
         self.local_port = local_port
+        self.local_addr = local_addr
         self.log_level = log_level
         self.url: str | None = None
         self.start_calls = 0
@@ -246,6 +252,7 @@ async def test_cli_agent_env_rollout_uses_gateway_and_tunnel(monkeypatch):
     assert len(FakeTunnel.instances) == 1
     tunnel = FakeTunnel.instances[0]
     assert tunnel.local_port == 8000
+    assert tunnel.local_addr == "gateway.internal"
     assert tunnel.start_calls == 1
     assert await env.get_tunnel_url() == "https://unit-test.tunnel.prime.ai"
     assert tunnel.start_calls == 1
