@@ -142,6 +142,18 @@ class AnthropicMessagesClient(
                 return cast(dict[str, Any], tc_args)
             return {}
 
+        def build_tool_result_block(message: ToolMessage) -> ToolResultBlockParam:
+            return ToolResultBlockParam(
+                type="tool_result",
+                tool_use_id=message.tool_call_id,
+                content=cast(
+                    Any,
+                    message.content
+                    if isinstance(message.content, str)
+                    else " ".join(content_to_text_chunks(message.content)),
+                ),
+            )
+
         def from_chat_message(message: Message) -> AnthropicMessageParam | None:
             assert not isinstance(message, str)
             if isinstance(message, SystemMessage):
@@ -182,18 +194,7 @@ class AnthropicMessagesClient(
             elif isinstance(message, ToolMessage):
                 return AnthropicMessageParam(
                     role="user",
-                    content=[
-                        ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=message.tool_call_id,
-                            content=cast(
-                                Any,
-                                message.content
-                                if isinstance(message.content, str)
-                                else " ".join(content_to_text_chunks(message.content)),
-                            ),
-                        )
-                    ],
+                    content=[build_tool_result_block(message)],
                 )
             elif isinstance(message, TextMessage):
                 return AnthropicMessageParam(role="user", content=message.content)
@@ -210,8 +211,29 @@ class AnthropicMessagesClient(
             return "\n\n".join(system_contents)
 
         system = extract_system_content(messages)
-        prompt = [from_chat_message(msg) for msg in messages]
-        prompt = [converted for converted in prompt if converted is not None]
+        prompt: list[AnthropicMessageParam] = []
+        pending_tool_results: list[ToolResultBlockParam] = []
+
+        def flush_tool_results() -> None:
+            nonlocal pending_tool_results
+            if not pending_tool_results:
+                return
+            prompt.append(
+                AnthropicMessageParam(role="user", content=pending_tool_results)
+            )
+            pending_tool_results = []
+
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                pending_tool_results.append(build_tool_result_block(message))
+                continue
+
+            flush_tool_results()
+            converted = from_chat_message(message)
+            if converted is not None:
+                prompt.append(converted)
+
+        flush_tool_results()
 
         return prompt, {"system": system}
 

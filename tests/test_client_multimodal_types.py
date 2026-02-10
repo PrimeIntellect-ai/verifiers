@@ -10,6 +10,7 @@ from verifiers.types import (
     SystemMessage,
     TextContentPart,
     ToolCall,
+    ToolMessage,
     UserMessage,
 )
 
@@ -114,4 +115,34 @@ async def test_anthropic_assistant_tool_calls_use_text_chunks_not_model_repr():
     assert prompt[0]["content"] == [
         {"type": "text", "text": "calling a tool"},
         {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_merges_consecutive_tool_results_into_single_user_message():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    messages = [
+        AssistantMessage(
+            content="calling tools",
+            tool_calls=[
+                ToolCall(id="call_1", name="lookup_a", arguments='{"q":"a"}'),
+                ToolCall(id="call_2", name="lookup_b", arguments='{"q":"b"}'),
+            ],
+        ),
+        ToolMessage(tool_call_id="call_1", content="result a"),
+        ToolMessage(tool_call_id="call_2", content="result b"),
+    ]
+
+    prompt, kwargs = await client.to_native_prompt(messages)
+
+    assert kwargs["system"] == ""
+    assert len(prompt) == 2
+    assert prompt[0]["role"] == "assistant"
+    assert prompt[1]["role"] == "user"
+    assert prompt[1]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "result a"},
+        {"type": "tool_result", "tool_use_id": "call_2", "content": "result b"},
     ]
