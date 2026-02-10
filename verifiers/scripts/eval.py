@@ -25,6 +25,7 @@ from verifiers.types import (
     EvalRunConfig,
 )
 from verifiers.utils.eval_utils import (
+    get_log_level,
     load_endpoints,
     load_toml_config,
     resolve_endpoints_file,
@@ -51,6 +52,38 @@ def _normalize_client_type(value: Any) -> ClientType:
     if value in {"openai", "anthropic"}:
         return cast(ClientType, value)
     return "openai"
+
+
+def _resolve_client_type_field(raw: dict[str, Any], source: str) -> Any:
+    field_values = {
+        "api_client_type": raw.get("api_client_type"),
+        "type": raw.get("type"),
+        # Deprecated alias retained for backwards-compatible eval configs.
+        "client_type": raw.get("client_type"),
+    }
+    present_values = {k: v for k, v in field_values.items() if v is not None}
+    if len(set(present_values.values())) > 1:
+        raise ValueError(
+            f"Conflicting client type fields in {source}: {sorted(present_values.keys())}. "
+            "Use one value via 'api_client_type' (preferred) or 'type' (shorthand)."
+        )
+    if (
+        field_values["client_type"] is not None
+        and field_values["api_client_type"] is None
+        and field_values["type"] is None
+    ):
+        logger.warning(
+            "Field 'client_type' is deprecated in %s. "
+            "Use 'api_client_type' (preferred) or 'type' (shorthand).",
+            source,
+        )
+    return (
+        field_values["api_client_type"]
+        if field_values["api_client_type"] is not None
+        else field_values["type"]
+        if field_values["type"] is not None
+        else field_values["client_type"]
+    )
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -294,7 +327,8 @@ def main():
     )
     args = parser.parse_args()
 
-    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    if args.debug:  # only set up console logging in debug mode
+        setup_logging(get_log_level(args.verbose))
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
@@ -372,7 +406,7 @@ def main():
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
         )
-        raw_client_type = raw.get("client_type")
+        raw_client_type = _resolve_client_type_field(raw, source="eval config")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
         if isinstance(raw_api_base_url, list):
@@ -412,7 +446,13 @@ def main():
             client_type = _normalize_client_type(
                 raw_client_type
                 if client_type_override
-                else endpoint.get("client_type", DEFAULT_CLIENT_TYPE)
+                else endpoint.get(
+                    "api_client_type",
+                    endpoint.get(
+                        "type",
+                        endpoint.get("client_type", DEFAULT_CLIENT_TYPE),
+                    ),
+                )
             )
             if api_key_override or api_base_url_override or client_type_override:
                 logger.debug(
@@ -546,6 +586,7 @@ def main():
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
             verbose=raw.get("verbose", False),
+            debug=raw.get("debug", False),
             state_columns=raw.get("state_columns", []),
             save_results=raw.get("save_results", False),
             resume_path=resume_path,

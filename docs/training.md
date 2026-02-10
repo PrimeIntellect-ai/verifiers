@@ -33,7 +33,7 @@ Use the `prime lab setup` script to download example configuration files for Hos
 prime lab setup
 ```
 
-This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `endpoints.toml` and GEPA starter configs in `configs/gepa/`:
+This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `configs/endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
 ```
 configs/

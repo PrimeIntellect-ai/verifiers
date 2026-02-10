@@ -22,7 +22,23 @@ def test_load_endpoints_python_registry_normalizes_to_lists(tmp_path: Path):
     assert endpoint["key"] == "OPENAI_API_KEY"
 
 
-def test_load_endpoints_python_registry_preserves_client_type(tmp_path: Path):
+def test_load_endpoints_python_registry_preserves_api_client_type(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.py"
+    registry_path.write_text(
+        "ENDPOINTS = {\n"
+        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "type": "anthropic"},\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["haiku"][0]["api_client_type"] == "anthropic"
+
+
+def test_load_endpoints_python_registry_accepts_legacy_client_type_alias(
+    tmp_path: Path,
+):
     registry_path = tmp_path / "endpoints.py"
     registry_path.write_text(
         "ENDPOINTS = {\n"
@@ -33,7 +49,7 @@ def test_load_endpoints_python_registry_preserves_client_type(tmp_path: Path):
 
     endpoints = load_endpoints(str(registry_path))
 
-    assert endpoints["haiku"][0]["client_type"] == "anthropic"
+    assert endpoints["haiku"][0]["api_client_type"] == "anthropic"
 
 
 def test_load_endpoints_toml_groups_variants_by_endpoint_id(tmp_path: Path):
@@ -95,6 +111,42 @@ def test_load_endpoints_toml_accepts_matching_short_and_long_fields(tmp_path: Pa
 
     assert endpoints["gpt-5-mini"][0]["url"] == "https://api.pinference.ai/api/v1"
     assert endpoints["gpt-5-mini"][0]["key"] == "PRIME_API_KEY"
+
+
+def test_load_endpoints_toml_accepts_api_client_type_fields(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "haiku"\n'
+        'model = "claude-haiku-4-5"\n'
+        'url = "https://api.anthropic.com"\n'
+        'key = "ANTHROPIC_API_KEY"\n'
+        'type = "anthropic"\n'
+        'api_client_type = "anthropic"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["haiku"][0]["api_client_type"] == "anthropic"
+
+
+def test_load_endpoints_toml_rejects_conflicting_client_type_fields(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "haiku"\n'
+        'model = "claude-haiku-4-5"\n'
+        'url = "https://api.anthropic.com"\n'
+        'key = "ANTHROPIC_API_KEY"\n'
+        'type = "anthropic"\n'
+        'api_client_type = "openai"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
 
 
 def test_load_endpoints_toml_rejects_conflicting_url_fields(tmp_path: Path):

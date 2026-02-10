@@ -9,6 +9,7 @@
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Configuration Types](#configuration-types)
+- [Prime CLI Plugin](#prime-cli-plugin)
 - [Decorators](#decorators)
 - [Utility Functions](#utility-functions)
 
@@ -19,18 +20,18 @@
 ### Messages
 
 ```python
-Messages = str | list[ChatMessage]
+Messages = list[Message]
 ```
 
-The primary message type. Either a plain string (completion mode) or a list of chat messages (chat mode).
+Provider-agnostic message list used across runtimes and providers. Completion mode is represented with `{"role": "text", "content": "..."}` entries.
 
-### ChatMessage
+### Message
 
 ```python
-ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
+Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage
 ```
 
-OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
+Provider-agnostic message union. `TextMessage` is used for raw completion-style prompts/completions.
 
 ### Info
 
@@ -58,13 +59,18 @@ RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
 Individual reward functions operate on single rollouts. Group reward functions operate on all rollouts for an example together (useful for relative scoring).
 
-### ModelResponse
+### Response
 
 ```python
-ModelResponse = Completion | ChatCompletion | None
+class Response(CustomBaseModel):
+    id: str
+    created: int
+    model: str
+    usage: Usage | None
+    message: ResponseMessage
 ```
 
-Raw response from the OpenAI API.
+Unified model response returned by `vf.Client` adapters and stored in trajectory steps.
 
 ---
 
@@ -84,12 +90,12 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 | Field | Type | Description |
 |-------|------|-------------|
 | `input` | `RolloutInput` | Nested input data |
-| `client` | `AsyncOpenAI` | OpenAI client |
+| `client` | `vf.Client` | Provider adapter client |
 | `model` | `str` | Model name |
 | `sampling_args` | `SamplingArgs \| None` | Generation parameters |
 | `is_completed` | `bool` | Whether rollout has ended |
 | `is_truncated` | `bool` | Whether generation was truncated |
-| `oai_tools` | `list[ChatCompletionToolParam]` | Available tools |
+| `tool_defs` | `list[Tool]` | Provider-agnostic tool definitions |
 | `trajectory` | `list[TrajectoryStep]` | Multi-turn trajectory |
 | `trajectory_id` | `str` | UUID for this rollout |
 | `timing` | `RolloutTiming` | Timing information |
@@ -123,8 +129,8 @@ class RolloutOutput(dict):
     # Required fields
     example_id: int
     task: str
-    prompt: Messages | None
-    completion: Messages | None
+    prompt: Messages | str | None
+    completion: Messages | str | None
     reward: float
     timing: RolloutTiming
     is_completed: bool
@@ -136,7 +142,8 @@ class RolloutOutput(dict):
     error: str | None
     stop_condition: str | None
     trajectory: list[TrajectoryStep]
-    oai_tools: list[ChatCompletionToolParam]
+    tool_defs: list[Tool]
+    oai_tools: list[Tool]  # deprecated alias in serialized output
 ```
 
 Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
@@ -145,9 +152,9 @@ Serialized output from a rollout. This is a `dict` subclass that provides typed 
 
 ```python
 class TrajectoryStep(TypedDict):
-    prompt: Messages
-    completion: Messages
-    response: ModelResponse
+    prompt: Messages | str
+    completion: Messages | str
+    response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
@@ -196,6 +203,12 @@ Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects
 ### GenerateMetadata
 
 ```python
+class VersionInfo(TypedDict):
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
 class GenerateMetadata(TypedDict):
     env_id: str
     env_args: dict
@@ -208,12 +221,15 @@ class GenerateMetadata(TypedDict):
     time_ms: float
     avg_reward: float
     avg_metrics: dict[str, float]
+    version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
-    tools: list[ChatCompletionToolParam] | None
+    tools: list[Tool] | None
 ```
 
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
+`version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
 
 ### RolloutScore / RolloutScores
 
@@ -242,12 +258,12 @@ class Environment(ABC):
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         system_prompt: str | None = None,
-        few_shot: list[ChatMessage] | None = None,
+        few_shot: Messages | None = None,
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
-        oai_tools: list[ChatCompletionToolParam] | None = None,
+        tool_defs: list[Tool] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
@@ -281,7 +297,7 @@ Abstract base class for all environments.
 |--------|---------|-------------|
 | `rollout(input, client, model, sampling_args)` | `State` | Abstract: run single rollout |
 | `init_state(input, client, model, sampling_args)` | `State` | Create initial state from input |
-| `get_model_response(state, prompt, ...)` | `ModelResponse` | Get model response for prompt |
+| `get_model_response(state, prompt, ...)` | `Response` | Get unified model response for prompt |
 | `is_completed(state)` | `bool` | Check all stop conditions |
 | `run_rollout(sem, input, client, model, sampling_args)` | `State` | Run rollout with semaphore |
 | `run_group(group_inputs, client, model, ...)` | `list[State]` | Generate and score one group |
@@ -411,7 +427,7 @@ class OpenEnvEnv(MultiTurnEnv):
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: Rubric | None = None,
         **kwargs,
@@ -637,6 +653,50 @@ Endpoints = dict[str, list[Endpoint]]
 ```
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+
+---
+
+## Prime CLI Plugin
+
+Verifiers exposes a plugin contract consumed by `prime` for command execution.
+
+### PRIME_PLUGIN_API_VERSION
+
+```python
+PRIME_PLUGIN_API_VERSION = 1
+```
+
+API version for compatibility checks between `prime` and `verifiers`.
+
+### PrimeCLIPlugin
+
+```python
+@dataclass(frozen=True)
+class PrimeCLIPlugin:
+    api_version: int = PRIME_PLUGIN_API_VERSION
+    eval_module: str = "verifiers.cli.commands.eval"
+    gepa_module: str = "verifiers.cli.commands.gepa"
+    install_module: str = "verifiers.cli.commands.install"
+    init_module: str = "verifiers.cli.commands.init"
+    setup_module: str = "verifiers.cli.commands.setup"
+    build_module: str = "verifiers.cli.commands.build"
+
+    def build_module_command(
+        self, module_name: str, args: Sequence[str] | None = None
+    ) -> list[str]:
+        ...
+```
+
+`build_module_command` returns a subprocess command list for `python -m <module> ...`.
+
+### get_plugin
+
+```python
+def get_plugin() -> PrimeCLIPlugin:
+    ...
+```
+
+Returns the plugin instance consumed by `prime`.
 
 ---
 

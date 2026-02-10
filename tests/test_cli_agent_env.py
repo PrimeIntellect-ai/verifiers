@@ -1,5 +1,6 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
+import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -176,6 +177,7 @@ class TestCliAgentEnv:
         )
         request_id = "req-test"
         state["current_request_id"] = request_id
+        response_future: asyncio.Future = asyncio.Future()
         env._interception_server.intercepts[request_id] = {
             "stream": False,
             "tools": [
@@ -188,6 +190,7 @@ class TestCliAgentEnv:
                     },
                 }
             ],
+            "response_future": response_future,
         }
 
         response = await env.get_model_response(
@@ -201,6 +204,12 @@ class TestCliAgentEnv:
         kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
         assert "tools" in kwargs
         assert kwargs["tools"][0]["function"]["name"] == "echo"
+
+        # Non-streaming interception payload must be OpenAI ChatCompletion-shaped.
+        intercepted_response = await response_future
+        assert hasattr(intercepted_response, "choices")
+        choices = getattr(intercepted_response, "choices", [])
+        assert choices and getattr(choices[0], "message", None) is not None
 
 
 class TestHarborEnv:

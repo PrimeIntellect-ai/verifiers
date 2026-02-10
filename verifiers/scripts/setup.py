@@ -27,6 +27,17 @@ CLAUDE_MD_DST = "CLAUDE.md"
 ENVS_AGENTS_MD_SRC = f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/{VERIFIERS_COMMIT}/assets/lab/environments/AGENTS.md"
 ENVS_AGENTS_MD_DST = "environments/AGENTS.md"
 
+LAB_SKILLS = [
+    "create-environments",
+    "browse-environments",
+    "review-environments",
+    "evaluate-environments",
+    "optimize-with-environments",
+    "train-with-environments",
+    "brainstorm",
+]
+PRIME_SKILLS_DIR = ".prime/skills"
+
 ConfigSpec = tuple[str, str, str]
 
 
@@ -152,6 +163,35 @@ def download_configs(configs: list[ConfigSpec]):
             print(f"{dst} already exists")
 
 
+def sync_endpoints_config():
+    """Ensure configs/endpoints.toml exists."""
+    os.makedirs(os.path.dirname(ENDPOINTS_DST), exist_ok=True)
+    if not os.path.exists(ENDPOINTS_DST):
+        wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)
+        print(f"\nDownloaded {ENDPOINTS_DST} from https://github.com/{VERIFIERS_REPO}")
+    else:
+        print(f"{ENDPOINTS_DST} already exists")
+
+
+def sync_prime_skills():
+    """Ensure .prime/skills contains the lab skill set."""
+    os.makedirs(PRIME_SKILLS_DIR, exist_ok=True)
+
+    for skill_name in LAB_SKILLS:
+        skill_src = (
+            f"https://raw.githubusercontent.com/{VERIFIERS_REPO}/refs/heads/"
+            f"{VERIFIERS_COMMIT}/skills/{skill_name}/SKILL.md"
+        )
+        skill_dst = os.path.join(PRIME_SKILLS_DIR, skill_name, "SKILL.md")
+        os.makedirs(os.path.dirname(skill_dst), exist_ok=True)
+
+        if not os.path.exists(skill_dst):
+            wget.download(skill_src, skill_dst)
+            print(f"\nDownloaded {skill_dst} from https://github.com/{VERIFIERS_REPO}")
+        else:
+            print(f"{skill_dst} already exists")
+
+
 def install_environments_to_prime_rl():
     """Install all environments from environments/ folder into prime-rl workspace."""
     envs_dir = "environments"
@@ -244,6 +284,7 @@ def run_setup(
 
     os.makedirs("configs", exist_ok=True)
     os.makedirs("environments", exist_ok=True)
+    sync_prime_skills()
 
     if not skip_agents_md:
         if os.path.exists(AGENTS_MD_DST):
@@ -267,11 +308,7 @@ def run_setup(
         install_prime_rl()
         install_environments_to_prime_rl()
 
-    if not os.path.exists(ENDPOINTS_DST):
-        wget.download(ENDPOINTS_SRC, ENDPOINTS_DST)
-        print(f"\nDownloaded {ENDPOINTS_DST} from https://github.com/{VERIFIERS_REPO}")
-    else:
-        print(f"{ENDPOINTS_DST} already exists")
+    sync_endpoints_config()
 
     configs_to_download: list[ConfigSpec] = []
     if prime_rl:

@@ -341,6 +341,7 @@ class TestMultiTurnEnv:
         assert "completion" in state  # Completion is set when is_completed returns True
         completion = state["completion"]
         assert isinstance(completion, list)
+        assert all(msg.get("role") == "text" for msg in completion)
         completion_text = "".join(str(msg.get("content", "")) for msg in completion)
         assert "First response" in completion_text
         assert "DONE" in completion_text

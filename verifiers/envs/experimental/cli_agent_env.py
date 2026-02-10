@@ -27,54 +27,11 @@ from verifiers.types import (
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
-    get_streaming_model_response,
+    response_to_chat_completion,
+    synthesize_stream,
 )
-from verifiers.utils.message_utils import normalize_messages
 
 logger = logging.getLogger(__name__)
-
-
-def _chat_completion_to_vf_response(chat_response: object, model: str) -> Response:
-    choice = getattr(chat_response, "choices", [None])[0]
-    message = getattr(choice, "message", None)
-    raw_tool_calls = getattr(message, "tool_calls", None) or []
-    tool_calls: list[vf.ToolCall] = []
-    for raw_tool_call in raw_tool_calls:
-        function_obj = getattr(raw_tool_call, "function", None)
-        tool_id = getattr(raw_tool_call, "id", None)
-        tool_name = getattr(function_obj, "name", None)
-        tool_args = getattr(function_obj, "arguments", None)
-        if (
-            isinstance(tool_id, str)
-            and isinstance(tool_name, str)
-            and isinstance(tool_args, str)
-        ):
-            tool_calls.append(
-                vf.ToolCall(id=tool_id, name=tool_name, arguments=tool_args)
-            )
-
-    finish_reason = getattr(choice, "finish_reason", None)
-    if finish_reason not in {"stop", "length", "tool_calls"}:
-        finish_reason = None
-
-    response_id = getattr(chat_response, "id", "")
-    created = getattr(chat_response, "created", int(time.time()))
-    response_model = getattr(chat_response, "model", model)
-
-    return Response(
-        id=response_id if isinstance(response_id, str) else "",
-        created=created if isinstance(created, int) else int(time.time()),
-        model=response_model if isinstance(response_model, str) else model,
-        usage=None,
-        message=vf.ResponseMessage(
-            content=getattr(message, "content", None),
-            reasoning_content=None,
-            tool_calls=tool_calls or None,
-            finish_reason=finish_reason,
-            is_truncated=finish_reason == "length",
-            tokens=None,
-        ),
-    )
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
@@ -411,46 +368,33 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 )
 
         response: Response | None = None
-        interception_response: object | None = None
         error: BaseException | None = None
 
         try:
-            # Handle streaming requests
-            if intercept and intercept.get("stream"):
-                streaming_prompt = normalize_messages(
-                    prompt, field_name="streaming prompt"
-                )
-                streamed_response = await get_streaming_model_response(
-                    state=state,
-                    prompt=streaming_prompt,
-                    intercept=intercept,
-                    client=client,
-                    model=model,
-                    native_tools=intercept.get("tools"),
-                    sampling_args=sampling_args,
-                )
-                interception_response = streamed_response
-                response = _chat_completion_to_vf_response(
-                    streamed_response, model or state["model"]
-                )
-            else:
-                response = await super().get_model_response(
-                    state=state,
-                    prompt=prompt,
-                    client=client,
-                    model=model,
-                    tool_defs=tool_defs,
-                    sampling_args=sampling_args,
-                    message_type=message_type,
-                )
-                interception_response = response
+            response = await super().get_model_response(
+                state=state,
+                prompt=prompt,
+                client=client,
+                model=model,
+                tool_defs=tool_defs,
+                sampling_args=sampling_args,
+                message_type=message_type,
+            )
         except BaseException as e:
             error = e
             raise
         finally:
             # Always unblock HTTP handler, even on exception
             if intercept:
-                deliver_response(intercept, interception_response, error)
+                if intercept.get("stream"):
+                    await synthesize_stream(intercept, response, error)
+                else:
+                    interception_response = (
+                        response_to_chat_completion(response)
+                        if response is not None
+                        else None
+                    )
+                    deliver_response(intercept, interception_response, error)
                 state["current_request_id"] = None
 
         assert response is not None
@@ -477,7 +421,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         async with self._tunnel_lock:
             if self._tunnel is not None:
                 try:
-                    await self._tunnel.stop()
+                    self._tunnel.sync_stop()
                     logger.debug("Prime Tunnel stopped")
                 except Exception as e:
                     logger.warning(f"Error stopping Prime Tunnel: {e}")

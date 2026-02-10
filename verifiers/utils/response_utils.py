@@ -1,7 +1,9 @@
 from verifiers.types import (
     AssistantMessage,
+    MessageType,
     Messages,
     Response,
+    TextMessage,
     TrajectoryStepTokens,
 )
 
@@ -9,9 +11,35 @@ from verifiers.types import (
 # --- New Response-based utilities ---
 
 
-async def parse_response_message(response: Response) -> Messages:
-    """Parse a vf.Response into a Messages list (single AssistantMessage)."""
+def _content_to_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+        return "".join(chunks)
+    return str(content)
+
+
+async def parse_response_message(
+    response: Response, message_type: MessageType = "chat"
+) -> Messages:
+    """Parse a vf.Response into a Messages list for chat or raw completion mode."""
     response_message = response.message
+    if message_type == "completion":
+        return [TextMessage(content=_content_to_text(response_message.content))]
+
     message = AssistantMessage(
         role="assistant",
         content=response_message.content,

@@ -4,17 +4,17 @@ import asyncio
 import importlib.util
 import logging
 import math
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import cast
-
-from datasets import disable_progress_bar, enable_progress_bar
-from datasets.utils import logging as ds_logging
+from typing import Callable, cast
 
 import numpy as np
+from datasets import disable_progress_bar, enable_progress_bar
+from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
@@ -67,13 +67,48 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         )
 
     endpoint = Endpoint(model=model, url=url, key=key)
-    client_type = raw_endpoint_dict.get("client_type")
-    if client_type is not None:
-        if client_type not in ("openai", "anthropic"):
-            raise ValueError(
-                f"Field 'client_type' must be 'openai' or 'anthropic' in {source}"
+
+    client_type_values = {
+        "api_client_type": raw_endpoint_dict.get("api_client_type"),
+        "type": raw_endpoint_dict.get("type"),
+        # Deprecated alias retained for endpoint-registry compatibility.
+        "client_type": raw_endpoint_dict.get("client_type"),
+    }
+    present_client_type_values = {
+        field: value for field, value in client_type_values.items() if value is not None
+    }
+    normalized_values = set(present_client_type_values.values())
+    if len(normalized_values) > 1:
+        raise ValueError(
+            "Conflicting values for client type fields "
+            f"{sorted(present_client_type_values.keys())} in {source}. "
+            "Use a single value via 'api_client_type' (preferred) or 'type' (shorthand)."
+        )
+
+    resolved_client_type = (
+        client_type_values["api_client_type"]
+        if client_type_values["api_client_type"] is not None
+        else client_type_values["type"]
+        if client_type_values["type"] is not None
+        else client_type_values["client_type"]
+    )
+    if resolved_client_type is not None:
+        if (
+            client_type_values["client_type"] is not None
+            and client_type_values["api_client_type"] is None
+            and client_type_values["type"] is None
+        ):
+            logger.warning(
+                "Field 'client_type' is deprecated in %s. "
+                "Use 'api_client_type' (preferred) or 'type' (shorthand).",
+                source,
             )
-        endpoint["client_type"] = cast(ClientType, client_type)
+        if resolved_client_type not in ("openai", "anthropic"):
+            raise ValueError(
+                "Field 'api_client_type' (or shorthand 'type') must be "
+                f"'openai' or 'anthropic' in {source}"
+            )
+        endpoint["api_client_type"] = cast(ClientType, resolved_client_type)
 
     return endpoint
 
@@ -303,6 +338,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         # logging
         "verbose",
+        "debug",
         # saving
         "state_columns",
         "save_results",
@@ -524,6 +560,10 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
             print_usage(task_results)
 
 
+def get_log_level(verbose: bool) -> str:
+    return "DEBUG" if verbose else os.getenv("VF_LOG_LEVEL", "INFO")
+
+
 @contextmanager
 def quiet_datasets():
     prev_level = ds_logging.get_verbosity()
@@ -539,6 +579,7 @@ def quiet_datasets():
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
+    on_log_file: Callable[[Path], None] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
 ) -> GenerateOutputs:
@@ -550,16 +591,31 @@ async def run_evaluation(
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    # start env server as sidecar process
-    try:
-        await vf_env.start_server(extra_env_kwargs=config.extra_env_kwargs)
+    results_path = config.resume_path or get_eval_results_path(config)
 
-        # run evaluation
-        results_path = config.resume_path or get_eval_results_path(config)
+    try:
+        if config.debug:
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level=get_log_level(config.verbose),
+            )
+        else:
+            log_file = results_path / "eval.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            await vf_env.start_server(
+                extra_env_kwargs=config.extra_env_kwargs,
+                log_level="CRITICAL",  # disable console logging
+                log_file=str(log_file),
+                log_file_level=get_log_level(config.verbose),
+            )
+            if on_log_file is not None:
+                on_log_file(log_file)
+
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
+
         effective_group_max_concurrent = config.max_concurrent
         if (
             not config.independent_scoring
@@ -684,6 +740,9 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)
 
+        def register_log_file(log_file: Path) -> None:
+            display.add_log_file_for_env(env_idx, log_file)
+
         display.update_env_state(env_idx, status="running")
         try:
             result = await run_evaluation(
@@ -691,6 +750,7 @@ async def run_evaluations_tui(config: EvalRunConfig, tui_mode: bool = True) -> N
                 on_start=on_start,
                 on_progress=on_progress,
                 on_log=on_log,
+                on_log_file=register_log_file,
             )
 
             # get save path if results were saved
