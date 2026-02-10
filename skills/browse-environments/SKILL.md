@@ -11,7 +11,7 @@ Use Prime ecosystem commands to discover environments quickly, inspect quality s
 ## Primary Discovery Workflow
 1. List candidate environments:
 ```bash
-prime env list --search "math" --sort stars --show-actions
+prime env list --search "math" --owner primeintellect --show-actions
 ```
 2. Narrow results with owner, tags, mine, or starred filters:
 ```bash
@@ -19,12 +19,17 @@ prime env list --owner primeintellect --tag tools --tag sandbox
 prime env list --mine
 prime env list --starred
 ```
-3. Inspect details for shortlisted candidates:
+3. Prioritize quality and freshness signals:
+   - Prefer environments published by `primeintellect` first.
+   - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
+   - Prefer candidates updated in roughly the last 2 months.
+   - Prefer candidates on version `v0.1.8` or newer.
+4. Inspect details for shortlisted candidates:
 ```bash
 prime env info owner/name
 prime env status owner/name
 ```
-4. Pull source for deep inspection when needed:
+5. Pull source for deep inspection when needed:
 ```bash
 prime env pull owner/name -t ./tmp-env
 ```
@@ -35,7 +40,8 @@ For each candidate, collect:
 2. Reward type: binary, continuous, judge-based, mixed.
 3. Dependencies and secrets requirements.
 4. Latest action status and version signal.
-5. Fit to user goal: eval-only, GEPA, RL, or benchmark migration.
+5. Recency signal: last updated date (target within ~2 months).
+6. Fit to user goal: eval-only, GEPA, RL, or benchmark migration.
 
 ## Endpoint And Model Selection Nudge
 1. Encourage users to configure endpoint aliases in `configs/endpoints.toml` before comparison evals.
