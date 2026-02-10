@@ -1,9 +1,15 @@
+import functools
 import json
 import time
 from collections.abc import Mapping
 from typing import Any, cast
 
-from anthropic import AsyncAnthropic
+from anthropic import (
+    AsyncAnthropic,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+)
 from anthropic.types import (
     ContentBlock,
     TextBlockParam,
@@ -21,6 +27,7 @@ from anthropic.types import (
 )
 
 from verifiers.clients.client import Client
+from verifiers.errors import OverlongPromptError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -39,6 +46,32 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_anthropic_client
+
+
+def handle_overlong_prompt(func):
+    """Decorator to handle overlong prompt errors from the Anthropic API."""
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except (AuthenticationError, PermissionDeniedError):
+            raise
+        except BadRequestError as e:
+            error_text = e.message.lower()
+            context_length_phrases = [
+                "prompt is too long",
+                "exceed context limit",
+                "exceeds context limit",
+                "too many total text bytes",
+                "context length",
+                "input is too long",
+            ]
+            if any(phrase in error_text for phrase in context_length_phrases):
+                raise OverlongPromptError from e
+            raise
+
+    return wrapper
 
 
 class AnthropicMessagesClient(
@@ -245,6 +278,7 @@ class AnthropicMessagesClient(
             input_schema=tool.parameters,
         )
 
+    @handle_overlong_prompt
     async def get_native_response(
         self,
         prompt: list[AnthropicMessageParam],
@@ -349,8 +383,8 @@ class AnthropicMessagesClient(
                 total_tokens=input_tokens + output_tokens,
             ),
             message=ResponseMessage(
-                content=content or None,
-                reasoning_content=reasoning_content or None
+                content=content,
+                reasoning_content=(reasoning_content or None)
                 if self.interleaved_thinking
                 else None,
                 tool_calls=tool_calls or None,
