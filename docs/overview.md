@@ -100,7 +100,7 @@ In the TUI, press `c` to open Copy Mode for prompt/completion text; highlight an
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
 ```bash
-prime env push --path ./environments/my_env
+prime env push my-env # equivalent to --path ./environments/my_env
 ```
 
 To run an evaluation directly from the Environments Hub, do:
