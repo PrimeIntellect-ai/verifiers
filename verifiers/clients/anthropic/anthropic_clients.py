@@ -35,6 +35,7 @@ from verifiers.types import (
     Tool,
     ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_anthropic_client
@@ -334,11 +335,19 @@ class AnthropicMessagesClient(
         content, reasoning_content, tool_calls = parse_content(response.content)
         is_truncated = response.stop_reason == "max_tokens"
 
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+
         return Response(
             id=response.id,
             model=response.model,
             created=int(time.time()),
-            usage=None,
+            usage=Usage(
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                reasoning_tokens=0,
+                total_tokens=input_tokens + output_tokens,
+            ),
             message=ResponseMessage(
                 content=content or None,
                 reasoning_content=reasoning_content or None,

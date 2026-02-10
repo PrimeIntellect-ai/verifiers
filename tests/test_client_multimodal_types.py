@@ -11,6 +11,7 @@ from verifiers.types import (
     TextContentPart,
     ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
 
@@ -146,3 +147,33 @@ async def test_anthropic_merges_consecutive_tool_results_into_single_user_messag
         {"type": "tool_result", "tool_use_id": "call_1", "content": "result a"},
         {"type": "tool_result", "tool_use_id": "call_2", "content": "result b"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_from_native_response_extracts_usage():
+    anthropic = pytest.importorskip("anthropic")
+    from anthropic.types import Message as AnthropicMessage
+
+    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+
+    native_response = AnthropicMessage(
+        id="msg_test123",
+        type="message",
+        role="assistant",
+        content=[{"type": "text", "text": "Hello!"}],
+        model="claude-haiku-4-5",
+        stop_reason="end_turn",
+        stop_sequence=None,
+        usage=anthropic.types.Usage(input_tokens=42, output_tokens=17),
+    )
+
+    response = await client.from_native_response(native_response)
+
+    assert response.usage is not None
+    assert isinstance(response.usage, Usage)
+    assert response.usage.prompt_tokens == 42
+    assert response.usage.completion_tokens == 17
+    assert response.usage.total_tokens == 59
+    assert response.usage.reasoning_tokens == 0
