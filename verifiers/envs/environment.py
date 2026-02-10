@@ -63,7 +63,6 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
-    SystemMessage,
     Tool,
     TokenUsage,
 )
@@ -338,14 +337,18 @@ class Environment(ABC):
                     assert isinstance(prompt, list), (
                         f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
                     )
-                    normalized_prompt = normalize_messages(
-                        prompt, field_name="dataset prompt"
+                    # Check if a system message already exists (first message)
+                    first = prompt[0] if prompt else None
+                    first_role = (
+                        first.get("role")
+                        if isinstance(first, dict)
+                        else getattr(first, "role", None)
                     )
-                    if normalized_prompt and isinstance(
-                        normalized_prompt[0], SystemMessage
-                    ):
-                        return normalized_prompt
-                    return [SystemMessage(content=system_prompt), *normalized_prompt]
+                    if first_role == "system":
+                        return prompt
+                    # Prepend as a plain dict so Arrow/HuggingFace can serialize.
+                    # Normalization to Pydantic happens later in init_state.
+                    return [{"role": "system", "content": system_prompt}, *prompt]
 
                 dataset = dataset.map(
                     lambda x: {"prompt": prepend_system_prompt(x["prompt"])},

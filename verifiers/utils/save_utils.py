@@ -245,7 +245,7 @@ def state_to_output(
     if "info" in output and not output["info"]:
         output.pop("info")
     # flatten metrics to top-level keys (backwards compatibility)
-    state_metrics = state.get("metrics", {})
+    state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():
         output[k] = v
     # add state columns (must be serializable)
