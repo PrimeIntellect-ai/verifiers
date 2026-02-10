@@ -1,4 +1,6 @@
 default_install_hook_types: [pre-commit, pre-push]
+# Exclude Harbor task assets from linting
+exclude: ^environments/.*/tasks/
 
 repos:
   - repo: local

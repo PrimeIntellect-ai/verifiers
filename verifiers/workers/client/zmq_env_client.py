@@ -23,7 +23,7 @@ from verifiers.workers.types import (
 class ZMQEnvClient(EnvClient):
     """ZMQ-based environment client."""
 
-    DEFAULT_REQUEST_TIMEOUT_S = 600.0
+    DEFAULT_REQUEST_TIMEOUT = 36_000  # 10h
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000"):
         super().__init__(address=address)
@@ -68,11 +68,7 @@ class ZMQEnvClient(EnvClient):
         """Fail all pending futures with the given reason."""
         pending_count = len(self.pending)
         if pending_count:
-            self.logger.warning(
-                "Failing %d pending request(s): %s",
-                pending_count,
-                reason,
-            )
+            self.logger.warning(f"Failing {pending_count} pending request(s): {reason}")
         for _, future in list(self.pending.items()):
             if not future.done():
                 future.set_exception(RuntimeError(reason))
@@ -100,11 +96,6 @@ class ZMQEnvClient(EnvClient):
                         try:
                             response = msgpack.unpackb(response_data, raw=False)
                             future.set_result(response)
-                            self.logger.debug(
-                                "Resolved request_id=%s (pending=%d)",
-                                request_id,
-                                len(self.pending),
-                            )
                         except Exception as unpack_error:
                             # Unpacking failed - fail the specific future
                             self.logger.error(
@@ -117,9 +108,7 @@ class ZMQEnvClient(EnvClient):
                             )
                 else:
                     self.logger.warning(
-                        "Received response for unknown request_id=%s (pending=%d)",
-                        request_id,
-                        len(self.pending),
+                        f"Received response for unknown request_id={request_id} (pending={len(self.pending)})"
                     )
 
             except asyncio.CancelledError:
@@ -138,7 +127,6 @@ class ZMQEnvClient(EnvClient):
     async def _start(self):
         self._receiver_task = asyncio.create_task(self._receive_loop())
         self.socket.connect(self.address)
-        self.logger.debug("ZMQ client started")
 
     async def _send_request(
         self,
@@ -153,9 +141,7 @@ class ZMQEnvClient(EnvClient):
                 if self._receiver_task is None:
                     await self._start()
 
-        effective_timeout = (
-            self.DEFAULT_REQUEST_TIMEOUT_S if timeout is None else timeout
-        )
+        effective_timeout = self.DEFAULT_REQUEST_TIMEOUT if timeout is None else timeout
 
         # Use request_id from Pydantic model, encode to bytes for ZMQ frame
         request_id = uuid.uuid4().hex
@@ -172,14 +158,6 @@ class ZMQEnvClient(EnvClient):
 
         future: asyncio.Future[dict] = asyncio.Future()
         self.pending[request_id] = future
-        self.logger.debug(
-            "Sending %s request_id=%s timeout=%.1fs (pending=%d)",
-            request.request_type,
-            request_id,
-            effective_timeout,
-            len(self.pending),
-        )
-
         await self.socket.send_multipart([request_id.encode(), payload_bytes])
 
         try:
@@ -187,11 +165,7 @@ class ZMQEnvClient(EnvClient):
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
             self.logger.error(
-                "Timed out waiting for request_id=%s type=%s after %.1fs (pending=%d)",
-                request_id,
-                request.request_type,
-                effective_timeout,
-                len(self.pending),
+                f"Timed out waiting for request_id={request_id} type={request.request_type} after {effective_timeout:.1f}s (pending={len(self.pending)})"
             )
             raise TimeoutError(
                 f"Environment timeout for {request.request_type} request after {effective_timeout}s"
@@ -201,7 +175,7 @@ class ZMQEnvClient(EnvClient):
         response = response_type.model_validate(raw_response)
 
         if not response.success:
-            raise RuntimeError(f"Server error: {response.error}")
+            raise RuntimeError(response.error)
 
         return response
 
@@ -222,4 +196,3 @@ class ZMQEnvClient(EnvClient):
         # Close socket and terminate context
         self.socket.close()
         self.ctx.term()
-        self.logger.debug("ZMQ client closed")
