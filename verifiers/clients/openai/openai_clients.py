@@ -2,7 +2,12 @@ import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import (
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+)
 from openai.types import Completion
 from openai.types.chat import (
     ChatCompletion,
@@ -32,7 +37,6 @@ from verifiers.clients.client import Client
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
-    ModelError,
     OverlongPromptError,
 )
 from verifiers.types import (
@@ -65,20 +69,13 @@ def handle_overlong_prompt(func):
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
-        except Exception as e:
-            if isinstance(e, BadRequestError):
-                error_text = e.response.text.lower()
-                context_length_phrases = [
-                    "this model's maximum context length is",
-                    "is longer than the model's context length",
-                    "exceeds the model's context length",
-                    "exceed the configured limit",
-                    "exceeds the configured limit",
-                    "exceeded model",
-                ]
-                if any(phrase in error_text for phrase in context_length_phrases):
-                    raise OverlongPromptError from e
-            raise ModelError from e
+        except (AuthenticationError, PermissionDeniedError):
+            raise
+        except BadRequestError as e:
+            error_text = e.response.text.lower()
+            if "context length" in error_text or "prompt_too_long" in error_text:
+                raise OverlongPromptError from e
+            raise
 
     return wrapper
 

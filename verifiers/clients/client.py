@@ -2,6 +2,15 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from anthropic import (
+    AuthenticationError as AnthropicAuthenticationError,
+)
+from anthropic import (
+    PermissionDeniedError as AnthropicPermissionDeniedError,
+)
+from openai import AuthenticationError as OpenAIAuthenticationError
+from openai import PermissionDeniedError as OpenAIPermissionDeniedError
+
 from verifiers.errors import Error, ModelError
 from verifiers.types import (
     ClientConfig,
@@ -18,6 +27,13 @@ ClientT = TypeVar("ClientT")
 MessagesT = TypeVar("MessagesT")
 ResponseT = TypeVar("ResponseT")
 ToolT = TypeVar("ToolT")
+
+AUTH_ERRORS: tuple[type[Exception], ...] = (
+    OpenAIAuthenticationError,
+    OpenAIPermissionDeniedError,
+    AnthropicAuthenticationError,
+    AnthropicPermissionDeniedError,
+)
 
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
@@ -104,6 +120,8 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
             response = await self.from_native_response(native_response)
             return response
         except Error:
+            raise
+        except AUTH_ERRORS:
             raise
         except Exception as e:
             raise ModelError from e
