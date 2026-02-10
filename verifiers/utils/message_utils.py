@@ -190,13 +190,14 @@ def format_messages(messages: Any) -> Text:
         content = _attr_or_key(msg, "content", "")
         style = "bright_cyan" if role == "assistant" else "bright_magenta"
 
-        out.append(f"{role}: ", style="bold")
-        out.append(str(content) if content else "", style=style)
-
         reasoning_content = _attr_or_key(msg, "reasoning_content")
         if isinstance(reasoning_content, str) and reasoning_content.strip():
-            out.append("\n\n[reasoning]\n", style="dim")
+            out.append("[reasoning]\n", style="dim")
             out.append(reasoning_content, style="dim")
+            out.append("\n\n")
+
+        out.append(f"{role}: ", style="bold")
+        out.append(str(content) if content else "", style=style)
 
         tool_calls = _attr_or_key(msg, "tool_calls")
         for tc in tool_calls or []:
