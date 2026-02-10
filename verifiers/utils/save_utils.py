@@ -189,8 +189,6 @@ def state_to_output(
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
     )
-    # Backward-compatible alias while downstream consumers migrate to `tool_defs`.
-    output["oai_tools"] = output.get("tool_defs")
     usage = _extract_state_token_usage(state)
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.
@@ -217,18 +215,10 @@ def state_to_output(
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
-        output_prompt = sanitize_tool_calls(messages_to_printable(prompt))
-        if state.get("message_type") == "completion":
-            output["prompt"] = _flatten_messages_content(output_prompt)
-        else:
-            output["prompt"] = output_prompt
+        output["prompt"] = sanitize_tool_calls(messages_to_printable(prompt))
     completion = state.get("completion")
     if completion is not None:
-        output_completion = sanitize_tool_calls(messages_to_printable(completion))
-        if state.get("message_type") == "completion":
-            output["completion"] = _flatten_messages_content(output_completion)
-        else:
-            output["completion"] = output_completion
+        output["completion"] = sanitize_tool_calls(messages_to_printable(completion))
     # use repr for error
     if state.get("error") is not None:
         error_chain = ErrorChain(state.get("error"))
@@ -320,10 +310,7 @@ class GenerateOutputsBuilder:
         """Accumulate new outputs."""
         self.outputs.extend(new_outputs)
         for output in new_outputs:
-            self.tools_list.append(
-                output.get("tool_defs")
-                or cast(list[Tool] | None, output.get("oai_tools"))
-            )
+            self.tools_list.append(output.get("tool_defs"))
 
     def build_metadata(self) -> GenerateMetadata:
         """Build metadata from accumulated outputs."""

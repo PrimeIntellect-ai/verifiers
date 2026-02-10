@@ -136,10 +136,10 @@ def main():
         help="Name of model to evaluate",
     )
     parser.add_argument(
-        "--client-type",
+        "--api-client-type",
         type=str,
         default=None,
-        help="Which client to use ('openai' or 'anthropic')",
+        help="Which API client to use ('openai' or 'anthropic')",
         choices=["openai", "anthropic"],
     )
     parser.add_argument(
@@ -374,7 +374,7 @@ def main():
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
         )
-        raw_client_type = raw.get("client_type")
+        raw_client_type = raw.get("api_client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
         if isinstance(raw_api_base_url, list):
@@ -414,11 +414,11 @@ def main():
             client_type = _normalize_client_type(
                 raw_client_type
                 if client_type_override
-                else endpoint.get("client_type", DEFAULT_CLIENT_TYPE)
+                else endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
             )
             if api_key_override or api_base_url_override or client_type_override:
                 logger.debug(
-                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, client_type: %s)",
+                    "Using endpoint registry for model '%s' with overrides (key: %s, url: %s, api_client_type: %s)",
                     model,
                     "override" if api_key_override else "registry",
                     "override" if api_base_url_override else "registry",

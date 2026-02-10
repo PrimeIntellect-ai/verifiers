@@ -233,7 +233,7 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
-    def test_states_to_outputs_completion_flattens_messages(self, make_state):
+    def test_states_to_outputs_completion_keeps_messages(self, make_state):
         states = [
             make_state(
                 prompt=[
@@ -252,8 +252,14 @@ class TestSavingResults:
         ]
         outputs = states_to_outputs(states, state_columns=[])
         result = json.loads(json.dumps(outputs, default=make_serializable))
-        assert result[0]["prompt"] == "Start:First response Continue."
-        assert result[0]["completion"] == "Final DONE"
+        assert result[0]["prompt"] == [
+            {"role": "text", "content": "Start:"},
+            {"role": "assistant", "content": "First response"},
+            {"role": "text", "content": " Continue."},
+        ]
+        assert result[0]["completion"] == [
+            {"role": "assistant", "content": "Final DONE"},
+        ]
 
     def test_non_serializable_state_column_raises(self, make_state):
         """Non-serializable state_columns should raise ValueError."""

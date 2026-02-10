@@ -204,8 +204,8 @@ class VersionInfo(TypedDict):
 
 
 class TrajectoryStep(TypedDict):
-    prompt: Messages | str
-    completion: Messages | str
+    prompt: Messages
+    completion: Messages
     response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
@@ -251,15 +251,15 @@ class RolloutOutput(dict):
     Required fields: example_id, task, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     oai_tools (deprecated alias), token_usage
+                     token_usage
     Additional fields: arbitrary serializable state_columns
     """
 
     # Required fields
     example_id: int
     task: str
-    prompt: Messages | str | None
-    completion: Messages | str | None
+    prompt: Messages | None
+    completion: Messages | None
     reward: float
     timing: RolloutTiming
     is_completed: bool
@@ -272,7 +272,6 @@ class RolloutOutput(dict):
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
-    oai_tools: list[Tool]  # deprecated alias; mirrors tool_defs in serialized output
     token_usage: TokenUsage
 
 
@@ -289,7 +288,7 @@ class State(dict):
     stop_condition: str | None
     tool_defs: list[Tool]
     trajectory: list[TrajectoryStep]
-    completion: Messages | str | None
+    completion: Messages | None
     reward: float | None
     advantage: float | None
     metrics: dict[str, float] | None
@@ -384,7 +383,7 @@ Endpoint = TypedDict(
         "key": str,
         "url": str,
         "model": str,
-        "client_type": NotRequired[ClientType],
+        "api_client_type": NotRequired[ClientType],
     },
 )
 Endpoints = dict[str, list[Endpoint]]
