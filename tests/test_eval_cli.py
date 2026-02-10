@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
-from verifiers.utils.save_utils import states_to_outputs
+from verifiers.utils.save_utils import save_metadata, save_outputs, states_to_outputs
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def run_cli(make_metadata, make_state, make_input):
         overrides,
         capture_all_configs: bool = False,
         endpoints: dict | None = None,
+        run_evaluation_impl=None,
     ):
         """Run CLI with mocked arguments and capture config(s).
 
@@ -49,6 +51,7 @@ def run_cli(make_metadata, make_state, make_input):
             "no_interleave_scoring": False,
             "state_columns": [],
             "save_results": False,
+            "save_image_mode": "base64",
             "resume": None,
             "save_every": -1,
             "save_to_hf_hub": False,
@@ -73,6 +76,12 @@ def run_cli(make_metadata, make_state, make_input):
         monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
 
         async def fake_run_evaluation(config, **kwargs):
+            if run_evaluation_impl is not None:
+                result = await run_evaluation_impl(config, **kwargs)
+                captured["sampling_args"] = dict(config.sampling_args)
+                captured["configs"].append(config)
+                return result
+
             captured["sampling_args"] = dict(config.sampling_args)
             captured["configs"].append(config)
             _make_metadata = make_metadata
@@ -858,3 +867,108 @@ def test_cli_toml_resume_false_disables_global_resume(monkeypatch, run_cli):
     assert configs[0].resume_path is None
     assert configs[1].env_id == "env-b"
     assert configs[1].resume_path is None
+
+
+def test_cli_save_dataset_with_base64_images(
+    monkeypatch, run_cli, make_metadata, make_state, tmp_path: Path
+):
+    saved_results_path: Path | None = None
+
+    async def fake_run_evaluation(config, **kwargs):
+        nonlocal saved_results_path
+        state = make_state(
+            prompt=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "question"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                        },
+                    ],
+                }
+            ],
+            completion=[{"role": "assistant", "content": "ok"}],
+            reward=1.0,
+        )
+
+        outputs = states_to_outputs(
+            [state],
+            image_mode=config.save_image_mode,
+            max_image_base64_chars=config.max_image_base64_chars,
+        )
+        saved_results_path = tmp_path / "results"
+        metadata = make_metadata(
+            env_id=config.env_id,
+            model=config.model,
+            sampling_args=config.sampling_args,
+            num_examples=config.num_examples,
+            rollouts_per_example=config.rollouts_per_example,
+            path_to_save=saved_results_path,
+            save_image_mode=config.save_image_mode,
+        )
+        if config.save_results:
+            save_outputs(outputs, saved_results_path)
+            save_metadata(metadata, saved_results_path)
+        return GenerateOutputs(outputs=outputs, metadata=metadata)
+
+    run_cli(
+        monkeypatch,
+        {
+            "save_results": True,
+            "save_image_mode": "base64",
+            "debug": True,
+        },
+        run_evaluation_impl=fake_run_evaluation,
+    )
+
+    assert saved_results_path is not None
+    results_file = saved_results_path / "results.jsonl"
+    assert results_file.exists()
+    row = json.loads(results_file.read_text(encoding="utf-8").splitlines()[0])
+    assert row["prompt"][0]["content"] == "question\n\n[image]"
+    assert row["prompt"][0]["images"][0]["media_type"] == "image/png"
+    assert row["prompt"][0]["images"][0]["base64"] == "QUJDRA=="
+
+
+def test_cli_save_dataset_base64_limit_enforced(
+    monkeypatch, run_cli, make_metadata, make_state
+):
+    monkeypatch.setattr(vf_eval, "MAX_IMAGE_BASE64_CHARS", 4)
+
+    async def fake_run_evaluation(config, **kwargs):
+        state = make_state(
+            prompt=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "question"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                        },
+                    ],
+                }
+            ],
+            completion=[{"role": "assistant", "content": "ok"}],
+            reward=1.0,
+        )
+        outputs = states_to_outputs(
+            [state],
+            image_mode=config.save_image_mode,
+            max_image_base64_chars=config.max_image_base64_chars,
+        )
+        metadata = make_metadata(save_image_mode=config.save_image_mode)
+        return GenerateOutputs(outputs=outputs, metadata=metadata)
+
+    with pytest.raises(ValueError, match="exceeds max_image_base64_chars"):
+        run_cli(
+            monkeypatch,
+            {
+                "save_results": True,
+                "save_image_mode": "base64",
+                "debug": True,
+            },
+            run_evaluation_impl=fake_run_evaluation,
+        )

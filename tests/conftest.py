@@ -559,6 +559,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
         state_columns: list[str] = ["foo"],
         path_to_save: Path = Path("test.jsonl"),
         tools: list[Tool] | None = None,
+        save_image_mode: str = "base64",
     ) -> GenerateMetadata:
         if version_info is None:
             version_info = {
@@ -584,6 +585,7 @@ def make_metadata() -> Callable[..., GenerateMetadata]:
             state_columns=state_columns,
             path_to_save=path_to_save,
             tools=tools,
+            save_image_mode=save_image_mode,
         )
 
     return _make_metadata

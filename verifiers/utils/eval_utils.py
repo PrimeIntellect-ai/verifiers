@@ -34,6 +34,7 @@ from verifiers.types import (
 from verifiers.utils.async_utils import EventLoopLagMonitor
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
+from verifiers.utils.message_utils import ImageMode
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
@@ -332,6 +333,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # saving
         "state_columns",
         "save_results",
+        "save_image_mode",
         "resume",
         "resume_path",
         "save_to_hf_hub",
@@ -605,6 +607,16 @@ async def run_evaluation(
         logger.debug(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
         )
+        save_image_mode = (
+            config.save_image_mode
+            if config.save_results
+            else ImageMode.PLACEHOLDER.value
+        )
+        max_image_base64_chars = (
+            config.max_image_base64_chars
+            if config.save_results and save_image_mode == ImageMode.BASE64.value
+            else None
+        )
 
         effective_group_max_concurrent = config.max_concurrent
         if (
@@ -632,6 +644,8 @@ async def run_evaluation(
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
+            image_mode=save_image_mode,
+            max_image_base64_chars=max_image_base64_chars,
             push_to_hf_hub=config.save_to_hf_hub,
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             independent_scoring=config.independent_scoring,
