@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from aiohttp import web
 from openai.types.chat import (
@@ -28,6 +28,10 @@ from openai.types.chat.chat_completion_message_tool_call import (
 from verifiers.types import Response
 
 logger = logging.getLogger(__name__)
+
+ChatCompletionFinishReason = Literal[
+    "stop", "length", "tool_calls", "content_filter", "function_call"
+]
 
 
 class InterceptionServer:
@@ -227,9 +231,15 @@ class InterceptionServer:
         return response
 
 
-def _normalize_finish_reason(finish_reason: str | None) -> str:
-    if finish_reason in {"stop", "length", "tool_calls"}:
-        return finish_reason
+def _normalize_finish_reason(
+    finish_reason: str | None,
+) -> ChatCompletionFinishReason:
+    if finish_reason == "stop":
+        return "stop"
+    if finish_reason == "length":
+        return "length"
+    if finish_reason == "tool_calls":
+        return "tool_calls"
     return "stop"
 
 
@@ -242,8 +252,9 @@ def _content_to_text(content: object) -> str | None:
         chunks: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                if part.get("type") == "text":
-                    text = part.get("text")
+                part_dict = cast(dict[str, Any], part)
+                if part_dict.get("type") == "text":
+                    text = part_dict.get("text")
                     if isinstance(text, str):
                         chunks.append(text)
                 continue

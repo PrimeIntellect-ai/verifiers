@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from verifiers.types import (
     AssistantMessage,
     MessageType,
@@ -20,8 +22,9 @@ def _content_to_text(content: object) -> str:
         chunks: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                if part.get("type") == "text":
-                    text = part.get("text")
+                part_dict = cast(dict[str, Any], part)
+                if part_dict.get("type") == "text":
+                    text = part_dict.get("text")
                     if isinstance(text, str):
                         chunks.append(text)
                 continue
