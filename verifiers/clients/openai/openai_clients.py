@@ -621,13 +621,15 @@ class OAIChatCompletionsTokenClient(OAIChatCompletionsClient):
     ) -> OpenAIChatResponse:
         def normalize_sampling_args(sampling_args: SamplingArgs):
             sampling_args = dict(sampling_args)
+            if "max_tokens" in sampling_args:
+                sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             sampling_args["logprobs"] = True
             extra_body = dict(return_token_ids=True)
             if "extra_body" in sampling_args:
                 sampling_args["extra_body"].update(extra_body)
             else:
                 sampling_args["extra_body"] = extra_body
-            return sampling_args
+            return {k: v for k, v in sampling_args.items() if v is not None}
 
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
