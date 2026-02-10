@@ -626,7 +626,10 @@ class OAIChatCompletionsTokenClient(OAIChatCompletionsClient):
             sampling_args["logprobs"] = True
             extra_body = dict(return_token_ids=True)
             if "extra_body" in sampling_args:
-                sampling_args["extra_body"].update(extra_body)
+                sampling_args["extra_body"] = {
+                    **sampling_args["extra_body"],
+                    **extra_body,
+                }
             else:
                 sampling_args["extra_body"] = extra_body
             return {k: v for k, v in sampling_args.items() if v is not None}
