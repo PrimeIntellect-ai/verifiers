@@ -47,9 +47,64 @@ def _normalize_raw_message_content(message: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+def _normalize_raw_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("role") != "assistant":
+        return message
+
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return message
+
+    normalized_tool_calls: list[Any] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            normalized_tool_calls.append(tool_call)
+            continue
+
+        if "name" in tool_call and "arguments" in tool_call:
+            normalized_tool_calls.append(tool_call)
+            continue
+
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            normalized_tool_calls.append(tool_call)
+            continue
+
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if not isinstance(name, str):
+            normalized_tool_calls.append(tool_call)
+            continue
+
+        if isinstance(arguments, str):
+            arguments_str = arguments
+        else:
+            try:
+                arguments_str = json.dumps(arguments if arguments is not None else {})
+            except (TypeError, ValueError):
+                arguments_str = str(arguments)
+
+        tool_call_id = tool_call.get("id")
+        if not isinstance(tool_call_id, str):
+            tool_call_id = name
+
+        normalized_tool_calls.append(
+            {
+                "id": tool_call_id,
+                "name": name,
+                "arguments": arguments_str,
+            }
+        )
+
+    message = dict(message)
+    message["tool_calls"] = normalized_tool_calls
+    return message
+
+
 def from_raw_message(message: dict) -> Message:
     """Convert a raw dict to the appropriate Pydantic message type."""
     message = _normalize_raw_message_content(message)
+    message = _normalize_raw_tool_calls(message)
     if message["role"] == "text":
         return TextMessage.model_validate(message)
     elif message["role"] == "system":
