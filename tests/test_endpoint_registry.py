@@ -36,9 +36,7 @@ def test_load_endpoints_python_registry_preserves_api_client_type(tmp_path: Path
     assert endpoints["haiku"][0]["api_client_type"] == "anthropic"
 
 
-def test_load_endpoints_python_registry_accepts_legacy_client_type_alias(
-    tmp_path: Path,
-):
+def test_load_endpoints_python_registry_rejects_client_type_alias(tmp_path: Path):
     registry_path = tmp_path / "endpoints.py"
     registry_path.write_text(
         "ENDPOINTS = {\n"
@@ -49,7 +47,7 @@ def test_load_endpoints_python_registry_accepts_legacy_client_type_alias(
 
     endpoints = load_endpoints(str(registry_path))
 
-    assert endpoints["haiku"][0]["api_client_type"] == "anthropic"
+    assert endpoints == {}
 
 
 def test_load_endpoints_toml_groups_variants_by_endpoint_id(tmp_path: Path):
@@ -141,6 +139,23 @@ def test_load_endpoints_toml_rejects_conflicting_client_type_fields(tmp_path: Pa
         'key = "ANTHROPIC_API_KEY"\n'
         'type = "anthropic"\n'
         'api_client_type = "openai"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints == {}
+
+
+def test_load_endpoints_toml_rejects_client_type_alias(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "haiku"\n'
+        'model = "claude-haiku-4-5"\n'
+        'url = "https://api.anthropic.com"\n'
+        'key = "ANTHROPIC_API_KEY"\n'
+        'client_type = "anthropic"\n',
         encoding="utf-8",
     )
 

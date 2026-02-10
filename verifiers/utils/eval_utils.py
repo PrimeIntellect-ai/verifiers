@@ -68,41 +68,30 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
 
     endpoint = Endpoint(model=model, url=url, key=key)
 
-    client_type_values = {
-        "api_client_type": raw_endpoint_dict.get("api_client_type"),
-        "type": raw_endpoint_dict.get("type"),
-        # Deprecated alias retained for endpoint-registry compatibility.
-        "client_type": raw_endpoint_dict.get("client_type"),
-    }
-    present_client_type_values = {
-        field: value for field, value in client_type_values.items() if value is not None
-    }
-    normalized_values = set(present_client_type_values.values())
-    if len(normalized_values) > 1:
+    if "client_type" in raw_endpoint_dict:
+        raise ValueError(
+            f"Field 'client_type' is not supported in {source}. "
+            "Use 'api_client_type' (preferred) or 'type' (shorthand)."
+        )
+
+    api_client_type = raw_endpoint_dict.get("api_client_type")
+    shorthand_type = raw_endpoint_dict.get("type")
+    if (
+        api_client_type is not None
+        and shorthand_type is not None
+        and api_client_type != shorthand_type
+    ):
         raise ValueError(
             "Conflicting values for client type fields "
-            f"{sorted(present_client_type_values.keys())} in {source}. "
+            "['api_client_type', 'type'] "
+            f"in {source}. "
             "Use a single value via 'api_client_type' (preferred) or 'type' (shorthand)."
         )
 
     resolved_client_type = (
-        client_type_values["api_client_type"]
-        if client_type_values["api_client_type"] is not None
-        else client_type_values["type"]
-        if client_type_values["type"] is not None
-        else client_type_values["client_type"]
+        api_client_type if api_client_type is not None else shorthand_type
     )
     if resolved_client_type is not None:
-        if (
-            client_type_values["client_type"] is not None
-            and client_type_values["api_client_type"] is None
-            and client_type_values["type"] is None
-        ):
-            logger.warning(
-                "Field 'client_type' is deprecated in %s. "
-                "Use 'api_client_type' (preferred) or 'type' (shorthand).",
-                source,
-            )
         if resolved_client_type not in ("openai", "anthropic"):
             raise ValueError(
                 "Field 'api_client_type' (or shorthand 'type') must be "
@@ -323,6 +312,8 @@ def load_toml_config(path: Path) -> list[dict]:
         # model/client
         "endpoint_id",
         "model",
+        "api_client_type",
+        "type",
         "api_key_var",
         "api_base_url",
         "header",

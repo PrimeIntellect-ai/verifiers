@@ -385,8 +385,6 @@ Endpoint = TypedDict(
         "url": str,
         "model": str,
         "api_client_type": NotRequired[ClientType],
-        # Deprecated alias retained for endpoint-registry compatibility.
-        "client_type": NotRequired[ClientType],
     },
 )
 Endpoints = dict[str, list[Endpoint]]

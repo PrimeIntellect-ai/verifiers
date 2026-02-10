@@ -7,3 +7,5 @@ Use this guidance when contributing to the `verifiers` repository itself.
 - Keep changes aligned with documented architecture (`verifiers/`, `environments/`, `configs/`, `tests/`, `docs/`) and update docs when behavior changes. (See `docs/development.md`.)
 - Prefer a single clear path over maintaining parallel approaches by default; if two options exist, preserve both only when there is an explicit long-term reason.
 - Aggressively deprecate/remove inferior paths when they are not part of an intended multi-option contract, especially in repo-internal development workflows.
+- Do not add backward-compatibility shims unless the user explicitly requests or approves them.
+- If a change is major and a temporary shim is plausible, ask the user whether they want that shim before adding one; if they request a breaking change, proceed without a shim by default.

@@ -78,7 +78,8 @@ uv run pre-commit install
 ### Scope
 - Small, focused diffs
 - One change per PR
-- Backward compatibility is only desirable if it can be done without introducing excessive maintenance burden
+- Do not add backward-compatibility shims unless the user explicitly requests or approves them
+- For major changes where a temporary shim is plausible, ask the user first whether they want the shim
 - Delete dead code (don't guard it)
 
 ### Checklist
