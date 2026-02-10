@@ -150,6 +150,10 @@ class RLMCodeExecutionTimeout(Exception):
     """Raised when code execution exceeds the configured timeout."""
 
 
+class RLMWorkerRecoveryError(vf.SandboxError):
+    """Raised when the RLM worker cannot be restarted after a failure."""
+
+
 @dataclass(frozen=True)
 class RLMWorkerPaths:
     base_dir: str
@@ -3952,11 +3956,10 @@ class RLMEnv(vf.StatefulToolEnv):
                 # Abort rollout immediately on timeout
                 raise vf.SandboxError() from e
             recovered = await self._recover_from_code_timeout(state)
-            recovery_note = (
-                " The worker was restarted and the REPL state was reset."
-                if recovered
-                else " Failed to restart the worker; the REPL may be unusable."
-            )
+            if not recovered:
+                raise RLMWorkerRecoveryError(
+                    "Code execution timed out and the worker could not be restarted."
+                ) from e
             # Return error to model so it can try more efficient code
             return {
                 "status": "error",
@@ -3964,7 +3967,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 "stderr": "",
                 "result": (
                     f"Code execution timed out after {self.code_execution_timeout} seconds."
-                    f"{recovery_note} Your code may be too slow - consider a more "
+                    " The worker was restarted and the REPL state was reset."
+                    " Your code may be too slow - consider a more "
                     "efficient algorithm or breaking the computation into smaller steps."
                 ),
                 "answer": {"ready": False, "content": ""},
