@@ -73,7 +73,17 @@ def handle_overlong_prompt(func):
             raise
         except BadRequestError as e:
             error_text = e.response.text.lower()
-            if "context length" in error_text or "prompt_too_long" in error_text:
+            context_length_phrases = [
+                "this model's maximum context length is",
+                "is longer than the model's context length",
+                "exceeds the model's context length",
+                "exceed the configured limit",
+                "exceeds the configured limit",
+                "exceeded model",
+                "prompt_too_long",
+                "context length",
+            ]
+            if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e
             raise
 

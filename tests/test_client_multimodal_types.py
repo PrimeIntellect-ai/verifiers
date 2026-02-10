@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from verifiers.clients.openai.openai_clients import OAIChatCompletionsClient
 from verifiers.types import (
@@ -177,3 +178,31 @@ async def test_anthropic_from_native_response_extracts_usage():
     assert response.usage.completion_tokens == 17
     assert response.usage.total_tokens == 59
     assert response.usage.reasoning_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_anthropic_from_native_response_respects_interleaved_thinking_flag():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    native_response = SimpleNamespace(
+        id="msg_think",
+        model="claude-haiku-4-5",
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        content=[
+            SimpleNamespace(type="thinking", thinking="hidden chain"),
+            SimpleNamespace(type="text", text="final answer"),
+        ],
+    )
+
+    client.set_interleaved_thinking(False)
+    response_no_thinking = await client.from_native_response(native_response)
+    assert response_no_thinking.message.reasoning_content is None
+    assert response_no_thinking.message.content == "final answer"
+
+    client.set_interleaved_thinking(True)
+    response_with_thinking = await client.from_native_response(native_response)
+    assert response_with_thinking.message.reasoning_content == "hidden chain"
+    assert response_with_thinking.message.content == "final answer"

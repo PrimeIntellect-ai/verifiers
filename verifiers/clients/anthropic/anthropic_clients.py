@@ -350,7 +350,9 @@ class AnthropicMessagesClient(
             ),
             message=ResponseMessage(
                 content=content or None,
-                reasoning_content=reasoning_content or None,
+                reasoning_content=reasoning_content or None
+                if self.interleaved_thinking
+                else None,
                 tool_calls=tool_calls or None,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=is_truncated,
