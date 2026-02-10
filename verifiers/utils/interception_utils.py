@@ -247,8 +247,11 @@ async def synthesize_stream(
     Protocol (must match _handle_streaming_response):
       put chunk(s) on chunk_queue → put None (EOF) → resolve response_future.
     """
-    chunk_queue = intercept.get("chunk_queue")
-    future = intercept.get("response_future")
+    chunk_queue = cast(
+        asyncio.Queue[ChatCompletionChunk | None] | None,
+        intercept.get("chunk_queue"),
+    )
+    future = cast(asyncio.Future[Any] | None, intercept.get("response_future"))
 
     # Error / no-response: unblock queue reader, fail/resolve future
     if error is not None or response is None:
@@ -282,6 +285,23 @@ async def synthesize_stream(
             for i, tc in enumerate(message.tool_calls)
         ]
 
+    delta_content: str | None
+    if isinstance(message.content, str):
+        delta_content = message.content
+    elif isinstance(message.content, list):
+        text_parts: list[str] = []
+        for part in message.content:
+            text = (
+                part.get("text")
+                if isinstance(part, dict)
+                else getattr(part, "text", None)
+            )
+            if isinstance(text, str):
+                text_parts.append(text)
+        delta_content = "".join(text_parts) if text_parts else None
+    else:
+        delta_content = None
+
     content_chunk = ChatCompletionChunk(
         id=response.id,
         choices=[
@@ -289,7 +309,7 @@ async def synthesize_stream(
                 index=0,
                 delta=ChoiceDelta(
                     role="assistant",
-                    content=message.content,
+                    content=delta_content,
                     tool_calls=delta_tool_calls,
                 ),
                 finish_reason=None,
