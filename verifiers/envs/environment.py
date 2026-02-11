@@ -765,6 +765,7 @@ class Environment(ABC):
         else:
             state["oai_tools"] = []
         state["trajectory"] = []
+        state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
