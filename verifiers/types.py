@@ -12,10 +12,8 @@ from typing import (
     TypeAlias,
 )
 
-from anthropic import AsyncAnthropic
 from anthropic.types import RedactedThinkingBlock
 from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
-from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
@@ -30,7 +28,6 @@ else:
     from typing import NotRequired, TypedDict
 
 # Client / message type literals
-NativeClient: TypeAlias = AsyncOpenAI | AsyncAnthropic
 ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
