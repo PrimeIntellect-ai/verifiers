@@ -119,29 +119,6 @@ def _extract_state_token_usage(state: State) -> TokenUsage | None:
     return None
 
 
-def _flatten_messages_content(value: Any) -> Any:
-    if not isinstance(value, list):
-        return value
-
-    chunks: list[str] = []
-    for message in value:
-        if isinstance(message, Mapping):
-            content = message.get("content", "")
-        else:
-            content = getattr(message, "content", "")
-        if isinstance(content, str):
-            chunks.append(content)
-            continue
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, Mapping) and part.get("type") == "text":
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        chunks.append(text)
-
-    return "".join(chunks)
-
-
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     """Auto-generates a dataset name."""
     metadata = outputs["metadata"]
