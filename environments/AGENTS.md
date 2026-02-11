@@ -1,6 +1,8 @@
 # environments/AGENTS.md
 
-This file mirrors the "Environments" section from the Verifiers documentation, and is downloaded automatically using the setup script.
+<!-- Generated for repository development workflows. Do not edit directly. -->
+
+This file mirrors the "Environments" documentation page.
 
 ---
 
@@ -494,6 +496,18 @@ The model sees `run_code(code: str)` in its tool schema, but the environment inj
 
 Verifiers includes several built-in stateful environment classes: `SandboxEnv` provides a containerized bash shell, and `PythonEnv` extends it with a persistent Python REPL (both of which are configured for use with Prime Intellect's [Sandboxes](https://docs.primeintellect.ai/sandboxes/overview)). These handle sandbox lifecycle management automatically.
 
+Both `SandboxEnv` and `CliAgentEnv` accept a `labels` parameter for tagging sandboxes:
+
+```python
+env = vf.SandboxEnv(
+    dataset=dataset,
+    rubric=rubric,
+    labels=["experiment-1", "math-tasks"],  # optional labels for sandbox categorization
+)
+```
+
+Labels are passed to the Prime Sandboxes API and can be used for organizing, filtering, and managing sandboxes across experiments or training runs.
+
 Stateful environments often define methods decorated with `@vf.cleanup` (called after each rollout) or `@vf.teardown` (called once at environment shutdown) for resource management. These decorators, along with `@vf.stop` for custom stop conditions (boolean functions checked after each turn), are powerful tools for rollout lifecycle control in custom `MultiTurnEnv` subclasses.
 
 ## Custom Multi-Turn Environments
@@ -621,11 +635,13 @@ class MyGameEnv(vf.MultiTurnEnv):
     @vf.cleanup
     async def save_game_log(self, state: vf.State):
         await log_game_result(state["game_id"], state["score"])
-    
+
     @vf.teardown
     async def close_connections(self):
         await self.db_connection.close()
 ```
+
+> **Important:** Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully. This ensures correct behavior when rollouts are cancelled or interrupted, and that cleanup completes even when resources are in unexpected states.
 
 ### Signaling Early Termination
 
@@ -720,6 +736,27 @@ dependencies = [
 ]
 ```
 
+### Required API Keys
+
+Environments that require external API keys (e.g., for judge models or external services) should validate them early in `load_environment()` using `vf.ensure_keys()`:
+
+```python
+import verifiers as vf
+
+def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
+    vf.ensure_keys([api_key_var])
+    # now safe to use os.environ[api_key_var]
+    ...
+```
+
+This raises `MissingKeyError` with a clear message listing all missing keys and instructions for setting them:
+
+- **Environments Hub CI**: Add secrets on the environment's Settings page
+- **Hosted Training**: Set `env_file` in your config (e.g., `env_file = ["secrets.env"]`)
+- **Local**: Export in your shell (e.g., `export OPENAI_API_KEY=...`)
+
+Document required variables in your README under a "Required Environment Variables" section.
+
 ### Installation
 
 Install a local environment with `prime env install`:
@@ -756,12 +793,14 @@ Supported third-party environment integrations include:
 
 - **`TextArenaEnv`** — wraps [TextArena](https://github.com/LeonGuertler/TextArena) text-based game environments
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
+- **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
+- **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena).
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). For OpenEnv environments, build the bundled project image with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
-- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests
+- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling ( like `sandbox_client_max_workers`) parameters via `SandboxMixin`
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
-- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Execution is local-only and uses a filesystem-based context: a provided `context_dir` is copied into the working directory, or legacy JSON-serializable `context` data is written to `context.json`/`context.txt`. The RLM scaffolding prompt (filesystem summary, REPL workflow, tool docs) is injected into the first user message wrapped in `<RLM_SCAFFOLDING>...</RLM_SCAFFOLDING>`, preserving any external system prompt. User code runs in a Python REPL with a best-effort filesystem jail that restricts access to the working directory; customize additional guardrails via `disallowed_modules`/`disallowed_builtins`.
+- **`RLMEnv`** — implements Recursive Language Models for unbounded context processing. Execution supports both local and sandbox backends via `execution_backend` (`"local"` default, `"sandbox"` to run the REPL inside a Prime Sandbox). Context is still filesystem-based: a provided `context_dir` is copied into the working directory, or legacy JSON-serializable `context` data is written to `context.json`/`context.txt`. The RLM scaffolding prompt (filesystem availability note, REPL workflow, tool docs) is injected into the first user message wrapped in `<RLM_SCAFFOLDING>...</RLM_SCAFFOLDING>`, preserving any external system prompt; the model-visible prompt is stored in `state["prompt"]`, while the original input prompt is preserved in `state["raw_prompt"]`. The REPL language is configurable via `repl_language` (default: `bash`); use `repl_language="python"` to retain the Python REPL. Bash mode uses `call_bash_repl` and behaves like a terminal; Python mode uses `call_python_repl`. Sub-LLM and root-tool interception for sandboxes is routed through a Prime Tunnel unless `interception_url` is provided. Tooling can be split via `tools` (shared), `root_tools` (REPL-only), and `sub_tools` (sub-LLM tools). Fixed root tools like `llm_batch` are always present and cannot be overridden. Tool ordering is fixed tools → shared tools → role-specific tools, with per-list deduplication by name. Root tools are callable only inside the REPL; sub-LLM tools use standard tool-calling. When using the sandbox backend, the sandbox and worker are started eagerly during `setup_state`, and package installs are skipped when the package is already importable in the image. Environments can pre-set `state["rlm_fs_root_remote"]` (and optionally `state["rlm_control_dir_remote"]`) before calling `super().setup_state` to point the worker at an existing filesystem path in the sandbox. For further customization, override `get_sandbox_request`, `on_sandbox_ready`, or `customize_worker_script` on `RLMEnv`.

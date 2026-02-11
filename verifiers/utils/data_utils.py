@@ -1,11 +1,14 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
-import random
-from typing import Any, Callable, cast
+from __future__ import annotations
 
-from datasets import Dataset, concatenate_datasets, load_dataset
+import random
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from verifiers.types import ChatMessage
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 
 ### PROMPTS ###
 
@@ -36,7 +39,7 @@ def format_dataset(
     ):
         dataset = dataset.rename_column("example_id", "src_id")
     if "example_id" not in dataset.column_names:
-        dataset = dataset.add_column("example_id", range(len(dataset)))  # type: ignore
+        dataset = dataset.add_column("example_id", range(len(dataset)))
 
     # extract format_prompt as a standalone function to avoid capturing self
     def format_prompt_fn(prompt_str: str) -> list[ChatMessage]:
@@ -259,6 +262,8 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
 def load_example_dataset(
     name: str = "gsm8k", split: str | None = None, n: int | None = None, seed: int = 0
 ) -> Dataset:
+    from datasets import Dataset, concatenate_datasets, load_dataset
+
     if name == "aime2024":
         if split is None:
             split = "train"
@@ -268,10 +273,10 @@ def load_example_dataset(
             split = "test"
         aime_i = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-I")[split]
-        )  # type: ignore[redundant-cast]
+        )
         aime_ii = cast(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
-        )  # type: ignore[redundant-cast]
+        )
         dataset = concatenate_datasets([aime_i, aime_ii])
     elif name == "amc2023":
         if split is None:

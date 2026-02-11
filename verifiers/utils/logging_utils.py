@@ -1,7 +1,5 @@
-import json
 import logging
 import sys
-from collections.abc import Mapping
 from contextlib import contextmanager
 
 from rich.console import Console
@@ -10,8 +8,9 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.errors import Error
-from verifiers.types import Messages
+from verifiers.types import ErrorInfo, Messages
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.message_utils import format_messages
 
 LOGGER_NAME = "verifiers"
 
@@ -20,30 +19,53 @@ def setup_logging(
     level: str = "INFO",
     log_format: str | None = None,
     date_format: str | None = None,
+    log_file: str | None = None,
+    log_file_level: str | None = None,
 ) -> None:
     """
     Setup basic logging configuration for the verifiers package.
 
     Args:
-        level: The logging level to use. Defaults to "INFO".
+        level: The logging level to use for console output. Defaults to "INFO".
         log_format: Custom log format string. If None, uses default format.
         date_format: Custom date format string. If None, uses default format.
+        log_file: Optional path to a log file. If specified, logs will be written to this file.
+        log_file_level: The logging level for the file handler. If None, uses the same level as console.
     """
     if log_format is None:
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     if date_format is None:
         date_format = "%Y-%m-%d %H:%M:%S"
 
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
+    formatter = logging.Formatter(fmt=log_format, datefmt=date_format)
 
     logger = logging.getLogger(LOGGER_NAME)
-    # Remove any existing handlers to avoid duplicates
-    logger.handlers.clear()
-    logger.setLevel(level.upper())
-    logger.addHandler(handler)
 
-    # Prevent the logger from propagating messages to the root logger
+    # remove any existing handlers to avoid duplicates
+    logger.handlers.clear()
+
+    # set logger level to the minimum of console and file levels
+    # so messages can reach the more permissive handler
+    console_level = getattr(logging, level.upper())
+    file_level = (
+        getattr(logging, log_file_level.upper()) if log_file_level else console_level
+    )
+    logger.setLevel(min(console_level, file_level))
+
+    # add console handler (stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(console_level)
+    logger.addHandler(console_handler)
+
+    # add file handler if log_file is specified
+    if log_file is not None:
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(file_level)
+        logger.addHandler(file_handler)
+
+    # prevent the logger from propagating messages to the root logger
     logger.propagate = False
 
 
@@ -76,66 +98,17 @@ def quiet_verifiers():
 def print_prompt_completions_sample(
     prompts: list[Messages],
     completions: list[Messages],
-    errors: list[Error | None],
+    errors: list[Error | ErrorInfo | None],
     rewards: list[float],
     step: int,
     num_samples: int = 1,
 ) -> None:
-    def _attr_or_key(obj, key: str, default=None):
-        """Return obj.key if present, else obj[key] if Mapping, else default."""
-        val = getattr(obj, key, None)
-        if val is not None:
-            return val
-        if isinstance(obj, Mapping):
-            return obj.get(key, default)
-        return default
-
-    def _normalize_tool_call(tc):
-        """Return {"name": ..., "args": ...} from a dict or Pydantic-like object."""
-        src = (
-            _attr_or_key(tc, "function") or tc
-        )  # prefer nested function object if present
-        name = _attr_or_key(src, "name", "") or ""
-        args = _attr_or_key(src, "arguments", {}) or {}
-
-        if not isinstance(args, str):
-            try:
-                args = json.dumps(args)
-            except Exception:
-                args = str(args)
-        return {"name": name, "args": args}
-
-    def _format_messages(messages) -> Text:
-        if isinstance(messages, str):
-            return Text(messages)
-
+    def format_error(error: ErrorInfo | BaseException) -> Text:
         out = Text()
-        for idx, msg in enumerate(messages):
-            if idx:
-                out.append("\n\n")
-
-            assert isinstance(msg, dict)
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            style = "bright_cyan" if role == "assistant" else "bright_magenta"
-
-            out.append(f"{role}: ", style="bold")
-            out.append(content, style=style)
-
-            for tc in msg.get("tool_calls") or []:  # treat None as empty list
-                payload = _normalize_tool_call(tc)
-                out.append(
-                    "\n\n[tool call]\n"
-                    + json.dumps(payload, indent=2, ensure_ascii=False),
-                    style=style,
-                )
-
-        return out
-
-    def _format_error(error: BaseException) -> Text:
-        out = Text()
-        out.append(f"error: {ErrorChain(error)}", style="bold red")
-
+        if isinstance(error, BaseException):
+            out.append(f"error: {ErrorChain(error)}", style="bold red")
+        else:
+            out.append(f"error: {error['error_chain_repr']}", style="bold red")
         return out
 
     console = Console()
@@ -156,10 +129,10 @@ def print_prompt_completions_sample(
         error = errors[i]
         reward = reward_values[i]
 
-        formatted_prompt = _format_messages(prompt)
-        formatted_completion = _format_messages(completion)
+        formatted_prompt = format_messages(prompt)
+        formatted_completion = format_messages(completion)
         if error is not None:
-            formatted_completion += Text("\n\n") + _format_error(error)
+            formatted_completion += Text("\n\n") + format_error(error)
 
         table.add_row(formatted_prompt, formatted_completion, Text(f"{reward:.2f}"))
         if i < samples_to_show - 1:

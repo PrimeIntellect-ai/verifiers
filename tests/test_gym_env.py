@@ -147,12 +147,14 @@ def test_basic_rollout_and_reward_sum(toy_env_class, client):
         num_eval_episodes=1,
     )
 
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    outputs = env.evaluate_sync(
+        client=client, model="mock", state_columns=["trajectory", "gym_done"]
+    )
+    st = outputs["outputs"][0]
     steps = st.get("trajectory", [])
 
     assert len(steps) > 0
-    assert res["reward"] == [1.0]
+    assert st["reward"] == 1.0
     assert st.get("gym_done") is True
 
     last_prompt = steps[-1]["prompt"]
@@ -173,8 +175,10 @@ def test_action_parse_error_ends_episode(toy_env_class, client):
         num_eval_episodes=1,
     )
 
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    res = env.evaluate_sync(
+        client=client, model="mock", state_columns=["trajectory", "gym_done"]
+    )
+    st = res["outputs"][0]
     steps = st.get("trajectory", [])
 
     assert st.get("gym_done") is True
@@ -200,8 +204,10 @@ def test_max_episode_steps_limits_turns(client):
         num_train_episodes=0,
         num_eval_episodes=1,
     )
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    res = env.evaluate_sync(
+        client=client, model="mock", state_columns=["trajectory", "gym_done"]
+    )
+    st = res["outputs"][0]
     steps = st.get("trajectory", [])
 
     assert len(steps) == 3
@@ -229,7 +235,7 @@ def test_system_prompt_and_few_shot(toy_env_class, client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    st = res["outputs"][0]
     first_prompt = st["prompt"]
 
     roles = [m["role"] for m in first_prompt]
@@ -256,8 +262,10 @@ def test_four_tuple_step_normalization(client):
         num_train_episodes=0,
         num_eval_episodes=1,
     )
-    res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    res = env.evaluate_sync(
+        client=client, model="mock", state_columns=["trajectory", "gym_done"]
+    )
+    st = res["outputs"][0]
     steps = st.get("trajectory", [])
 
     assert steps[0]["extras"]["gym_info"] == {"info": "done"}
@@ -275,7 +283,7 @@ def test_env_kwargs_passed_to_env(toy_env_class, client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    st = res["outputs"][0]
 
     first_obs_msg = st["prompt"][-1]["content"]
     assert first_obs_msg == "x=5"
@@ -303,7 +311,7 @@ def test_custom_obs_to_text(client):
         num_eval_episodes=1,
     )
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    st = res["outputs"][0]
     assert st["prompt"][-1]["content"] == "obs_is_0"
 
 
@@ -324,7 +332,7 @@ def test_completion_mode(toy_env_class, client):
     )
 
     res = env.evaluate_sync(client=client, model="mock")
-    st = res["state"][0]
+    st = res["outputs"][0]
 
     assert isinstance(st["prompt"], str)
     assert st["prompt"] == "x=0"

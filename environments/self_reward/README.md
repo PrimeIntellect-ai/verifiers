@@ -16,7 +16,6 @@
 
 ### Task
 - **Type**: single-turn
-- **Parser**: default `Parser`
 - **Rubric overview**: `JudgeRubric` uses a judge client/model/prompt to produce a 0–1 score
 
 ### Quickstart
@@ -32,7 +31,7 @@ Configure model and sampling:
 prime eval run self-reward \
   -m gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B", "base_url": "http://0.0.0.0:8000/v1", "api_key_var": "JUDGE_API_KEY"}'
+  -a '{"dataset_name": "your/dataset", "judge_model": "Qwen/Qwen3-0.6B", "base_url": "http://0.0.0.0:8000/v1", "api_key_var": "JUDGE_API_KEY"}'
 ```
 
 Notes:
@@ -42,10 +41,10 @@ Notes:
 ### Environment Arguments
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `dataset_name` | str | — | HF dataset name or path containing `question`/`answer` |
-| `model_name` | str | — | Judge model name (OpenAI-compatible) |
+| `dataset_name` | str | `"PrimeIntellect/Hendrycks-Math"` | HF dataset name or path containing `question`/`answer` |
+| `judge_model` | str | `"gpt-4.1-mini"` | Judge model name (OpenAI-compatible) |
 | `base_url` | str | `"http://0.0.0.0:8000/v1"` | Judge API base URL |
-| `api_key_var` | str | `"JUDGE_API_KEY"` | Env var containing judge API key |
+| `api_key_var` | str | `"JUDGE_API_KEY"` | Env var for judge API key (optional, defaults to "EMPTY" if not set) |
 
 ### Metrics
 | Metric | Meaning |

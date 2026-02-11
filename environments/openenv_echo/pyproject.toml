@@ -1,0 +1,26 @@
+[project]
+name = "openenv-echo"
+description = "OpenEnv Echo environment via the OpenEnvEnv adapter"
+tags = ["openenv", "mcp", "tools", "example"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[openenv]>=0.1.10.dev2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "openenv_echo.py",
+    "pyproject.toml",
+    "README.md",
+    "proj/**/*",
+    "proj/.build.json",
+]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

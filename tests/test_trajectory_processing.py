@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from verifiers.types import RolloutInput, State, TrajectoryStep, TrajectoryStepTokens
+from verifiers.types import State, TrajectoryStep, TrajectoryStepTokens
 from verifiers.utils.response_utils import parse_response_tokens
 
 
@@ -90,12 +90,11 @@ async def test_parse_response_tokens_completion_without_tokens():
     assert tokens is None
 
 
-def test_process_trajectory_steps_for_training():
+def test_process_trajectory_steps_for_training(make_input):
     """Test processing trajectory steps into training examples."""
     state1 = State(
-        input=RolloutInput(
+        input=make_input(
             prompt=[{"role": "user", "content": "Hello"}],
-            example_id=0,
             task="test",
         )
     )
@@ -122,7 +121,7 @@ def test_process_trajectory_steps_for_training():
     ]
 
     state2 = State(
-        input=RolloutInput(
+        input=make_input(
             prompt=[{"role": "user", "content": "Bye"}],
             example_id=1,
             task="test",
@@ -183,12 +182,11 @@ def test_process_trajectory_steps_for_training():
     assert rewards_list == [1.0, 0.5]
 
 
-def test_process_trajectory_steps_skip_missing_tokens():
+def test_process_trajectory_steps_skip_missing_tokens(make_input):
     """Test that trajectory steps without tokens are skipped."""
     state = State(
-        input=RolloutInput(
+        input=make_input(
             prompt=[{"role": "user", "content": "Hello"}],
-            example_id=0,
             task="test",
         )
     )

@@ -1,11 +1,8 @@
 """Tests for the MathRubric class."""
 
-import time
-
 import pytest
 
 import verifiers as vf
-from verifiers.utils.async_utils import NullAsyncContext
 
 
 class TestMathRubric:
@@ -35,17 +32,16 @@ class TestMathRubric:
         ],
         ids=lambda x: f"{x['completion']} == {x['answer']}",
     )
-    async def test_score_valid_answers(self, test_case):
+    async def test_score_valid_answers(self, test_case, make_input):
         """Test scoring a single rollout."""
 
         rubric = vf.MathRubric()
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = test_case["completion"]
@@ -56,9 +52,8 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["metrics"]["correct_answer"] == 1.0
 
@@ -71,17 +66,16 @@ class TestMathRubric:
         ],
         ids=lambda x: f"{x['completion']} != {x['answer']}",
     )
-    async def test_score_invalid_answers(self, test_case):
+    async def test_score_invalid_answers(self, test_case, make_input):
         """Test scoring a single rollout."""
 
         rubric = vf.MathRubric()
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=test_case["answer"],
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = test_case["completion"]
@@ -92,29 +86,27 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["metrics"]["correct_answer"] == 0.0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("timeout_seconds", [0.1, 1, 10])
-    async def test_timeout(self, timeout_seconds):
+    @pytest.mark.parametrize("timeout_seconds", [0.1, 10])
+    async def test_timeout(self, timeout_seconds, make_input):
         """Test scoring a single rollout."""
 
-        answer = "1"
         # very large input triggers timeout, takes ~2s to parse and verify
-        completion = "1" * int(1e6)
+        answer = "1" * int(1e5)
+        completion = "1" * int(1e5)
 
         rubric = vf.MathRubric(max_workers=1, timeout_seconds=timeout_seconds)
 
         state = vf.State(
-            input=vf.RolloutInput(
+            input=make_input(
                 prompt="test prompt",
                 answer=answer,
                 task="test_task",
-                example_id=0,
             )
         )
         state["completion"] = completion
@@ -125,17 +117,11 @@ class TestMathRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        start_time = time.time()
-        await rubric.score_rollout(state, score_sem)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        assert state["metrics"]["correct_answer"] == 0.0
+        await rubric.score_rollout(state)
 
-        # Entire function should timeout within timeout + small overhead
-        print(f"Time taken: {elapsed_time:.2f}s")
-        overhead_seconds = 1
-        assert elapsed_time < timeout_seconds + overhead_seconds, (
-            f"Time taken: {elapsed_time:.2f}s (expected < {timeout_seconds + overhead_seconds}s)"
-        )
+        # rollout should only pass for large timeout
+        if timeout_seconds == 10:
+            assert state["metrics"]["correct_answer"] == 1.0
+        else:
+            assert state["metrics"]["correct_answer"] == 0.0

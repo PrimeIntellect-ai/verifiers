@@ -1,0 +1,21 @@
+# Ignore node_modules to ensure fresh install with correct architecture
+node_modules
+
+# Note: dist is NOT ignored because Dockerfile.runtime needs to copy the binary from it
+
+# Ignore git
+.git
+.gitignore
+
+# Ignore environment files
+.env
+.env.*
+
+# Ignore IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Ignore macOS files
+.DS_Store

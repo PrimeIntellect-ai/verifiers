@@ -9,6 +9,7 @@ import os
 import pickle
 import shutil
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -334,10 +335,9 @@ class TestContextFilesystemSetup:
         result = await env.setup_state(state)
         try:
             prompt = result["rlm_system_prompt"]
-            fs_root = result["rlm_fs_root"]
-            assert f"Working directory: {fs_root}" in prompt
-            assert "No extra data was provided" in prompt
-            assert "can still use this directory" in prompt
+            assert "filesystem available" in prompt
+            assert "Working directory:" not in prompt
+            assert "No extra data was provided" not in prompt
         finally:
             await env.cleanup_rlm_state(result)
 
@@ -392,6 +392,109 @@ class TestBashPrompt:
             assert "RLM_CONTENT" in prompt
         finally:
             await env.cleanup_rlm_state(result)
+
+
+class TestPromptVerbosity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "verbosity, expected_snippets, unexpected_snippets",
+        [
+            (
+                "light",
+                [
+                    "You have the `call_python_repl` tool and a filesystem available to you."
+                ],
+                [
+                    "This is an iterative environment.",
+                    "Critical: This is an ITERATIVE environment",
+                ],
+            ),
+            (
+                "medium",
+                [
+                    "You have the `call_python_repl` tool and a filesystem available to you.",
+                    "This is an iterative environment.",
+                ],
+                ["Critical: This is an ITERATIVE environment"],
+            ),
+            (
+                "heavy",
+                [
+                    "iterative Python REPL where you explore data step by step.",
+                    "Critical: This is an ITERATIVE environment",
+                ],
+                ["This is an iterative environment."],
+            ),
+        ],
+    )
+    async def test_root_prompt_verbosity_python(
+        self,
+        verbosity: str,
+        expected_snippets: list[str],
+        unexpected_snippets: list[str],
+    ):
+        dataset = make_dataset({})
+        env = build_env(
+            dataset, repl_language="python", root_prompt_verbosity=verbosity
+        )
+        env._ensure_interception_server = AsyncMock()
+        env._executor.setup = AsyncMock()
+
+        state = {"info": {}, "model": "m", "client": MagicMock()}
+        result = await env.setup_state(state)
+        try:
+            prompt = result["rlm_system_prompt"]
+            for snippet in expected_snippets:
+                assert snippet in prompt
+            for snippet in unexpected_snippets:
+                assert snippet not in prompt
+        finally:
+            await env.cleanup_rlm_state(result)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verbosity", ["light", "medium", "heavy"])
+    async def test_sub_prompt_verbosity(self, verbosity: str, rlm_env: RLMEnv):
+        env = rlm_env
+        env.sub_prompt_verbosity = verbosity
+        env.sub_tool_max_turns = 7
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_run_sub_llm(state, client, model, messages):
+            captured["messages"] = messages
+            return {
+                "final_content": "ok",
+                "turns": [
+                    {
+                        "prompt_messages": [{"role": "user", "content": "hi"}],
+                        "response": {},
+                        "tool_call_count": 0,
+                    }
+                ],
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "tool_call_count": 0,
+                "num_turns": 1,
+                "max_turns_reached": False,
+            }
+
+        env._run_sub_llm = AsyncMock(side_effect=_fake_run_sub_llm)
+
+        await env._run_sub_llm_request(
+            state_ref={},
+            client=MagicMock(),
+            sub_model="m",
+            messages=[{"role": "user", "content": "task"}],
+            batch_id="b",
+            request_id="r",
+            parent_turn=0,
+        )
+
+        expected = rlm_module._SUB_LLM_SYSTEM_PROMPT_STORE[verbosity].format(
+            num_turns=env.sub_tool_max_turns
+        )
+        assert captured["messages"][0]["role"] == "system"
+        assert captured["messages"][0]["content"] == expected
 
 
 class TestBashReplOutput:
@@ -1033,42 +1136,56 @@ class TestRunSubLLMWithTools:
 
 class TestSubLLMRequestPaths:
     @pytest.mark.asyncio
-    async def test_interleaved_uses_tokens_endpoint(self, rlm_env):
+    async def test_sub_llm_ignores_interleaving_and_uses_chat(self, rlm_env):
         mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+        mock_message.content = "ok"
         mock_response = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.chat.completions.create = AsyncMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+        mock_client.post = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         rlm_env.interleaved_rollouts = True
         messages = [{"role": "user", "content": "hi"}]
-        state = {"sampling_args": {"max_tokens": 7, "extra_body": {"foo": "bar"}}}
+        state = {"sampling_args": {"max_tokens": 7}}
 
-        with patch(
-            "verifiers.envs.experimental.rlm_env.tokenize_vllm",
-            new=AsyncMock(return_value=[1, 2, 3]),
-        ) as mock_tokenize:
-            await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
+        await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
 
-        mock_tokenize.assert_awaited_once_with(
-            client=mock_client,
-            messages=messages,
-            tools=None,
-            model="gpt-4",
-        )
-        mock_client.post.assert_awaited_once()
-        args, kwargs = mock_client.post.call_args
-        assert args[0] == "/chat/completions/tokens"
-        body = kwargs["body"]
-        assert body["tokens"] == [1, 2, 3]
-        assert body["max_completion_tokens"] == 7
-        assert body["return_token_ids"] is True
-        assert body["foo"] == "bar"
-        assert "max_tokens" not in body
-        mock_client.chat.completions.create.assert_not_called()
+        mock_client.chat.completions.create.assert_awaited_once()
+        _, kwargs = mock_client.chat.completions.create.call_args
+        assert kwargs["max_completion_tokens"] == 7
+        assert "max_tokens" not in kwargs
+        mock_client.post.assert_not_called()
 
 
 # =============================================================================
-# 8. Root Tool Serialization (pickle)
+# 8. llm_batch Prompt Validation
+# =============================================================================
+
+
+class TestLLMBatchPromptValidation:
+    @pytest.mark.asyncio
+    async def test_llm_batch_rejects_non_string_prompts(self, rlm_env):
+        context = {
+            "client": MagicMock(),
+            "sub_model": "gpt-4",
+            "state": {"trajectory": []},
+        }
+
+        contents, _ = await rlm_env._root_llm_batch(
+            context, [{"role": "user", "content": "hi"}]
+        )
+        assert "must be a string" in contents[0]
+
+        contents, _ = await rlm_env._root_llm_batch(
+            context, [[{"role": "user", "content": "hi"}]]
+        )
+        assert "must be a string" in contents[0]
+
+
+# =============================================================================
+# 9. Root Tool Serialization (pickle)
 # =============================================================================
 
 
@@ -1115,7 +1232,7 @@ class TestRootToolSerialization:
 
 
 # =============================================================================
-# 9. Context Limit Configuration
+# 10. Context Limit Configuration
 # =============================================================================
 
 
@@ -1130,7 +1247,7 @@ class TestContextLimitConfiguration:
 
 
 # =============================================================================
-# 10. Sub-LLM Metrics with Tools
+# 11. Sub-LLM Metrics with Tools
 # =============================================================================
 
 
@@ -1200,18 +1317,94 @@ class TestSubLLMMetricsWithTools:
 
 
 # =============================================================================
-# 11. Sub-LLM Trajectory Steps
+# 12. Sub-LLM Trajectory Steps
 # =============================================================================
 
 
 class TestSubLLMTrajectorySteps:
     @pytest.mark.asyncio
     async def test_include_sub_llm_in_trajectory_default(self, rlm_env):
-        assert rlm_env.include_sub_llm_in_trajectory is True
+        assert rlm_env.include_sub_llm_in_trajectory is False
+
+    def test_interleaved_disallowed_when_sub_llm_in_trajectory(self):
+        dataset = make_dataset({})
+        with pytest.raises(ValueError, match="include_sub_llm_in_trajectory=True"):
+            build_env(
+                dataset,
+                include_sub_llm_in_trajectory=True,
+                interleaved_rollouts=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_sub_llm_steps_added_to_trajectory(self, rlm_env):
+        rlm_env.include_sub_llm_in_trajectory = True
+        state = {"trajectory": [], "sampling_args": {}}
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+        mock_message.content = "ok"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+
+        result = {
+            "final_content": "ok",
+            "turns": [
+                {
+                    "prompt_messages": [{"role": "user", "content": "hi"}],
+                    "response": mock_response,
+                    "tool_call_count": 0,
+                }
+            ],
+            "total_prompt_tokens": 1,
+            "total_completion_tokens": 1,
+            "tool_call_count": 0,
+            "num_turns": 1,
+            "max_turns_reached": False,
+        }
+
+        token_payload = {
+            "prompt_ids": [1],
+            "prompt_mask": [0],
+            "completion_ids": [2],
+            "completion_mask": [1],
+            "completion_logprobs": [0.0],
+            "overlong_prompt": False,
+            "is_truncated": False,
+        }
+
+        with (
+            patch.object(rlm_env, "_run_sub_llm", new=AsyncMock(return_value=result)),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_tokens",
+                new=AsyncMock(return_value=token_payload),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_response_messages",
+                new=AsyncMock(return_value=[{"role": "assistant", "content": "ok"}]),
+            ),
+            patch(
+                "verifiers.envs.experimental.rlm_env.parse_is_truncated",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await rlm_env._run_sub_llm_request(
+                state_ref=state,
+                client=MagicMock(),
+                sub_model="gpt-4",
+                messages=[{"role": "user", "content": "hi"}],
+                batch_id="b1",
+                request_id="r1",
+                parent_turn=0,
+            )
+
+        assert len(state["trajectory"]) == 1
+        assert state["trajectory"][0]["trajectory_id"] == "b1_r1"
+        assert state["trajectory"][0]["extras"]["is_sub_llm_call"] is True
 
 
 # =============================================================================
-# 12. Tunnel Utils (kept for coverage)
+# 13. Tunnel Utils (kept for coverage)
 # =============================================================================
 
 

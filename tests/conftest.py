@@ -1,9 +1,12 @@
 """Pytest configuration and fixtures for verifiers tests."""
 
+from pathlib import Path
+from typing import Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from datasets import Dataset
+from openai.types.chat import ChatCompletionToolParam
 
 from verifiers import (
     MaybeThinkParser,
@@ -20,6 +23,16 @@ from verifiers import (
     XMLParser,
     stop,
 )
+from verifiers.types import (
+    GenerateMetadata,
+    Info,
+    RolloutInput,
+    RolloutOutput,
+    RolloutTiming,
+    SamplingArgs,
+    TrajectoryStep,
+)
+from verifiers.utils.save_utils import state_to_output
 
 
 @pytest.fixture
@@ -408,3 +421,135 @@ def mock_stateful_tool_env(mock_openai_client, sample_chat_dataset):
         parser=Parser(),
         rubric=Rubric(),
     )
+
+
+DEFAULT_PROMPT: Messages = [{"role": "user", "content": "What is 2+2?"}]
+DEFAULT_COMPLETION: Messages = [{"role": "assistant", "content": "4"}]
+
+
+@pytest.fixture
+def make_input() -> Callable[..., RolloutInput]:
+    """Fixture to make RolloutInput objects for testing."""
+
+    def _make_input(
+        example_id: int = 0,
+        task: str = "default",
+        prompt: Messages = DEFAULT_PROMPT,
+        info: Info = {},
+        answer: str = "4",
+    ) -> RolloutInput:
+        return RolloutInput(
+            example_id=example_id, task=task, prompt=prompt, answer=answer, info=info
+        )
+
+    return _make_input
+
+
+@pytest.fixture
+def make_state() -> Callable[..., State]:
+    """Fixture to make State objects for testing."""
+
+    def _make_state(
+        example_id: int = 0,
+        task: str = "default",
+        prompt: Messages = DEFAULT_PROMPT,
+        answer: str = "4",
+        info: Info = {},
+        completion: Messages = DEFAULT_COMPLETION,
+        reward: float = 0.0,
+        metrics: dict[str, float] = {"accuracy": 0.0},
+        is_completed: bool = True,
+        is_truncated: bool = False,
+        stop_condition: str | None = "max_turns_reached",
+        oai_tools: list[ChatCompletionToolParam] | None = None,
+        trajectory: list[TrajectoryStep] = [],
+        timing=RolloutTiming(
+            generation_ms=0.0,
+            scoring_ms=0.0,
+            total_ms=0.0,
+        ),
+        foo: str = "bar",  # custom field
+        **kwargs,
+    ) -> State:
+        return State(
+            example_id=example_id,
+            task=task,
+            prompt=prompt,
+            answer=answer,
+            info=info,
+            completion=completion,
+            reward=reward,
+            metrics=metrics,
+            is_completed=is_completed,
+            is_truncated=is_truncated,
+            stop_condition=stop_condition,
+            oai_tools=oai_tools,
+            trajectory=trajectory,
+            timing=timing,
+            error=None,
+            foo=foo,
+            **kwargs,
+        )
+
+    return _make_state
+
+
+@pytest.fixture
+def make_output(make_state) -> Callable[..., RolloutOutput]:
+    """Fixture to make RolloutOutput objects for testing.
+
+    This creates a State first, then converts it to a RolloutOutput using
+    state_to_output(). This ensures the output matches the serialized format
+    used in GenerateOutputs.
+    """
+
+    def _make_output(
+        state_columns: list[str] = ["foo"],
+        **kwargs,
+    ) -> RolloutOutput:
+        state = make_state(**kwargs)
+        return state_to_output(state, state_columns)
+
+    return _make_output
+
+
+@pytest.fixture
+def make_metadata() -> Callable[..., GenerateMetadata]:
+    """Fixture to make GenerateMetadata objects for testing."""
+
+    def _make_metadata(
+        env_id: str = "test-env",
+        env_args: dict = {},
+        model: str = "test-model",
+        base_url: str = "http://localhost:8000/v1",
+        num_examples: int = 1,
+        rollouts_per_example: int = 1,
+        sampling_args: SamplingArgs = {},
+        date: str = "1970-01-01",
+        time_ms: float = 0.0,
+        avg_reward: float = 0.0,
+        avg_metrics: dict[str, float] = {},
+        usage: dict[str, float] | None = None,
+        state_columns: list[str] = ["foo"],
+        path_to_save: Path = Path("test.jsonl"),
+        tools: list[ChatCompletionToolParam] | None = None,
+    ) -> GenerateMetadata:
+        return GenerateMetadata(
+            env_id=env_id,
+            env_args=env_args,
+            model=model,
+            base_url=base_url,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            sampling_args=sampling_args,
+            date=date,
+            time_ms=time_ms,
+            avg_reward=avg_reward,
+            avg_metrics=avg_metrics,
+            usage=usage,
+            state_columns=state_columns,
+            path_to_save=path_to_save,
+            tools=tools,
+        )
+
+    return _make_metadata

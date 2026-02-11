@@ -26,6 +26,7 @@ def load_environment(
     Args:
         max_examples: Maximum number of examples to load (-1 for all examples)
     """
+    vf.ensure_keys([judge_api_key_var])
 
     dataset = load_dataset("google/civil_comments", split="train")
 
@@ -74,7 +75,7 @@ Respond in the following format:
 
     parser = vf.Parser()
     judge_client = AsyncOpenAI(
-        api_key=os.getenv(judge_api_key_var), base_url=judge_base_url
+        api_key=os.environ[judge_api_key_var], base_url=judge_base_url
     )
 
     judge_prompt = """Evaluate this toxicity classification task.

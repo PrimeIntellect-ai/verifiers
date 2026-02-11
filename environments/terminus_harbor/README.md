@@ -12,7 +12,6 @@
 
 ### Task
 - **Type**: multiturn, cli_agent
-- **Parser**: N/A
 - **Rubric overview**: Binary, returned by running task tests
 
 ### Quickstart

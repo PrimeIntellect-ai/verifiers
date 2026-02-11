@@ -4,7 +4,6 @@ import pytest
 
 from verifiers import Rubric, RubricGroup, XMLParser
 from verifiers.types import RolloutInput, RolloutTiming, State
-from verifiers.utils.async_utils import NullAsyncContext
 
 
 class TestRubricGroup:
@@ -163,8 +162,7 @@ class TestRubricGroup:
             start_time=0.0,
         )
 
-        score_sem = NullAsyncContext()
-        await group.score_group([state], score_sem)
+        await group.score_group([state])
 
         # Should have scores from both rubrics
         assert "func1" in state["metrics"]
@@ -203,8 +201,7 @@ class TestRubricGroup:
             start_time=0.0,
         )
 
-        score_sem = NullAsyncContext()
-        await group.score_group([state], score_sem)
+        await group.score_group([state])
 
         # Should have summed scores for duplicate function names
         assert "func1" in state["metrics"]
@@ -244,8 +241,7 @@ class TestRubricGroup:
             start_time=0.0,
         )
 
-        score_sem = NullAsyncContext()
-        await group.score_group([state], score_sem)
+        await group.score_group([state])
 
         # Should pass custom kwargs to reward functions
         assert "func1" in state["metrics"]
@@ -282,8 +278,7 @@ class TestRubricGroup:
             start_time=0.0,
         )
 
-        score_sem = NullAsyncContext()
-        await group.score_group([state], score_sem)
+        await group.score_group([state])
 
         # Should work with single rubric
         assert "func1" in state["metrics"]
@@ -302,10 +297,9 @@ class TestRubricGroup:
 
         # Test with empty data - should handle gracefully
         states = []
-        score_sem = NullAsyncContext()
         # Empty states should not cause errors
         try:
-            await group.score_group(states, score_sem)
+            await group.score_group(states)
         except ZeroDivisionError:
             pytest.skip("score_group doesn't handle empty states yet")
 
@@ -368,8 +362,7 @@ class TestRubricGroup:
                 start_time=0.0,
             )
 
-        score_sem = NullAsyncContext()
-        await group.score_group(states, score_sem)
+        await group.score_group(states)
 
         # Should work with multiple states
         assert "func1" in states[0]["metrics"]
@@ -420,8 +413,7 @@ class TestRubricGroup:
             start_time=0.0,
         )
 
-        score_sem = NullAsyncContext()
-        await group.score_rollout(state, score_sem)
+        await group.score_rollout(state)
 
         assert state["reward"] == 1.0
         assert recorded_parsers == [xml_parser]

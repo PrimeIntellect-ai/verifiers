@@ -6,7 +6,6 @@ import pytest
 
 from verifiers import Parser, Rubric
 from verifiers.types import RewardFunc, RolloutInput, State
-from verifiers.utils.async_utils import NullAsyncContext
 
 
 class TestRubric:
@@ -171,9 +170,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert "func1" in state["metrics"]
         assert "func2" in state["metrics"]
@@ -211,9 +209,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["metrics"]["list_func"] == 2.0  # Length of completion list
         assert state["reward"] == 2.0
@@ -266,8 +263,7 @@ class TestRubric:
                 "start_time": 0.0,
             }
 
-        score_sem = NullAsyncContext()
-        await rubric.score_group(states, score_sem)
+        await rubric.score_group(states)
 
         assert states[0]["metrics"]["accuracy_func"] == 1.0
         assert states[1]["metrics"]["accuracy_func"] == 1.0
@@ -304,9 +300,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_group([state], score_sem)
+        await rubric.score_group([state])
 
         # Weighted sum: 1.0*2.0 + 0.5*3.0 = 3.5
         assert state["reward"] == pytest.approx(3.5)
@@ -319,10 +314,9 @@ class TestRubric:
             return 1.0
 
         rubric = Rubric(funcs=[test_func], weights=[1.0])
-        score_sem = NullAsyncContext()
 
         # score_group with empty list should handle gracefully
-        await rubric.score_group([], score_sem)
+        await rubric.score_group([])
 
     @pytest.mark.asyncio
     async def test_score_rollouts_with_default_infos(self):
@@ -349,9 +343,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_group([state], score_sem)
+        await rubric.score_group([state])
 
         assert "simple_func" in state["metrics"]
         assert state["metrics"]["simple_func"] == 1.0
@@ -388,9 +381,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_group([state], score_sem)
+        await rubric.score_group([state])
 
         assert state["metrics"]["scalar_func"] == 0.5
         assert state["reward"] == 0.5
@@ -425,9 +417,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         # Weighted sum: 0.5*1 + 1.0*2 = 2.5
         assert state["reward"] == pytest.approx(2.5)
@@ -464,9 +455,8 @@ class TestRubric:
             "total_ms": 0.0,
             "start_time": 0.0,
         }
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["reward"] == pytest.approx(0.5)
         assert calls == ["g1", "g2"]  # order respected

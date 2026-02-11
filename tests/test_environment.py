@@ -1,6 +1,5 @@
 """Tests for the base Environment class."""
 
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -10,14 +9,12 @@ from openai.types.chat.chat_completion import Choice
 import verifiers as vf
 from verifiers import Environment, Parser, Rubric, ThinkParser
 from verifiers.types import (
-    GenerateMetadata,
     GenerateOutputs,
     Messages,
     RolloutInput,
-    RolloutScores,
     SamplingArgs,
 )
-from verifiers.utils.eval_utils import make_dataset as build_dataset
+from verifiers.utils.save_utils import make_dataset as build_dataset
 
 
 # Create a concrete implementation for testing the abstract base class
@@ -37,66 +34,51 @@ class SimpleEnvironment(Environment):
     ):
         """Simple test rollout implementation."""
         state = await self.init_state(input, client=client, model=model)
-        state = await self.setup_state(state)
+        try:
+            state = await self.setup_state(state)
 
-        prompt_messages = state["prompt"]
-        response = await self.get_model_response(state, prompt_messages)
+            prompt_messages = state["prompt"]
+            response = await self.get_model_response(state, prompt_messages)
 
-        from verifiers.utils.response_utils import parse_response_messages
+            from verifiers.utils.response_utils import parse_response_messages
 
-        completion_messages = await parse_response_messages(response, self.message_type)
-        from verifiers.types import TrajectoryStep
-        from verifiers.utils.response_utils import parse_response_tokens
+            completion_messages = await parse_response_messages(
+                response, self.message_type
+            )
+            from verifiers.types import TrajectoryStep
+            from verifiers.utils.response_utils import parse_response_tokens
 
-        tokens = await parse_response_tokens(response, self.message_type)
-        trajectory_step = TrajectoryStep(
-            prompt=prompt_messages,
-            completion=completion_messages,
-            response=response,
-            tokens=tokens,
-            reward=None,
-            advantage=None,
-            is_truncated=False,
-            trajectory_id=state["trajectory_id"],
-            extras={},
-        )
-        state["trajectory"].append(trajectory_step)
-        state["is_completed"] = True
+            tokens = await parse_response_tokens(response, self.message_type)
+            trajectory_step = TrajectoryStep(
+                prompt=prompt_messages,
+                completion=completion_messages,
+                response=response,
+                tokens=tokens,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id=state["trajectory_id"],
+                extras={},
+            )
+            state["trajectory"].append(trajectory_step)
+            state["is_completed"] = True
 
-        from verifiers.utils.message_utils import concat_messages
+            from verifiers.utils.message_utils import concat_messages
 
-        last_prompt = state["trajectory"][-1]["prompt"]
-        last_completion = state["trajectory"][-1]["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+            last_prompt = state["trajectory"][-1]["prompt"]
+            last_completion = state["trajectory"][-1]["completion"]
+            full_conversation = concat_messages([last_prompt, last_completion])
+            state["completion"] = full_conversation[len(state["prompt"]) :]
+        except vf.Error as e:
+            state["error"] = e
 
         return state
-
-
-def _make_metadata(
-    num_examples: int, rollouts_per_example: int = 1
-) -> GenerateMetadata:
-    return GenerateMetadata(
-        env_id="test-env",
-        env_args={},
-        model="test-model",
-        base_url="http://localhost",
-        num_examples=num_examples,
-        rollouts_per_example=rollouts_per_example,
-        sampling_args={},
-        date="1970-01-01",
-        time_ms=0.0,
-        avg_reward=0.0,
-        avg_metrics={},
-        state_columns=["custom_field"],
-        path_to_save=Path("test.jsonl"),
-    )
 
 
 class TestEnvironmentBase:
     """Test cases for the base Environment class."""
 
-    def test_environment_initialization(self, mock_openai_client, sample_dataset):
+    def test_environment_initialization(self, sample_dataset):
         """Test that Environment initializes correctly."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
@@ -107,9 +89,7 @@ class TestEnvironmentBase:
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 
-    def test_environment_with_eval_dataset_only(
-        self, mock_openai_client, sample_dataset
-    ):
+    def test_environment_with_eval_dataset_only(self, sample_dataset):
         """Test Environment with only eval_dataset."""
         env = SimpleEnvironment(
             eval_dataset=sample_dataset,
@@ -119,21 +99,18 @@ class TestEnvironmentBase:
         assert env.dataset is None
         assert env.eval_dataset is not None
 
-    def test_environment_no_datasets_raises_error(self, mock_openai_client):
+    def test_environment_no_datasets_raises_error(self):
         """Test that Environment raises error when no datasets provided."""
         with pytest.raises(
             ValueError, match="Either dataset or eval_dataset must be provided"
         ):
             SimpleEnvironment(
-                client=mock_openai_client,
                 model="test-model",
                 parser=Parser(),
                 rubric=Rubric(),
             )
 
-    def test_completion_mode_with_system_prompt_raises_error(
-        self, mock_openai_client, sample_dataset
-    ):
+    def test_completion_mode_with_system_prompt_raises_error(self, sample_dataset):
         """Test that completion mode with system prompt raises error."""
         with pytest.raises(ValueError, match="not supported for completion tasks"):
             SimpleEnvironment(
@@ -144,9 +121,7 @@ class TestEnvironmentBase:
                 rubric=Rubric(),
             )
 
-    def test_different_parser_rubric_parser_warns(
-        self, mock_openai_client, sample_dataset
-    ):
+    def test_different_parser_rubric_parser_warns(self, sample_dataset):
         """Test that warning is logged when parser and rubric parser are different."""
         from unittest.mock import patch
 
@@ -158,8 +133,6 @@ class TestEnvironmentBase:
             mock_get_logger.return_value = mock_logger
 
             _ = SimpleEnvironment(
-                client=mock_openai_client,
-                model="test-model",
                 dataset=sample_dataset,
                 parser=think_parser,
                 rubric=rubric,
@@ -169,11 +142,9 @@ class TestEnvironmentBase:
                 "The parser and rubric parser are different. This may cause unexpected behavior."
             )
 
-    def test_get_dataset(self, mock_openai_client, sample_dataset):
+    def test_get_dataset(self, sample_dataset):
         """Test dataset retrieval."""
         env = SimpleEnvironment(
-            client=mock_openai_client,
-            model="test-model",
             dataset=sample_dataset,
             parser=Parser(),
             rubric=Rubric(),
@@ -188,11 +159,10 @@ class TestEnvironmentBase:
         assert len(subset) == 1
 
     @pytest.mark.asyncio
-    async def test_get_model_response_chat(self, mock_openai_client):
+    async def test_get_model_response_chat(self, mock_openai_client, make_input):
         """Test get_model_response with chat format."""
         env = SimpleEnvironment(
             client=mock_openai_client,
-            model="test-model",
             eval_dataset=Dataset.from_dict({"question": ["test"], "answer": ["test"]}),
             parser=Parser(),
             rubric=Rubric(),
@@ -200,7 +170,7 @@ class TestEnvironmentBase:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -222,7 +192,7 @@ class TestEnvironmentBase:
         mock_openai_client.chat.completions.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_model_response_completion(self, mock_openai_client):
+    async def test_get_model_response_completion(self, mock_openai_client, make_input):
         """Test get_model_response with completion format."""
         env = SimpleEnvironment(
             client=mock_openai_client,
@@ -235,7 +205,7 @@ class TestEnvironmentBase:
 
         prompt = "Complete this:"
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -253,7 +223,7 @@ class TestEnvironmentBase:
 
     @pytest.mark.asyncio
     async def test_a_generate_with_score_rollouts(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test async generate with scoring enabled."""
         env = SimpleEnvironment(
@@ -272,26 +242,22 @@ class TestEnvironmentBase:
 
         env.rubric.score_group = mock_score_group  # type: ignore[attr-defined]
 
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                example_id=0,
-            )
-        ]
-
-        results = await env.generate(
+        inputs = [make_input()]
+        outputs = await env.generate(
             inputs,
             client=mock_openai_client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert results["reward"] == [1.0]
+        states = outputs["outputs"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 1.0
 
-    def test_generate_sync_wrapper(self, mock_openai_client, sample_dataset):
+    def test_generate_sync_wrapper(
+        self, mock_openai_client, sample_dataset, make_input
+    ):
         """Test synchronous generate wrapper."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
@@ -307,98 +273,32 @@ class TestEnvironmentBase:
 
         env.rubric.score_group = mock_score_group  # type: ignore[attr-defined]
 
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                info={},
-                example_id=0,
-            )
-        ]
-        results = env.generate_sync(
+        inputs = [make_input()]
+        outputs = env.generate_sync(
             inputs,
             client=mock_openai_client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
+        states = outputs["outputs"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 1.0
 
-    def test_make_dataset(self, mock_openai_client, sample_dataset):
+    def test_make_dataset(self, make_metadata, make_output):
         """Test creating a dataset from evaluation results."""
 
-        results = GenerateOutputs(
-            prompt=[[{"role": "user", "content": "Hello"}]],
-            completion=[[{"role": "assistant", "content": "Hi"}]],
-            answer=["Hi"],
-            reward=[1.0],
-            task=["default"],
-            state=[
-                {
-                    "custom_field": "value",
-                    "timing": {
-                        "generation_ms": 0.0,
-                        "scoring_ms": 0.0,
-                        "total_ms": 0.0,
-                    },
-                }
-            ],
-            info=[{}],
-            example_id=[0],
-            metrics={},
-            metadata=_make_metadata(num_examples=1),
-        )
-
+        results = GenerateOutputs(outputs=[make_output()], metadata=make_metadata())
         dataset = build_dataset(results)
 
         assert len(dataset) == 1
         assert "prompt" in dataset.column_names
         assert "completion" in dataset.column_names
-        assert "answer" in dataset.column_names
         assert "reward" in dataset.column_names
         assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
-        assert "custom_field" in dataset.column_names
-
-    @pytest.mark.asyncio
-    async def test_generate_state_preserves_references(self, mock_openai_client):
-        """Test that generate creates state with preserved references instead of deep copying"""
-        env = SimpleEnvironment(
-            eval_dataset=Dataset.from_dict(
-                {"question": ["test question"], "answer": ["test answer"]}
-            ),
-            parser=Parser(),
-            rubric=Rubric(),
-        )
-
-        env.rubric.score_rollouts = AsyncMock(  # type: ignore[attr-defined]
-            return_value=RolloutScores(reward=[1.0], metrics={})
-        )
-
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                info={"key": "value"},
-                example_id=0,
-            )
-        ]
-
-        results = await env.generate(
-            inputs,
-            client=mock_openai_client,
-            model="test-model",
-        )
-
-        assert len(results["state"]) == 1
-        state = results["state"][0]
-
-        assert state["prompt"] is results["prompt"][0]
-        assert state["completion"] is results["completion"][0]
-        assert state["answer"] is results["answer"][0]
-        assert state["info"] is results["info"][0]
-        assert state["example_id"] is results["example_id"][0]
+        assert "foo" in dataset.column_names  # custom field from make_output fixture
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_openai_client):
@@ -474,7 +374,9 @@ class TestRenderStopErrorHandling:
     """Test cases for _render_stop error handling paths."""
 
     @pytest.mark.asyncio
-    async def test_render_stop_with_vf_error(self, mock_openai_client, sample_dataset):
+    async def test_render_stop_with_vf_error(
+        self, mock_openai_client, sample_dataset, make_input
+    ):
         """Test that _render_stop logs correctly for vf.Error with cause."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
@@ -487,11 +389,7 @@ class TestRenderStopErrorHandling:
         error.__cause__ = cause
 
         state = await env.init_state(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            ),
+            input=make_input(prompt=[{"role": "user", "content": "test"}]),
             client=mock_openai_client,
             model="test-model",
         )
@@ -513,7 +411,7 @@ class TestRenderStopErrorHandling:
 
     @pytest.mark.asyncio
     async def test_render_stop_with_regular_exception(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that _render_stop logs correctly for regular exceptions without cause."""
         env = SimpleEnvironment(
@@ -525,11 +423,7 @@ class TestRenderStopErrorHandling:
         error = RuntimeError("something went wrong")
 
         state = await env.init_state(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            ),
+            input=make_input(),
             client=mock_openai_client,
             model="test-model",
         )
@@ -578,53 +472,27 @@ class TestMaybeRetry:
     """Test cases for maybe_retry functionality in Environment.generate()."""
 
     @pytest.mark.asyncio
-    async def test_retry_succeeds_after_transient_infra_error(self, mock_openai_client):
-        """InfraError on first 2 attempts, succeeds on 3rd with max_retries=3."""
+    async def test_retry_after_retryable_error(self, mock_openai_client, make_input):
+        """Retry after error on first 2 attempts, succeeds on 3rd with max_retries=3."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RetryCounterEnv(
             fail_count=2, dataset=dataset, parser=Parser(), rubric=Rubric()
         )
 
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            )
-        ]
-        results = await env.generate(
+        inputs = [make_input()]
+        outputs = await env.generate(
             inputs, client=mock_openai_client, model="test-model", max_retries=3
         )
+        states = outputs["outputs"]
 
-        assert results["state"][0].get("error") is None
+        assert states[0].get("error") is None
         assert env.call_counts[0] == 3
 
     @pytest.mark.asyncio
-    async def test_retry_fails_after_max_retries_exhausted(self, mock_openai_client):
-        """InfraError persists after all retries exhausted."""
-        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
-        env = RetryCounterEnv(
-            fail_count=10, dataset=dataset, parser=Parser(), rubric=Rubric()
-        )
-
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            )
-        ]
-
-        with pytest.raises(vf.InfraError):
-            await env.generate(
-                inputs, client=mock_openai_client, model="test-model", max_retries=2
-            )
-
-        assert env.call_counts[0] == 3  # 1 initial + 2 retries
-
-    @pytest.mark.asyncio
-    async def test_non_infra_error_not_retried(self, mock_openai_client):
-        """ToolError is NOT retried even with max_retries > 0."""
+    async def test_no_retry_after_non_retryable_error(
+        self, mock_openai_client, make_input
+    ):
+        """Non-retryable error type is NOT retried even with max_retries > 0."""
         dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
         env = RetryCounterEnv(
             fail_count=10,
@@ -634,20 +502,37 @@ class TestMaybeRetry:
             rubric=Rubric(),
         )
 
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "test"}],
-                answer="test",
-                example_id=0,
-            )
-        ]
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs, client=mock_openai_client, model="test-model", max_retries=3
+        )
 
-        with pytest.raises(vf.ToolError):
-            await env.generate(
-                inputs, client=mock_openai_client, model="test-model", max_retries=3
-            )
+        rollout_outputs = outputs["outputs"]
+        assert env.call_counts[0] == 1  # No retries for non-retryable error
+        assert rollout_outputs[0].get("error") is not None
+        error_info = rollout_outputs[0]["error"]
+        assert "ToolError" == error_info["error"]
 
-        assert env.call_counts[0] == 1  # No retries for non-InfraError
+    @pytest.mark.asyncio
+    async def test_error_in_state_after_max_retries_exhausted(
+        self, mock_openai_client, make_input
+    ):
+        """Error persists in state after all retries exhausted."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=10, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+
+        inputs = [make_input()]
+        outputs = await env.generate(
+            inputs, client=mock_openai_client, model="test-model", max_retries=2
+        )
+
+        rollout_outputs = outputs["outputs"]
+        assert env.call_counts[0] == 3  # 1 initial + 2 retries
+        assert rollout_outputs[0].get("error") is not None
+        error_info = rollout_outputs[0]["error"]
+        assert "InfraError" == error_info["error"]
 
 
 class TestEmptyModelResponseErrors:
@@ -655,7 +540,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_none_response_raises_empty_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that None response raises EmptyModelResponseError."""
         env = SimpleEnvironment(
@@ -669,7 +554,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -679,7 +564,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_none_choices_raises_empty_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that response with None choices raises EmptyModelResponseError."""
         env = SimpleEnvironment(
@@ -697,7 +582,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -707,7 +592,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_wrong_number_of_choices_raises_invalid_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that response with != 1 choices raises InvalidModelResponseError."""
         env = SimpleEnvironment(
@@ -735,7 +620,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -745,7 +630,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_empty_choices_raises_invalid_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that response with empty choices list raises InvalidModelResponseError."""
         env = SimpleEnvironment(
@@ -763,7 +648,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -773,7 +658,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_chat_empty_content_no_tool_calls_raises_empty_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that chat response with no content and no tool_calls raises EmptyModelResponseError."""
         env = SimpleEnvironment(
@@ -796,7 +681,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -806,7 +691,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_chat_empty_string_content_no_tool_calls_raises_empty_model_response_error(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that chat response with empty string content and no tool_calls raises EmptyModelResponseError."""
         env = SimpleEnvironment(
@@ -829,7 +714,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -839,7 +724,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_chat_with_tool_calls_but_no_content_succeeds(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that chat response with tool_calls but no content does NOT raise error."""
         env = SimpleEnvironment(
@@ -869,7 +754,7 @@ class TestEmptyModelResponseErrors:
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -877,11 +762,11 @@ class TestEmptyModelResponseErrors:
         # Should not raise
         response = await env.get_model_response(state, prompt)
         assert response is not None
-        assert response.choices[0].message.tool_calls is not None
+        assert response.choices[0].message.tool_calls is not None  # type: ignore
 
     @pytest.mark.asyncio
     async def test_completion_empty_text_raises_empty_model_response_error(
-        self, mock_openai_client
+        self, mock_openai_client, make_input
     ):
         """Test that completion response with empty text raises EmptyModelResponseError."""
         from openai.types.completion_choice import CompletionChoice
@@ -904,7 +789,7 @@ class TestEmptyModelResponseErrors:
 
         prompt = "Complete this:"
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )
@@ -914,7 +799,7 @@ class TestEmptyModelResponseErrors:
 
     @pytest.mark.asyncio
     async def test_completion_none_text_raises_empty_model_response_error(
-        self, mock_openai_client
+        self, mock_openai_client, make_input
     ):
         """Test that completion response with None text raises EmptyModelResponseError."""
         from openai.types.completion_choice import CompletionChoice
@@ -937,7 +822,7 @@ class TestEmptyModelResponseErrors:
 
         prompt = "Complete this:"
         state = await env.init_state(
-            input=RolloutInput(example_id=0, task="test", prompt=prompt),
+            input=make_input(prompt=prompt),
             client=mock_openai_client,
             model="test-model",
         )

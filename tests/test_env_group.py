@@ -8,8 +8,7 @@ from datasets import Dataset
 
 from verifiers import EnvGroup, Rubric, SingleTurnEnv
 from verifiers.envs.env_group import EnvGroupRubric
-from verifiers.types import RolloutInput, State
-from verifiers.utils.async_utils import NullAsyncContext
+from verifiers.types import State
 
 
 class TestEnvGroupRubric:
@@ -50,7 +49,7 @@ class TestEnvGroupRubric:
         assert set(rubric.all_reward_names) == {"num_turns", "func1", "func2", "func3"}
 
     @pytest.mark.asyncio
-    async def test_env_group_rubric_score_rollout(self, mock_openai_client):
+    async def test_env_group_rubric_score_rollout(self, mock_openai_client, make_input):
         """Test scoring a rollout with EnvGroupRubric."""
 
         # Create test environments
@@ -79,12 +78,7 @@ class TestEnvGroupRubric:
 
         # Test scoring for "math" task
         state = State(
-            input=RolloutInput(
-                prompt="Test prompt",
-                answer="Test answer",
-                task="math",
-                example_id=0,
-            )
+            input=make_input(prompt="Test prompt", answer="Test answer", task="math")
         )
         state["completion"] = "Test completion"
         state["trajectory"] = []
@@ -99,9 +93,8 @@ class TestEnvGroupRubric:
         state["oai_tools"] = []
         state["reward"] = None
         state["metrics"] = None
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert "func1" in state["metrics"]
         assert "func2" in state["metrics"]
@@ -110,7 +103,7 @@ class TestEnvGroupRubric:
         assert state["reward"] == 0.8
 
     @pytest.mark.asyncio
-    async def test_env_group_rubric_unknown_task(self, mock_openai_client):
+    async def test_env_group_rubric_unknown_task(self, mock_openai_client, make_input):
         """Test scoring with unknown task returns zeros."""
         env1 = SingleTurnEnv(
             client=mock_openai_client,
@@ -122,13 +115,7 @@ class TestEnvGroupRubric:
         env_map = {"known_task": env1}
         rubric = EnvGroupRubric(env_map)
 
-        state = State(
-            input=RolloutInput(
-                prompt="Test",
-                task="unknown_task",
-                example_id=0,
-            )
-        )
+        state = State(input=make_input(prompt="Test", task="unknown_task"))
         state["completion"] = "Test"
         state["trajectory"] = []
         state["timing"] = {
@@ -142,9 +129,8 @@ class TestEnvGroupRubric:
         state["oai_tools"] = []
         state["reward"] = None
         state["metrics"] = None
-        score_sem = NullAsyncContext()
 
-        await rubric.score_rollout(state, score_sem)
+        await rubric.score_rollout(state)
 
         assert state["reward"] == 0.0
 
@@ -285,7 +271,7 @@ class TestEnvGroup:
         assert env_group.rubric.env_map["env_0"] == env1
 
     @pytest.mark.asyncio
-    async def test_env_group_rollout_routing(self, mock_openai_client):
+    async def test_env_group_rollout_routing(self, mock_openai_client, make_input):
         """Test that rollout is properly routed to the correct sub-environment."""
         # Create environments with different behaviors
         env1 = SingleTurnEnv(
@@ -304,16 +290,12 @@ class TestEnvGroup:
 
         # Mock the rollout methods to return different values
         async def env1_rollout(*args, **kwargs):
-            state = State(
-                input=RolloutInput(prompt="Test prompt", task="math", example_id=0)
-            )
+            state = State(input=make_input(prompt="Test prompt", task="math"))
             state["env"] = "env1"
             return state
 
         async def env2_rollout(*args, **kwargs):
-            state = State(
-                input=RolloutInput(prompt="Test prompt", task="code", example_id=0)
-            )
+            state = State(input=make_input(prompt="Test prompt", task="code"))
             state["env"] = "env2"
             return state
 
@@ -327,7 +309,7 @@ class TestEnvGroup:
 
         # Test routing to math environment
         state1 = await env_group.rollout(
-            input=RolloutInput(prompt="Test prompt", task="math", example_id=0),
+            input=make_input(prompt="Test prompt", task="math"),
             client=mock_openai_client,
             model="test-model",
         )
@@ -342,7 +324,7 @@ class TestEnvGroup:
 
         # Test routing to code environment
         state2 = await env_group.rollout(
-            input=RolloutInput(prompt="Test prompt", task="code", example_id=0),
+            input=make_input(prompt="Test prompt", task="code"),
             client=mock_openai_client,
             model="test-model",
         )
@@ -375,7 +357,7 @@ class TestEnvGroup:
         assert env_group.get_env_for_task("unknown") == env1
 
     @pytest.mark.asyncio
-    async def test_env_group_generate(self, mock_openai_client):
+    async def test_env_group_generate(self, mock_openai_client, make_input):
         """Test generate method with EnvGroup."""
         env1 = SingleTurnEnv(
             client=mock_openai_client,
@@ -396,7 +378,7 @@ class TestEnvGroup:
         # Mock the scoring with a properly-typed cast
         from typing import cast
 
-        async def mock_score_group(states, score_sem=None):
+        async def mock_score_group(states):
             for state in states:
                 state["reward"] = 0.8 if state["task"] == "math" else 0.9
                 state["metrics"] = {}
@@ -404,13 +386,12 @@ class TestEnvGroup:
         cast(Any, env_group.rubric).score_group = mock_score_group
 
         inputs = [
-            RolloutInput(
+            make_input(
                 prompt=[{"role": "user", "content": "Math question"}],
                 answer="math_answer",
                 task="math",
-                example_id=0,
             ),
-            RolloutInput(
+            make_input(
                 prompt=[{"role": "user", "content": "Code question"}],
                 answer="code_answer",
                 task="code",
@@ -418,14 +399,15 @@ class TestEnvGroup:
             ),
         ]
 
-        results = await env_group.generate(
+        outputs = await env_group.generate(
             inputs, client=mock_openai_client, model="test-model"
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        states = outputs["outputs"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
 
     def test_env_group_with_mixed_datasets(self, mock_openai_client):
         """Test EnvGroup with environments having different dataset configurations."""

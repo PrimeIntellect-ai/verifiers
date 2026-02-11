@@ -7,7 +7,7 @@ from datasets import Dataset
 
 import verifiers as vf
 from verifiers import Parser, Rubric, SingleTurnEnv
-from verifiers.types import RolloutInput, RolloutTiming
+from verifiers.types import RolloutTiming
 
 
 class TestSingleTurnEnv:
@@ -102,17 +102,11 @@ class TestSingleTurnEnv:
             await mock_singleturn_env.env_response(messages, state)
 
     @pytest.mark.asyncio
-    async def test_rollout_chat_format(self, mock_singleturn_env):
+    async def test_rollout_chat_format(self, mock_singleturn_env, make_input):
         """Test rollout with chat format."""
-        prompt = [{"role": "user", "content": "What is 2+2?"}]
-        answer = "4"
-
+        input = make_input()
         state = await mock_singleturn_env.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
-            ),
+            input=input,
             client=mock_singleturn_env.client,
             model="test-model",
         )
@@ -127,23 +121,19 @@ class TestSingleTurnEnv:
         # Check state structure
         assert "trajectory" in state
         assert len(state["trajectory"]) == 1
-        assert state["answer"] == answer
+        assert state["answer"] == input["answer"]
 
         # Verify the client was called
         mock_singleturn_env.client.chat.completions.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rollout_completion_format(self, mock_singleturn_env_completion):
+    async def test_rollout_completion_format(
+        self, mock_singleturn_env_completion, make_input
+    ):
         """Test rollout with completion format."""
-        prompt = "Calculate 2+2:"
-        answer = "4"
-
+        input = make_input(prompt="Calculate 2+2:", answer="4")
         state = await mock_singleturn_env_completion.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
-            ),
+            input=input,
             client=mock_singleturn_env_completion.client,
             model="test-model",
         )
@@ -161,18 +151,13 @@ class TestSingleTurnEnv:
         mock_singleturn_env_completion.client.completions.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rollout_with_sampling_args(self, mock_singleturn_env):
+    async def test_rollout_with_sampling_args(self, mock_singleturn_env, make_input):
         """Test rollout with custom sampling arguments."""
-        prompt = [{"role": "user", "content": "Hello"}]
-        answer = "Hi"
+        input = make_input()
         sampling_args = {"temperature": 0.8, "max_tokens": 100}
 
         state = await mock_singleturn_env.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
-            ),
+            input=input,
             client=mock_singleturn_env.client,
             model="test-model",
             sampling_args=sampling_args,
@@ -188,21 +173,16 @@ class TestSingleTurnEnv:
         assert "max_completion_tokens" in call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_rollout_with_task_and_info(self, mock_singleturn_env):
+    async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
         """Test rollout with task and info parameters."""
-        prompt = [{"role": "user", "content": "Test question"}]
-        answer = "Test answer"
-        task = "math"
-        info = {"difficulty": "easy"}
-
+        input = make_input(
+            prompt=[{"role": "user", "content": "Test question"}],
+            answer="Test answer",
+            task="math",
+            info={"difficulty": "easy"},
+        )
         state = await mock_singleturn_env.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                task=task,
-                info=info,
-                example_id=0,
-            ),
+            input=input,
             client=mock_singleturn_env.client,
             model="test-model",
         )
@@ -210,27 +190,22 @@ class TestSingleTurnEnv:
 
         assert isinstance(completion, list)
         # Check state contains all the information
-        assert state["answer"] == answer
-        assert state["task"] == task
-        assert state["info"] == info
+        assert state["example_id"] == input["example_id"]
+        assert state["prompt"] == input["prompt"]
+        assert state["answer"] == input["answer"]
+        assert state["task"] == input["task"]
+        assert state["info"] == input["info"]
 
     @pytest.mark.asyncio
-    async def test_rollout_error_handling(self, mock_singleturn_env):
+    async def test_rollout_error_handling(self, mock_singleturn_env, make_input):
         """Test rollout handles errors from get_model_response."""
         # Mock get_model_response to return an error
         mock_singleturn_env.client.chat.completions.create = AsyncMock(
             side_effect=Exception("API Error")
         )
 
-        prompt = [{"role": "user", "content": "Hello"}]
-        answer = "Hi"
-
         state = await mock_singleturn_env.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                example_id=0,
-            ),
+            input=make_input(),
             client=mock_singleturn_env.client,
             model="test-model",
         )
@@ -238,53 +213,36 @@ class TestSingleTurnEnv:
         assert isinstance(state["error"], vf.ModelError)
 
     @pytest.mark.asyncio
-    async def test_rollout_state_structure(self, mock_singleturn_env):
+    async def test_rollout_state_structure(self, mock_singleturn_env, make_input):
         """Test that rollout creates proper state structure."""
-        prompt = [{"role": "user", "content": "Hello"}]
-        answer = "Hi"
-        task = "greeting"
-        info = {"context": "test"}
-
+        input = make_input()
         state = await mock_singleturn_env.rollout(
-            input=RolloutInput(
-                prompt=prompt,
-                answer=answer,
-                task=task,
-                info=info,
-                example_id=0,
-            ),
+            input=input,
             client=mock_singleturn_env.client,
             model="test-model",
         )
         completion = state["completion"]
 
         # Check all expected state fields
-        assert state["prompt"] == prompt
+        assert state["prompt"] == input["prompt"]
+        assert state["answer"] == input["answer"]
+        assert state["task"] == input["task"]
+        assert state["info"] == input["info"]
+        assert state["example_id"] == input["example_id"]
         assert state["completion"] == completion
-        assert state["answer"] == answer
-        assert state["task"] == task
-        assert state["info"] == info
         assert "trajectory" in state
         assert isinstance(state["trajectory"], list)
         assert len(state["trajectory"]) == 1
 
     @pytest.mark.asyncio
-    async def test_a_generate_basic(self, mock_singleturn_env):
+    async def test_a_generate_basic(self, mock_singleturn_env, make_input):
         """Test async generation with basic inputs."""
-        from verifiers.types import RolloutInput
-
         inputs_list = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "What is 2+2?"}],
-                answer="4",
-                example_id=0,
-                task="test",
-            ),
-            RolloutInput(
+            make_input(),
+            make_input(
+                example_id=1,
                 prompt=[{"role": "user", "content": "What is 3+3?"}],
                 answer="6",
-                example_id=1,
-                task="test",
             ),
         ]
 
@@ -296,18 +254,18 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = await mock_singleturn_env.generate(
+        outputs = await mock_singleturn_env.generate(
             inputs_list,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
-        assert len(results["state"]) == 2
-        assert results["reward"] == [1.0, 1.0]
+        states = outputs["outputs"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
+            assert state["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_a_generate_with_dataset(
@@ -323,58 +281,38 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = await mock_singleturn_env.generate(
+        outputs = await mock_singleturn_env.generate(
             sample_chat_dataset,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
-        assert len(results["completion"]) == 2
+        states = outputs["outputs"]
+        assert len(states) == 2
+        for state in states:
+            assert "completion" in state
+            assert "reward" in state
+            assert state["reward"] == 1.0
 
     @pytest.mark.asyncio
-    async def test_a_generate_no_scoring(self, mock_singleturn_env):
+    async def test_a_generate_no_scoring(self, mock_singleturn_env, make_input):
         """Test async generation without scoring rollouts."""
-        from verifiers.types import RolloutInput
-
-        inputs_list = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                example_id=0,
-                task="test",
-            ),
-        ]
-
-        results = await mock_singleturn_env.generate(
+        inputs_list = [make_input()]
+        outputs = await mock_singleturn_env.generate(
             inputs_list,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results  # reward attribute exists
-        # Scoring always happens now, so rewards will be set
-        assert len(results["reward"]) >= 0
+        states = outputs["outputs"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 0.0
 
-    def test_generate_sync_wrapper(self, mock_singleturn_env):
+    def test_generate_sync_wrapper(self, mock_singleturn_env, make_input):
         """Test the synchronous generate wrapper."""
-        from verifiers.types import RolloutInput
 
-        inputs = [
-            RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                info={},
-                example_id=0,
-                task="test",
-            )
-        ]
-
-        # Mock the rubric scoring
         async def mock_score_group(states, score_sem=None):
             for state in states:
                 state["reward"] = 1.0
@@ -382,19 +320,22 @@ class TestSingleTurnEnv:
 
         mock_singleturn_env.rubric.score_group = mock_score_group
 
-        results = mock_singleturn_env.generate_sync(
+        inputs = [make_input()]
+        outputs = mock_singleturn_env.generate_sync(
             inputs,
             client=mock_singleturn_env.client,
             model="test-model",
         )
 
-        assert "completion" in results
-        assert "state" in results
-        assert "reward" in results
+        states = outputs["outputs"]
+        assert len(states) == 1
+        assert "completion" in states[0]
+        assert "reward" in states[0]
+        assert states[0]["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_different_message_types_in_same_env(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that environment respects its message_type setting."""
         # Chat environment
@@ -418,10 +359,8 @@ class TestSingleTurnEnv:
 
         # Test chat rollout
         chat_state = await chat_env.rollout(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                answer="Hi",
-                example_id=0,
+            input=make_input(
+                prompt=[{"role": "user", "content": "Hello"}], answer="Hi"
             ),
             client=mock_openai_client,
             model="test-model",
@@ -431,11 +370,7 @@ class TestSingleTurnEnv:
 
         # Test completion rollout
         comp_state = await completion_env.rollout(
-            input=RolloutInput(
-                prompt="Complete this:",
-                answer="Done",
-                example_id=0,
-            ),
+            input=make_input(prompt="Complete this:", answer="Done"),
             client=mock_openai_client,
             model="test-model",
         )
@@ -444,7 +379,7 @@ class TestSingleTurnEnv:
 
     @pytest.mark.asyncio
     async def test_singleturn_stops_after_one_response(
-        self, mock_openai_client, sample_dataset
+        self, mock_openai_client, sample_dataset, make_input
     ):
         """Test that SingleTurnEnv truly stops after one response."""
         # We'll verify this by checking the is_completed logic
@@ -453,15 +388,9 @@ class TestSingleTurnEnv:
         )
 
         # Before any trajectory steps
-        from verifiers.types import RolloutInput, State
+        from verifiers.types import State
 
-        state = State(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                example_id=0,
-                task="default",
-            )
-        )
+        state = State(input=make_input())
         state["trajectory"] = []
         state["timing"] = RolloutTiming(
             generation_ms=0.0,
@@ -474,13 +403,7 @@ class TestSingleTurnEnv:
         # After one trajectory step
         from verifiers.types import TrajectoryStep
 
-        state = State(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                example_id=0,
-                task="default",
-            )
-        )
+        state = State(input=make_input())
         state["trajectory"] = [
             TrajectoryStep(
                 prompt=[{"role": "user", "content": "Hello"}],
@@ -503,13 +426,7 @@ class TestSingleTurnEnv:
         assert await env.is_completed(state)
 
         # Even with multiple trajectory steps (shouldn't happen), it's still completed
-        state = State(
-            input=RolloutInput(
-                prompt=[{"role": "user", "content": "Hello"}],
-                example_id=0,
-                task="default",
-            )
-        )
+        state = State(input=make_input())
         state["trajectory"] = [
             TrajectoryStep(
                 prompt=[{"role": "user", "content": "Hello"}],

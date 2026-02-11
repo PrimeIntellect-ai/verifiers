@@ -10,6 +10,7 @@ uv.lock
 .ropeproject/
 .scratch/
 .chroma_db/
+/.codex/environments/
 
 # artifacts
 core.* 
@@ -46,3 +47,7 @@ scratch/
 .vscode/
 *.swp
 .DS_Store
+
+# CUA server (local dev artifacts)
+assets/templates/browserbase/cua/node_modules/
+assets/templates/browserbase/cua/pnpm-lock.yaml

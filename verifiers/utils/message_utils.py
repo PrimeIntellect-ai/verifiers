@@ -1,9 +1,11 @@
 import json
-from typing import cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
 )
+from rich.text import Text
 
 from verifiers.types import ChatMessage, Messages
 
@@ -15,13 +17,13 @@ def strip_nones_from_content(messages: list[ChatMessage]) -> list[ChatMessage]:
         content = msg.get("content")
         if isinstance(content, list):
             new_msg = dict(msg)
-            new_msg["content"] = [  # type: ignore[typeddict-item]
+            new_msg["content"] = [
                 {k: v for k, v in c.items() if v is not None}
                 if isinstance(c, dict)
                 else c
                 for c in content
             ]
-            result.append(new_msg)  # type: ignore[arg-type]
+            result.append(cast(ChatMessage, new_msg))
         else:
             result.append(msg)
     return result
@@ -83,6 +85,54 @@ def messages_to_printable(messages: Messages) -> Messages:
     if isinstance(messages, str):
         return messages
     return [message_to_printable(m) for m in messages or []]
+
+
+def format_messages(messages: Any) -> Text:
+    def _attr_or_key(obj: Any, key: str, default: Any = None) -> Any:
+        val = getattr(obj, key, None)
+        if val is not None:
+            return val
+        if isinstance(obj, Mapping):
+            return obj.get(key, default)
+        return default
+
+    def _normalize_tool_call(tc: Any) -> dict[str, str]:
+        if isinstance(tc, str):
+            tc = json.loads(tc)
+        src = _attr_or_key(tc, "function") or tc
+        name = _attr_or_key(src, "name", "") or ""
+        args = _attr_or_key(src, "arguments", {}) or {}
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args)
+            except Exception:
+                args = str(args)
+        return {"name": name, "args": args}
+
+    if isinstance(messages, str):
+        return Text(messages)
+
+    out = Text()
+    for idx, msg in enumerate(messages):
+        if idx:
+            out.append("\n\n")
+
+        assert isinstance(msg, dict)
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        style = "bright_cyan" if role == "assistant" else "bright_magenta"
+
+        out.append(f"{role}: ", style="bold")
+        out.append(str(content) if content else "", style=style)
+
+        for tc in msg.get("tool_calls") or []:
+            payload = _normalize_tool_call(tc)
+            out.append(
+                "\n\n[tool call]\n" + json.dumps(payload, indent=2, ensure_ascii=False),
+                style=style,
+            )
+
+    return out
 
 
 def sanitize_tool_calls(messages: Messages):
