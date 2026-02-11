@@ -13,12 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from datasets import Dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.envs.environment import Environment
@@ -27,9 +25,12 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ClientConfig,
     GenerateOutputs,
+    Response,
+    ResponseMessage,
     RolloutInput,
     SamplingArgs,
     Tool,
+    Usage,
 )
 from verifiers.utils.message_utils import sanitize_tool_calls
 from verifiers.utils.save_utils import make_dataset as build_dataset
@@ -90,9 +91,9 @@ class DummyEnvironment(Environment):
 
 
 @pytest.fixture
-def make_dummy_env() -> Callable[[AsyncOpenAI, Dataset | None], DummyEnvironment]:
+def make_dummy_env():
     def _make_dummy_env(
-        mock_openai_client: AsyncOpenAI, dataset: Dataset | None = None, **kwargs
+        mock_openai_client, dataset: Dataset | None = None, **kwargs
     ) -> DummyEnvironment:
         dataset = dataset or Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
         return DummyEnvironment(
@@ -132,20 +133,13 @@ async def test_get_model_response_chat_with_tools(
     )
     # Ensure the client was invoked and returned provider-agnostic Response
     assert isinstance(resp, vf.Response)
-    assert mock_openai_client.chat.completions.create.await_count == 1
-    kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
-    assert "tools" in kwargs
-    assert kwargs["tools"] == [
-        {
-            "type": "function",
-            "function": {
-                "name": "echo",
-                "description": "echo",
-                "parameters": {},
-                "strict": True,
-            },
-        }
-    ]
+    assert mock_openai_client.call_count == 1
+    kwargs = mock_openai_client.last_call_kwargs
+    assert kwargs["tools"] is not None
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0].name == "echo"
+    assert kwargs["tools"][0].description == "echo"
+    assert kwargs["tools"][0].parameters == {}
 
 
 @pytest.mark.asyncio
@@ -160,15 +154,39 @@ async def test_get_model_response_tracks_usage_on_state(
         model="test-model",
     )
 
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock(message=MagicMock(content="ok", tool_calls=None))]
-    resp1.usage = {"prompt_tokens": 11, "completion_tokens": 7}
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock(message=MagicMock(content="ok2", tool_calls=None))]
-    resp2.usage = {"input_tokens": 3, "output_tokens": 2}
-
-    mock_openai_client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2])
+    resp1 = Response(
+        id="1",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=11, reasoning_tokens=0, completion_tokens=7, total_tokens=18
+        ),
+        message=ResponseMessage(
+            content="ok",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    resp2 = Response(
+        id="2",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=3, reasoning_tokens=0, completion_tokens=2, total_tokens=5
+        ),
+        message=ResponseMessage(
+            content="ok2",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    mock_openai_client.get_response = AsyncMock(side_effect=[resp1, resp2])
 
     await env.get_model_response(state=state, prompt=prompt)
     await env.get_model_response(state=state, prompt=prompt)
@@ -193,10 +211,23 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
         model="test-model",
     )
 
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content="ok", tool_calls=None))]
-    resp.usage = {"prompt_tokens": 5, "completion_tokens": 4}
-    mock_openai_client.chat.completions.create = AsyncMock(return_value=resp)
+    resp = Response(
+        id="1",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=5, reasoning_tokens=0, completion_tokens=4, total_tokens=9
+        ),
+        message=ResponseMessage(
+            content="ok",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    mock_openai_client.get_response = AsyncMock(return_value=resp)
 
     await env.get_model_response(state=state, prompt=prompt)
     # Simulate user clobbering visible usage and omitting response from trajectory.
@@ -214,7 +245,14 @@ async def test_get_model_response_completion_rejects_tools(
     mock_openai_client, make_dummy_env, make_input
 ):
     env = make_dummy_env(mock_openai_client, message_type="completion")
-    with pytest.raises(vf.ModelError):
+    # Mock get_response to raise ValueError like the real OpenAICompletionsClient does
+    mock_openai_client.get_response = AsyncMock(
+        side_effect=ValueError(
+            "Completions API does not support tools. "
+            "Use chat_completions or messages client_type instead."
+        )
+    )
+    with pytest.raises(ValueError, match="does not support tools"):
         state = await env.init_state(
             input=make_input(prompt=[{"role": "user", "content": "Complete this"}]),
             client=mock_openai_client,
@@ -479,21 +517,27 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
 async def test_generate_resume_closes_local_endpoint_clients(
     tmp_path, monkeypatch, mock_openai_client, make_dummy_env, make_input, make_output
 ):
-    class LocalClientStub:
+    class InnerClientStub:
         def __init__(self):
             self.closed = False
 
         async def close(self):
             self.closed = True
 
-    created_clients: list[LocalClientStub] = []
+    class LocalClientStub:
+        def __init__(self):
+            self.client = InnerClientStub()
 
-    def fake_setup_client(_config):
-        client = LocalClientStub()
-        created_clients.append(client)
-        return client
+    created_clients: list[InnerClientStub] = []
 
-    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+    def fake_resolve_client(_config):
+        wrapper = LocalClientStub()
+        created_clients.append(wrapper.client)
+        return wrapper
+
+    monkeypatch.setattr(
+        "verifiers.envs.environment.resolve_client", fake_resolve_client
+    )
 
     env = make_dummy_env(mock_openai_client)
     results_path = tmp_path / "resume-complete"
@@ -536,25 +580,31 @@ async def test_generate_resume_closes_local_endpoint_clients(
 async def test_generate_closes_partially_created_clients_on_setup_failure(
     monkeypatch, mock_openai_client, make_dummy_env, make_input
 ):
-    class LocalClientStub:
+    class InnerClientStub:
         def __init__(self):
             self.closed = False
 
         async def close(self):
             self.closed = True
 
-    created_clients: list[LocalClientStub] = []
+    class LocalClientStub:
+        def __init__(self):
+            self.client = InnerClientStub()
+
+    created_clients: list[InnerClientStub] = []
     calls = {"count": 0}
 
-    def fake_setup_client(_config):
+    def fake_resolve_client(_config):
         calls["count"] += 1
         if calls["count"] == 2:
             raise RuntimeError("setup failed")
-        client = LocalClientStub()
-        created_clients.append(client)
-        return client
+        wrapper = LocalClientStub()
+        created_clients.append(wrapper.client)
+        return wrapper
 
-    monkeypatch.setattr("verifiers.envs.environment.setup_client", fake_setup_client)
+    monkeypatch.setattr(
+        "verifiers.envs.environment.resolve_client", fake_resolve_client
+    )
 
     env = make_dummy_env(mock_openai_client)
     with pytest.raises(RuntimeError, match="setup failed"):

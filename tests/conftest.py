@@ -1,8 +1,8 @@
 """Pytest configuration and fixtures for verifiers tests."""
 
+import logging
 from pathlib import Path
-from typing import Callable
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, Callable
 
 import pytest
 from datasets import Dataset
@@ -22,14 +22,18 @@ from verifiers import (
     XMLParser,
     stop,
 )
+from verifiers.clients.client import Client
 from verifiers.types import (
     GenerateMetadata,
     Info,
+    Response,
+    ResponseMessage,
     RolloutInput,
     RolloutOutput,
     RolloutTiming,
     SamplingArgs,
     Tool,
+    ToolCall,
     TrajectoryStep,
 )
 from verifiers.utils.save_utils import state_to_output
@@ -82,34 +86,33 @@ def think_parser_with_extractor():
 # Async test fixtures for Environment testing
 
 
-class MockAsyncOpenAI:
-    """Mock AsyncOpenAI client that maps conversation inputs to outputs."""
+class MockClient(Client):
+    """Mock Client that maps conversation inputs to vf.Response outputs.
+
+    Overrides get_response() to return provider-agnostic vf.Response objects
+    directly, bypassing native client conversion.
+    """
 
     def __init__(self):
-        self.chat_completions = {}  # Maps conversation history to responses
-        self.text_completions = {}  # Maps prompts to responses
+        self.logger = logging.getLogger(f"{__name__}.MockClient")
+        self._client = None
+        self.interleaved_thinking = True
+
+        self._chat_responses: dict[tuple, dict] = {}
+        self._text_responses: dict[str, dict] = {}
         self.default_chat_response = "This is a test response"
         self.default_text_response = "This is a test completion"
-        self.base_url = "http://localhost/v1/"  # For testing URL parsing
 
-        # Create mock structure
-        self.chat = MagicMock()
-        self.completions = MagicMock()
-        self.chat.completions = MagicMock()
-
-        # Set up async methods
-        self.chat.completions.create = AsyncMock(
-            side_effect=self._handle_chat_completion
-        )
-        self.completions.create = AsyncMock(side_effect=self._handle_text_completion)
+        # Call tracking
+        self.call_count = 0
+        self.last_call_kwargs: dict[str, Any] = {}
 
     def add_chat_response(
         self, messages, response, finish_reason="stop", tool_calls=None
     ):
         """Add a mapped response for specific messages."""
-        # Convert messages to a hashable key
         key = self._messages_to_key(messages)
-        self.chat_completions[key] = {
+        self._chat_responses[key] = {
             "content": response,
             "finish_reason": finish_reason,
             "tool_calls": tool_calls,
@@ -117,8 +120,8 @@ class MockAsyncOpenAI:
 
     def add_text_response(self, prompt, response, finish_reason="stop"):
         """Add a mapped response for specific prompt."""
-        self.text_completions[prompt] = {
-            "text": response,
+        self._text_responses[prompt] = {
+            "content": response,
             "finish_reason": finish_reason,
         }
 
@@ -129,99 +132,170 @@ class MockAsyncOpenAI:
         if text_response:
             self.default_text_response = text_response
 
-    async def _handle_chat_completion(self, messages, **kwargs):
-        """Handle chat completion requests."""
-        key = self._messages_to_key(messages)
+    async def get_response(
+        self,
+        prompt,
+        model,
+        sampling_args,
+        tools=None,
+        **kwargs,
+    ) -> Response:
+        """Return a Response based on the prompt-to-response mapping."""
+        self.call_count += 1
+        self.last_call_kwargs = {
+            "prompt": prompt,
+            "model": model,
+            "sampling_args": sampling_args,
+            "tools": tools,
+            **kwargs,
+        }
 
-        if key in self.chat_completions:
-            response_data = self.chat_completions[key]
+        if self._is_text_prompt(prompt):
+            return self._make_text_response(prompt)
+        return self._make_chat_response(prompt)
+
+    # -- Abstract method stubs (never called since get_response is overridden) --
+
+    def setup_client(self, config):
+        return None
+
+    async def to_native_tool(self, tool):
+        pass
+
+    async def to_native_prompt(self, messages):
+        return [], {}
+
+    async def get_native_response(
+        self, prompt, model, sampling_args, tools=None, **kwargs
+    ):
+        pass
+
+    async def raise_from_native_response(self, response):
+        pass
+
+    async def from_native_response(self, response):
+        pass
+
+    # -- Internal helpers --
+
+    @staticmethod
+    def _is_text_prompt(prompt) -> bool:
+        """Detect completion-mode prompts (single TextMessage with role='text')."""
+        if isinstance(prompt, str):
+            return True
+        if isinstance(prompt, list) and len(prompt) == 1:
+            msg = prompt[0]
+            role = msg["role"] if isinstance(msg, dict) else getattr(msg, "role", None)
+            if role == "text":
+                return True
+        return False
+
+    @staticmethod
+    def _extract_text(prompt) -> str:
+        """Extract text content from a text/completion prompt."""
+        if isinstance(prompt, str):
+            return prompt
+        msg = prompt[0]
+        if isinstance(msg, dict):
+            return msg.get("content", "")
+        return getattr(msg, "content", "")
+
+    def _messages_to_key(self, messages):
+        """Convert messages list to a hashable key."""
+        key_parts = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+            else:
+                role = getattr(msg, "role", "")
+                content = getattr(msg, "content", "")
+            key_parts.append(f"{role}:{content}")
+        return tuple(key_parts)
+
+    def _convert_tool_calls(self, raw_tool_calls) -> list[ToolCall] | None:
+        """Convert OAI-style tool call objects to vf.ToolCall."""
+        if not raw_tool_calls:
+            return None
+        result: list[ToolCall] = []
+        for tc in raw_tool_calls:
+            if hasattr(tc, "function"):
+                result.append(
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=tc.function.arguments,
+                    )
+                )
+            elif isinstance(tc, dict):
+                func = tc.get("function", {})
+                result.append(
+                    ToolCall(
+                        id=tc.get("id", ""),
+                        name=func.get("name", ""),
+                        arguments=func.get("arguments", ""),
+                    )
+                )
+        return result or None
+
+    def _make_chat_response(self, messages) -> Response:
+        key = self._messages_to_key(messages)
+        if key in self._chat_responses:
+            data = self._chat_responses[key]
         else:
-            response_data = {
+            data = {
                 "content": self.default_chat_response,
                 "finish_reason": "stop",
                 "tool_calls": None,
             }
 
-        # Create mock response that mimics ChatCompletion
-        from openai.types.chat.chat_completion import ChatCompletion, Choice
-        from openai.types.chat.chat_completion_message import ChatCompletionMessage
+        tool_calls = self._convert_tool_calls(data.get("tool_calls"))
 
-        # Create a proper mock that will pass isinstance checks
-        mock_response = MagicMock(spec=ChatCompletion)
-        mock_choice = MagicMock(spec=Choice)
-        mock_message = MagicMock(spec=ChatCompletionMessage)
+        return Response(
+            id="test-id",
+            created=0,
+            model="test-model",
+            usage=None,
+            message=ResponseMessage(
+                content=data["content"],
+                reasoning_content=None,
+                finish_reason=data["finish_reason"],
+                is_truncated=data["finish_reason"] == "length",
+                tokens=None,
+                tool_calls=tool_calls,
+            ),
+        )
 
-        # Set the attributes
-        mock_message.content = response_data["content"]
-        mock_message.role = "assistant"
-        mock_message.tool_calls = response_data.get("tool_calls", None)
-        mock_choice.message = mock_message
-        mock_choice.finish_reason = response_data["finish_reason"]
-        mock_choice.index = 0
-
-        mock_response.choices = [mock_choice]
-        mock_response.id = "test-id"
-        mock_response.model = "test-model"
-        mock_response.object = "chat.completion"
-        mock_response.created = 0
-        mock_response.usage = None
-
-        # model_dump() should return a realistic dict for reasoning content extraction
-        mock_message.model_dump = lambda: {
-            "role": "assistant",
-            "content": response_data["content"],
-            "tool_calls": response_data.get("tool_calls", None),
-        }
-
-        return mock_response
-
-    async def _handle_text_completion(self, prompt, **kwargs):
-        """Handle text completion requests."""
-        if prompt in self.text_completions:
-            response_data = self.text_completions[prompt]
+    def _make_text_response(self, prompt) -> Response:
+        text = self._extract_text(prompt)
+        if text in self._text_responses:
+            data = self._text_responses[text]
         else:
-            response_data = {
-                "text": self.default_text_response,
+            data = {
+                "content": self.default_text_response,
                 "finish_reason": "stop",
             }
 
-        # Create mock response that mimics Completion
-        from openai.types.completion import Completion
-        from openai.types.completion_choice import CompletionChoice
-
-        # Create a proper mock that will pass isinstance checks
-        mock_response = MagicMock(spec=Completion)
-        mock_choice = MagicMock(spec=CompletionChoice)
-
-        # Set the attributes
-        mock_choice.text = response_data["text"]
-        mock_choice.finish_reason = response_data["finish_reason"]
-        mock_choice.index = 0
-
-        mock_response.choices = [mock_choice]
-        mock_response.id = "test-id"
-        mock_response.model = "test-model"
-        mock_response.object = "text_completion"
-        mock_response.created = 0
-        mock_response.usage = None
-
-        return mock_response
-
-    def _messages_to_key(self, messages):
-        """Convert messages list to a hashable key."""
-        # Create a simplified representation for hashing
-        key_parts = []
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            key_parts.append(f"{role}:{content}")
-        return tuple(key_parts)
+        return Response(
+            id="test-id",
+            created=0,
+            model="test-model",
+            usage=None,
+            message=ResponseMessage(
+                content=data["content"],
+                reasoning_content=None,
+                finish_reason=data["finish_reason"],
+                is_truncated=data["finish_reason"] == "length",
+                tokens=None,
+                tool_calls=None,
+            ),
+        )
 
 
 @pytest.fixture
 def mock_openai_client():
-    """Return a mocked AsyncOpenAI client with input-output mapping."""
-    return MockAsyncOpenAI()
+    """Return a MockClient with input-output mapping."""
+    return MockClient()
 
 
 @pytest.fixture

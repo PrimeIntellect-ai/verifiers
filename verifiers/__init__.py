@@ -21,7 +21,9 @@ from .envs.tool_env import ToolEnv  # noqa # isort: skip
 from .clients.client import Client  # noqa # isort: skip
 from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa # isort: skip
 from .clients.openai_chat_completions_client import OpenAIChatCompletionsClient  # noqa # isort: skip
-from .clients.openai_chat_completions_token_client import OpenAIChatCompletionsTokenClient  # noqa # isort: skip
+from .clients.openai_chat_completions_token_client import (
+    OpenAIChatCompletionsTokenClient,
+)  # noqa # isort: skip
 from .clients.openai_completions_client import OpenAICompletionsClient  # noqa # isort: skip
 
 # main imports

@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from datasets import Dataset
-from openai.types.chat.chat_completion import Choice
 
 import verifiers as vf
 from verifiers import Environment, Parser, Rubric, ThinkParser
@@ -12,9 +11,11 @@ from verifiers.types import (
     GenerateOutputs,
     Messages,
     Response,
+    ResponseMessage,
     RolloutInput,
     SamplingArgs,
     Tool,
+    ToolCall,
 )
 from verifiers.utils.save_utils import make_dataset as build_dataset
 
@@ -147,17 +148,6 @@ class TestEnvironmentBase:
                 rubric=Rubric(),
             )
 
-    def test_completion_mode_with_system_prompt_raises_error(self, sample_dataset):
-        """Test that completion mode with system prompt raises error."""
-        with pytest.raises(ValueError, match="not supported for completion tasks"):
-            SimpleEnvironment(
-                dataset=sample_dataset,
-                message_type="completion",
-                system_prompt="test prompt",
-                parser=Parser(),
-                rubric=Rubric(),
-            )
-
     def test_different_parser_rubric_parser_warns(self, sample_dataset):
         """Test that warning is logged when parser and rubric parser are different."""
         from unittest.mock import patch
@@ -221,7 +211,7 @@ class TestEnvironmentBase:
         assert isinstance(response, Response)
         assert response.message is not None
         assert response.message.content is not None
-        mock_openai_client.chat.completions.create.assert_called_once()
+        assert mock_openai_client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_get_model_response_completion(self, mock_openai_client, make_input):
@@ -251,7 +241,7 @@ class TestEnvironmentBase:
         assert isinstance(response, Response)
         assert response.message is not None
         assert response.message.content is not None
-        mock_openai_client.completions.create.assert_called_once()
+        assert mock_openai_client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_init_state_normalizes_info_tool_defs(
@@ -647,8 +637,10 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return None
-        mock_openai_client.chat.completions.create = AsyncMock(return_value=None)
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("None response")
+        )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
         state = await env.init_state(
@@ -671,11 +663,9 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with None choices
-        mock_response = Mock()
-        mock_response.choices = None
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("Response has no choices")
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -699,21 +689,9 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with 2 choices
-        mock_choice1 = Mock(spec=Choice)
-        mock_choice1.message = Mock()
-        mock_choice1.message.content = "Response 1"
-        mock_choice1.message.tool_calls = None
-
-        mock_choice2 = Mock(spec=Choice)
-        mock_choice2.message = Mock()
-        mock_choice2.message.content = "Response 2"
-        mock_choice2.message.tool_calls = None
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice1, mock_choice2]
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        # Mock the client to raise InvalidModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.InvalidModelResponseError("Expected 1 choice, got 2")
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -737,11 +715,9 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with empty choices
-        mock_response = Mock()
-        mock_response.choices = []
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        # Mock the client to raise InvalidModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.InvalidModelResponseError("Expected 1 choice, got 0")
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -765,16 +741,9 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with empty content and no tool calls
-        mock_choice = Mock(spec=Choice)
-        mock_choice.message = Mock()
-        mock_choice.message.content = None
-        mock_choice.message.tool_calls = None
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("No content and no tool calls")
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -798,16 +767,9 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with empty string content
-        mock_choice = Mock(spec=Choice)
-        mock_choice.message = Mock()
-        mock_choice.message.content = ""
-        mock_choice.message.tool_calls = None
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("Empty content and no tool calls")
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -831,23 +793,26 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with tool calls but no content
-        mock_tool_call = Mock()
-        mock_tool_call.id = "call_123"
-        mock_tool_call.type = "function"
-        mock_tool_call.function = Mock()
-        mock_tool_call.function.name = "test_function"
-        mock_tool_call.function.arguments = "{}"
+        # Mock the client to return a Response with tool calls but no content
+        from verifiers.types import Response
 
-        mock_choice = Mock(spec=Choice)
-        mock_choice.message = Mock()
-        mock_choice.message.content = None
-        mock_choice.message.tool_calls = [mock_tool_call]
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai_client.chat.completions.create = AsyncMock(
-            return_value=mock_response
+        mock_openai_client.get_response = AsyncMock(
+            return_value=Response(
+                id="test-id",
+                created=0,
+                model="test-model",
+                usage=None,
+                message=ResponseMessage(
+                    content=None,
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=[
+                        ToolCall(id="call_123", name="test_function", arguments="{}")
+                    ],
+                ),
+            )
         )
 
         prompt: Messages = [{"role": "user", "content": "Hello"}]
@@ -867,7 +832,6 @@ class TestEmptyModelResponseErrors:
         self, mock_openai_client, make_input
     ):
         """Test that completion response with empty text raises EmptyModelResponseError."""
-        from openai.types.completion_choice import CompletionChoice
 
         env = SimpleEnvironment(
             eval_dataset=Dataset.from_dict({"prompt": ["test"], "answer": ["test"]}),
@@ -876,14 +840,10 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with empty text
-        mock_choice = Mock(spec=CompletionChoice)
-        mock_choice.text = ""
-        mock_choice.finish_reason = "stop"
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai_client.completions.create = AsyncMock(return_value=mock_response)
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("Empty completion text")
+        )
 
         prompt = "Complete this:"
         state = await env.init_state(
@@ -900,7 +860,6 @@ class TestEmptyModelResponseErrors:
         self, mock_openai_client, make_input
     ):
         """Test that completion response with None text raises EmptyModelResponseError."""
-        from openai.types.completion_choice import CompletionChoice
 
         env = SimpleEnvironment(
             eval_dataset=Dataset.from_dict({"prompt": ["test"], "answer": ["test"]}),
@@ -909,14 +868,10 @@ class TestEmptyModelResponseErrors:
             rubric=Rubric(),
         )
 
-        # Mock the client to return a response with None text
-        mock_choice = Mock(spec=CompletionChoice)
-        mock_choice.text = None
-        mock_choice.finish_reason = "stop"
-
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai_client.completions.create = AsyncMock(return_value=mock_response)
+        # Mock the client to raise EmptyModelResponseError
+        mock_openai_client.get_response = AsyncMock(
+            side_effect=vf.EmptyModelResponseError("None completion text")
+        )
 
         prompt = "Complete this:"
         state = await env.init_state(

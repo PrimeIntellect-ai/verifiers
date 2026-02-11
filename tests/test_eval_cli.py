@@ -259,7 +259,7 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
                     "model": "claude-haiku-4-5",
                     "url": "https://api.anthropic.com",
                     "key": "ANTHROPIC_API_KEY",
-                    "api_client_type": "anthropic",
+                    "api_client_type": "anthropic_messages",
                 }
             ]
         },
@@ -267,7 +267,7 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
 
     config = captured["configs"][0]
     assert config.endpoint_id == "haiku"
-    assert config.client_config.client_type == "anthropic"
+    assert config.client_config.client_type == "anthropic_messages"
     assert config.client_config.api_key_var == "ANTHROPIC_API_KEY"
     assert config.client_config.api_base_url == "https://api.anthropic.com"
 

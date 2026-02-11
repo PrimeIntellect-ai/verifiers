@@ -1054,16 +1054,25 @@ class TestCallSubTool:
 class TestRunSubLLMWithTools:
     @pytest.mark.asyncio
     async def test_completes_without_tool_calls(self, rlm_env_with_sub_tools):
+        from verifiers.types import Response, ResponseMessage
+
         mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_message = MagicMock()
-        mock_message.tool_calls = None
-        mock_message.content = "Final answer"
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_response.model_dump = MagicMock(
-            return_value={"choices": [{"message": {"content": "Final answer"}}]}
+        mock_client.get_response = AsyncMock(
+            return_value=Response(
+                id="mock",
+                created=0,
+                model="gpt-4",
+                usage=None,
+                message=ResponseMessage(
+                    content="Final answer",
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=None,
+                ),
+            )
         )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         messages = [{"role": "user", "content": "Test"}]
         state = {}
@@ -1079,54 +1088,48 @@ class TestRunSubLLMWithTools:
 
     @pytest.mark.asyncio
     async def test_executes_tool_calls(self, rlm_env_with_sub_tools):
-        mock_client = MagicMock()
+        from verifiers.types import Response, ResponseMessage, ToolCall
 
-        mock_tool_call = MagicMock()
-        mock_tool_call.id = "call_1"
-        mock_tool_call.function.name = "sample_tool"
-        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
-
-        mock_message1 = MagicMock()
-        mock_message1.tool_calls = [mock_tool_call]
-        mock_message1.content = None
-        mock_message1.model_dump = MagicMock(
-            return_value={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "sample_tool",
-                            "arguments": '{"x": 2, "y": 3}',
-                        },
-                    }
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=None,
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1", name="sample_tool", arguments='{"x": 2, "y": 3}'
+                    )
                 ],
-            }
+            ),
         )
-
-        mock_message2 = MagicMock()
-        mock_message2.tool_calls = None
-        mock_message2.content = "The result is 5"
-
-        mock_response1 = MagicMock()
-        mock_response1.choices = [MagicMock(message=mock_message1)]
-
-        mock_response2 = MagicMock()
-        mock_response2.choices = [MagicMock(message=mock_message2)]
-        mock_response2.model_dump = MagicMock(
-            return_value={"choices": [{"message": {"content": "The result is 5"}}]}
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=None,
+            message=ResponseMessage(
+                content="The result is 5",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
         )
-
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=[mock_response1, mock_response2]
-        )
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2])
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
         state = {}
         await rlm_env_with_sub_tools._run_sub_llm(state, mock_client, "gpt-4", messages)
 
-        assert mock_client.chat.completions.create.call_count == 2
+        assert mock_client.get_response.call_count == 2
 
 
 # =============================================================================
@@ -1137,14 +1140,25 @@ class TestRunSubLLMWithTools:
 class TestSubLLMRequestPaths:
     @pytest.mark.asyncio
     async def test_sub_llm_ignores_interleaving_and_uses_chat(self, rlm_env):
+        from verifiers.types import Response, ResponseMessage
+
         mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.tool_calls = None
-        mock_message.content = "ok"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_client.post = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_client.get_response = AsyncMock(
+            return_value=Response(
+                id="mock",
+                created=0,
+                model="gpt-4",
+                usage=None,
+                message=ResponseMessage(
+                    content="ok",
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=None,
+                ),
+            )
+        )
 
         rlm_env.interleaved_rollouts = True
         messages = [{"role": "user", "content": "hi"}]
@@ -1152,11 +1166,10 @@ class TestSubLLMRequestPaths:
 
         await rlm_env._call_sub_llm_api(state, mock_client, "gpt-4", messages)
 
-        mock_client.chat.completions.create.assert_awaited_once()
-        _, kwargs = mock_client.chat.completions.create.call_args
-        assert kwargs["max_completion_tokens"] == 7
-        assert "max_tokens" not in kwargs
-        mock_client.post.assert_not_called()
+        mock_client.get_response.assert_awaited_once()
+        call_kwargs = mock_client.get_response.call_args.kwargs
+        # sampling_args should have max_tokens (from state["sampling_args"]["max_tokens"])
+        assert call_kwargs["sampling_args"]["max_tokens"] == 7
 
 
 # =============================================================================
@@ -1254,53 +1267,52 @@ class TestContextLimitConfiguration:
 class TestSubLLMMetricsWithTools:
     @pytest.mark.asyncio
     async def test_accumulates_tokens_across_tool_turns(self, rlm_env_with_sub_tools):
-        mock_client = MagicMock()
+        from verifiers.types import Response, ResponseMessage, ToolCall, Usage
 
-        mock_tool_call = MagicMock()
-        mock_tool_call.id = "call_1"
-        mock_tool_call.function.name = "sample_tool"
-        mock_tool_call.function.arguments = '{"x": 2, "y": 3}'
-
-        mock_message1 = MagicMock()
-        mock_message1.tool_calls = [mock_tool_call]
-        mock_message1.content = None
-        mock_message1.model_dump = MagicMock(
-            return_value={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "sample_tool",
-                            "arguments": '{"x": 2, "y": 3}',
-                        },
-                    }
+        resp1 = Response(
+            id="mock1",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=50,
+                reasoning_tokens=0,
+                completion_tokens=30,
+                total_tokens=80,
+            ),
+            message=ResponseMessage(
+                content=None,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_1", name="sample_tool", arguments='{"x": 2, "y": 3}'
+                    )
                 ],
-            }
+            ),
         )
-
-        mock_response1 = MagicMock()
-        mock_response1.choices = [MagicMock(message=mock_message1)]
-        mock_response1.usage = MagicMock(prompt_tokens=50, completion_tokens=30)
-
-        mock_message2 = MagicMock()
-        mock_message2.tool_calls = None
-        mock_message2.content = "The result is 5"
-
-        mock_response2 = MagicMock()
-        mock_response2.choices = [MagicMock(message=mock_message2)]
-        mock_response2.usage = MagicMock(prompt_tokens=100, completion_tokens=20)
-        mock_response2.model_dump = MagicMock(
-            return_value={
-                "choices": [{"message": {"content": "The result is 5"}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            }
+        resp2 = Response(
+            id="mock2",
+            created=0,
+            model="gpt-4",
+            usage=Usage(
+                prompt_tokens=100,
+                reasoning_tokens=0,
+                completion_tokens=20,
+                total_tokens=120,
+            ),
+            message=ResponseMessage(
+                content="The result is 5",
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=None,
+                tool_calls=None,
+            ),
         )
-
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=[mock_response1, mock_response2]
-        )
+        mock_client = MagicMock()
+        mock_client.get_response = AsyncMock(side_effect=[resp1, resp2])
 
         messages = [{"role": "user", "content": "Add 2 and 3"}]
         state = {}

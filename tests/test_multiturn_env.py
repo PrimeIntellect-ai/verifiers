@@ -282,9 +282,9 @@ class TestMultiTurnEnv:
         )
 
         # Verify sampling args were passed
-        call_args = mock_multiturn_env.client.chat.completions.create.call_args
-        assert "temperature" in call_args.kwargs
-        assert "max_completion_tokens" in call_args.kwargs
+        call_kwargs = mock_multiturn_env.client.last_call_kwargs
+        assert call_kwargs["sampling_args"]["temperature"] == 0.8
+        assert call_kwargs["sampling_args"]["max_tokens"] == 50
 
     @pytest.mark.asyncio
     async def test_completion_format_multiturn(self, mock_openai_client, make_input):
@@ -323,8 +323,8 @@ class TestMultiTurnEnv:
         )
 
         mock_openai_client.add_text_response("Start:", "First response")
-        mock_openai_client.add_text_response(
-            "Start:First response Continue.", "Final DONE"
+        mock_openai_client.set_default_responses(
+            chat_response="Final DONE", text_response="Final DONE"
         )
 
         prompt = "Start:"
@@ -335,8 +335,8 @@ class TestMultiTurnEnv:
         )
 
         assert len(state["trajectory"]) == 2
-        # With max_turns=3, the rollout should complete after 2 turns
-        # (max_turns_reached stop condition should trigger)
+        # With max_turns=3, the rollout completes after 2 turns when done_condition
+        # fires after detecting "DONE" in the response
         assert state["is_completed"] is True
         assert "completion" in state  # Completion is set when is_completed returns True
         completion = state["completion"]

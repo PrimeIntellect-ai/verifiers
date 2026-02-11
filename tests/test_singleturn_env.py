@@ -124,7 +124,7 @@ class TestSingleTurnEnv:
         assert state["answer"] == input["answer"]
 
         # Verify the client was called
-        mock_singleturn_env.client.chat.completions.create.assert_called_once()
+        assert mock_singleturn_env.client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_rollout_completion_format(
@@ -147,7 +147,7 @@ class TestSingleTurnEnv:
         assert len(state["trajectory"]) == 1
 
         # Verify the client was called
-        mock_singleturn_env_completion.client.completions.create.assert_called_once()
+        assert mock_singleturn_env_completion.client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_rollout_with_sampling_args(self, mock_singleturn_env, make_input):
@@ -167,9 +167,9 @@ class TestSingleTurnEnv:
         assert completion[0]["content"] == "This is a test response"
 
         # Verify sampling args were passed
-        call_args = mock_singleturn_env.client.chat.completions.create.call_args
-        assert "temperature" in call_args.kwargs
-        assert "max_completion_tokens" in call_args.kwargs
+        call_kwargs = mock_singleturn_env.client.last_call_kwargs
+        assert call_kwargs["sampling_args"]["temperature"] == 0.8
+        assert call_kwargs["sampling_args"]["max_tokens"] == 100
 
     @pytest.mark.asyncio
     async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
@@ -199,8 +199,8 @@ class TestSingleTurnEnv:
     async def test_rollout_error_handling(self, mock_singleturn_env, make_input):
         """Test rollout handles errors from get_model_response."""
         # Mock get_model_response to return an error
-        mock_singleturn_env.client.chat.completions.create = AsyncMock(
-            side_effect=Exception("API Error")
+        mock_singleturn_env.client.get_response = AsyncMock(
+            side_effect=vf.ModelError("API Error")
         )
 
         state = await mock_singleturn_env.rollout(

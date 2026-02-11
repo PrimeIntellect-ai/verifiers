@@ -198,9 +198,9 @@ class TestCliAgentEnv:
         )
 
         assert isinstance(response, vf.Response)
-        kwargs = mock_openai_client.chat.completions.create.await_args.kwargs
-        assert "tools" in kwargs
-        assert kwargs["tools"][0]["function"]["name"] == "echo"
+        kwargs = mock_openai_client.last_call_kwargs
+        assert kwargs["tools"] is not None
+        assert kwargs["tools"][0].name == "echo"
 
 
 class TestHarborEnv:
