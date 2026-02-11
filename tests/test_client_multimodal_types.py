@@ -15,6 +15,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
+from verifiers.utils.response_utils import parse_response_message
 
 
 @pytest.mark.asyncio
@@ -206,3 +207,39 @@ async def test_anthropic_from_native_response_respects_interleaved_thinking_flag
     response_with_thinking = await client.from_native_response(native_response)
     assert response_with_thinking.message.reasoning_content == "hidden chain"
     assert response_with_thinking.message.content == "final answer"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_tool_call_round_trips_thinking_blocks():
+    pytest.importorskip("anthropic")
+    from anthropic.types import Message as AnthropicMessage
+    from anthropic.types import Usage as AnthropicUsage
+
+    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    native_response = AnthropicMessage(
+        id="msg_tool_think",
+        type="message",
+        role="assistant",
+        content=[
+            {"type": "thinking", "thinking": "hidden chain", "signature": "sig_1"},
+            {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
+        ],
+        model="claude-haiku-4-5",
+        stop_reason="tool_use",
+        stop_sequence=None,
+        usage=AnthropicUsage(input_tokens=1, output_tokens=1),
+    )
+
+    response = await client.from_native_response(native_response)
+    completion_messages = await parse_response_message(response)
+    prompt, kwargs = await client.to_native_prompt(completion_messages)
+
+    assert kwargs["system"] == ""
+    assert len(prompt) == 1
+    assert prompt[0]["role"] == "assistant"
+    assert prompt[0]["content"] == [
+        {"type": "thinking", "thinking": "hidden chain", "signature": "sig_1"},
+        {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
+    ]

@@ -164,6 +164,34 @@ class AnthropicMessagesClient(
                     chunks.append("[image]")
             return chunks
 
+        def extract_thinking_blocks(message: AssistantMessage) -> list[dict[str, str]]:
+            """Preserve provider-specific reasoning blocks across tool-call turns."""
+            raw_blocks = getattr(message, "thinking_blocks", None)
+            if not isinstance(raw_blocks, list):
+                return []
+
+            blocks: list[dict[str, str]] = []
+            for raw_block in raw_blocks:
+                if not isinstance(raw_block, Mapping):
+                    continue
+                block_type = raw_block.get("type")
+                if block_type == "thinking":
+                    thinking = raw_block.get("thinking")
+                    signature = raw_block.get("signature")
+                    if isinstance(thinking, str) and isinstance(signature, str):
+                        blocks.append(
+                            {
+                                "type": "thinking",
+                                "thinking": thinking,
+                                "signature": signature,
+                            }
+                        )
+                elif block_type == "redacted_thinking":
+                    data = raw_block.get("data")
+                    if isinstance(data, str):
+                        blocks.append({"type": "redacted_thinking", "data": data})
+            return blocks
+
         def _parse_tool_args(tc_args: str | dict | object | None) -> dict[str, Any]:
             """Parse tool arguments from string or dict."""
             if isinstance(tc_args, str):
@@ -198,8 +226,9 @@ class AnthropicMessagesClient(
                     content=cast(Any, normalize_anthropic_content(message.content)),
                 )
             elif isinstance(message, AssistantMessage):
+                thinking_blocks = extract_thinking_blocks(message)
                 if message.tool_calls:
-                    content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                    content_blocks: list[Any] = [*thinking_blocks]
                     for text_chunk in content_to_text_chunks(message.content):
                         content_blocks.append(
                             TextBlockParam(type="text", text=text_chunk)
@@ -215,6 +244,16 @@ class AnthropicMessagesClient(
                         )
                     return AnthropicMessageParam(
                         role="assistant", content=content_blocks
+                    )
+                if thinking_blocks:
+                    content_blocks: list[Any] = [*thinking_blocks]
+                    for text_chunk in content_to_text_chunks(message.content):
+                        content_blocks.append(
+                            TextBlockParam(type="text", text=text_chunk)
+                        )
+                    return AnthropicMessageParam(
+                        role="assistant",
+                        content=content_blocks,
                     )
                 return AnthropicMessageParam(
                     role="assistant",
@@ -325,10 +364,11 @@ class AnthropicMessagesClient(
     async def from_native_response(self, response: AnthropicMessage) -> Response:
         def parse_content(
             content_blocks: list[ContentBlock],
-        ) -> tuple[str, str, list[ToolCall]]:
+        ) -> tuple[str, str, list[ToolCall], list[dict[str, str]]]:
             content = ""
             reasoning_content = ""
             tool_calls = []
+            thinking_blocks: list[dict[str, str]] = []
             for content_block in content_blocks:
                 if content_block.type == "text":
                     text_value = getattr(content_block, "text", None)
@@ -338,6 +378,21 @@ class AnthropicMessagesClient(
                     thinking_value = getattr(content_block, "thinking", None)
                     if isinstance(thinking_value, str):
                         reasoning_content += thinking_value
+                        signature_value = getattr(content_block, "signature", None)
+                        if isinstance(signature_value, str):
+                            thinking_blocks.append(
+                                {
+                                    "type": "thinking",
+                                    "thinking": thinking_value,
+                                    "signature": signature_value,
+                                }
+                            )
+                elif content_block.type == "redacted_thinking":
+                    data_value = getattr(content_block, "data", None)
+                    if isinstance(data_value, str):
+                        thinking_blocks.append(
+                            {"type": "redacted_thinking", "data": data_value}
+                        )
                 elif content_block.type == "tool_use":
                     tool_id = getattr(content_block, "id", None)
                     tool_name = getattr(content_block, "name", None)
@@ -353,7 +408,7 @@ class AnthropicMessagesClient(
                     )
                 else:
                     raise ValueError(f"Unsupported content type: {content_block.type}")
-            return content, reasoning_content, tool_calls
+            return content, reasoning_content, tool_calls, thinking_blocks
 
         def parse_finish_reason(response: AnthropicMessage) -> FinishReason:
             match response.stop_reason:
@@ -366,7 +421,9 @@ class AnthropicMessagesClient(
                 case _:
                     return None
 
-        content, reasoning_content, tool_calls = parse_content(response.content)
+        content, reasoning_content, tool_calls, thinking_blocks = parse_content(
+            response.content
+        )
         is_truncated = response.stop_reason == "max_tokens"
 
         input_tokens = response.usage.input_tokens
@@ -387,6 +444,7 @@ class AnthropicMessagesClient(
                 reasoning_content=(reasoning_content or None)
                 if self.interleaved_thinking
                 else None,
+                thinking_blocks=thinking_blocks or None,
                 tool_calls=tool_calls or None,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=is_truncated,

@@ -57,6 +57,19 @@ ENDPOINTS = {
         "key": "DEEPSEEK_API_KEY",
         "type": "openai",
     },
+    # deepseek (Anthropic-compatible)
+    "deepseek-chat-anth": {
+        "model": "deepseek-chat",
+        "url": "https://api.deepseek.com/anthropic",
+        "key": "DEEPSEEK_API_KEY",
+        "type": "anthropic",
+    },
+    "deepseek-reasoner-anth": {
+        "model": "deepseek-reasoner",
+        "url": "https://api.deepseek.com/anthropic",
+        "key": "DEEPSEEK_API_KEY",
+        "type": "anthropic",
+    },
     # google
     "gemini-2.5-flash": {
         "model": "google/gemini-2.5-flash",
