@@ -79,6 +79,11 @@ from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     strip_nones_from_content,
 )
+from verifiers.utils.reasoning_utils import (
+    ReasoningFormat,
+    detect_reasoning_format,
+    prepare_messages_for_provider,
+)
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -124,10 +129,12 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
         score_rollouts: bool = True,
+        reasoning_format: ReasoningFormat = "auto",
         **kwargs,
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: Literal["chat", "completion"] = message_type
+        self.reasoning_format: ReasoningFormat = reasoning_format
         self.oai_tools: list[ChatCompletionToolParam] | None = oai_tools
         self.system_prompt = system_prompt
         self.few_shot = few_shot
@@ -592,6 +599,7 @@ class Environment(ABC):
             """Convenience function for wrapping (chat, completion) API calls."""
             if message_type == "chat":
                 assert isinstance(prompt, list)
+                prompt = prepare_messages_for_provider(prompt, self.reasoning_format)
                 prompt = strip_nones_from_content(prompt)
                 # --- detect audio parts and force text-only modality if caller didn't set one ---
                 has_audio = False
@@ -708,6 +716,25 @@ class Environment(ABC):
         if response is None:
             raise vf.EmptyModelResponseError("Model returned no response")
         self.increment_state_usage_from_response(state, response)
+        if (
+            self.reasoning_format == "auto"
+            and hasattr(response, "choices")
+            and response.choices
+        ):
+            detected = detect_reasoning_format(
+                response.choices[0].message
+                if isinstance(response.choices[0], Choice)
+                else response.choices[0],
+                getattr(
+                    response.choices[0].message
+                    if isinstance(response.choices[0], Choice)
+                    else response.choices[0],
+                    "content",
+                    None,
+                ),
+            )
+            if detected != "none":
+                self.reasoning_format = detected
         if response.choices is None:
             raise vf.EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
@@ -715,10 +742,14 @@ class Environment(ABC):
                 f"Model returned {len(response.choices)} choices, expected 1"
             )
         if isinstance(response.choices[0], Choice):
-            if not (
-                response.choices[0].message.content
-                or response.choices[0].message.tool_calls
-            ):
+            has_content = bool(response.choices[0].message.content)
+            has_tool_calls = bool(response.choices[0].message.tool_calls)
+            rc = getattr(response.choices[0].message, "reasoning_content", None)
+            r = getattr(response.choices[0].message, "reasoning", None)
+            has_reasoning = (isinstance(rc, str) and bool(rc.strip())) or (
+                isinstance(r, str) and bool(r.strip())
+            )
+            if not (has_content or has_tool_calls or has_reasoning):
                 raise vf.EmptyModelResponseError(
                     "Model returned no content and did not call any tools"
                 )

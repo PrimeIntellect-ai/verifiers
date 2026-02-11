@@ -9,6 +9,10 @@ from verifiers.types import (
     ModelResponse,
     TrajectoryStepTokens,
 )
+from verifiers.utils.reasoning_utils import (
+    extract_reasoning_from_response,
+    normalize_reasoning_content,
+)
 
 
 async def parse_response_tokens(
@@ -105,6 +109,8 @@ async def parse_response_messages(
         assert isinstance(response, ChatCompletion)
         if response.choices and response.choices[0].message:
             response_text = response.choices[0].message.content or ""
+            reasoning = extract_reasoning_from_response(response.choices[0].message)
+            response_text = normalize_reasoning_content(reasoning, response_text)
         response_message: dict[str, object] = {
             "role": "assistant",
             "content": response_text,
