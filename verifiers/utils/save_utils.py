@@ -119,6 +119,27 @@ def _extract_state_token_usage(state: State) -> TokenUsage | None:
     return None
 
 
+def _flatten_messages_content(messages: Any) -> str:
+    """Flatten printable messages into a single completion-style string."""
+    if isinstance(messages, str):
+        return messages
+    if not isinstance(messages, list):
+        return str(messages)
+
+    chunks: list[str] = []
+    for message in messages:
+        if isinstance(message, Mapping):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+
+        if isinstance(content, str):
+            chunks.append(content)
+        elif content is not None:
+            chunks.append(str(content))
+    return "".join(chunks)
+
+
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
     """Auto-generates a dataset name."""
     metadata = outputs["metadata"]
@@ -189,13 +210,25 @@ def state_to_output(
             }
     if usage is not None:
         output["token_usage"] = usage
+    should_flatten_completion_output = (
+        state.get("message_type") == "completion" and "input" in state
+    )
+
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
     if prompt is not None:
-        output["prompt"] = sanitize_tool_calls(messages_to_printable(prompt))
+        output_prompt = sanitize_tool_calls(messages_to_printable(prompt))
+        if should_flatten_completion_output:
+            output["prompt"] = _flatten_messages_content(output_prompt)
+        else:
+            output["prompt"] = output_prompt
     completion = state.get("completion")
     if completion is not None:
-        output["completion"] = sanitize_tool_calls(messages_to_printable(completion))
+        output_completion = sanitize_tool_calls(messages_to_printable(completion))
+        if should_flatten_completion_output:
+            output["completion"] = _flatten_messages_content(output_completion)
+        else:
+            output["completion"] = output_completion
     # use repr for error
     if state.get("error") is not None:
         error_chain = ErrorChain(state.get("error"))
