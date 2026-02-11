@@ -4,6 +4,11 @@ from openai import (
 from openai.types import Completion
 
 from verifiers.clients.client import Client
+from verifiers.clients.openai_chat_completions_client import (
+    content_to_text,
+    get_usage_field,
+    handle_openai_overlong_prompt,
+)
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -20,12 +25,6 @@ from verifiers.types import (
     Usage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.clients.openai_chat_completions_client import (
-    content_to_text,
-    handle_openai_overlong_prompt,
-    get_usage_field,
-)
-
 
 OpenAITextMessages = str
 OpenAITextResponse = Completion
@@ -47,10 +46,24 @@ class OpenAICompletionsClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[OpenAITextMessages, dict]:
-        prompt = ""
+        parts: list[str] = []
         for message in messages:
-            prompt += content_to_text(message.content)
-        return prompt, {}
+            content = message.content
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") != "text":
+                            raise ValueError(
+                                "Completions API does not support non-text content (e.g. images). "
+                                "Use chat_completions or messages client_type instead."
+                            )
+                    elif getattr(part, "type", None) != "text":
+                        raise ValueError(
+                            "Completions API does not support non-text content (e.g. images). "
+                            "Use chat_completions or messages client_type instead."
+                        )
+            parts.append(content_to_text(content))
+        return "\n\n".join(parts), {}
 
     async def to_native_tool(self, tool: Tool) -> None:
         raise ValueError("Tools are not supported for Completions API")
@@ -64,7 +77,11 @@ class OpenAICompletionsClient(
         tools: list[None] | None = None,
         **kwargs,
     ) -> OpenAITextResponse:
-        assert tools is None, "Tools are not supported for Completions API"
+        if tools:
+            raise ValueError(
+                "Completions API does not support tools. "
+                "Use chat_completions or messages client_type instead."
+            )
 
         def normalize_sampling_args(sampling_args: SamplingArgs):
             return {k: v for k, v in sampling_args.items() if v is not None}

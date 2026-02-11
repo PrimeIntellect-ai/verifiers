@@ -17,8 +17,6 @@ from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
 import verifiers as vf
-from verifiers.utils.import_utils import load_toml
-
 from verifiers.types import (
     ClientType,
     Endpoint,
@@ -34,6 +32,7 @@ from verifiers.types import (
     StartCallback,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import print_prompt_completions_sample, print_time
 from verifiers.utils.path_utils import get_eval_results_path
 
@@ -89,9 +88,14 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         short_client_type if short_client_type is not None else long_client_type
     )
     if client_type is not None:
-        if client_type not in ("openai", "anthropic"):
+        if client_type not in (
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ):
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai' or 'anthropic' in {source}"
+                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 

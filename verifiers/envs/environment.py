@@ -26,14 +26,10 @@ from typing import (
     final,
 )
 
-from anthropic import Anthropic, AsyncAnthropic
-from openai import AsyncOpenAI, OpenAI
-
-from verifiers.clients import resolve_client
+from verifiers.clients import Client, resolve_client
 from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
-    setup_client,
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
@@ -63,8 +59,8 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
-    Tool,
     TokenUsage,
+    Tool,
 )
 from verifiers.utils.async_utils import (
     maybe_retry,
@@ -114,6 +110,13 @@ class Environment(ABC):
         score_rollouts: bool = True,
         **kwargs,
     ):
+        import warnings
+
+        warnings.warn(
+            "message_type is deprecated and will be removed; use client_type on the eval config / endpoint instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.message_type: MessageType = message_type
         if "oai_tools" in kwargs:
@@ -139,13 +142,6 @@ class Environment(ABC):
         self.set_interleaved_rollouts(interleaved_rollouts)
         self.set_interleaved_thinking(interleaved_thinking)
         self.set_score_rollouts(score_rollouts)
-
-        if self.message_type != "chat" and (self.system_prompt or self.few_shot):
-            raise ValueError(
-                'The fields "system_prompt" and "few_shot" are not supported for completion tasks.'
-                'Please use message_type="chat" instead, or pre-format your dataset '
-                'to contain a "prompt" column.'
-            )
 
         self.env_client: EnvClient | None = None
         self.env_server_process: Process | None = None
@@ -402,16 +398,13 @@ class Environment(ABC):
         return dataset
 
     def _format_dataset_source(self, dataset: Dataset) -> Dataset:
-        """Format a dataset based on message_type."""
-        if self.message_type == "chat":
-            return self._format_dataset(
-                dataset,
-                self.system_prompt,
-                self.few_shot,
-                map_kwargs=self.map_kwargs,
-            )
-        else:
-            return self._format_completion_dataset(dataset, map_kwargs=self.map_kwargs)
+        """Format a dataset as chat (messages); client maps to its format at request time."""
+        return self._format_dataset(
+            dataset,
+            self.system_prompt,
+            self.few_shot,
+            map_kwargs=self.map_kwargs,
+        )
 
     def build_dataset(self) -> Dataset | None:
         """Build and cache the training dataset from source if needed."""
@@ -516,11 +509,10 @@ class Environment(ABC):
         self,
         state: State,
         prompt: Messages | str,
-        client: AsyncOpenAI | AsyncAnthropic | None = None,
+        client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
     ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
@@ -531,27 +523,15 @@ class Environment(ABC):
         """
 
         def resolve_optional_args(
-            client: AsyncOpenAI | AsyncAnthropic | None,
+            client: Client | None,
             model: str | None,
             tool_defs: list[Tool] | None,
             sampling_args: SamplingArgs | None,
-            message_type: MessageType | None,
-        ) -> tuple[
-            vf.Client,
-            str,
-            list[Tool] | None,
-            SamplingArgs,
-        ]:
+        ) -> tuple[Client, str, list[Tool] | None, SamplingArgs]:
             """Resolve optional arguments, fallback to state or class defaults."""
-            message_type = message_type or self.message_type
-            assert message_type is not None
-            vf_client = (
-                resolve_client(client, message_type, self.interleaved_rollouts)
-                if client is not None
-                else state["client"]
-            )
-            assert vf_client is not None
-            vf_client.set_interleaved_thinking(self.interleaved_thinking)
+            client = client if client is not None else state["client"]
+            assert client is not None
+            client.set_interleaved_thinking(self.interleaved_thinking)
             model = model or state["model"]
             assert model is not None
             if tool_defs is None:
@@ -568,17 +548,17 @@ class Environment(ABC):
             sampling_args = cast(
                 SamplingArgs, sampling_args or state["sampling_args"] or {}
             )
-            return vf_client, model, tool_defs, sampling_args
+            return client, model, tool_defs, sampling_args
 
-        vf_client, model, tool_defs, sampling_args = resolve_optional_args(
-            client, model, tool_defs, sampling_args, message_type
+        client, model, tool_defs, sampling_args = resolve_optional_args(
+            client, model, tool_defs, sampling_args
         )
 
         normalized_prompt = normalize_messages(prompt, field_name="prompt")
 
         self._get_usage_tracker(state, create_if_missing=True)
 
-        response = await vf_client.get_response(
+        response = await client.get_response(
             prompt=normalized_prompt,
             model=model,
             tools=tool_defs,
@@ -593,7 +573,7 @@ class Environment(ABC):
     async def init_state(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | AsyncAnthropic,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -616,13 +596,9 @@ class Environment(ABC):
         if isinstance(raw_prompt, (str, list)):
             state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
 
-        # Wrap raw client in vf.Client adapter
-        state["client"] = resolve_client(
-            client, self.message_type, self.interleaved_rollouts
-        )
+        state["client"] = resolve_client(client)
         state["model"] = model
         state["sampling_args"] = sampling_args
-        state["message_type"] = self.message_type
         state["is_completed"] = False
         state["is_truncated"] = False
 
@@ -662,7 +638,7 @@ class Environment(ABC):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | AsyncAnthropic,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
@@ -719,7 +695,7 @@ class Environment(ABC):
     async def run_rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | AsyncAnthropic | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -747,16 +723,15 @@ class Environment(ABC):
                 state_columns,
             )
 
-        local_client: AsyncOpenAI | AsyncAnthropic
-        owned_local_client: AsyncOpenAI | AsyncAnthropic | None = None
-        if resolved_client_config is not None:
-            owned_local_client = setup_client(resolved_client_config)
-            local_client = owned_local_client
-        else:
-            local_client = cast(AsyncOpenAI | AsyncAnthropic, client)
+        resolved_client = resolve_client(client)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(input, local_client, model, sampling_args)
+            state = await self.rollout(
+                input,
+                resolved_client,
+                model,
+                sampling_args,
+            )
 
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
@@ -765,11 +740,7 @@ class Environment(ABC):
 
             return state
 
-        try:
-            state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        finally:
-            if owned_local_client is not None:
-                await owned_local_client.close()
+        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
         output = state_to_output(state, state_columns or [])
         return output
 
@@ -777,7 +748,7 @@ class Environment(ABC):
     async def run_group(
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI | AsyncAnthropic | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -806,17 +777,16 @@ class Environment(ABC):
                 state_columns,
             )
 
-        local_client: AsyncOpenAI | AsyncAnthropic
-        owned_local_client: AsyncOpenAI | AsyncAnthropic | None = None
-        if resolved_client_config is not None:
-            owned_local_client = setup_client(resolved_client_config)
-            local_client = owned_local_client
-        else:
-            local_client = cast(AsyncOpenAI | AsyncAnthropic, client)
+        resolved_client = resolve_client(client)
 
         async def run_group_attempt() -> list[State]:
             rollout_tasks = [
-                self.rollout(input, local_client, model, sampling_args)
+                self.rollout(
+                    input,
+                    resolved_client,
+                    model,
+                    sampling_args,
+                )
                 for input in group_inputs
             ]
             group_states = await asyncio.gather(*rollout_tasks)
@@ -827,13 +797,7 @@ class Environment(ABC):
                 await self.rubric.dummy_score_group(group_states)
             return group_states
 
-        try:
-            group_states = await maybe_retry(
-                run_group_attempt, max_retries=max_retries
-            )()
-        finally:
-            if owned_local_client is not None:
-                await owned_local_client.close()
+        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]
@@ -842,7 +806,7 @@ class Environment(ABC):
     async def generate(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | AsyncAnthropic | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
@@ -859,9 +823,6 @@ class Environment(ABC):
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
-
-        Args:
-            client: Can be a single AsyncOpenAI client or a ClientConfig.
         """
         from datasets import Dataset
         from tqdm import tqdm
@@ -957,7 +918,7 @@ class Environment(ABC):
             results_path=results_path,
         )
 
-        single_client: AsyncOpenAI | AsyncAnthropic | None = None
+        single_client: Client | None = None
         endpoint_client_configs: list[ClientConfig] = []
         endpoint_client_idx = 0
         if isinstance(client, ClientConfig):
@@ -966,9 +927,9 @@ class Environment(ABC):
             # Raw async-client path
             single_client = client
 
-        local_endpoint_clients: list[AsyncOpenAI | AsyncAnthropic] = []
+        local_endpoint_clients: list[Client] = []
 
-        def get_client_for_group() -> AsyncOpenAI | AsyncAnthropic | ClientConfig:
+        def get_client_for_group() -> Client | ClientConfig:
             """Get next client in round-robin order or return the single client."""
             nonlocal endpoint_client_idx
             if self.env_client is not None and endpoint_client_configs:
@@ -989,7 +950,7 @@ class Environment(ABC):
         try:
             if self.env_client is None and endpoint_client_configs:
                 for endpoint_config in endpoint_client_configs:
-                    local_endpoint_clients.append(setup_client(endpoint_config))
+                    local_endpoint_clients.append(resolve_client(endpoint_config))
 
             # load existing results if available
             if results_path is not None and is_valid_eval_results_path(results_path):
@@ -1051,9 +1012,7 @@ class Environment(ABC):
                     for i, group_input in enumerate(filtered_group_inputs):
                         # For grouped scoring, keep each group on one endpoint so
                         # rollouts in the same group can benefit from shared KV cache.
-                        group_client: AsyncOpenAI | AsyncAnthropic | ClientConfig = (
-                            get_client_for_group()
-                        )
+                        group_client = get_client_for_group()
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
@@ -1111,23 +1070,16 @@ class Environment(ABC):
                 pbar.close()
             if local_endpoint_clients:
                 await asyncio.gather(
-                    *(client.close() for client in local_endpoint_clients),
+                    *(client.client.close() for client in local_endpoint_clients),
                     return_exceptions=True,
                 )
 
     def generate_sync(
         self,
         inputs: Dataset | List[RolloutInput],
-        client: AsyncOpenAI | AsyncAnthropic | OpenAI | Anthropic | ClientConfig,
+        client: Client | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
-        if isinstance(client, OpenAI):
-            client = AsyncOpenAI(api_key=client.api_key, base_url=str(client.base_url))
-        elif isinstance(client, Anthropic):
-            client = AsyncAnthropic(
-                api_key=getattr(client, "api_key", None),
-                base_url=str(getattr(client, "base_url", "")),
-            )
         coro = self.generate(
             inputs,
             client=client,
@@ -1169,7 +1121,7 @@ class Environment(ABC):
 
     async def evaluate(
         self,
-        client: AsyncOpenAI | AsyncAnthropic | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,
@@ -1212,7 +1164,7 @@ class Environment(ABC):
 
     def evaluate_sync(
         self,
-        client: OpenAI | Anthropic | AsyncOpenAI | AsyncAnthropic | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
         num_examples: int = -1,

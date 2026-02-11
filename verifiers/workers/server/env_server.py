@@ -5,12 +5,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
-
 import verifiers as vf
+from verifiers.clients import Client, resolve_client
 from verifiers.types import ClientConfig
-from verifiers.utils.client_utils import resolve_client_config, setup_client
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.workers.types import (
     HealthRequest,
     HealthResponse,
@@ -53,7 +51,7 @@ class EnvServer(ABC):
         self.env_args = env_args or {}
         self.extra_env_kwargs = extra_env_kwargs or {}
 
-        self.clients: dict[str, AsyncOpenAI | AsyncAnthropic] = {}
+        self.clients: dict[str, Client] = {}
         self.pending_tasks: set[asyncio.Task] = set()
 
         # load environment
@@ -127,18 +125,16 @@ class EnvServer(ABC):
         )
         return RunGroupResponse(outputs=outputs)
 
-    async def _resolve_client(
-        self, client_config: ClientConfig
-    ) -> AsyncOpenAI | AsyncAnthropic:
+    async def _resolve_client(self, client_config: ClientConfig) -> Client:
         resolved_client_config = resolve_client_config(client_config)
         client_key = resolved_client_config.model_dump_json()
         if client_key in self.clients:
             return self.clients[client_key]
-        client = setup_client(resolved_client_config)
+        client = resolve_client(resolved_client_config)
         self.clients[client_key] = client
         return client
 
     async def _close_cached_clients(self) -> None:
         for client in self.clients.values():
-            await client.close()
+            await client.client.close()
         self.clients.clear()

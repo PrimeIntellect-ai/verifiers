@@ -3,11 +3,14 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Mapping, final
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
-
 import verifiers as vf
-from verifiers.types import ClientConfig, Messages, RolloutInput, SamplingArgs
+from verifiers.clients import Client
+from verifiers.types import (
+    ClientConfig,
+    Messages,
+    RolloutInput,
+    SamplingArgs,
+)
 from verifiers.workers.client.env_client import EnvClient
 
 if TYPE_CHECKING:
@@ -269,7 +272,7 @@ class EnvGroup(vf.Environment):
     async def run_rollout(  # type: ignore[override]
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -286,7 +289,7 @@ class EnvGroup(vf.Environment):
     async def run_group(  # type: ignore[override]
         self,
         group_inputs: list[RolloutInput],
-        client: AsyncOpenAI | ClientConfig,
+        client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs,
         max_retries: int = 0,
@@ -309,7 +312,7 @@ class EnvGroup(vf.Environment):
     async def rollout(
         self,
         input: RolloutInput,
-        client: AsyncOpenAI | AsyncAnthropic,
+        client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> vf.State:

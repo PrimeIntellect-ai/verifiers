@@ -12,23 +12,30 @@ from typing import (
     TypeAlias,
 )
 
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from datasets import Dataset
 
-    import verifiers as vf
+    from verifiers.clients import Client
     from verifiers.errors import Error
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
 else:
     from typing import NotRequired, TypedDict
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic import field_validator
 
 # Client / message type literals
-ClientType = Literal["openai", "anthropic"]
-MessageType = Literal["chat", "completion"]
+NativeClient: TypeAlias = AsyncOpenAI | AsyncAnthropic
+ClientType = Literal[
+    "openai_completions",
+    "openai_chat_completions",
+    "openai_chat_completions_token",
+    "anthropic_messages",
+]
+MessageType = Literal["chat", "completion"]  # deprecated
 
 
 # Provider-agnostic message + response types
@@ -276,7 +283,7 @@ class State(dict):
     INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
-    client: vf.Client
+    client: Client
     model: str
     sampling_args: SamplingArgs | None
     # created during rollout
@@ -390,7 +397,7 @@ class ClientConfig(BaseModel):
     """Pydantic model for client configuration."""
 
     client_idx: int = 0
-    client_type: ClientType = "openai"
+    client_type: ClientType = "chat_completions"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)

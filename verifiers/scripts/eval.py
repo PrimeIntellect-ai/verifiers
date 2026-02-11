@@ -45,13 +45,7 @@ DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
-DEFAULT_CLIENT_TYPE = "openai"
-
-
-def _normalize_client_type(value: Any) -> ClientType:
-    if value in {"openai", "anthropic"}:
-        return cast(ClientType, value)
-    return "openai"
+DEFAULT_CLIENT_TYPE = "openai_chat_completions"
 
 
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
@@ -139,8 +133,13 @@ def main():
         "--api-client-type",
         type=str,
         default=None,
-        help="Which API client to use ('openai' or 'anthropic')",
-        choices=["openai", "anthropic"],
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'anthropic_messages')",
+        choices=[
+            "openai_completions",
+            "openai_chat_completions",
+            "openai_chat_completions_token",
+            "anthropic_messages",
+        ],
     )
     parser.add_argument(
         "--api-key-var",
@@ -411,7 +410,7 @@ def main():
                     "which is not yet supported by EvalConfig."
                 )
             model = endpoint["model"]
-            client_type = _normalize_client_type(
+            client_type = (
                 raw_client_type
                 if client_type_override
                 else endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
@@ -444,7 +443,7 @@ def main():
             api_base_url = (
                 raw_api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
             )
-            client_type = _normalize_client_type(
+            client_type = (
                 raw_client_type if client_type_override else DEFAULT_CLIENT_TYPE
             )
 
@@ -493,7 +492,7 @@ def main():
 
         assert primary_api_base_url is not None
         client_config = ClientConfig(
-            client_type=_normalize_client_type(client_type),
+            client_type=cast(ClientType, client_type),
             api_key_var=resolved_api_key_var,
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
