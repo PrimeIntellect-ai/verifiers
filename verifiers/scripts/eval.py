@@ -449,10 +449,13 @@ def main():
         resolved_api_key_var = api_key_var
 
         endpoint_configs: list[EndpointClientConfig] = []
+        has_variant_concurrency = endpoint_group is not None and any(
+            ep.get("max_concurrent") is not None for ep in endpoint_group
+        )
         if (
             endpoint_group is not None
             and not api_base_url_override
-            and len(endpoint_group) > 1
+            and (len(endpoint_group) > 1 or has_variant_concurrency)
         ):
             endpoint_configs = [
                 EndpointClientConfig(
@@ -461,6 +464,7 @@ def main():
                     ),
                     api_base_url=endpoint["url"],
                     extra_headers=merged_headers,
+                    max_concurrent=endpoint.get("max_concurrent"),
                 )
                 for endpoint in endpoint_group
             ]
