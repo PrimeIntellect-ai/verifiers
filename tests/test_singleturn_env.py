@@ -139,9 +139,8 @@ class TestSingleTurnEnv:
         )
         completion = state["completion"]
 
-        # Should return string format for completion
-        assert isinstance(completion, str)
-        assert completion == "This is a test completion"
+        assert isinstance(completion, list)
+        assert completion[0]["content"] == "This is a test completion"
 
         # Check state structure
         assert "trajectory" in state
@@ -375,7 +374,7 @@ class TestSingleTurnEnv:
             model="test-model",
         )
         completion_result = comp_state["completion"]
-        assert isinstance(completion_result, str)
+        assert isinstance(completion_result, list)
 
     @pytest.mark.asyncio
     async def test_singleturn_stops_after_one_response(

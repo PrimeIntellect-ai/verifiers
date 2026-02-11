@@ -67,13 +67,33 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         )
 
     endpoint = Endpoint(model=model, url=url, key=key)
-    client_type = raw_endpoint_dict.get("client_type")
+
+    if "client_type" in raw_endpoint_dict:
+        raise ValueError(
+            f"Field 'client_type' is no longer supported in {source}. "
+            "Use 'type' or 'api_client_type'."
+        )
+
+    short_client_type = raw_endpoint_dict.get("type")
+    long_client_type = raw_endpoint_dict.get("api_client_type")
+    if (
+        short_client_type is not None
+        and long_client_type is not None
+        and short_client_type != long_client_type
+    ):
+        raise ValueError(
+            f"Conflicting values for 'type' and 'api_client_type' in {source}"
+        )
+
+    client_type = (
+        short_client_type if short_client_type is not None else long_client_type
+    )
     if client_type is not None:
         if client_type not in ("openai", "anthropic"):
             raise ValueError(
-                f"Field 'client_type' must be 'openai' or 'anthropic' in {source}"
+                f"Field 'type'/'api_client_type' must be 'openai' or 'anthropic' in {source}"
             )
-        endpoint["client_type"] = cast(ClientType, client_type)
+        endpoint["api_client_type"] = cast(ClientType, client_type)
 
     return endpoint
 
@@ -288,6 +308,7 @@ def load_toml_config(path: Path) -> list[dict]:
         # model/client
         "endpoint_id",
         "model",
+        "api_client_type",
         "api_key_var",
         "api_base_url",
         "header",

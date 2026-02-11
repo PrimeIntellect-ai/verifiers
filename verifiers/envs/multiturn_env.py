@@ -76,10 +76,10 @@ class MultiTurnEnv(vf.Environment):
         if len(state["trajectory"]) == 0:
             return normalize_messages(state["prompt"], field_name="state.prompt")
         prev_turn_prompt = normalize_messages(
-            state["trajectory"][-1]["prompt"], field_name="trajectory prompt"
+            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
         )
         prev_turn_completion = normalize_messages(
-            state["trajectory"][-1]["completion"], field_name="trajectory completion"
+            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
         )
         messages = concat_messages([prev_turn_prompt, prev_turn_completion])
         env_response = await self.env_response(messages, state)
@@ -94,10 +94,10 @@ class MultiTurnEnv(vf.Environment):
             state["completion"] = []
             return
         last_prompt = normalize_messages(
-            state["trajectory"][-1]["prompt"], field_name="trajectory prompt"
+            state["trajectory"][-1]["prompt"], field_name="trajectory.prompt"
         )
         last_completion = normalize_messages(
-            state["trajectory"][-1]["completion"], field_name="trajectory completion"
+            state["trajectory"][-1]["completion"], field_name="trajectory.completion"
         )
         full_conversation = concat_messages([last_prompt, last_completion])
         if state.get("final_env_response"):
