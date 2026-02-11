@@ -181,7 +181,7 @@ class TestStopPriorityOrdering:
             rubric=vf.Rubric(),
         )
 
-        mock_client.set_default_responses(chat_response="test")
+        mock_client.set_default_response("test")
 
         await env.rollout(
             input=RolloutInput(

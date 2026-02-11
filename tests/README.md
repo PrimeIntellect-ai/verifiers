@@ -66,7 +66,7 @@ The test suite includes comprehensive support for testing async Environment clas
 ### MockClient (conftest.py)
 - `MockClient(Client)` implements the `get_response()` interface returning `vf.Response` objects
 - `mock_client` fixture provides an instance for tests
-- Supports prompt-to-response mappings via `add_chat_response()` and `add_text_response()`
+- Supports prompt-to-response mappings via `add_response()`
 - Tracks calls via `call_count` and `last_call_kwargs`
 - No actual API calls are made during testing
 
@@ -86,7 +86,7 @@ async def test_my_async_function(mock_client):
 # Custom response mapping
 @pytest.mark.asyncio
 async def test_with_custom_response(mock_client):
-    mock_client.set_default_responses(chat_response="DONE")
+    mock_client.set_default_response("DONE")
     env = SimpleMultiTurnEnv(client=mock_client, model="test", ...)
     completion, state = await env.rollout(...)
 ```

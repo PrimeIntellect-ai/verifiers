@@ -34,11 +34,11 @@ class TestMultiTurnEnv:
         prompt = [{"role": "user", "content": "Start conversation"}]
 
         # Set up responses for the conversation turns
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Start conversation"}],
             response="First response",
         )
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[
                 {"role": "user", "content": "Start conversation"},
                 {"role": "assistant", "content": "First response"},
@@ -46,7 +46,7 @@ class TestMultiTurnEnv:
             ],
             response="Second response",
         )
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[
                 {"role": "user", "content": "Start conversation"},
                 {"role": "assistant", "content": "First response"},
@@ -84,9 +84,7 @@ class TestMultiTurnEnv:
     async def test_max_turns_limiting(self, mock_multiturn_env_max_turns, make_input):
         """Test that rollout stops at max_turns."""
         # Set up responses that would continue indefinitely
-        mock_multiturn_env_max_turns.client.set_default_responses(
-            chat_response="Keep going"
-        )
+        mock_multiturn_env_max_turns.client.set_default_response("Keep going")
 
         prompt = [{"role": "user", "content": "Start conversation"}]
         state = await mock_multiturn_env_max_turns.rollout(
@@ -136,7 +134,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        mock_client.set_default_responses(chat_response="Still thinking")
+        mock_client.set_default_response("Still thinking")
 
         prompt: Messages = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
@@ -156,7 +154,7 @@ class TestMultiTurnEnv:
     @pytest.mark.asyncio
     async def test_state_initialization(self, mock_multiturn_env, make_input):
         """Test that state is properly initialized with all required fields."""
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Test state"}], response="Quick DONE"
         )
 
@@ -187,7 +185,7 @@ class TestMultiTurnEnv:
     @pytest.mark.asyncio
     async def test_immediate_completion(self, mock_multiturn_env, make_input):
         """Test completion detection on first turn."""
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Quick question"}],
             response="Immediate DONE",
         )
@@ -211,11 +209,11 @@ class TestMultiTurnEnv:
     async def test_env_response_integration(self, mock_multiturn_env, make_input):
         """Test that environment responses are properly integrated."""
         # Set up responses for the conversation turns
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Start conversation"}],
             response="First response",
         )
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[
                 {"role": "user", "content": "Start conversation"},
                 {"role": "assistant", "content": "First response"},
@@ -247,7 +245,7 @@ class TestMultiTurnEnv:
         original_prompt = [{"role": "user", "content": "Original message"}]
         prompt_copy = [{"role": "user", "content": "Original message"}]
 
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Original message"}],
             response="Response DONE",
         )
@@ -264,7 +262,7 @@ class TestMultiTurnEnv:
     @pytest.mark.asyncio
     async def test_sampling_args_passed_through(self, mock_multiturn_env, make_input):
         """Test that sampling arguments are passed to model calls."""
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Test sampling"}],
             response="Quick DONE",
         )
@@ -320,10 +318,8 @@ class TestMultiTurnEnv:
             max_turns=3,
         )
 
-        mock_client.add_text_response("Start:", "First response")
-        mock_client.set_default_responses(
-            chat_response="Final DONE", text_response="Final DONE"
-        )
+        mock_client.add_response("Start:", "First response")
+        mock_client.set_default_response("Final DONE")
 
         prompt = "Start:"
         state = await env.rollout(
@@ -367,7 +363,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        env.client.set_default_responses(chat_response="Continue")  # type: ignore
+        env.client.set_default_response("Continue")  # type: ignore
 
         prompt = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
@@ -418,7 +414,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        env.client.add_chat_response(  # type: ignore
+        env.client.add_response(  # type: ignore
             messages=[{"role": "user", "content": "Start"}], response="First response"
         )
 
@@ -442,10 +438,10 @@ class TestMultiTurnEnv:
     async def test_responses_stored_in_state(self, mock_multiturn_env, make_input):
         """Test that model responses are stored in state['responses']."""
         # Set up a multi-turn conversation
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[{"role": "user", "content": "Start"}], response="First"
         )
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[
                 {"role": "user", "content": "Start"},
                 {"role": "assistant", "content": "First"},
@@ -453,7 +449,7 @@ class TestMultiTurnEnv:
             ],
             response="Second",
         )
-        mock_multiturn_env.client.add_chat_response(
+        mock_multiturn_env.client.add_response(
             messages=[
                 {"role": "user", "content": "Start"},
                 {"role": "assistant", "content": "First"},
@@ -502,7 +498,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        mock_client.set_default_responses(chat_response="Model response")
+        mock_client.set_default_response("Model response")
 
         prompt: Messages = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
@@ -540,7 +536,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Start"}],
             response="First response",
         )

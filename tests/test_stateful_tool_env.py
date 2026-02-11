@@ -36,12 +36,12 @@ class TestStatefulToolEnv:
         }
         user_message = ChatCompletionUserMessageParam(content="Offset 5", role="user")
 
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[user_message],
             response="Using tool",
             tool_calls=[tool_call],
         )
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[
                 user_message,
                 assistant_message,
@@ -179,7 +179,7 @@ class TestStatefulToolEnv:
         )
 
         # First response triggers tool call with invalid JSON
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Square 4"}],
             response="Using tool",
             tool_calls=[tool_call_with_invalid_json_arguments],
@@ -228,7 +228,7 @@ class TestStatefulToolEnv:
 
         tool_call = _build_tool_call("faulty_tool", {})
 
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Invoke"}],
             response="Using tool",
             tool_calls=[tool_call],

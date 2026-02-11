@@ -93,39 +93,25 @@ class MockClient(Client):
         self.logger = logging.getLogger(f"{__name__}.MockClient")
         self._client = None
 
-        self._chat_responses: dict[tuple, dict] = {}
-        self._text_responses: dict[str, dict] = {}
-        self.default_chat_response = "This is a test response"
-        self.default_text_response = "This is a test completion"
+        self._responses: dict[tuple, dict] = {}
+        self.default_response = "This is a test response"
 
         # Call tracking
         self.call_count = 0
         self.last_call_kwargs: dict[str, Any] = {}
 
-    def add_chat_response(
-        self, messages, response, finish_reason="stop", tool_calls=None
-    ):
+    def add_response(self, messages, response, finish_reason="stop", tool_calls=None):
         """Add a mapped response for specific messages."""
-        key = self._messages_to_key(messages)
-        self._chat_responses[key] = {
+        key = self._messages_to_key(self._normalize_input(messages))
+        self._responses[key] = {
             "content": response,
             "finish_reason": finish_reason,
             "tool_calls": tool_calls,
         }
 
-    def add_text_response(self, prompt, response, finish_reason="stop"):
-        """Add a mapped response for specific prompt."""
-        self._text_responses[prompt] = {
-            "content": response,
-            "finish_reason": finish_reason,
-        }
-
-    def set_default_responses(self, chat_response=None, text_response=None):
-        """Set default responses when no mapping found."""
-        if chat_response:
-            self.default_chat_response = chat_response
-        if text_response:
-            self.default_text_response = text_response
+    def set_default_response(self, response):
+        """Set default response when no mapping found."""
+        self.default_response = response
 
     async def get_response(
         self,
@@ -145,9 +131,7 @@ class MockClient(Client):
             **kwargs,
         }
 
-        if self._is_text_prompt(prompt):
-            return self._make_text_response(prompt)
-        return self._make_chat_response(prompt)
+        return self._make_response(prompt)
 
     def setup_client(self, config):
         return None
@@ -172,26 +156,11 @@ class MockClient(Client):
     # -- Internal helpers --
 
     @staticmethod
-    def _is_text_prompt(prompt) -> bool:
-        """Detect completion-mode prompts (single TextMessage with role='text')."""
-        if isinstance(prompt, str):
-            return True
-        if isinstance(prompt, list) and len(prompt) == 1:
-            msg = prompt[0]
-            role = msg["role"] if isinstance(msg, dict) else getattr(msg, "role", None)
-            if role == "text":
-                return True
-        return False
-
-    @staticmethod
-    def _extract_text(prompt) -> str:
-        """Extract text content from a text/completion prompt."""
-        if isinstance(prompt, str):
-            return prompt
-        msg = prompt[0]
-        if isinstance(msg, dict):
-            return msg.get("content", "")
-        return getattr(msg, "content", "")
+    def _normalize_input(messages):
+        """Normalize prompt to list-of-dicts form for keying."""
+        if isinstance(messages, str):
+            return [{"role": "text", "content": messages}]
+        return messages
 
     def _messages_to_key(self, messages):
         """Convert messages list to a hashable key."""
@@ -231,13 +200,13 @@ class MockClient(Client):
                 )
         return result or None
 
-    def _make_chat_response(self, messages) -> Response:
-        key = self._messages_to_key(messages)
-        if key in self._chat_responses:
-            data = self._chat_responses[key]
+    def _make_response(self, prompt) -> Response:
+        key = self._messages_to_key(self._normalize_input(prompt))
+        if key in self._responses:
+            data = self._responses[key]
         else:
             data = {
-                "content": self.default_chat_response,
+                "content": self.default_response,
                 "finish_reason": "stop",
                 "tool_calls": None,
             }
@@ -256,31 +225,6 @@ class MockClient(Client):
                 is_truncated=data["finish_reason"] == "length",
                 tokens=None,
                 tool_calls=tool_calls,
-            ),
-        )
-
-    def _make_text_response(self, prompt) -> Response:
-        text = self._extract_text(prompt)
-        if text in self._text_responses:
-            data = self._text_responses[text]
-        else:
-            data = {
-                "content": self.default_text_response,
-                "finish_reason": "stop",
-            }
-
-        return Response(
-            id="test-id",
-            created=0,
-            model="test-model",
-            usage=None,
-            message=ResponseMessage(
-                content=data["content"],
-                reasoning_content=None,
-                finish_reason=data["finish_reason"],
-                is_truncated=data["finish_reason"] == "length",
-                tokens=None,
-                tool_calls=None,
             ),
         )
 

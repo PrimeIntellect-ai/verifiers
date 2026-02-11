@@ -138,7 +138,7 @@ class TestSingleTurnEnv:
         completion = state["completion"]
 
         assert isinstance(completion, list)
-        assert completion[0]["content"] == "This is a test completion"
+        assert completion[0]["content"] == "This is a test response"
 
         # Check state structure
         assert "trajectory" in state

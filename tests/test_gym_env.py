@@ -48,6 +48,28 @@ class ToyEnv:
 class GymMockClient(MockClient):
     """Mock client for GymEnv tests that responds based on x=N observations."""
 
+    @staticmethod
+    def _is_text_prompt(prompt) -> bool:
+        """Detect completion-mode prompts (single TextMessage with role='text')."""
+        if isinstance(prompt, str):
+            return True
+        if isinstance(prompt, list) and len(prompt) == 1:
+            msg = prompt[0]
+            role = msg["role"] if isinstance(msg, dict) else getattr(msg, "role", None)
+            if role == "text":
+                return True
+        return False
+
+    @staticmethod
+    def _extract_text(prompt) -> str:
+        """Extract text content from a text/completion prompt."""
+        if isinstance(prompt, str):
+            return prompt
+        msg = prompt[0]
+        if isinstance(msg, dict):
+            return msg.get("content", "")
+        return getattr(msg, "content", "")
+
     async def get_response(self, prompt, model, sampling_args, tools=None, **kwargs):
         self.call_count += 1
         self.last_call_kwargs = {

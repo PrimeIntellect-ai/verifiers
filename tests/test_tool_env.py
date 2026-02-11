@@ -90,12 +90,12 @@ class TestToolEnv:
         }
         user_message = ChatCompletionUserMessageParam(content="Square 4", role="user")
 
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[user_message],
             response="Using tool",
             tool_calls=[tool_call],
         )
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[
                 user_message,
                 assistant_message,
@@ -119,7 +119,7 @@ class TestToolEnv:
     async def test_tool_env_completion_without_tool_calls(
         self, mock_tool_env, mock_client, make_input
     ):
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Hello"}],
             response="Hi",
         )
@@ -173,7 +173,7 @@ class TestToolEnv:
         )
 
         # First response triggers tool call with invalid JSON
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Square 4"}],
             response="Using tool",
             tool_calls=[tool_call_with_invalid_json_arguments],
@@ -219,7 +219,7 @@ class TestToolEnv:
 
         tool_call = _build_tool_call("faulty_tool", {})
 
-        mock_client.add_chat_response(
+        mock_client.add_response(
             messages=[{"role": "user", "content": "Invoke"}],
             response="Using tool",
             tool_calls=[tool_call],
