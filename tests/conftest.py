@@ -153,6 +153,9 @@ class MockClient(Client):
     async def from_native_response(self, response):
         pass
 
+    async def close(self) -> None:
+        pass
+
     # -- Internal helpers --
 
     @staticmethod

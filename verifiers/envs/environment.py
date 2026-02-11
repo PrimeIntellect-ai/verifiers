@@ -1067,7 +1067,7 @@ class Environment(ABC):
                 pbar.close()
             if local_endpoint_clients:
                 await asyncio.gather(
-                    *(client.client.close() for client in local_endpoint_clients),
+                    *(client.close() for client in local_endpoint_clients),
                     return_exceptions=True,
                 )
 

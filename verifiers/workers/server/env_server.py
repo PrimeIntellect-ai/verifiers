@@ -136,5 +136,5 @@ class EnvServer(ABC):
 
     async def _close_cached_clients(self) -> None:
         for client in self.clients.values():
-            await client.client.close()
+            await client.close()
         self.clients.clear()

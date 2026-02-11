@@ -89,6 +89,9 @@ class AnthropicMessagesClient(
     def setup_client(self, config: ClientConfig) -> AsyncAnthropic:
         return setup_anthropic_client(config)
 
+    async def close(self) -> None:
+        await self.client.close()
+
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[AnthropicMessageParam], dict]:

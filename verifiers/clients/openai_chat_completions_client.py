@@ -139,6 +139,9 @@ class OpenAIChatCompletionsClient(
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
 
+    async def close(self) -> None:
+        await self.client.close()
+
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[OpenAIChatMessages, dict]:

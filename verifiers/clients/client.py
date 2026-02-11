@@ -83,6 +83,11 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
         """Convert the native response to a vf.Response."""
         ...
 
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the underlying client, if applicable."""
+        ...
+
     async def to_native_tools(self, tools: list[Tool] | None) -> list[ToolT] | None:
         """Converts a list of vf.Tools to the native tool format for this client."""
         if tools is None:

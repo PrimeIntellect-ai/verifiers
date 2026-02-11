@@ -513,22 +513,18 @@ async def test_run_rollout_server_mode_resolves_endpoint_config(
 async def test_generate_resume_closes_local_endpoint_clients(
     tmp_path, monkeypatch, mock_client, make_dummy_env, make_input, make_output
 ):
-    class InnerClientStub:
+    class LocalClientStub:
         def __init__(self):
             self.closed = False
 
         async def close(self):
             self.closed = True
 
-    class LocalClientStub:
-        def __init__(self):
-            self.client = InnerClientStub()
-
-    created_clients: list[InnerClientStub] = []
+    created_clients: list[LocalClientStub] = []
 
     def fake_resolve_client(_config):
         wrapper = LocalClientStub()
-        created_clients.append(wrapper.client)
+        created_clients.append(wrapper)
         return wrapper
 
     monkeypatch.setattr(
@@ -576,18 +572,14 @@ async def test_generate_resume_closes_local_endpoint_clients(
 async def test_generate_closes_partially_created_clients_on_setup_failure(
     monkeypatch, mock_client, make_dummy_env, make_input
 ):
-    class InnerClientStub:
+    class LocalClientStub:
         def __init__(self):
             self.closed = False
 
         async def close(self):
             self.closed = True
 
-    class LocalClientStub:
-        def __init__(self):
-            self.client = InnerClientStub()
-
-    created_clients: list[InnerClientStub] = []
+    created_clients: list[LocalClientStub] = []
     calls = {"count": 0}
 
     def fake_resolve_client(_config):
@@ -595,7 +587,7 @@ async def test_generate_closes_partially_created_clients_on_setup_failure(
         if calls["count"] == 2:
             raise RuntimeError("setup failed")
         wrapper = LocalClientStub()
-        created_clients.append(wrapper.client)
+        created_clients.append(wrapper)
         return wrapper
 
     monkeypatch.setattr(
