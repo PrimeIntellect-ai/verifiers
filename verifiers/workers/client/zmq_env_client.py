@@ -164,9 +164,15 @@ class ZMQEnvClient(EnvClient):
             raw_response = await asyncio.wait_for(future, timeout=effective_timeout)
         except asyncio.TimeoutError:
             self.pending.pop(request_id, None)
-            self.logger.error(
-                f"Timed out waiting for request_id={request_id} type={request.request_type} after {effective_timeout:.1f}s (pending={len(self.pending)})"
+            request_type = request.request_type
+            log_msg = (
+                f"Timed out waiting for request_id={request_id} type={request_type} "
+                f"after {effective_timeout:.1f}s (pending={len(self.pending)})"
             )
+            if request_type == "health":
+                self.logger.warning(log_msg)
+            else:
+                self.logger.error(log_msg)
             raise TimeoutError(
                 f"Environment timeout for {request.request_type} request after {effective_timeout}s"
             )

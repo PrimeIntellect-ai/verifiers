@@ -55,23 +55,33 @@ async def wait_for_env_server(
     interval: float = 1,
     log_interval: float = 10,
     timeout: float = 3600,  # 1h
+    health_timeout: float = 120,
 ) -> None:
-    wait_time = 0
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
+    next_log_at = log_interval
     logger.debug(f"Starting pinging environment server at {env_client.address}")
-    while wait_time < timeout:
+    while True:
+        elapsed = loop.time() - start_time
+        if elapsed >= timeout:
+            msg = (
+                f"Environment server at {env_client.address} is not ready after "
+                f"{print_time(elapsed)} (>{print_time(timeout)}). Aborting..."
+            )
+            logger.error(msg)
+            raise TimeoutError(msg)
+
+        probe_timeout = min(health_timeout, timeout - elapsed)
         try:
-            await env_client.health(timeout=1)  # quick timeout
+            await env_client.health(timeout=probe_timeout)
             logger.debug(
-                f"Environment server at {env_client.address} is ready after {print_time(wait_time)}"
+                f"Environment server at {env_client.address} is ready after {print_time(elapsed)}"
             )
             return
         except Exception as e:
-            if wait_time % log_interval == 0 and wait_time > 0:
+            if elapsed >= next_log_at:
                 logger.warning(
-                    f"Environment server at {env_client.address} was not reached after {print_time(wait_time)} (Error: {e})"
+                    f"Environment server at {env_client.address} was not reached after {print_time(elapsed)} (Error: {e})"
                 )
+                next_log_at += log_interval
             await asyncio.sleep(interval)
-            wait_time += interval
-    msg = f"Environment server at {env_client.address} is not ready after {print_time(wait_time)} (>{print_time(timeout)}). Aborting..."
-    logger.error(msg)
-    raise TimeoutError(msg)
