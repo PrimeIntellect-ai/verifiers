@@ -136,7 +136,7 @@ class ZMQEnvServer(EnvServer):
         response_bytes = cast(
             bytes,
             msgpack.packb(
-                response.model_dump(mode="python"),
+                response.model_dump(mode="python", warnings=False),
                 default=msgpack_encoder,
                 use_bin_type=True,
             ),

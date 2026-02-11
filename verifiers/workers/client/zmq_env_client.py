@@ -150,7 +150,7 @@ class ZMQEnvClient(EnvClient):
         payload_bytes = cast(
             bytes,
             msgpack.packb(
-                request.model_dump(mode="python"),
+                request.model_dump(mode="python", warnings=False),
                 default=msgpack_encoder,
                 use_bin_type=True,
             ),
