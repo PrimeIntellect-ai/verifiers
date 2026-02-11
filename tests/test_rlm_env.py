@@ -1542,8 +1542,11 @@ class TestRLMWorkerErrorRaised:
         )
         executor._sessions["test"] = session
         state = {"rollout_id": "test"}
-        with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
-            await executor.execute({"code": "1+1", "seq": 1}, state)
+        try:
+            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
+                await executor.execute({"code": "1+1", "seq": 1}, state)
+        finally:
+            executor._sessions.pop("test", None)
 
     @pytest.mark.asyncio
     async def test_local_execute_worker_process_exited(self, rlm_env):
@@ -1560,8 +1563,11 @@ class TestRLMWorkerErrorRaised:
         )
         executor._sessions["test"] = session
         state = {"rollout_id": "test"}
-        with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
-            await executor.execute({"code": "1+1", "seq": 1}, state)
+        try:
+            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
+                await executor.execute({"code": "1+1", "seq": 1}, state)
+        finally:
+            executor._sessions.pop("test", None)
 
 
 class TestRLMSetupErrorRaised:
