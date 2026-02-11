@@ -6,20 +6,16 @@ from verifiers.types import (
 )
 
 
-# --- New Response-based utilities ---
-
-
 async def parse_response_message(response: Response) -> Messages:
-    """Parse a vf.Response into a Messages list (single AssistantMessage)."""
+    """Parse a vf.Response into a vf.Messages list (single vf.AssistantMessage)."""
     response_message = response.message
     message_payload = {
         "role": "assistant",
         "content": response_message.content,
         "reasoning_content": response_message.reasoning_content,
+        "thinking_blocks": response_message.thinking_blocks,
         "tool_calls": response_message.tool_calls,
     }
-    if response_message.model_extra:
-        message_payload.update(response_message.model_extra)
     message = AssistantMessage.model_validate(message_payload)
     return [message]
 

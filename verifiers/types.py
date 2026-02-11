@@ -13,6 +13,8 @@ from typing import (
 )
 
 from anthropic import AsyncAnthropic
+from anthropic.types import RedactedThinkingBlock
+from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -118,10 +120,14 @@ class ToolCall(CustomBaseModel):
     arguments: str
 
 
+ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
+
+
 class AssistantMessage(CustomBaseModel):
     role: Literal["assistant"] = "assistant"
     content: MessageContent | None = None
     reasoning_content: str | None = None
+    thinking_blocks: list[ThinkingBlock] | None = None
     tool_calls: list[ToolCall] | None = None
 
 

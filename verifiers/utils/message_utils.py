@@ -1,6 +1,7 @@
 import json
 from collections.abc import Mapping
 from typing import Any, cast
+
 from rich.text import Text
 
 from verifiers.types import (
@@ -16,9 +17,6 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-
-
-# --- New Pydantic-based utilities ---
 
 
 def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
