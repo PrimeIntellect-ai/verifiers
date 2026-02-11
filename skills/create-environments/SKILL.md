@@ -88,11 +88,11 @@ prime eval run my-env -m gpt-4.1-mini -n 30 -r 3 -s
 2. Ask the user explicitly whether visibility should be `PUBLIC` or `PRIVATE`.
 3. Use:
 ```bash
-prime env push --path ./environments/my_env --visibility PUBLIC
+prime env push my-env --visibility PUBLIC
 ```
 or
 ```bash
-prime env push --path ./environments/my_env --visibility PRIVATE
+prime env push my-env --visibility PRIVATE
 ```
 4. For hosted or large-scale workflows, prefer running with the Hub slug after push:
 ```bash
