@@ -330,6 +330,7 @@ class AnthropicMessagesClient(
             sampling_args = dict(sampling_args)
             max_tokens = sampling_args.pop("max_tokens", None)
             sampling_args.pop("n", None)
+            sampling_args.pop("stop", None)
             if max_tokens is None:
                 self.logger.warning(
                     "max_tokens is not set but Anthropic /v1/messages endpoint requires it, falling back to max_tokens=4096"
