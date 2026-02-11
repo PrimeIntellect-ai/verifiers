@@ -115,8 +115,9 @@ def content_to_text(content: Any) -> str:
 
 
 DEFAULT_REASONING_FIELDS = [
-    "reasoning",  # vLLM
-    "reasoning_content",  # DeepSeek API
+    "reasoning",  # vLLM, Together AI, OpenRouter
+    "reasoning_content",  # DeepSeek, Qwen/DashScope, SGLang, Fireworks AI, Kimi/Moonshot
+    "reasoning_details",  # OpenRouter, MiniMax
 ]
 
 OpenAIChatMessage: TypeAlias = ChatCompletionMessageParam
