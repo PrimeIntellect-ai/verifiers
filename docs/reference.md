@@ -8,6 +8,7 @@
   - [Environment Classes](#environment-classes)
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
+- [Client Classes](#client-classes)
 - [Configuration Types](#configuration-types)
 - [Prime CLI Plugin](#prime-cli-plugin)
 - [Decorators](#decorators)
@@ -59,13 +60,18 @@ RewardFunc = IndividualRewardFunc | GroupRewardFunc
 
 Individual reward functions operate on single rollouts. Group reward functions operate on all rollouts for an example together (useful for relative scoring).
 
-### ModelResponse
+### ClientType
 
 ```python
-ModelResponse = Completion | ChatCompletion | None
+ClientType = Literal[
+    "openai_completions",
+    "openai_chat_completions",
+    "openai_chat_completions_token",
+    "anthropic_messages",
+]
 ```
 
-Raw response from the OpenAI API.
+Selects which `Client` implementation to use. Set via `ClientConfig.client_type`.
 
 ---
 
@@ -85,12 +91,12 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 | Field | Type | Description |
 |-------|------|-------------|
 | `input` | `RolloutInput` | Nested input data |
-| `client` | `AsyncOpenAI` | OpenAI client |
+| `client` | `Client` | Client instance |
 | `model` | `str` | Model name |
 | `sampling_args` | `SamplingArgs \| None` | Generation parameters |
 | `is_completed` | `bool` | Whether rollout has ended |
 | `is_truncated` | `bool` | Whether generation was truncated |
-| `oai_tools` | `list[ChatCompletionToolParam]` | Available tools |
+| `tool_defs` | `list[Tool] \| None` | Available tool definitions |
 | `trajectory` | `list[TrajectoryStep]` | Multi-turn trajectory |
 | `trajectory_id` | `str` | UUID for this rollout |
 | `timing` | `RolloutTiming` | Timing information |
@@ -137,7 +143,7 @@ class RolloutOutput(dict):
     error: str | None
     stop_condition: str | None
     trajectory: list[TrajectoryStep]
-    oai_tools: list[ChatCompletionToolParam]
+    tool_defs: list[Tool] | None
 ```
 
 Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
@@ -148,7 +154,7 @@ Serialized output from a rollout. This is a `dict` subclass that provides typed 
 class TrajectoryStep(TypedDict):
     prompt: Messages
     completion: Messages
-    response: ModelResponse
+    response: Response
     tokens: TrajectoryStepTokens | None
     reward: float | None
     advantage: float | None
@@ -218,7 +224,7 @@ class GenerateMetadata(TypedDict):
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path
-    tools: list[ChatCompletionToolParam] | None
+    tools: list[Tool] | None
 ```
 
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
@@ -257,7 +263,6 @@ class Environment(ABC):
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
         message_type: MessageType = "chat",
-        oai_tools: list[ChatCompletionToolParam] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
         env_args: dict | None = None,
@@ -272,7 +277,7 @@ Abstract base class for all environments.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `generate(inputs, client, model, ...)` | `GenerateOutputs` | Run rollouts asynchronously |
+| `generate(inputs, client, model, ...)` | `GenerateOutputs` | Run rollouts asynchronously. `client` accepts `Client \| ClientConfig`. |
 | `generate_sync(inputs, client, ...)` | `GenerateOutputs` | Synchronous wrapper |
 | `evaluate(client, model, ...)` | `GenerateOutputs` | Evaluate on eval_dataset |
 | `evaluate_sync(client, model, ...)` | `GenerateOutputs` | Synchronous evaluation |
@@ -291,7 +296,7 @@ Abstract base class for all environments.
 |--------|---------|-------------|
 | `rollout(input, client, model, sampling_args)` | `State` | Abstract: run single rollout |
 | `init_state(input, client, model, sampling_args)` | `State` | Create initial state from input |
-| `get_model_response(state, prompt, ...)` | `ModelResponse` | Get model response for prompt |
+| `get_model_response(state, prompt, ...)` | `Response` | Get model response for prompt |
 | `is_completed(state)` | `bool` | Check all stop conditions |
 | `run_rollout(sem, input, client, model, sampling_args)` | `State` | Run rollout with semaphore |
 | `run_group(group_inputs, client, model, ...)` | `list[State]` | Generate and score one group |
@@ -573,6 +578,91 @@ Combines rubrics for `EnvGroup`.
 
 ---
 
+## Client Classes
+
+### Client
+
+```python
+class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
+    def __init__(self, client_or_config: ClientT | ClientConfig) -> None: ...
+
+    @property
+    def client(self) -> ClientT: ...
+
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools: list[Tool] | None = None,
+        **kwargs,
+    ) -> Response: ...
+
+    async def close(self) -> None: ...
+```
+
+Abstract base class for all model clients. Wraps a provider-specific SDK client and translates between provider-agnostic `vf` types (`Messages`, `Tool`, `Response`) and provider-native formats. The `client` property exposes the underlying SDK client (e.g., `AsyncOpenAI`, `AsyncAnthropic`).
+
+`get_response()` is the main public method — it converts the prompt and tools to the native format, calls the provider API, validates the response, and converts it back to a `vf.Response`. Errors are wrapped in `vf.ModelError` unless they are already `vf.Error` or authentication errors.
+
+**Abstract methods (for subclass implementors):**
+
+| Method | Description |
+|--------|-------------|
+| `setup_client(config)` | Create the native SDK client from `ClientConfig` |
+| `to_native_prompt(messages)` | Convert `Messages` → native prompt format + extra kwargs |
+| `to_native_tool(tool)` | Convert `Tool` → native tool format |
+| `get_native_response(prompt, model, ...)` | Call the provider API |
+| `raise_from_native_response(response)` | Raise `ModelError` for invalid responses |
+| `from_native_response(response)` | Convert native response → `vf.Response` |
+| `close()` | Close the underlying SDK client |
+
+### Built-in Client Implementations
+
+| Class | `client_type` | SDK Client | Description |
+|-------|---------------|------------|-------------|
+| `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
+| `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
+| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route |
+| `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
+
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
+
+### Response
+
+```python
+class Response(BaseModel):
+    id: str
+    created: int
+    model: str
+    usage: Usage | None
+    message: ResponseMessage
+
+class ResponseMessage(BaseModel):
+    content: str | None
+    reasoning_content: str | None
+    finish_reason: Literal["stop", "length", "tool_calls"] | None
+    is_truncated: bool | None
+    tokens: ResponseTokens | None
+    tool_calls: list[ToolCall] | None
+```
+
+Provider-agnostic model response. All `Client` implementations return `Response` from `get_response()`.
+
+### Tool
+
+```python
+class Tool(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, object]
+    strict: bool | None = None
+```
+
+Provider-agnostic tool definition. Environments define tools using this type; each `Client` converts them to its native format via `to_native_tool()`.
+
+---
+
 ## Configuration Types
 
 ### ClientConfig
@@ -580,6 +670,7 @@ Combines rubrics for `EnvGroup`.
 ```python
 class ClientConfig(BaseModel):
     client_idx: int = 0
+    client_type: ClientType = "openai_chat_completions"
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
@@ -590,7 +681,7 @@ class ClientConfig(BaseModel):
     extra_headers: dict[str, str] = {}
 ```
 
-Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+`client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
