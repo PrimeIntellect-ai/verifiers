@@ -106,7 +106,6 @@ class Environment(ABC):
         map_kwargs: dict = {},
         max_seq_len: int | None = None,
         interleaved_rollouts: bool = False,
-        interleaved_thinking: bool = True,
         score_rollouts: bool = True,
         **kwargs,
     ):
@@ -140,7 +139,6 @@ class Environment(ABC):
         self.map_kwargs = map_kwargs
 
         self.set_interleaved_rollouts(interleaved_rollouts)
-        self.set_interleaved_thinking(interleaved_thinking)
         self.set_score_rollouts(score_rollouts)
 
         self.env_client: EnvClient | None = None
@@ -531,7 +529,6 @@ class Environment(ABC):
             """Resolve optional arguments, fallback to state or class defaults."""
             client = client if client is not None else state["client"]
             assert client is not None
-            client.set_interleaved_thinking(self.interleaved_thinking)
             model = model or state["model"]
             assert model is not None
             if tool_defs is None:
@@ -1284,10 +1281,6 @@ class Environment(ABC):
                 self.env_server_process.kill()
                 self.env_server_process.join(timeout=5)
             self.env_server_process = None
-
-    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
-        """Set the interleaved thinking flag for this environment."""
-        self.interleaved_thinking = interleaved_thinking
 
     def set_score_rollouts(self, score_rollouts: bool) -> None:
         """Set the score rollouts flag for this environment."""

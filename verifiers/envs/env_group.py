@@ -339,9 +339,3 @@ class EnvGroup(vf.Environment):
         self.score_rollouts = score_rollouts
         for env in self.envs:
             env.set_score_rollouts(score_rollouts)
-
-    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
-        """Set the interleaved thinking flag for this environment group and all sub-environments."""
-        self.interleaved_thinking = interleaved_thinking
-        for env in self.envs:
-            env.set_interleaved_thinking(interleaved_thinking)
