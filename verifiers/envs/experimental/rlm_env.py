@@ -146,6 +146,10 @@ def _merge_tool_lists(
     return deduped_all, deduped_map
 
 
+class SubLLMEmptyModelResponseError(vf.EmptyModelResponseError):
+    """Raised when a sub-LLM call returns an empty model response."""
+
+
 class RLMCodeExecutionTimeout(vf.ToolCallError):
     """Raised when code execution exceeds the configured timeout."""
 
@@ -3151,6 +3155,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
+        except vf.EmptyModelResponseError as e:
+            raise SubLLMEmptyModelResponseError(str(e)) from e
         except Exception as e:
             raise e
 
