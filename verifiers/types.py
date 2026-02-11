@@ -31,7 +31,7 @@ ClientType = Literal["openai", "anthropic"]
 MessageType = Literal["chat", "completion"]
 
 
-# Custom base model with dict-like access
+# Provider-agnostic message + response types
 class CustomBaseModel(BaseModel):
     """Allow extras and dict-like attribute access."""
 
@@ -52,7 +52,6 @@ class CustomBaseModel(BaseModel):
         return super().__eq__(other)
 
 
-# Shared message types (provider-agnostic)
 class TextMessage(CustomBaseModel):
     role: Literal["text"] = "text"
     content: str
@@ -131,7 +130,6 @@ Message: TypeAlias = (
 Messages = list[Message]
 
 
-# Provider-agnostic tool definition
 class Tool(CustomBaseModel):
     name: str
     description: str
@@ -139,7 +137,6 @@ class Tool(CustomBaseModel):
     strict: bool | None = None
 
 
-# Response types (returned by Client adapters)
 class Usage(CustomBaseModel):
     prompt_tokens: int
     reasoning_tokens: int
