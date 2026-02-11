@@ -182,7 +182,7 @@ async def test_anthropic_from_native_response_extracts_usage():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_from_native_response_respects_interleaved_thinking_flag():
+async def test_anthropic_from_native_response_always_parses_reasoning():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
@@ -198,15 +198,9 @@ async def test_anthropic_from_native_response_respects_interleaved_thinking_flag
         ],
     )
 
-    client.set_interleaved_thinking(False)
-    response_no_thinking = await client.from_native_response(native_response)
-    assert response_no_thinking.message.reasoning_content is None
-    assert response_no_thinking.message.content == "final answer"
-
-    client.set_interleaved_thinking(True)
-    response_with_thinking = await client.from_native_response(native_response)
-    assert response_with_thinking.message.reasoning_content == "hidden chain"
-    assert response_with_thinking.message.content == "final answer"
+    response = await client.from_native_response(native_response)
+    assert response.message.reasoning_content == "hidden chain"
+    assert response.message.content == "final answer"
 
 
 @pytest.mark.asyncio

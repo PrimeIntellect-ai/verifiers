@@ -92,7 +92,6 @@ class MockClient(Client):
     def __init__(self):
         self.logger = logging.getLogger(f"{__name__}.MockClient")
         self._client = None
-        self.interleaved_thinking = True
 
         self._chat_responses: dict[tuple, dict] = {}
         self._text_responses: dict[str, dict] = {}

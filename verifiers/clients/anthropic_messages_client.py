@@ -442,9 +442,7 @@ class AnthropicMessagesClient(
             ),
             message=ResponseMessage(
                 content=content,
-                reasoning_content=(reasoning_content or None)
-                if self.interleaved_thinking
-                else None,
+                reasoning_content=reasoning_content or None,
                 thinking_blocks=thinking_blocks or None,  # type: ignore
                 tool_calls=tool_calls or None,
                 finish_reason=parse_finish_reason(response),

@@ -43,14 +43,10 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
             self._client = self.setup_client(client_or_config)
         else:
             self._client = client_or_config
-        self.interleaved_thinking = True
 
     @property
     def client(self) -> ClientT:
         return self._client
-
-    def set_interleaved_thinking(self, interleaved_thinking: bool) -> None:
-        self.interleaved_thinking = interleaved_thinking
 
     @abstractmethod
     def setup_client(self, config: ClientConfig) -> ClientT: ...
