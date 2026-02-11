@@ -5,19 +5,19 @@ from openai import AsyncOpenAI
 from typing import cast
 
 from verifiers.clients.client import Client
-from verifiers.clients.anthropic import AnthropicMessagesClient
-from verifiers.clients.openai import (
-    OAIChatCompletionsClient,
-    OAIChatCompletionsTokenClient,
-    OAICompletionsClient,
+from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.clients.openai_chat_completions_token_client import (
+    OpenAIChatCompletionsTokenClient,
 )
+from verifiers.clients.openai_completions_client import OpenAICompletionsClient
 from verifiers.types import MessageType
 
 CLIENT_REGISTRY = {
     "openai": {
-        "completions": OAICompletionsClient,
-        "chat_completions": OAIChatCompletionsClient,
-        "chat_completions_tokens": OAIChatCompletionsTokenClient,
+        "completions": OpenAICompletionsClient,
+        "chat_completions": OpenAIChatCompletionsClient,
+        "chat_completions_tokens": OpenAIChatCompletionsTokenClient,
     },
     "anthropic": {"messages": AnthropicMessagesClient},
 }
@@ -33,10 +33,10 @@ def resolve_client(
     if isinstance(client, AsyncOpenAI):
         if message_type == "chat":
             if interleaved_rollouts:
-                return OAIChatCompletionsTokenClient(client)
-            return OAIChatCompletionsClient(client)
+                return OpenAIChatCompletionsTokenClient(client)
+            return OpenAIChatCompletionsClient(client)
         elif message_type == "completion":
-            return OAICompletionsClient(client)
+            return OpenAICompletionsClient(client)
         else:
             raise ValueError(
                 f"Unsupported message type: {message_type} for OpenAI client"
@@ -55,14 +55,14 @@ def resolve_client(
     else:
         # Fall back to OpenAI client for duck-typed clients (e.g., mocks, proxies)
         if message_type == "completion":
-            return OAICompletionsClient(cast(AsyncOpenAI, client))
-        return OAIChatCompletionsClient(cast(AsyncOpenAI, client))
+            return OpenAICompletionsClient(cast(AsyncOpenAI, client))
+        return OpenAIChatCompletionsClient(cast(AsyncOpenAI, client))
 
 
 __all__ = [
     "AnthropicMessagesClient",
-    "OAICompletionsClient",
-    "OAIChatCompletionsClient",
-    "OAIChatCompletionsTokenClient",
+    "OpenAICompletionsClient",
+    "OpenAIChatCompletionsClient",
+    "OpenAIChatCompletionsTokenClient",
     "Client",
 ]

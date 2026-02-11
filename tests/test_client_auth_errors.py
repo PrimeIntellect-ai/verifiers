@@ -5,11 +5,9 @@ from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import AuthenticationError as OpenAIAuthenticationError
 from openai import BadRequestError as OpenAIBadRequestError
 
-from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
-from verifiers.clients.openai.openai_clients import (
-    OAIChatCompletionsClient,
-    OAICompletionsClient,
-)
+from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.clients.openai_completions_client import OpenAICompletionsClient
 from verifiers.errors import OverlongPromptError
 from verifiers.types import TextMessage, UserMessage
 
@@ -58,7 +56,7 @@ class _FailingAnthropicClient:
 
 @pytest.mark.asyncio
 async def test_openai_auth_error_not_wrapped_as_model_error():
-    client = OAICompletionsClient(_FailingOpenAIClient())
+    client = OpenAICompletionsClient(_FailingOpenAIClient())
 
     with pytest.raises(OpenAIAuthenticationError):
         await client.get_response(
@@ -181,7 +179,7 @@ async def test_anthropic_non_overlong_bad_request_not_converted():
 )
 @pytest.mark.asyncio
 async def test_openai_overlong_prompt_raises_overlong_error(error_message: str):
-    client = OAIChatCompletionsClient(_OverlongOpenAIChatClient(error_message))
+    client = OpenAIChatCompletionsClient(_OverlongOpenAIChatClient(error_message))
 
     with pytest.raises(OverlongPromptError):
         await client.get_response(

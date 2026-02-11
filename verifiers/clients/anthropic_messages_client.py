@@ -48,7 +48,7 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_anthropic_client
 
 
-def handle_overlong_prompt(func):
+def _handle_anthropic_overlong_prompt(func):
     """Decorator to handle overlong prompt errors from the Anthropic API."""
 
     @functools.wraps(func)
@@ -317,7 +317,7 @@ class AnthropicMessagesClient(
             input_schema=tool.parameters,
         )
 
-    @handle_overlong_prompt
+    @_handle_anthropic_overlong_prompt
     async def get_native_response(
         self,
         prompt: list[AnthropicMessageParam],

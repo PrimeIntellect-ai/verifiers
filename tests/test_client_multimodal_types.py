@@ -1,7 +1,7 @@
 import pytest
 from types import SimpleNamespace
 
-from verifiers.clients.openai.openai_clients import OAIChatCompletionsClient
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.types import (
     AssistantMessage,
     ImageUrlContentPart,
@@ -20,7 +20,7 @@ from verifiers.utils.response_utils import parse_response_message
 
 @pytest.mark.asyncio
 async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
-    client = OAIChatCompletionsClient(object())
+    client = OpenAIChatCompletionsClient(object())
     messages = [
         UserMessage(
             content=[
@@ -55,7 +55,7 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
 @pytest.mark.asyncio
 async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
     pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
     messages = [
@@ -101,7 +101,7 @@ async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
 @pytest.mark.asyncio
 async def test_anthropic_assistant_tool_calls_use_text_chunks_not_model_repr():
     pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
     messages = [
@@ -124,7 +124,7 @@ async def test_anthropic_assistant_tool_calls_use_text_chunks_not_model_repr():
 @pytest.mark.asyncio
 async def test_anthropic_merges_consecutive_tool_results_into_single_user_message():
     pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
     messages = [
@@ -156,7 +156,7 @@ async def test_anthropic_from_native_response_extracts_usage():
     anthropic = pytest.importorskip("anthropic")
     from anthropic.types import Message as AnthropicMessage
 
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
 
@@ -184,7 +184,7 @@ async def test_anthropic_from_native_response_extracts_usage():
 @pytest.mark.asyncio
 async def test_anthropic_from_native_response_respects_interleaved_thinking_flag():
     pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
     native_response = SimpleNamespace(
@@ -215,7 +215,7 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
     from anthropic.types import Message as AnthropicMessage
     from anthropic.types import Usage as AnthropicUsage
 
-    from verifiers.clients.anthropic.anthropic_clients import AnthropicMessagesClient
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
     native_response = AnthropicMessage(
