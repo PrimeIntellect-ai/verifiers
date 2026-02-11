@@ -47,6 +47,8 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    image_mode: str = "base64"
+    max_image_base64_chars: int | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -64,6 +66,8 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    image_mode: str = "base64"
+    max_image_base64_chars: int | None = None
 
 
 class RunGroupResponse(BaseResponse):

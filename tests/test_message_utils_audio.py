@@ -1,5 +1,6 @@
 # tests/test_message_utils_audio.py
 from verifiers.utils.message_utils import (
+    ImageMode,
     message_to_printable,
     messages_to_printable,
 )
@@ -108,3 +109,39 @@ def test_dataset_map_introduces_none_fields_and_stripping_fixes():
         "type": "image_url",
         "image_url": {"url": "data:image/png;base64,abc123"},
     }
+
+
+def test_message_to_printable_base64_mode_extracts_images():
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "question"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+            },
+        ],
+    }
+
+    out = message_to_printable(msg, image_mode=ImageMode.BASE64)
+    assert out["content"] == "question\n\n[image]"
+    assert out["images"][0]["media_type"] == "image/png"
+    assert out["images"][0]["base64"] == "QUJDRA=="
+    assert out["images"][0]["base64_chars"] == 8
+
+
+def test_message_to_printable_base64_mode_enforces_limit():
+    msg = {
+        "role": "user",
+        "content": [
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+            }
+        ],
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="exceeds max_image_base64_chars"):
+        message_to_printable(msg, image_mode="base64", max_image_base64_chars=4)
