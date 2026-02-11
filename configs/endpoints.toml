@@ -216,3 +216,10 @@ endpoint_id = "glm-4.7"
 model = "z-ai/glm-4.7"
 url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
+
+[[endpoint]]
+endpoint_id = "deepseek-reasoner"
+model = "deepseek-reasoner"
+url = "https://api.deepseek.com/v1"
+key = "DEEPSEEK_API_KEY"
+type = "openai_chat_completions"
