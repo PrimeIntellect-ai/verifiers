@@ -36,7 +36,7 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
-    "prime-tunnel>=0.1.0",
+    "prime-tunnel>=0.1.1",
     "prime-sandboxes>=0.2.14",
     "pydantic>=2.11.9",
     "requests",
@@ -87,6 +87,25 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+rl = [
+    "torch>=2.8.0,<2.9.0",
+    "transformers>=4.56.2",
+    "accelerate>=1.4.0",
+    "requests",
+    "peft",
+    "wandb",
+    "vllm>=0.10.0,<0.11.0",
+    "liger-kernel>=0.5.10",
+    "deepspeed>=0.17.6",
+    "flash-attn>=2.8.3",
+]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
 vf-gepa = "verifiers.scripts.gepa:main"

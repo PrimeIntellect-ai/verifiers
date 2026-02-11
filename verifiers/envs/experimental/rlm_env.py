@@ -54,9 +54,9 @@ else:
 
 from aiohttp import web
 from openai.types.chat import ChatCompletionFunctionToolParam
-from prime_tunnel import Tunnel
 from prime_sandboxes import SandboxClient
 from prime_sandboxes.core import APIClient
+from prime_tunnel import Tunnel
 import verifiers as vf
 from verifiers.types import (
     ChatMessage,
@@ -75,7 +75,7 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_oai_tool
-from verifiers.utils.sandbox_exec_utils import SandboxExecutorMixin
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.envs.sandbox_env import CreateSandboxRequest
 from prime_sandboxes import CommandTimeoutError
 
@@ -1898,14 +1898,12 @@ class LocalRLMExecutor(BaseRLMExecutor):
         session.worker_process = None
 
 
-class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
+class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     def __init__(self, env: "RLMEnv") -> None:
         BaseRLMExecutor.__init__(self, env)
-        SandboxExecutorMixin.__init__(self)
         self._sessions: dict[str, SandboxRLMReplSession] = {}
         self._retained_dirs: set[str] = set()
-        self._active_sandboxes: set[str] = set()
-        self._init_sandbox_executor(
+        self.init_sandbox_client(
             sandbox_client_max_workers=env.sandbox_client_max_workers,
             sandbox_client_max_connections=env.sandbox_client_max_connections,
             sandbox_client_max_keepalive_connections=env.sandbox_client_max_keepalive_connections,
@@ -1922,24 +1920,12 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         session = self._get_session(state)
         if session.sandbox_id is None:
             request = self._build_sandbox_request(state)
-            sandbox = await self._create_sandbox(request)
-            session.sandbox_id = sandbox.id
-            self._active_sandboxes.add(sandbox.id)
-            state["sandbox_id"] = sandbox.id
             state["sandbox_state"] = {
                 "ready": False,
-                "ready_wait_time": 0.0,
                 "command_execution_times": [],
             }
-            start_wait = time.time()
-            await self._wait_for_sandbox_ready(sandbox.id)
+            session.sandbox_id = await self.create_sandbox(state, request)
             state["sandbox_state"]["ready"] = True
-            state["sandbox_state"]["ready_wait_time"] = time.time() - start_wait
-            try:
-                # Allow environments to run repo/tool setup before the worker starts.
-                await self.env.on_sandbox_ready(state, sandbox.id)
-            except Exception as exc:
-                raise vf.SandboxError(f"Sandbox setup hook failed: {exc}") from exc
 
         if not session.sandbox_id:
             raise vf.SandboxError() from Exception("Sandbox not initialized")
@@ -2065,21 +2051,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                             rollout_id,
                             e,
                         )
-                try:
-                    await self._delete_sandbox(session.sandbox_id)
-                    self._active_sandboxes.discard(session.sandbox_id)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to delete sandbox {session.sandbox_id}: {e}"
-                    )
+                await self.delete_sandbox(session.sandbox_id)
             return
 
-        try:
-            if session.sandbox_id:
-                await self._delete_sandbox(session.sandbox_id)
-                self._active_sandboxes.discard(session.sandbox_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete sandbox {session.sandbox_id}: {e}")
+        if session.sandbox_id:
+            await self.delete_sandbox(session.sandbox_id)
 
         await asyncio.to_thread(shutil.rmtree, session.local_rollout_dir, True)
 
@@ -2092,11 +2068,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                     await self._stop_worker(session)
                 finally:
                     if session.sandbox_id:
-                        self._active_sandboxes.add(session.sandbox_id)
+                        self.active_sandboxes.add(session.sandbox_id)
                     if session.local_rollout_dir not in self._retained_dirs:
                         shutil.rmtree(session.local_rollout_dir, True)
-        if self._active_sandboxes:
-            sandbox_ids = list(self._active_sandboxes)
+        if self.active_sandboxes:
+            sandbox_ids = list(self.active_sandboxes)
             batch_size = 100
             sync_client = SandboxClient(APIClient())
             for i in range(0, len(sandbox_ids), batch_size):
@@ -2104,11 +2080,11 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
                 try:
                     sync_client.bulk_delete(sandbox_ids=batch)
                     for sandbox_id in batch:
-                        self._active_sandboxes.discard(sandbox_id)
+                        self.active_sandboxes.discard(sandbox_id)
                     logger.debug(f"Bulk deleted batch of {len(batch)} sandboxes")
                 except Exception as e:
                     logger.warning(f"Bulk delete failed for batch: {e}")
-        self._teardown_sandbox_client()
+        self.teardown_sandbox_client()
 
     def _get_or_create_session(self, state: State) -> SandboxRLMReplSession:
         rollout_id = state.get("rollout_id")
@@ -2139,6 +2115,36 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
 
     def _build_sandbox_request(self, state: State) -> CreateSandboxRequest:
         return self.env.get_sandbox_request(state)
+
+    async def post_sandbox_setup(self, state: State) -> None:
+        sandbox_id = state.get("sandbox_id")
+        if not sandbox_id:
+            raise vf.SandboxError() from Exception("Sandbox not initialized")
+        try:
+            # Allow environments to run repo/tool setup before the worker starts.
+            await self.env.on_sandbox_ready(state, sandbox_id)
+        except Exception as exc:
+            raise vf.SandboxError(f"Sandbox setup hook failed: {exc}") from exc
+
+    async def _execute_sandbox_command(
+        self,
+        sandbox_id: str,
+        command: str,
+        *,
+        working_dir: str | None = None,
+        timeout: int = 30,
+    ) -> Any:
+        try:
+            return await self.sandbox_client.execute_command(
+                sandbox_id,
+                command,
+                working_dir=working_dir,
+                timeout=timeout,
+            )
+        except CommandTimeoutError:
+            raise
+        except Exception as e:
+            raise RuntimeError(e)
 
     async def _install_packages(self, session: SandboxRLMReplSession) -> None:
         sandbox_id = session.sandbox_id
@@ -2209,13 +2215,13 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
         worker_script = self.env.customize_worker_script(worker_script, state)
         worker_path.write_text(worker_script, encoding="utf-8")
 
-        await self._sandbox_client.upload_file(
+        await self.sandbox_client.upload_file(
             session.sandbox_id, session.paths.context_file, str(context_path)
         )
-        await self._sandbox_client.upload_file(
+        await self.sandbox_client.upload_file(
             session.sandbox_id, session.paths.answer_file, str(answer_path)
         )
-        await self._sandbox_client.upload_file(
+        await self.sandbox_client.upload_file(
             session.sandbox_id, session.paths.worker_path, str(worker_path)
         )
 
@@ -2448,9 +2454,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             with tarfile.open(tar_path, "w:gz") as tar:
                 tar.add(local_path, arcname=".")
             remote_tar = f"/tmp/rlm_upload_{uuid.uuid4().hex}.tar.gz"
-            await self._sandbox_client.upload_file(
-                sandbox_id, remote_tar, str(tar_path)
-            )
+            await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
             extract_cmd = (
                 "bash -lc '"
                 f'mkdir -p "{remote_dir}"; '
@@ -2485,7 +2489,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxExecutorMixin):
             tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
             tar_path = Path(tmp.name)
             tmp.close()
-            await self._sandbox_client.download_file(
+            await self.sandbox_client.download_file(
                 sandbox_id, remote_tar, str(tar_path)
             )
             if local_path.exists():
