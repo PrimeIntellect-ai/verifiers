@@ -64,7 +64,7 @@ uv run pytest -m unit
 The test suite includes comprehensive support for testing async Environment classes:
 
 ### AsyncOpenAI Client Mocking
-- `mock_openai_client` fixture provides a fully mocked AsyncOpenAI client
+- `mock_client` fixture provides a fully mocked AsyncOpenAI client
 - Supports both chat completions and regular completions
 - No actual API calls are made during testing
 
@@ -76,8 +76,8 @@ The test suite includes comprehensive support for testing async Environment clas
 ### Async Test Examples
 ```python
 @pytest.mark.asyncio
-async def test_my_async_function(mock_openai_client):
-    env = SingleTurnEnv(client=mock_openai_client, model="test", ...)
+async def test_my_async_function(mock_client):
+    env = SingleTurnEnv(client=mock_client, model="test", ...)
     result = await env.rollout(...)
     assert result[0] == expected_completion
 
@@ -112,5 +112,5 @@ async def test_multiturn_conversation(mock_multiturn_env):
 1. Create test files following the `test_*.py` naming convention
 2. Use the fixtures from `conftest.py` for common instances
 3. Add appropriate test markers (`@pytest.mark.asyncio` for async tests)
-4. Use `mock_openai_client` for Environment testing
+4. Use `mock_client` for Environment testing
 5. Follow the existing test structure and naming conventions

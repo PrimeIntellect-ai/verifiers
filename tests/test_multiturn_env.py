@@ -14,14 +14,12 @@ class TestMultiTurnEnv:
         assert mock_multiturn_env.max_turns == 3
         assert mock_multiturn_env.message_type == "chat"  # Default from parent
 
-    def test_multiturn_env_default_max_turns(
-        self, mock_openai_client, sample_chat_dataset
-    ):
+    def test_multiturn_env_default_max_turns(self, mock_client, sample_chat_dataset):
         """Test MultiTurnEnv default max_turns value."""
         from tests.conftest import SimpleMultiTurnEnv
 
         env = SimpleMultiTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             parser=Parser(),
@@ -109,7 +107,7 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_override_is_completed_respects_max_turns(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Ensure custom is_completed implementations still honor max_turns."""
 
@@ -131,19 +129,19 @@ class TestMultiTurnEnv:
                 ]
 
         env = MaxTurnsAwareEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             parser=Parser(),
             rubric=Rubric(),
         )
 
-        mock_openai_client.set_default_responses(chat_response="Still thinking")
+        mock_client.set_default_responses(chat_response="Still thinking")
 
         prompt: Messages = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
             input=make_input(prompt=prompt, answer="target"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         completion = state["completion"]
@@ -287,7 +285,7 @@ class TestMultiTurnEnv:
         assert call_kwargs["sampling_args"]["max_tokens"] == 50
 
     @pytest.mark.asyncio
-    async def test_completion_format_multiturn(self, mock_openai_client, make_input):
+    async def test_completion_format_multiturn(self, mock_client, make_input):
         """Test MultiTurnEnv with completion format."""
 
         class CompletionMultiTurnEnv(MultiTurnEnv):
@@ -316,21 +314,21 @@ class TestMultiTurnEnv:
         )
 
         env = CompletionMultiTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=completion_dataset,
             max_turns=3,
         )
 
-        mock_openai_client.add_text_response("Start:", "First response")
-        mock_openai_client.set_default_responses(
+        mock_client.add_text_response("Start:", "First response")
+        mock_client.set_default_responses(
             chat_response="Final DONE", text_response="Final DONE"
         )
 
         prompt = "Start:"
         state = await env.rollout(
             input=make_input(prompt=prompt, answer="Done"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -347,7 +345,7 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_environment_response_state_modification(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that environment can modify state between turns."""
 
@@ -361,7 +359,7 @@ class TestMultiTurnEnv:
                 return [{"role": "user", "content": f"Turn {state['turn_count']}"}]
 
         env = StatefulMultiTurnEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             max_turns=5,
@@ -395,7 +393,7 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_completion_detection_before_env_response(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test completion detection works before env_response is called."""
 
@@ -412,7 +410,7 @@ class TestMultiTurnEnv:
                 return [{"role": "user", "content": "Should not appear"}]
 
         env = ImmediateCompletionEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             max_turns=5,
@@ -482,7 +480,7 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_final_env_response_stops_rollout(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that setting final_env_response stops rollout without extra model call."""
 
@@ -496,7 +494,7 @@ class TestMultiTurnEnv:
                 return [{"role": "user", "content": f"Turn {state['env_calls']}"}]
 
         env = FinalEnvResponseEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             max_turns=10,
@@ -504,12 +502,12 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        mock_openai_client.set_default_responses(chat_response="Model response")
+        mock_client.set_default_responses(chat_response="Model response")
 
         prompt: Messages = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
             input=make_input(prompt=prompt, answer="test"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
@@ -523,7 +521,7 @@ class TestMultiTurnEnv:
 
     @pytest.mark.asyncio
     async def test_final_env_response_included_in_completion(
-        self, mock_openai_client, sample_chat_dataset, make_input
+        self, mock_client, sample_chat_dataset, make_input
     ):
         """Test that final_env_response is included in state['completion']."""
 
@@ -534,7 +532,7 @@ class TestMultiTurnEnv:
                 return response
 
         env = FinalEnvResponseEnv(
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
             dataset=sample_chat_dataset,
             max_turns=10,
@@ -542,7 +540,7 @@ class TestMultiTurnEnv:
             rubric=Rubric(),
         )
 
-        mock_openai_client.add_chat_response(
+        mock_client.add_chat_response(
             messages=[{"role": "user", "content": "Start"}],
             response="First response",
         )
@@ -550,7 +548,7 @@ class TestMultiTurnEnv:
         prompt: Messages = [{"role": "user", "content": "Start"}]
         state = await env.rollout(
             input=make_input(prompt=prompt, answer="test"),
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 

@@ -161,7 +161,7 @@ class TestCliAgentEnv:
 
     @pytest.mark.asyncio
     async def test_non_streaming_intercept_tools_use_oai_schema(
-        self, sample_dataset, mock_openai_client
+        self, sample_dataset, mock_client
     ):
         """OpenAI-formatted intercepted tools should work for non-streaming requests."""
         env = vf.CliAgentEnv(
@@ -171,7 +171,7 @@ class TestCliAgentEnv:
         )
         state = await env.init_state(
             input=sample_dataset[0],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
         request_id = "req-test"
@@ -193,12 +193,12 @@ class TestCliAgentEnv:
         response = await env.get_model_response(
             state=state,
             prompt=sample_dataset[0]["prompt"],
-            client=mock_openai_client,
+            client=mock_client,
             model="test-model",
         )
 
         assert isinstance(response, vf.Response)
-        kwargs = mock_openai_client.last_call_kwargs
+        kwargs = mock_client.last_call_kwargs
         assert kwargs["tools"] is not None
         assert kwargs["tools"][0].name == "echo"
 

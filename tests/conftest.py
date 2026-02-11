@@ -87,11 +87,7 @@ def think_parser_with_extractor():
 
 
 class MockClient(Client):
-    """Mock Client that maps conversation inputs to vf.Response outputs.
-
-    Overrides get_response() to return provider-agnostic vf.Response objects
-    directly, bypassing native client conversion.
-    """
+    """Mocked vf.Client with get_response() to return provider-agnostic vf.Response objects"""
 
     def __init__(self):
         self.logger = logging.getLogger(f"{__name__}.MockClient")
@@ -153,8 +149,6 @@ class MockClient(Client):
         if self._is_text_prompt(prompt):
             return self._make_text_response(prompt)
         return self._make_chat_response(prompt)
-
-    # -- Abstract method stubs (never called since get_response is overridden) --
 
     def setup_client(self, config):
         return None
@@ -293,7 +287,7 @@ class MockClient(Client):
 
 
 @pytest.fixture
-def mock_openai_client():
+def mock_client():
     """Return a MockClient with input-output mapping."""
     return MockClient()
 
@@ -325,10 +319,10 @@ def sample_chat_dataset():
 
 
 @pytest.fixture
-def mock_singleturn_env(mock_openai_client, sample_dataset):
+def mock_singleturn_env(mock_client, sample_dataset):
     """Return a SingleTurnEnv with mocked client and dataset."""
     return SingleTurnEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=sample_dataset,
         system_prompt="You are a helpful assistant.",
@@ -338,7 +332,7 @@ def mock_singleturn_env(mock_openai_client, sample_dataset):
 
 
 @pytest.fixture
-def mock_singleturn_env_completion(mock_openai_client):
+def mock_singleturn_env_completion(mock_client):
     """Return a SingleTurnEnv for completion format testing."""
     completion_dataset = Dataset.from_dict(
         {
@@ -347,7 +341,7 @@ def mock_singleturn_env_completion(mock_openai_client):
         }
     )
     return SingleTurnEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=completion_dataset,
         message_type="completion",
@@ -420,10 +414,10 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
 
 
 @pytest.fixture
-def mock_multiturn_env(mock_openai_client, sample_chat_dataset):
+def mock_multiturn_env(mock_client, sample_chat_dataset):
     """Return a MultiTurnEnv for basic testing."""
     return SimpleMultiTurnEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=sample_chat_dataset,
         max_turns=3,
@@ -434,10 +428,10 @@ def mock_multiturn_env(mock_openai_client, sample_chat_dataset):
 
 
 @pytest.fixture
-def mock_multiturn_env_max_turns(mock_openai_client, sample_chat_dataset):
+def mock_multiturn_env_max_turns(mock_client, sample_chat_dataset):
     """Return a MultiTurnEnv that tests max_turns limiting."""
     return SimpleMultiTurnEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=sample_chat_dataset,
         max_turns=2,
@@ -462,9 +456,9 @@ class BasicToolEnv(ToolEnv):
 
 
 @pytest.fixture
-def mock_tool_env(mock_openai_client, sample_chat_dataset):
+def mock_tool_env(mock_client, sample_chat_dataset):
     return BasicToolEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=sample_chat_dataset,
         parser=Parser(),
@@ -498,9 +492,9 @@ class ExampleStatefulToolEnv(StatefulToolEnv):
 
 
 @pytest.fixture
-def mock_stateful_tool_env(mock_openai_client, sample_chat_dataset):
+def mock_stateful_tool_env(mock_client, sample_chat_dataset):
     return ExampleStatefulToolEnv(
-        client=mock_openai_client,
+        client=mock_client,
         model="test-model",
         dataset=sample_chat_dataset,
         parser=Parser(),
