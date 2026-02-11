@@ -2,7 +2,12 @@ import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
-from openai import AsyncOpenAI
+from openai import (
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+)
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessageFunctionToolCall,
@@ -26,13 +31,13 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 from openai.types.shared_params import FunctionDefinition
-from openai import (
-    AuthenticationError,
-    BadRequestError,
-    PermissionDeniedError,
-)
 
 from verifiers.clients.client import Client
+from verifiers.errors import (
+    EmptyModelResponseError,
+    InvalidModelResponseError,
+    OverlongPromptError,
+)
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -52,11 +57,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.errors import (
-    OverlongPromptError,
-    EmptyModelResponseError,
-    InvalidModelResponseError,
-)
 
 
 def handle_openai_overlong_prompt(func):

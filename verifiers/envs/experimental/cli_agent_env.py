@@ -4,8 +4,6 @@ import time
 import uuid
 from typing import Any, cast
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
 from prime_sandboxes import (
     AdvancedConfigs,
     BackgroundJob,
@@ -15,6 +13,7 @@ from prime_sandboxes import (
 from prime_tunnel import Tunnel
 
 import verifiers as vf
+from verifiers.clients import Client
 from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.types import (
     Messages,
@@ -326,7 +325,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self,
         state: State,
         prompt: Messages | str,
-        client: AsyncOpenAI | AsyncAnthropic | None = None,
+        client: Client | None = None,
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -378,7 +377,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 model=model,
                 tool_defs=tool_defs,
                 sampling_args=sampling_args,
-                message_type=message_type,
             )
         except BaseException as e:
             error = e

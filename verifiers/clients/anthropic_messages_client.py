@@ -444,7 +444,7 @@ class AnthropicMessagesClient(
                 reasoning_content=(reasoning_content or None)
                 if self.interleaved_thinking
                 else None,
-                thinking_blocks=thinking_blocks or None,
+                thinking_blocks=thinking_blocks or None,  # type: ignore
                 tool_calls=tool_calls or None,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=is_truncated,

@@ -31,9 +31,9 @@ import pickle
 import random
 import re
 import select
+import shlex
 import shutil
 import signal
-import shlex
 import subprocess
 import sys
 import tarfile
@@ -45,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, cast, Literal
+from typing import Any, Callable, Literal, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -53,18 +53,21 @@ else:
     from typing import TypedDict
 
 from aiohttp import web
-from prime_tunnel import Tunnel
-from prime_sandboxes import SandboxClient
+from prime_sandboxes import CommandTimeoutError, SandboxClient
 from prime_sandboxes.core import APIClient
+from prime_tunnel import Tunnel
+
 import verifiers as vf
+from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.envs.sandbox_env import CreateSandboxRequest
 from verifiers.types import (
     Message,
-    SystemMessage,
-    UserMessage,
     Messages,
     Response,
     State,
+    SystemMessage,
     TrajectoryStep,
+    UserMessage,
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.data_utils import extract_boxed_answer
@@ -74,9 +77,6 @@ from verifiers.utils.response_utils import (
     parse_response_tokens,
 )
 from verifiers.utils.tool_utils import convert_func_to_tool_def
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
-from verifiers.envs.sandbox_env import CreateSandboxRequest
-from prime_sandboxes import CommandTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -3140,7 +3140,6 @@ class RLMEnv(vf.StatefulToolEnv):
                     cast(Messages, messages),
                     client=client,
                     model=model,
-                    message_type="chat",
                 ),
                 timeout=self.sub_llm_api_timeout,
             )

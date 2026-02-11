@@ -122,10 +122,7 @@ class GymEnv(vf.MultiTurnEnv):
             for i in range(total):
                 obs, _ = normalize_reset(env.reset(seed=self.seed + i))
                 question = self.obs_to_text(obs)
-                if self.message_type == "completion":
-                    row = {"prompt": question, "answer": str(self.seed + i)}
-                else:
-                    row = {"question": question, "answer": str(self.seed + i)}
+                row = {"question": question, "answer": str(self.seed + i)}
                 if i < self.num_train_episodes:
                     train_rows.append(row)
                 else:
@@ -146,9 +143,7 @@ class GymEnv(vf.MultiTurnEnv):
         return str(obs)
 
     def wrap_response(self, text: str) -> vf.Messages | str:
-        if self.message_type == "chat":
-            return cast(vf.Messages, [{"role": "user", "content": text}])
-        return text
+        return cast(vf.Messages, [{"role": "user", "content": text}])
 
     async def env_response(
         self, messages: vf.Messages, state: State, **kwargs: Any
