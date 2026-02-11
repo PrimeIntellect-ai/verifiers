@@ -247,6 +247,6 @@ ENDPOINTS = {
         "model": "z-ai/glm-4.7",
         "url": "https://api.pinference.ai/api/v1",
         "key": "PRIME_API_KEY",
-        "type": "openai",
+        "type": "openai_chat_completions",
     },
 }
