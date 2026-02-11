@@ -8,15 +8,17 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatResponse,
     OpenAITool,
 )
-from verifiers.clients.openai_completions_client import _handle_openai_overlong_prompt
+from verifiers.clients.openai_chat_completions_client import (
+    handle_openai_overlong_prompt,
+)
 from verifiers.types import SamplingArgs, State
 from verifiers.utils.token_utils import get_prompt_ids
 
 
 class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
-    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client. To be used for interleaved thinking."""
+    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client."""
 
-    @_handle_openai_overlong_prompt
+    @handle_openai_overlong_prompt
     async def get_native_response(
         self,
         prompt: OpenAIChatMessages,

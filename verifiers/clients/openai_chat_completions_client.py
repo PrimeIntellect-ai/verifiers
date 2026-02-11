@@ -1,3 +1,4 @@
+import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
@@ -25,17 +26,13 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 from openai.types.shared_params import FunctionDefinition
+from openai import (
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+)
 
 from verifiers.clients.client import Client
-from verifiers.clients.openai_completions_client import (
-    _content_to_text,
-    _get_usage_field,
-    _handle_openai_overlong_prompt,
-)
-from verifiers.errors import (
-    EmptyModelResponseError,
-    InvalidModelResponseError,
-)
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -55,6 +52,67 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.errors import (
+    OverlongPromptError,
+    EmptyModelResponseError,
+    InvalidModelResponseError,
+)
+
+
+def handle_openai_overlong_prompt(func):
+    """Decorator to handle overlong prompt errors from the model API."""
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except (AuthenticationError, PermissionDeniedError):
+            raise
+        except BadRequestError as e:
+            error_text = e.response.text.lower()
+            context_length_phrases = [
+                "this model's maximum context length is",
+                "is longer than the model's context length",
+                "exceeds the model's context length",
+                "exceed the configured limit",
+                "exceeds the configured limit",
+                "exceeded model",
+                "prompt_too_long",
+                "context length",
+            ]
+            if any(phrase in error_text for phrase in context_length_phrases):
+                raise OverlongPromptError from e
+            raise
+
+    return wrapper
+
+
+def get_usage_field(usage: Any, key: str) -> Any:
+    """Get the usage field from a Pydantic model or dict."""
+    if isinstance(usage, Mapping):
+        return usage.get(key)
+    return getattr(usage, key, None)
+
+
+def content_to_str(content: Any) -> str:
+    """Get all the content in a message as a single string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, Mapping):
+                if part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+        return " ".join(chunks).strip()
+    return ""
+
 
 DEFAULT_REASONING_FIELDS = [
     "reasoning",  # vLLM
@@ -153,7 +211,7 @@ class OpenAIChatCompletionsClient(
             ),
         )
 
-    @_handle_openai_overlong_prompt
+    @handle_openai_overlong_prompt
     async def get_native_response(
         self,
         prompt: OpenAIChatMessages,
@@ -292,14 +350,14 @@ class OpenAIChatCompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = _get_usage_field(usage, "prompt_tokens")
-            completion_tokens = _get_usage_field(usage, "completion_tokens")
+            prompt_tokens = get_usage_field(usage, "prompt_tokens")
+            completion_tokens = get_usage_field(usage, "completion_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
-                prompt_tokens = _get_usage_field(usage, "input_tokens")
-                completion_tokens = _get_usage_field(usage, "output_tokens")
-            total_tokens = _get_usage_field(usage, "total_tokens")
+                prompt_tokens = get_usage_field(usage, "input_tokens")
+                completion_tokens = get_usage_field(usage, "output_tokens")
+            total_tokens = get_usage_field(usage, "total_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
@@ -404,5 +462,3 @@ class OpenAIChatCompletionsClient(
                 tool_calls=parse_tool_calls(response) or None,
             ),
         )
-
-

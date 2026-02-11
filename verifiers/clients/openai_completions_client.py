@@ -1,12 +1,5 @@
-import functools
-from collections.abc import Mapping
-from typing import Any
-
 from openai import (
     AsyncOpenAI,
-    AuthenticationError,
-    BadRequestError,
-    PermissionDeniedError,
 )
 from openai.types import Completion
 
@@ -14,7 +7,6 @@ from verifiers.clients.client import Client
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
-    OverlongPromptError,
 )
 from verifiers.types import (
     ClientConfig,
@@ -28,63 +20,15 @@ from verifiers.types import (
     Usage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-
-
-def _handle_openai_overlong_prompt(func):
-    """Decorator to handle overlong prompt errors from the model API."""
-
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except (AuthenticationError, PermissionDeniedError):
-            raise
-        except BadRequestError as e:
-            error_text = e.response.text.lower()
-            context_length_phrases = [
-                "this model's maximum context length is",
-                "is longer than the model's context length",
-                "exceeds the model's context length",
-                "exceed the configured limit",
-                "exceeds the configured limit",
-                "exceeded model",
-                "prompt_too_long",
-                "context length",
-            ]
-            if any(phrase in error_text for phrase in context_length_phrases):
-                raise OverlongPromptError from e
-            raise
-
-    return wrapper
-
-
-def _get_usage_field(usage: Any, key: str) -> Any:
-    if isinstance(usage, Mapping):
-        return usage.get(key)
-    return getattr(usage, key, None)
+from verifiers.clients.openai_chat_completions_client import (
+    content_to_str,
+    handle_openai_overlong_prompt,
+    get_usage_field,
+)
 
 
 OpenAITextMessages = str
 OpenAITextResponse = Completion
-
-
-def _content_to_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, Mapping):
-                if part.get("type") == "text":
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        chunks.append(text)
-                continue
-            text = getattr(part, "text", None)
-            if isinstance(text, str):
-                chunks.append(text)
-        return " ".join(chunks).strip()
-    return ""
 
 
 class OpenAICompletionsClient(
@@ -105,13 +49,13 @@ class OpenAICompletionsClient(
     ) -> tuple[OpenAITextMessages, dict]:
         prompt = ""
         for message in messages:
-            prompt += _content_to_text(message.content)
+            prompt += content_to_str(message.content)
         return prompt, {}
 
     async def to_native_tool(self, tool: Tool) -> None:
         raise ValueError("Tools are not supported for Completions API")
 
-    @_handle_openai_overlong_prompt
+    @handle_openai_overlong_prompt
     async def get_native_response(
         self,
         prompt: OpenAITextMessages,
@@ -149,14 +93,14 @@ class OpenAICompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = _get_usage_field(usage, "prompt_tokens")
-            completion_tokens = _get_usage_field(usage, "completion_tokens")
+            prompt_tokens = get_usage_field(usage, "prompt_tokens")
+            completion_tokens = get_usage_field(usage, "completion_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
-                prompt_tokens = _get_usage_field(usage, "input_tokens")
-                completion_tokens = _get_usage_field(usage, "output_tokens")
-            total_tokens = _get_usage_field(usage, "total_tokens")
+                prompt_tokens = get_usage_field(usage, "input_tokens")
+                completion_tokens = get_usage_field(usage, "output_tokens")
+            total_tokens = get_usage_field(usage, "total_tokens")
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
