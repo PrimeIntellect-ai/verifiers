@@ -94,8 +94,8 @@ def get_usage_field(usage: Any, key: str) -> Any:
     return getattr(usage, key, None)
 
 
-def content_to_str(content: Any) -> str:
-    """Get all the content in a message as a single string."""
+def content_to_text(content: Any) -> str:
+    """Get all text content from OAI message content."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -189,7 +189,7 @@ class OpenAIChatCompletionsClient(
                 return ChatCompletionToolMessageParam(
                     role="tool",
                     tool_call_id=message.tool_call_id,
-                    content=_content_to_text(message.content),
+                    content=content_to_text(message.content),
                 )
             elif isinstance(message, TextMessage):
                 return ChatCompletionUserMessageParam(

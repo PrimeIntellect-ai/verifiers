@@ -21,7 +21,7 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.clients.openai_chat_completions_client import (
-    content_to_str,
+    content_to_text,
     handle_openai_overlong_prompt,
     get_usage_field,
 )
@@ -49,7 +49,7 @@ class OpenAICompletionsClient(
     ) -> tuple[OpenAITextMessages, dict]:
         prompt = ""
         for message in messages:
-            prompt += content_to_str(message.content)
+            prompt += content_to_text(message.content)
         return prompt, {}
 
     async def to_native_tool(self, tool: Tool) -> None:
