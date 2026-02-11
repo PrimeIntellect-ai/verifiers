@@ -68,7 +68,7 @@ async def tokenize_vllm(
 async def get_prompt_ids(
     state: vf.State,
     prompt_messages: list[ChatCompletionMessageParam],
-    native_tools: list[ChatCompletionToolParam] | None,
+    oai_tools: list[ChatCompletionToolParam] | None,
     client: AsyncOpenAI,
 ) -> list[int]:
     """
@@ -150,13 +150,13 @@ async def get_prompt_ids(
         dummy_content_ids = await tokenize_vllm(
             client=client,
             messages=dummy_content,
-            tools=native_tools,
+            tools=oai_tools,
             model=state["model"],
         )
         dummy_messages_ids = await tokenize_vllm(
             client=client,
             messages=dummy_messages,
-            tools=native_tools,
+            tools=oai_tools,
             model=state["model"],
             extra_kwargs=dict(add_generation_prompt=False),
         )
