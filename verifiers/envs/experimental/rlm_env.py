@@ -146,8 +146,28 @@ def _merge_tool_lists(
     return deduped_all, deduped_map
 
 
-class RLMCodeExecutionTimeout(Exception):
+class SubLLMEmptyModelResponseError(vf.EmptyModelResponseError):
+    """Raised when a sub-LLM call returns an empty model response."""
+
+
+class RLMCodeExecutionTimeout(vf.ToolCallError):
     """Raised when code execution exceeds the configured timeout."""
+
+
+class RLMWorkerError(vf.SandboxError):
+    """Raised when the RLM worker is not running, crashes, or fails to start."""
+
+
+class RLMWorkerRecoveryError(RLMWorkerError):
+    """Raised when the RLM worker cannot be restarted after a failure."""
+
+
+class RLMSessionError(vf.SandboxError):
+    """Raised when the RLM session, sandbox, or venv is not initialized."""
+
+
+class RLMSetupError(vf.SandboxError):
+    """Raised when RLM environment setup fails (package install, setup hook, etc.)."""
 
 
 @dataclass(frozen=True)
@@ -1562,9 +1582,9 @@ class LocalRLMExecutor(BaseRLMExecutor):
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
         session = self._get_session(state)
         if session.worker_process is None:
-            raise vf.SandboxError() from Exception("RLM worker process not running")
+            raise RLMWorkerError("RLM worker process not running")
         if session.worker_process.poll() is not None:
-            raise vf.SandboxError() from Exception("RLM worker process not running")
+            raise RLMWorkerError("RLM worker process not running")
 
         def _do_io() -> str:
             payload_json = json.dumps(payload)
@@ -1747,7 +1767,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
     def _get_session(self, state: State) -> LocalRLMReplSession:
         rollout_id = state.get("rollout_id")
         if not rollout_id or rollout_id not in self._sessions:
-            raise vf.SandboxError() from Exception("Local session not initialized")
+            raise RLMSessionError("Local session not initialized")
         return self._sessions[rollout_id]
 
     async def _ensure_venv(self, session: LocalRLMReplSession) -> str | None:
@@ -1787,18 +1807,16 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
         try:
             result = await asyncio.to_thread(_run)
-        except FileNotFoundError:
-            raise vf.SandboxError() from RuntimeError(
+        except FileNotFoundError as e:
+            raise RLMSetupError(
                 "uv not found on PATH; local execution requires uv installed"
-            )
-        except subprocess.TimeoutExpired:
-            raise vf.SandboxError() from RuntimeError(
-                f"uv command timed out after {timeout} seconds"
-            )
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise RLMSetupError(f"uv command timed out after {timeout} seconds") from e
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             stdout = (result.stdout or "").strip()
-            raise vf.SandboxError() from Exception(
+            raise RLMSetupError(
                 f"uv command failed: {' '.join(args)}\nstdout: {stdout}\nstderr: {stderr}"
             )
 
@@ -1823,7 +1841,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
 
     async def _start_worker(self, state: State, session: LocalRLMReplSession) -> None:
         if self.env.repl_language == "python" and not session.venv_path:
-            raise vf.SandboxError() from Exception("Local venv not initialized")
+            raise RLMSessionError("Local venv not initialized")
         worker_script = _render_worker_script(
             session.paths, repl_language=self.env.repl_language
         )
@@ -1836,7 +1854,7 @@ class LocalRLMExecutor(BaseRLMExecutor):
         if self.env.repl_language == "python":
             venv_path = session.venv_path
             if venv_path is None:
-                raise vf.SandboxError() from Exception("Local venv not initialized")
+                raise RLMSessionError("Local venv not initialized")
             python_path = self._venv_python(venv_path)
         else:
             python_path = sys.executable
@@ -1866,11 +1884,11 @@ class LocalRLMExecutor(BaseRLMExecutor):
                     ]
                 except Exception:
                     pass
-                raise vf.SandboxError() from Exception(
+                raise RLMWorkerError(
                     f"RLM worker exited before ready. Log tail:\n{log_tail}"
                 )
             if perf_counter() - start > max_wait_seconds:
-                raise vf.SandboxError() from Exception("RLM worker failed to start")
+                raise RLMWorkerError("RLM worker failed to start")
             await asyncio.sleep(0.1)
 
     def _stop_worker(self, session: LocalRLMReplSession) -> None:
@@ -1928,7 +1946,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
             state["sandbox_state"]["ready"] = True
 
         if not session.sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
 
         sandbox_fs_root = state.get("rlm_fs_root_remote")
         sandbox_control_dir = state.get("rlm_control_dir_remote")
@@ -1961,9 +1979,9 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     async def setup(self, state: State) -> None:
         session = self._get_session(state)
         if not session.sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         if not session.paths:
-            raise vf.SandboxError() from Exception("Sandbox paths not initialized")
+            raise RLMSessionError("Sandbox paths not initialized")
 
         await self._install_packages(session)
         await self._write_sandbox_files(session, state)
@@ -1972,7 +1990,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     async def execute(self, payload: dict[str, Any], state: State) -> RLMExecResult:
         session = self._get_session(state)
         if not session.sandbox_id or not session.paths:
-            raise vf.SandboxError() from Exception("Sandbox session not initialized")
+            raise RLMSessionError("Sandbox session not initialized")
 
         try:
             raw = await self._send_worker_request(session, payload)
@@ -2110,7 +2128,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     def _get_session(self, state: State) -> SandboxRLMReplSession:
         rollout_id = state.get("rollout_id")
         if not rollout_id or rollout_id not in self._sessions:
-            raise vf.SandboxError() from Exception("Sandbox session not initialized")
+            raise RLMSessionError("Sandbox session not initialized")
         return self._sessions[rollout_id]
 
     def _build_sandbox_request(self, state: State) -> CreateSandboxRequest:
@@ -2119,12 +2137,12 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     async def post_sandbox_setup(self, state: State) -> None:
         sandbox_id = state.get("sandbox_id")
         if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         try:
             # Allow environments to run repo/tool setup before the worker starts.
             await self.env.on_sandbox_ready(state, sandbox_id)
         except Exception as exc:
-            raise vf.SandboxError(f"Sandbox setup hook failed: {exc}") from exc
+            raise RLMSetupError(f"Sandbox setup hook failed: {exc}") from exc
 
     async def _execute_sandbox_command(
         self,
@@ -2149,7 +2167,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
     async def _install_packages(self, session: SandboxRLMReplSession) -> None:
         sandbox_id = session.sandbox_id
         if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         packages = ["requests"]
         extras = [p.strip() for p in self.env.pip_install_packages.split() if p.strip()]
         packages.extend(extras)
@@ -2229,7 +2247,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
         assert session.paths is not None
         sandbox_id = session.sandbox_id
         if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         env_vars = self.env._build_worker_env_vars(state)
 
         exports = " ".join(
@@ -2258,7 +2276,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
         assert session.paths is not None
         sandbox_id = session.sandbox_id
         if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         cmd = (
             "bash -lc '"
             f"for i in $(seq 1 {self.env.max_startup_wait_seconds * 10}); do "
@@ -2274,14 +2292,14 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
             )
         except CommandTimeoutError as exc:
             log_tail = await self._read_worker_log_tail(session)
-            raise vf.SandboxError(
+            raise RLMWorkerError(
                 "RLM worker failed to become ready before timeout."
                 + (f"\nLog tail:\n{log_tail}" if log_tail else "")
             ) from exc
         exit_code = getattr(result, "exit_code", 0)
         if exit_code != 0:
             log_tail = await self._read_worker_log_tail(session)
-            raise vf.SandboxError(
+            raise RLMWorkerError(
                 "RLM worker failed to become ready."
                 + (f"\nLog tail:\n{log_tail}" if log_tail else "")
             )
@@ -2317,9 +2335,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
             detail += f"\nstdout:\n{stdout}"
         if stderr:
             detail += f"\nstderr:\n{stderr}"
-        raise vf.SandboxError() from RuntimeError(
-            f"{context} failed with exit code {exit_code}.{detail}"
-        )
+        raise RLMSetupError(f"{context} failed with exit code {exit_code}.{detail}")
 
     async def _read_worker_log_tail(self, session: SandboxRLMReplSession) -> str:
         if not session.sandbox_id or not session.paths:
@@ -2342,7 +2358,7 @@ class SandboxRLMExecutor(BaseRLMExecutor, SandboxMixin):
         assert session.paths is not None
         sandbox_id = session.sandbox_id
         if not sandbox_id:
-            raise vf.SandboxError() from Exception("Sandbox not initialized")
+            raise RLMSessionError("Sandbox not initialized")
         payload_json = json.dumps(payload)
         payload_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("utf-8")
         timeout_seconds = int(self.env.code_execution_timeout)
@@ -3139,6 +3155,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"Sub-LLM API call timed out after {self.sub_llm_api_timeout}s"
             )
             return None
+        except vf.EmptyModelResponseError as e:
+            raise SubLLMEmptyModelResponseError(str(e)) from e
         except Exception as e:
             raise e
 
@@ -3949,14 +3967,12 @@ class RLMEnv(vf.StatefulToolEnv):
                 "Code execution timed out after %ss", self.code_execution_timeout
             )
             if self.abort_on_code_timeout:
-                # Abort rollout immediately on timeout
-                raise vf.SandboxError() from e
+                raise
             recovered = await self._recover_from_code_timeout(state)
-            recovery_note = (
-                " The worker was restarted and the REPL state was reset."
-                if recovered
-                else " Failed to restart the worker; the REPL may be unusable."
-            )
+            if not recovered:
+                raise RLMWorkerRecoveryError(
+                    "Code execution timed out and the worker could not be restarted."
+                ) from e
             # Return error to model so it can try more efficient code
             return {
                 "status": "error",
@@ -3964,7 +3980,8 @@ class RLMEnv(vf.StatefulToolEnv):
                 "stderr": "",
                 "result": (
                     f"Code execution timed out after {self.code_execution_timeout} seconds."
-                    f"{recovery_note} Your code may be too slow - consider a more "
+                    " The worker was restarted and the REPL state was reset."
+                    " Your code may be too slow - consider a more "
                     "efficient algorithm or breaking the computation into smaller steps."
                 ),
                 "answer": {"ready": False, "content": ""},

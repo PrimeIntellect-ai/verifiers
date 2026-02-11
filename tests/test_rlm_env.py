@@ -15,7 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 from verifiers.envs.experimental import rlm_env as rlm_module
-from verifiers.envs.experimental.rlm_env import RLMEnv, RLMWorkerPaths
+from verifiers.envs.experimental.rlm_env import (
+    RLMEnv,
+    RLMWorkerPaths,
+    RLMCodeExecutionTimeout,
+    RLMSessionError,
+    RLMSetupError,
+    RLMWorkerError,
+    RLMWorkerRecoveryError,
+    SubLLMEmptyModelResponseError,
+    LocalRLMReplSession,
+)
+import subprocess
+import verifiers as vf
 
 
 # =============================================================================
@@ -1440,3 +1452,233 @@ class TestExtractTunnelUrlFromLine:
         line = "something.trycloudflare.com without https"
         url = extract_tunnel_url_from_line(line)
         assert url is None
+
+
+# =============================================================================
+# 14. RLM Exception Hierarchy
+# =============================================================================
+
+
+class TestExceptionHierarchy:
+    """Verify that RLM exceptions inherit from the correct verifiers base classes."""
+
+    def test_rlm_session_error_is_sandbox_error(self):
+        assert issubclass(RLMSessionError, vf.SandboxError)
+
+    def test_rlm_setup_error_is_sandbox_error(self):
+        assert issubclass(RLMSetupError, vf.SandboxError)
+
+    def test_rlm_worker_error_is_sandbox_error(self):
+        assert issubclass(RLMWorkerError, vf.SandboxError)
+
+    def test_rlm_worker_recovery_error_is_worker_error(self):
+        assert issubclass(RLMWorkerRecoveryError, RLMWorkerError)
+
+    def test_rlm_code_execution_timeout_is_tool_call_error(self):
+        assert issubclass(RLMCodeExecutionTimeout, vf.ToolCallError)
+
+    def test_sub_llm_empty_response_is_empty_model_response_error(self):
+        assert issubclass(SubLLMEmptyModelResponseError, vf.EmptyModelResponseError)
+
+    def test_all_are_vf_errors(self):
+        """All RLM exceptions should be caught by the rollout loop's except vf.Error."""
+        for exc_cls in (
+            RLMSessionError,
+            RLMSetupError,
+            RLMWorkerError,
+            RLMWorkerRecoveryError,
+            RLMCodeExecutionTimeout,
+            SubLLMEmptyModelResponseError,
+        ):
+            assert issubclass(exc_cls, vf.Error), (
+                f"{exc_cls.__name__} is not a vf.Error"
+            )
+
+
+class TestRLMSessionErrorRaised:
+    """Test that RLMSessionError is raised when sessions/sandboxes are not initialized."""
+
+    def test_local_get_session_missing_rollout_id(self, rlm_env):
+        executor = rlm_env._executor
+        state = {}
+        with pytest.raises(RLMSessionError, match="Local session not initialized"):
+            executor._get_session(state)
+
+    def test_local_get_session_unknown_rollout_id(self, rlm_env):
+        executor = rlm_env._executor
+        state = {"rollout_id": "nonexistent"}
+        with pytest.raises(RLMSessionError, match="Local session not initialized"):
+            executor._get_session(state)
+
+    @pytest.mark.asyncio
+    async def test_local_start_worker_no_venv(self, rlm_env):
+        executor = rlm_env._executor
+        session = LocalRLMReplSession(
+            rollout_id="test",
+            rollout_dir="/tmp/test",
+            paths=MagicMock(),
+            fs_root="/tmp/test/fs",
+            control_dir="/tmp/test/control",
+            venv_path=None,
+        )
+        state = {}
+        with pytest.raises(RLMSessionError, match="Local venv not initialized"):
+            await executor._start_worker(state, session)
+
+
+class TestRLMWorkerErrorRaised:
+    """Test that RLMWorkerError is raised when the worker is not running."""
+
+    @pytest.mark.asyncio
+    async def test_local_execute_worker_process_none(self, rlm_env):
+        executor = rlm_env._executor
+        session = LocalRLMReplSession(
+            rollout_id="test",
+            rollout_dir="/tmp/test",
+            paths=MagicMock(),
+            fs_root="/tmp/test/fs",
+            control_dir="/tmp/test/control",
+            worker_process=None,
+        )
+        executor._sessions["test"] = session
+        state = {"rollout_id": "test"}
+        try:
+            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
+                await executor.execute({"code": "1+1", "seq": 1}, state)
+        finally:
+            executor._sessions.pop("test", None)
+
+    @pytest.mark.asyncio
+    async def test_local_execute_worker_process_exited(self, rlm_env):
+        executor = rlm_env._executor
+        mock_process = MagicMock()
+        mock_process.poll.return_value = 1  # process exited
+        session = LocalRLMReplSession(
+            rollout_id="test",
+            rollout_dir="/tmp/test",
+            paths=MagicMock(),
+            fs_root="/tmp/test/fs",
+            control_dir="/tmp/test/control",
+            worker_process=mock_process,
+        )
+        executor._sessions["test"] = session
+        state = {"rollout_id": "test"}
+        try:
+            with pytest.raises(RLMWorkerError, match="RLM worker process not running"):
+                await executor.execute({"code": "1+1", "seq": 1}, state)
+        finally:
+            executor._sessions.pop("test", None)
+
+
+class TestRLMSetupErrorRaised:
+    """Test that RLMSetupError is raised on setup failures."""
+
+    @pytest.mark.asyncio
+    async def test_uv_not_found(self, rlm_env):
+        executor = rlm_env._executor
+        with patch(
+            "asyncio.to_thread", new=AsyncMock(side_effect=FileNotFoundError("uv"))
+        ):
+            with pytest.raises(RLMSetupError, match="uv not found on PATH"):
+                await executor._run_uv_command(["uv", "venv", "/tmp/test"], timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_uv_command_timeout(self, rlm_env):
+        executor = rlm_env._executor
+        with patch(
+            "asyncio.to_thread",
+            new=AsyncMock(side_effect=subprocess.TimeoutExpired("uv", 30)),
+        ):
+            with pytest.raises(RLMSetupError, match="uv command timed out"):
+                await executor._run_uv_command(["uv", "venv", "/tmp/test"], timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_uv_command_nonzero_exit(self, rlm_env):
+        executor = rlm_env._executor
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "some error"
+        mock_result.stdout = ""
+        with patch("asyncio.to_thread", new=AsyncMock(return_value=mock_result)):
+            with pytest.raises(RLMSetupError, match="uv command failed"):
+                await executor._run_uv_command(
+                    ["uv", "pip", "install", "foo"], timeout=30
+                )
+
+
+class TestRLMCodeExecutionTimeoutHandling:
+    """Test the abort and recovery paths for code execution timeout."""
+
+    @pytest.mark.asyncio
+    async def test_abort_on_timeout_raises_timeout_directly(self, rlm_env):
+        rlm_env.abort_on_code_timeout = True
+        rlm_env._executor.execute = AsyncMock(
+            side_effect=RLMCodeExecutionTimeout("timed out")
+        )
+        rlm_env._executor.prepare_filesystem = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
+
+        state = {"rlm_worker_ready": True, "_exec_seq": 0}
+        with pytest.raises(RLMCodeExecutionTimeout):
+            await rlm_env._execute_code("import time; time.sleep(999)", state)
+
+    @pytest.mark.asyncio
+    async def test_recovery_failure_raises_worker_recovery_error(self, rlm_env):
+        rlm_env.abort_on_code_timeout = False
+        rlm_env._executor.execute = AsyncMock(
+            side_effect=RLMCodeExecutionTimeout("timed out")
+        )
+        rlm_env._executor.prepare_filesystem = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
+        rlm_env._recover_from_code_timeout = AsyncMock(return_value=False)
+
+        state = {"rlm_worker_ready": True, "_exec_seq": 0}
+        with pytest.raises(RLMWorkerRecoveryError, match="could not be restarted"):
+            await rlm_env._execute_code("import time; time.sleep(999)", state)
+
+    @pytest.mark.asyncio
+    async def test_recovery_success_returns_error_result(self, rlm_env):
+        rlm_env.abort_on_code_timeout = False
+        rlm_env._executor.execute = AsyncMock(
+            side_effect=RLMCodeExecutionTimeout("timed out")
+        )
+        rlm_env._executor.prepare_filesystem = AsyncMock()
+        rlm_env._executor.setup = AsyncMock()
+        rlm_env._recover_from_code_timeout = AsyncMock(return_value=True)
+
+        state = {"rlm_worker_ready": True, "_exec_seq": 0}
+        result = await rlm_env._execute_code("slow_code()", state)
+        assert result["status"] == "error"
+        assert "timed out" in result["result"]
+
+
+class TestSubLLMEmptyModelResponseErrorRaised:
+    """Test that SubLLMEmptyModelResponseError is raised for empty sub-LLM responses."""
+
+    @pytest.mark.asyncio
+    async def test_empty_response_from_sub_llm(self, rlm_env):
+        with patch.object(
+            rlm_env,
+            "get_model_response",
+            new=AsyncMock(
+                side_effect=vf.EmptyModelResponseError("Model returned no response")
+            ),
+        ):
+            state = {"sampling_args": {}}
+            messages = [{"role": "user", "content": "hello"}]
+            with pytest.raises(SubLLMEmptyModelResponseError, match="no response"):
+                await rlm_env._call_sub_llm_api(state, MagicMock(), "gpt-4", messages)
+
+    @pytest.mark.asyncio
+    async def test_sub_llm_empty_response_chains_cause(self, rlm_env):
+        original = vf.EmptyModelResponseError("original error")
+        with patch.object(
+            rlm_env,
+            "get_model_response",
+            new=AsyncMock(side_effect=original),
+        ):
+            state = {"sampling_args": {}}
+            messages = [{"role": "user", "content": "hello"}]
+            with pytest.raises(SubLLMEmptyModelResponseError) as exc_info:
+                await rlm_env._call_sub_llm_api(state, MagicMock(), "gpt-4", messages)
+            assert exc_info.value.__cause__ is original
