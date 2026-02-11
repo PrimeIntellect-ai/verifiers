@@ -8,6 +8,7 @@ import logging
 import signal
 import time
 import uuid
+import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Mapping
@@ -83,6 +84,8 @@ from verifiers.utils.save_utils import (
 from verifiers.utils.usage_utils import StateUsageTracker
 from verifiers.workers.client.env_client import EnvClient
 
+_MESSAGE_TYPE_UNSET = object()
+
 
 class Environment(ABC):
     """
@@ -98,7 +101,7 @@ class Environment(ABC):
         parser: Parser | None = None,
         rubric: Rubric | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: MessageType = "chat",
+        message_type: MessageType | object = _MESSAGE_TYPE_UNSET,
         tool_defs: list[Tool] | None = None,
         max_workers: int = 512,
         env_id: str | None = None,
@@ -109,15 +112,18 @@ class Environment(ABC):
         score_rollouts: bool = True,
         **kwargs,
     ):
-        import warnings
-
-        warnings.warn(
-            "message_type is deprecated and will be removed; use client_type on the eval config / endpoint instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if message_type is _MESSAGE_TYPE_UNSET:
+            resolved_message_type: MessageType = "chat"
+        else:
+            if message_type != "chat":
+                warnings.warn(
+                    "message_type is deprecated and will be removed",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            resolved_message_type = cast(MessageType, message_type)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
-        self.message_type: MessageType = message_type
+        self.message_type: MessageType = resolved_message_type
         if "oai_tools" in kwargs:
             raise ValueError(
                 "`oai_tools` is no longer supported. Use `tool_defs` with provider-agnostic "
