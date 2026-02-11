@@ -436,8 +436,9 @@ class OpenAIChatCompletionsClient(
             if not isinstance(message_dict, dict):
                 return None
             for field in DEFAULT_REASONING_FIELDS:
-                if field in message_dict:
-                    return message_dict[field]
+                value = message_dict.get(field)
+                if isinstance(value, str):
+                    return value
             return None
 
         response_id = getattr(response, "id", "")
