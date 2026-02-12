@@ -130,6 +130,8 @@ class DualBarColumn(ProgressColumn):
         in_progress_style: StyleType = COLOR_RUNNING,
         table_column: Column | None = None,
     ) -> None:
+        if table_column is None:
+            table_column = Column(no_wrap=True, ratio=2)
         super().__init__(table_column=table_column)
         self.bar_width = bar_width
         self.style = style
