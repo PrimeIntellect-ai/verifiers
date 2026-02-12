@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, Task, TextColumn
 from rich.progress_bar import ProgressBar
 from rich.segment import Segment
-from rich.style import Style, StyleType
+from rich.style import StyleType
 from rich.table import Column, Table
 from rich.text import Text
 
@@ -28,8 +28,11 @@ from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
-# Default style for the in-progress bar segment (warm amber)
-DEFAULT_IN_PROGRESS_STYLE = Style(color="rgb(240,198,116)")
+# Status colors — used for panel borders and progress bar segments
+COLOR_PENDING = "dim"
+COLOR_RUNNING = "yellow"
+COLOR_COMPLETED = "green"
+COLOR_FAILED = "red"
 
 
 class _DualBar(ProgressBar):
@@ -42,7 +45,7 @@ class _DualBar(ProgressBar):
     def __init__(
         self,
         in_progress: float = 0,
-        in_progress_style: StyleType = DEFAULT_IN_PROGRESS_STYLE,
+        in_progress_style: StyleType = COLOR_RUNNING,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -121,9 +124,9 @@ class DualBarColumn(ProgressColumn):
     def __init__(
         self,
         bar_width: int | None = None,
-        style: StyleType = "bar.back",
-        complete_style: StyleType = "bar.complete",
-        in_progress_style: StyleType = DEFAULT_IN_PROGRESS_STYLE,
+        style: StyleType = COLOR_PENDING,
+        complete_style: StyleType = COLOR_COMPLETED,
+        in_progress_style: StyleType = COLOR_RUNNING,
         table_column: Column | None = None,
     ) -> None:
         super().__init__(table_column=table_column)
@@ -602,12 +605,12 @@ class EvalDisplay(BaseDisplay):
 
         # border style based on status
         border_styles = {
-            "pending": "dim",
-            "running": "yellow",
-            "completed": "green",
-            "failed": "red",
+            "pending": COLOR_PENDING,
+            "running": COLOR_RUNNING,
+            "completed": COLOR_COMPLETED,
+            "failed": COLOR_FAILED,
         }
-        border_style = border_styles.get(env_state.status, "dim")
+        border_style = border_styles.get(env_state.status, COLOR_PENDING)
 
         # build title with env name only
         title = Text()
