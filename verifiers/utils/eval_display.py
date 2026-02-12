@@ -15,110 +15,135 @@ from pathlib import Path
 from typing import Literal
 
 from rich.columns import Columns
-from rich.console import Console, ConsoleOptions, Group, Measurement, RenderResult
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.panel import Panel
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, Task, TextColumn
-from rich.style import Style
-from rich.table import Table
+from rich.progress_bar import ProgressBar
+from rich.segment import Segment
+from rich.style import Style, StyleType
+from rich.table import Column, Table
 from rich.text import Text
 
 from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import BaseDisplay, format_numeric, make_aligned_row
 from verifiers.utils.message_utils import format_messages
 
-
-# Colors for the dual-segment progress bar
-COMPLETED_STYLE = Style(color="rgb(0,215,135)")  # medium spring green
-IN_PROGRESS_STYLE = Style(color="rgb(240,198,116)")  # warm amber
-REMAINING_STYLE = Style(color="rgb(58,58,58)")  # dark gray
-
-BAR_CHAR = "━"
+# Default style for the in-progress bar segment (warm amber)
+DEFAULT_IN_PROGRESS_STYLE = Style(color="rgb(240,198,116)")
 
 
-class _DualBar:
-    """Renderable that draws a three-segment bar: completed, in-progress, remaining.
+class _DualBar(ProgressBar):
+    """Three-segment progress bar extending Rich's ProgressBar.
 
-    Supports responsive width when width=None (expands to fill available space).
+    Adds an in-progress segment between the completed and remaining regions.
+    Inherits responsive width (__rich_measure__) and pulse animation from ProgressBar.
     """
 
     def __init__(
         self,
-        total: float,
-        completed: float,
-        in_progress: float,
-        width: int | None = None,
+        in_progress: float = 0,
+        in_progress_style: StyleType = DEFAULT_IN_PROGRESS_STYLE,
+        **kwargs,
     ) -> None:
-        self.total = total
-        self.completed = completed
+        super().__init__(**kwargs)
         self.in_progress = in_progress
-        self.width = width
+        self.in_progress_style = in_progress_style
 
     def __rich_console__(
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
-        bar_width = min(self.width or options.max_width, options.max_width)
+        width = min(self.width or options.max_width, options.max_width)
+        ascii = options.legacy_windows or options.ascii_only
 
-        if self.total <= 0:
-            yield Text(BAR_CHAR * bar_width, style=REMAINING_STYLE)
+        if self.pulse or self.total is None:
+            yield from self._render_pulse(console, width, ascii=ascii)
             return
 
-        # Calculate widths for each segment
-        completed_ratio = self.completed / self.total
-        in_progress_ratio = self.in_progress / self.total
+        bar = "-" if ascii else "━"
+        half_bar_right = " " if ascii else "╸"
 
-        completed_width = int(completed_ratio * bar_width)
-        in_progress_width = int(in_progress_ratio * bar_width)
+        total = self.total or 0
+        if total <= 0:
+            yield Segment(bar * width, console.get_style(self.style))
+            return
 
-        # Ensure at least 1 char for non-zero segments
-        if self.completed > 0 and completed_width == 0:
-            completed_width = 1
-        if self.in_progress > 0 and in_progress_width == 0:
-            in_progress_width = 1
+        completed = min(total, max(0, self.completed))
+        in_prog = max(0, self.in_progress)
 
-        # Clamp so we don't exceed bar_width
-        if completed_width + in_progress_width > bar_width:
-            in_progress_width = bar_width - completed_width
+        # Half-char precision (2x resolution), matching ProgressBar's approach
+        c_halves = int(width * 2 * completed / total)
+        p_halves = int(width * 2 * in_prog / total)
 
-        remaining_width = bar_width - completed_width - in_progress_width
+        # Ensure at least 1 half-char for non-zero segments
+        if completed > 0 and c_halves == 0:
+            c_halves = 1
+        if in_prog > 0 and p_halves == 0:
+            p_halves = 1
 
-        bar = Text()
-        if completed_width > 0:
-            bar.append(BAR_CHAR * completed_width, style=COMPLETED_STYLE)
-        if in_progress_width > 0:
-            bar.append(BAR_CHAR * in_progress_width, style=IN_PROGRESS_STYLE)
-        if remaining_width > 0:
-            bar.append(BAR_CHAR * remaining_width, style=REMAINING_STYLE)
+        # Clamp to total bar width
+        total_halves = width * 2
+        if c_halves + p_halves > total_halves:
+            p_halves = total_halves - c_halves
 
-        yield bar
+        c_full, c_half = divmod(c_halves, 2)
+        p_full, p_half = divmod(p_halves, 2)
 
-    def __rich_measure__(
-        self, console: Console, options: ConsoleOptions
-    ) -> Measurement:
-        if self.width is not None:
-            return Measurement(self.width, self.width)
-        return Measurement(4, options.max_width)
+        c_style = console.get_style(self.complete_style)
+        p_style = console.get_style(self.in_progress_style)
+        r_style = console.get_style(self.style)
+
+        # Completed segment
+        if c_full:
+            yield Segment(bar * c_full, c_style)
+        if c_half:
+            yield Segment(half_bar_right, c_style)
+
+        # In-progress segment
+        if p_full:
+            yield Segment(bar * p_full, p_style)
+        if p_half:
+            yield Segment(half_bar_right, p_style)
+
+        # Remaining segment
+        used = c_full + c_half + p_full + p_half
+        remaining = width - used
+        if remaining > 0 and not console.no_color and console.color_system is not None:
+            yield Segment(bar * remaining, r_style)
 
 
 class DualBarColumn(ProgressColumn):
-    """A progress bar column that shows two segments: completed and in-progress.
+    """Progress column showing completed, in-progress, and remaining segments.
 
-    Renders a bar with three visual regions:
-    - Completed (green): rollouts that have finished
-    - In-progress (amber): rollouts currently executing
-    - Remaining (dark gray): rollouts not yet started
+    Follows the same constructor pattern as Rich's BarColumn, with an additional
+    in_progress_style for the active-work segment.
     """
 
-    def __init__(self, bar_width: int | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        bar_width: int | None = None,
+        style: StyleType = "bar.back",
+        complete_style: StyleType = "bar.complete",
+        in_progress_style: StyleType = DEFAULT_IN_PROGRESS_STYLE,
+        table_column: Column | None = None,
+    ) -> None:
+        super().__init__(table_column=table_column)
         self.bar_width = bar_width
+        self.style = style
+        self.complete_style = complete_style
+        self.in_progress_style = in_progress_style
 
     def render(self, task: Task) -> _DualBar:
         """Render the dual-segment bar."""
         return _DualBar(
-            total=max(0, task.total) if task.total is not None else 0,
+            total=max(0, task.total) if task.total is not None else None,
             completed=max(0, task.completed),
             in_progress=max(0, task.fields.get("in_progress", 0)),
             width=None if self.bar_width is None else max(1, self.bar_width),
+            pulse=not task.started,
+            animation_time=task.get_time(),
+            style=self.style,
+            complete_style=self.complete_style,
+            in_progress_style=self.in_progress_style,
         )
 
 
