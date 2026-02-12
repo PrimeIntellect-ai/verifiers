@@ -2931,6 +2931,7 @@ class ArcPipelineEnv(MultiAgentEnv):
         if picks:
             top = picks[0]
             print(f"  top pick is_correct: {top.get('is_correct')}")
+            print(f"  2nd pick is_correct: {picks[1].get('is_correct') if len(picks) > 1 else 'N/A'}")
             print(f"  top pick grid: {top.get('grid')}")
         print(f"  expected answer: {expected}")
         for gt, val in candidates.items():
