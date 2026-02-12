@@ -401,12 +401,12 @@ def print_rewards(results: GenerateOutputs):
 
 
 def print_info(results: GenerateOutputs):
-    is_truncated = [o["is_truncated"] for o in results["outputs"]]
+    is_truncated = [o.get("is_truncated", False) for o in results["outputs"]]
     print("Info:")
     print(
         f"is_truncated: avg - {np.mean(is_truncated):.3f}, std - {np.std(is_truncated):.3f}"
     )
-    stop_conditions = [o["stop_condition"] for o in results["outputs"]]
+    stop_conditions = [o.get("stop_condition") for o in results["outputs"]]
     counter = Counter(stop_conditions)
     print(
         f"stop_conditions: {', '.join([f'{k}: {v / counter.total():.3f}' for k, v in counter.items()])}"

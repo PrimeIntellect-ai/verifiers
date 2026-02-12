@@ -500,10 +500,11 @@ class MultiAgentEnv(MultiTurnEnv):
         group_inputs: list[RolloutInput],
         client: AsyncOpenAI,
         model: str,
-        gen_sampling_args: SamplingArgs,
-        gen_sem: asyncio.Semaphore,
-        score_sem: asyncio.Semaphore,
+        sampling_args: SamplingArgs = None,
+        gen_sem: asyncio.Semaphore | None = None,
+        score_sem: asyncio.Semaphore | None = None,
         score: bool = True,
+        **kwargs,
     ) -> list[State]:
         """
         Run rollouts and flatten to per-actor states for training.
@@ -519,8 +520,8 @@ class MultiAgentEnv(MultiTurnEnv):
         """
         # Run game rollouts (don't score yet - we'll score after flattening)
         game_states = await super().run_group(
-            group_inputs, client, model, gen_sampling_args,
-            gen_sem, score_sem, score=False
+            group_inputs, client, model, sampling_args,
+            **kwargs,
         )
 
         # Flatten: one game -> multiple per-actor states
@@ -533,7 +534,7 @@ class MultiAgentEnv(MultiTurnEnv):
 
         # Score flattened states (per-actor GRPO advantages)
         if score and self.rubric:
-            await self.rubric.score_group(flattened, score_sem=score_sem)
+            await self.rubric.score_group(flattened)
 
         return flattened
 

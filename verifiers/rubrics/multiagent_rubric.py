@@ -80,7 +80,6 @@ class MultiAgentRubric(Rubric):
         self,
         state: State,
         actor_id: str,
-        score_sem: AsyncContextManager,
     ) -> tuple[float, dict[str, float]]:
         """Compute reward using actor-specific + global reward functions."""
         total_reward = 0.0
@@ -90,7 +89,7 @@ class MultiAgentRubric(Rubric):
         actor_funcs = self.actor_reward_funcs.get(actor_id, [])
         for func, weight in actor_funcs:
             try:
-                score = await self._call_individual_reward_func(func, state, score_sem)
+                score = await self._call_individual_reward_func(func, state)
                 score = score if score is not None else 0.0
                 metrics[func.__name__] = score
                 total_reward += score * weight
@@ -102,7 +101,7 @@ class MultiAgentRubric(Rubric):
         for func, weight in zip(self.funcs, self.weights):
             if not self._is_group_func(func):
                 try:
-                    score = await self._call_individual_reward_func(func, state, score_sem)
+                    score = await self._call_individual_reward_func(func, state)
                     score = score if score is not None else 0.0
                     total_reward += score * weight
                     metrics[func.__name__] = score
@@ -115,7 +114,6 @@ class MultiAgentRubric(Rubric):
     async def score_group(
         self,
         states: list[State],
-        score_sem: AsyncContextManager,
     ) -> None:
         """
         Score with per-actor GRPO advantages (solver vs solver, not vs proposer).
@@ -136,11 +134,11 @@ class MultiAgentRubric(Rubric):
         children = [s for s in states if not s.get("child_states")]
         parents = [s for s in states if s.get("child_states")]
 
-        await self._score_states(children, score_sem)
-        await self._score_states(parents, score_sem)
+        await self._score_states(children)
+        await self._score_states(parents)
 
         # Run group funcs per-actor-group
-        await self._run_group_funcs_per_actor(states, score_sem)
+        await self._run_group_funcs_per_actor(states)
 
         # Compute GRPO advantages per-actor group
         actor_groups: dict[str, list[State]] = defaultdict(list)
@@ -185,7 +183,6 @@ class MultiAgentRubric(Rubric):
     async def _score_states(
         self,
         states: list[State],
-        score_sem: AsyncContextManager,
     ) -> None:
         """Score a list of states with individual reward funcs."""
         if not states:
@@ -194,7 +191,7 @@ class MultiAgentRubric(Rubric):
         actor_ids = [self.get_actor_id_from_state(s) or "default" for s in states]
 
         reward_tasks = [
-            self._compute_actor_reward(state, actor_id, score_sem)
+            self._compute_actor_reward(state, actor_id)
             for state, actor_id in zip(states, actor_ids)
         ]
         results = await asyncio.gather(*reward_tasks)
@@ -206,7 +203,6 @@ class MultiAgentRubric(Rubric):
     async def _run_group_funcs_per_actor(
         self,
         states: list[State],
-        score_sem: AsyncContextManager,
     ) -> None:
         """Run group reward funcs per-actor-group (solvers vs solvers, not vs proposers)."""
         group_funcs = [(f, w) for f, w in zip(self.funcs, self.weights) if self._is_group_func(f)]
@@ -223,7 +219,7 @@ class MultiAgentRubric(Rubric):
         for actor_id, actor_states in actor_groups.items():
             for func, weight in group_funcs:
                 group_func = cast(GroupRewardFunc, func)
-                scores = await self._call_group_reward_func(group_func, actor_states, score_sem)
+                scores = await self._call_group_reward_func(group_func, actor_states)
 
                 for state, score in zip(actor_states, scores):
                     state["reward"] += score * weight
