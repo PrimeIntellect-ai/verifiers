@@ -1145,18 +1145,18 @@ class Environment(ABC):
 
             tasks: dict[asyncio.Task, int] = {}
 
-            def _make_on_acquire(num_rollouts: int):
+            def make_on_acquire(num_rollouts: int):
                 """Create an on_acquire callback for a task.
 
                 Calls on_rollout_start with the number of rollouts that just
                 began executing (1 for independent scoring, len(group) for grouped).
                 """
 
-                def _on_acquire() -> None:
+                def on_acquire() -> None:
                     if on_rollout_start is not None:
                         on_rollout_start(num_rollouts)
 
-                return _on_acquire
+                return on_acquire
 
             try:
                 # create tasks based on mode
@@ -1174,7 +1174,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
-                                on_acquire=_make_on_acquire(1),
+                                on_acquire=make_on_acquire(1),
                             ),
                         )
                         tasks[task] = i
@@ -1203,7 +1203,7 @@ class Environment(ABC):
                                     max_retries=max_retries,
                                     state_columns=state_columns,
                                 ),
-                                on_acquire=_make_on_acquire(len(group_input)),
+                                on_acquire=make_on_acquire(len(group_input)),
                             ),
                         )
                         tasks[task] = i
